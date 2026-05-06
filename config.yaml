@@ -1,0 +1,24 @@
+# 系统配置
+exchanges:
+  - binance
+  - okx
+
+# 交易对
+symbols:
+  - ETH/USDT
+
+# 套利参数
+arbitrage:
+  min_profit_rate: 0.003  # 最小利润率0.3%（扣除手续费后）
+  check_interval: 1  # 检查间隔（秒）
+
+# 风控
+risk:
+  max_trade_amount: 10  # 单次最大交易额（USDT）
+  max_drawdown: 0.20  # 最大回撤20%
+  max_daily_loss: 50  # 每日最大亏损（USDT）
+
+# 手续费（Maker/Taker）
+fees:
+  binance: 0.001
+  okx: 0.001
