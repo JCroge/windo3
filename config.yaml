@@ -3,9 +3,13 @@ exchanges:
   - binance
   - okx
 
-# 交易对
+# 交易对（V2 Agent筛选 - 2026-05-06）
 symbols:
-  - ETH/USDT
+  - WIF/USDT    # Tier1 #1: 得分46.93, 波动45%, 价差0.26%
+  - TON/USDT    # Tier1 #2: 得分46.78, 波动25%, 价差0.14%
+  - DOGE/USDT   # Tier1 #3: 得分45.95, 波动5%, 价差0.01%
+  - MEGA/USDT   # Tier1 #4: 得分45.58, 波动7%, 价差0.11%
+  - DASH/USDT   # Tier1 #5: 得分44.88, 波动23%, 价差0.09%
 
 # 套利参数
 arbitrage:

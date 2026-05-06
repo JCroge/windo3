@@ -1,0 +1,410 @@
+{
+  "timestamp": "20260506_162005",
+  "version": "v2",
+  "tier1": [
+    {
+      "symbol": "WIF/USDT",
+      "total_score": 46.93,
+      "volatility": 45.08,
+      "spread": 0.2636,
+      "volume": 21.12,
+      "price": 0.227,
+      "change_24h": 16.41,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 13.2,
+        "activity": 4.2,
+        "stability": 5,
+        "balance": 1.5,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "TON/USDT",
+      "total_score": 46.78,
+      "volatility": 25.55,
+      "spread": 0.1388,
+      "volume": 86.3,
+      "price": 2.159,
+      "change_24h": 17.66,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 6.9,
+        "activity": 10,
+        "stability": 5,
+        "balance": 1.8,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "DOGE/USDT",
+      "total_score": 45.95,
+      "volatility": 5.2,
+      "spread": 0.0086,
+      "volume": 98.01,
+      "price": 0.11589,
+      "change_24h": 3.83,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 0.4,
+        "activity": 10,
+        "stability": 10,
+        "balance": 2.5,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "MEGA/USDT",
+      "total_score": 45.58,
+      "volatility": 7.15,
+      "spread": 0.1111,
+      "volume": 12.8,
+      "price": 0.12588,
+      "change_24h": 0.06,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 5.6,
+        "activity": 2.6,
+        "stability": 10,
+        "balance": 4.5,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "DASH/USDT",
+      "total_score": 42.71,
+      "volatility": 25.18,
+      "spread": 0.2724,
+      "volume": 27.57,
+      "price": 55.22,
+      "change_24h": 21.79,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 13.6,
+        "activity": 5.5,
+        "stability": 0,
+        "balance": 0.6,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    }
+  ],
+  "tier2": [
+    {
+      "symbol": "TRUMP/USDT",
+      "total_score": 42.2,
+      "volatility": 5.94,
+      "spread": 0.0831,
+      "volume": 13.01,
+      "price": 2.406,
+      "change_24h": -1.8,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 4.2,
+        "activity": 2.6,
+        "stability": 10,
+        "balance": 2.4,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "FIL/USDT",
+      "total_score": 41.45,
+      "volatility": 23.64,
+      "spread": 0.0647,
+      "volume": 41.51,
+      "price": 1.082,
+      "change_24h": 12.94,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 3.2,
+        "activity": 8.3,
+        "stability": 5,
+        "balance": 1.9,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "STX/USDT",
+      "total_score": 41.2,
+      "volatility": 63.16,
+      "spread": 0.0817,
+      "volume": 13.46,
+      "price": 0.2448,
+      "change_24h": 7.09,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 4.1,
+        "activity": 2.7,
+        "stability": 10,
+        "balance": 1.4,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "PENGU/USDT",
+      "total_score": 41.19,
+      "volatility": 11.08,
+      "spread": 0.018,
+      "volume": 28.87,
+      "price": 0.01112,
+      "change_24h": 4.06,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 0.9,
+        "activity": 5.8,
+        "stability": 10,
+        "balance": 1.5,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "PENDLE/USDT",
+      "total_score": 41.09,
+      "volatility": 14.49,
+      "spread": 0.1063,
+      "volume": 12.22,
+      "price": 1.88,
+      "change_24h": 1.57,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 5.3,
+        "activity": 2.4,
+        "stability": 10,
+        "balance": 0.3,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "ADA/USDT",
+      "total_score": 40.86,
+      "volatility": 4.34,
+      "spread": 0.0376,
+      "volume": 24.18,
+      "price": 0.2662,
+      "change_24h": 3.34,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 1.9,
+        "activity": 4.8,
+        "stability": 10,
+        "balance": 1.1,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "LINK/USDT",
+      "total_score": 40.83,
+      "volatility": 4.63,
+      "spread": 0.0403,
+      "volume": 23.32,
+      "price": 9.93,
+      "change_24h": 3.44,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 2.0,
+        "activity": 4.7,
+        "stability": 10,
+        "balance": 1.1,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "BCH/USDT",
+      "total_score": 40.78,
+      "volatility": 9.63,
+      "spread": 0.0426,
+      "volume": 23.55,
+      "price": 469.8,
+      "change_24h": 5.24,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 2.1,
+        "activity": 4.7,
+        "stability": 10,
+        "balance": 0.9,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "SUI/USDT",
+      "total_score": 39.93,
+      "volatility": 5.53,
+      "spread": 0.0201,
+      "volume": 22.53,
+      "price": 0.994,
+      "change_24h": 5.1,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 1.0,
+        "activity": 4.5,
+        "stability": 10,
+        "balance": 1.4,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "FET/USDT",
+      "total_score": 39.84,
+      "volatility": 9.11,
+      "spread": 0.0889,
+      "volume": 10.74,
+      "price": 0.2249,
+      "change_24h": 7.81,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 4.4,
+        "activity": 2.1,
+        "stability": 10,
+        "balance": 0.3,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    }
+  ],
+  "tier3": [
+    {
+      "symbol": "CFX/USDT",
+      "total_score": 39.71,
+      "volatility": 17.21,
+      "spread": 0.0159,
+      "volume": 11.49,
+      "price": 0.06296,
+      "change_24h": 2.12,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 0.8,
+        "activity": 2.3,
+        "stability": 10,
+        "balance": 3.6,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "NEAR/USDT",
+      "total_score": 39.59,
+      "volatility": 9.72,
+      "spread": 0.0722,
+      "volume": 11.5,
+      "price": 1.385,
+      "change_24h": 8.71,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 3.6,
+        "activity": 2.3,
+        "stability": 10,
+        "balance": 0.7,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "CHIP/USDT",
+      "total_score": 38.94,
+      "volatility": 10.77,
+      "spread": 0.0557,
+      "volume": 14.91,
+      "price": 0.05387,
+      "change_24h": -6.62,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 2.8,
+        "activity": 3.0,
+        "stability": 10,
+        "balance": 0.2,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "BNB/USDT",
+      "total_score": 38.92,
+      "volatility": 2.39,
+      "spread": 0.0702,
+      "volume": 53.53,
+      "price": 640.46,
+      "change_24h": 1.9,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 12.0,
+        "spread": 3.5,
+        "activity": 10,
+        "stability": 10,
+        "balance": 0.4,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    },
+    {
+      "symbol": "EIGEN/USDT",
+      "total_score": 38.59,
+      "volatility": 25.31,
+      "spread": 0.1504,
+      "volume": 12.24,
+      "price": 0.1993,
+      "change_24h": 10.66,
+      "funding_rate": 3,
+      "scores": {
+        "volatility": 20,
+        "spread": 7.5,
+        "activity": 2.4,
+        "stability": 5,
+        "balance": 0.6,
+        "funding": 3
+      },
+      "risks": [],
+      "risk_level": "\u4f4e"
+    }
+  ]
+}

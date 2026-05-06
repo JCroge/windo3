@@ -2,7 +2,92 @@
 
 ## 概述
 
-本文档面向需要集成或扩展套利系统的开发者。
+本文档面向需要集成或扩展交易系统的开发者。
+
+**重要变更（2026-05-06）**：
+- 原套利策略经全面验证不可行（0次机会），已放弃
+- 新方向：趋势交易 + 合约策略
+- 当前状态：MVP开发中，只有K线采集功能可用
+- 本文档将随新系统开发逐步更新
+
+## 当前可用接口
+
+### K线数据采集器 ✅
+
+**导入**：
+```python
+from kline_collector import KlineCollector
+```
+
+**使用示例**：
+```python
+import asyncio
+
+# 初始化
+collector = KlineCollector(
+    symbols=['BTCUSDT', 'ETHUSDT'],
+    interval='1m',
+    db_path='data/klines.db'
+)
+
+# 启动采集
+async def collect():
+    await collector.stream()
+
+asyncio.run(collect())
+```
+
+**数据库查询**：
+```python
+import sqlite3
+
+conn = sqlite3.connect('data/klines.db')
+cursor = conn.cursor()
+
+# 查询最新K线
+cursor.execute('''
+    SELECT symbol, open_time, open, high, low, close, volume
+    FROM klines
+    WHERE symbol = 'BTCUSDT' AND interval = '1m'
+    ORDER BY open_time DESC
+    LIMIT 100
+''')
+
+klines = cursor.fetchall()
+```
+
+## 待开发接口（计划中）
+
+### 技术指标计算器 ⏳
+
+**计划接口**：
+```python
+from indicators import TechnicalIndicators
+
+indicators = TechnicalIndicators()
+ma = indicators.calculate_ma(klines, period=20)
+macd = indicators.calculate_macd(klines)
+rsi = indicators.calculate_rsi(klines, period=14)
+```
+
+### 信号生成器 ⏳
+
+**计划接口**：
+```python
+from signal_generator import SignalGenerator
+
+generator = SignalGenerator()
+signal = generator.generate(klines, indicators)
+# 返回: 'BUY', 'SELL', 'HOLD'
+```
+
+---
+
+## 原套利系统接口（已归档）
+
+以下内容为原套利系统的集成指南，保留作为参考。
+
+**放弃原因**：2026-05-06全面验证，所有测试0次机会，市场效率极高，成本>收益。
 
 ## 系统接口
 
