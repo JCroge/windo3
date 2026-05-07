@@ -51,7 +51,31 @@ crypto-arbitrage/
 │   ├── market.db          # 套利数据（已归档）
 │   ├── klines.db          # ✅ K线数据
 │   ├── risk_state.json    # ✅ 风控状态持久化
-│   └── positions.json     # ✅ 持仓记录持久化
+│   ├── positions.json     # ✅ 持仓记录持久化
+│   ├── trade_history.json # ✅ 交易历史持久化（ReviewerAgent）
+│   └── riskguard_state.json # ✅ RiskGuard状态持久化
+├── agents/                # ✅ 多Agent交易系统（两层架构）
+│   ├── base.py            # Agent基类（生命周期、消息收发、LLM调用）
+│   ├── orchestrator.py    # 编排器（两层：研判12h + 交易持续）
+│   ├── message_bus.py     # 消息总线（asyncio Queue，支持topic:symbol路由）
+│   ├── llm_client.py      # Claude API客户端（中转API支持）
+│   ├── research/          # 研判层（6个Agent）
+│   │   ├── market_scanner.py       # OKX永续合约扫描（量/波动/费率/多空比/OI）
+│   │   ├── sentiment_researcher.py # 恐贪指数+CoinGecko热度+Taker比
+│   │   ├── news_researcher.py      # 6家加密媒体RSS新闻
+│   │   ├── synthesizer.py          # Claude综合研判（两阶段决策）
+│   │   ├── censor.py               # 言官逆向审查（Devil's Advocate）
+│   │   └── symbol_router.py        # 标的路由+轮换协议
+│   └── trading/           # 交易层（7个Agent，多标的并行）
+│       ├── multi_data_collector.py  # 9维度数据采集（K线/orderbook/OI/爆仓/费率/Taker/大单/多空比）
+│       ├── tech_analyst.py          # 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险）
+│       ├── judge.py                 # 精确交易计划（入场区间/止盈止损/动态杠杆1-20x/仓位）
+│       ├── executor.py              # 多标的交易执行 + Daily Hard Stop响应
+│       ├── portfolio_risk_guard.py  # 组合级风控盯盘 + 状态持久化
+│       ├── reviewer.py              # 交易复盘 + 策略衰减检测 + Daily Hard Stop触发
+│       └── telegram_notifier.py     # Telegram实时告警 + 每日摘要
+├── run_agents.py          # ✅ 多Agent系统启动入口
+├── test_p0_features.py    # ✅ P0功能测试（Reviewer/Hard Stop/Graceful Shutdown）
 ├── docs/                  # 文档
 │   ├── architecture.md
 │   ├── handoff.md
@@ -94,6 +118,13 @@ crypto-arbitrage/
 | LEVERAGE | 杠杆倍数 | 否（默认1） |
 | MAX_TRADE_AMOUNT | 单次最大交易额 | 否（默认10） |
 | MAX_DRAWDOWN | 最大回撤 | 否（默认0.20） |
+| ANTHROPIC_API_KEY | Claude API密钥 | 否（使用多Agent系统时必需） |
+| ANTHROPIC_BASE_URL | Claude API地址（支持中转） | 否（默认api.anthropic.com） |
+| ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-opus-4-6） |
+| RESEARCH_INTERVAL | 研判层运行周期（秒） | 否（默认43200=12h） |
+| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认3） |
+| TELEGRAM_BOT_TOKEN | Telegram Bot Token | 否（留空则不启用通知） |
+| TELEGRAM_CHAT_ID | Telegram Chat ID | 否（留空则不启用通知） |
 
 ## 开发阶段
 
@@ -135,18 +166,70 @@ crypto-arbitrage/
 - 风控逻辑：只限制亏损不限制盈利
 - 持久化：峰值余额和持仓记录重启不丢失
 
-### 🔄 Phase 4: 实盘运行与优化（下一阶段）
-- 实盘交易监控
-- 性能数据收集
-- 策略参数动态优化
-- 交易复盘分析
+### ✅ Phase 4: 多Agent系统（2026-05-07完成）
+- 消息总线（asyncio Queue，支持topic:symbol路由）
+- Agent基类（生命周期管理、消息收发、LLM调用）
+- 编排器（两层架构：研判层12h周期 + 交易层持续运行）
+- Claude API客户端（中转API支持、限流、重试）
+- 研判层6个Agent：MarketScanner、SentimentResearcher、NewsResearcher、Synthesizer、Censor、SymbolRouter
+- 交易层6个Agent：MultiDataCollector、MultiTechAnalyst、MultiJudge、MultiExecutor、PortfolioRiskGuard、ReviewerAgent
+- 两阶段研判决策（初选→言官谏言→终选）
+- LLM降级机制（Claude不可用时回退到规则引擎）
+- 集成测试通过（研判层→交易层完整流水线）
+
+### ✅ Phase 5c: 交易层深度升级（2026-05-07完成）
+- DataCollector 9维度采集：K线(1h/4h) + Orderbook 20档 + 资金费率历史(8期) + OI delta(Binance) + 爆仓订单(OKX) + Taker买卖比 + 大单检测(P90阈值) + 多空账户比 + 10s价格流
+- TechAnalyst 9维度信号解读：趋势结构(含4h偏向) + 关键价位(swing+orderbook墙) + 动量(RSI背离检测) + 资金流向(OI-价格背离/费率极值/Taker压力) + 微观结构(鲸鱼方向/深度偏向/爆仓强度) + 散户反指 + 风险评估(杠杆/波动/流动性)
+- Judge 精确交易计划：7维度加权评分 → 入场区间 + 基于支撑阻力的多级止盈止损 + 动态杠杆1-20x(三因子) + 仓位管理 + 反欺骗/反人性决策
+- 反欺骗验证8场景全通过：诱多陷阱→做空、恐慌底部→反人性做多、假突破→hold、杠杆过热→拒绝、信号矛盾→hold、完美做空→12x、主力洗盘→不追空、缩量阴跌→不做多
+
+### ✅ Phase 5d: P0风控增强（2026-05-07完成）
+- ReviewerAgent：交易历史追踪、滚动窗口指标（胜率/盈亏比）、策略衰减检测
+- Daily Hard Stop机制：双重熔断（单日亏损≤-50 USDT 或 连续3次亏损）
+- Graceful Shutdown：信号处理（SIGINT/SIGTERM）、状态保存、优雅停机
+- RiskGuard状态持久化：持仓追踪、价格缓存、熔断状态重启恢复
+- 交易层Agent数量：5→6（新增ReviewerAgent）
+
+**关键特性**：
+- 反馈闭环：execution_result → Reviewer → 策略复盘 → 衰减检测
+- 熔断保护：Reviewer检测触发 → Executor/RiskGuard响应 → 拒绝新交易 + 全平持仓
+- 状态持久化：data/trade_history.json + data/riskguard_state.json
+- 测试覆盖：7个P0功能测试全通过（test_p0_features.py）
+
+**研判层流水线**：
+MarketScanner+SentimentResearcher+NewsResearcher → Synthesizer(初选) → Censor(谏言) → Synthesizer(终选) → SymbolRouter → 交易层
+
+**交易层流水线（per-symbol）**：
+DataCollector →[market_data:symbol]→ TechAnalyst →[tech_analysis:symbol]→ Judge →[trade_decision:symbol]→ Executor →[execution_result:symbol]→ RiskGuard + Reviewer
+
+**Reviewer反馈闭环**：
+execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h） → 衰减检测 → Daily Hard Stop触发（如需）
+
+**已知问题**：
+- Claude中转API（dorocli.cc）偶尔被阻断，系统自动降级为规则引擎
+- OKX rubik多空比API已不可用，改用Binance topLongShortAccountRatio
+
+### ✅ Phase 6a: P1-A Telegram通知（2026-05-07完成）
+- TelegramNotifier Agent：实时推送交易通知、风控告警、每日摘要
+- 零配置降级：无TELEGRAM_BOT_TOKEN/CHAT_ID时自动禁用
+- 消息过滤：只推送critical级别风控告警（flash_move/max_drawdown/emergency_close）
+- 每日摘要：UTC日切时自动发送（交易笔数/胜率/盈亏/告警次数）
+- Rate limiting：1 msg/sec 防止Telegram API限流
+- 交易层Agent数量：6→7（新增TelegramNotifier）
+
+### 🔄 Phase 6b: 智能增强（下一阶段）
+- Predictor（趋势预测Agent）
+- 更多数据源（链上大额转账、清算数据）
+- Claude提示词优化
+- Paper Trading模式
 
 ## 技术栈
 
-- **数据获取**：ccxt 4.3+
+- **数据获取**：ccxt 4.3+, aiohttp（异步HTTP）, feedparser（RSS解析）
 - **数据处理**：pandas 2.0+
 - **数据库**：SQLite3
 - **异步IO**：asyncio
+- **LLM**：openai SDK（Claude API通过OpenAI兼容格式，支持中转）
 - **配置管理**：pyyaml, python-dotenv
 
 ## 运行命令
@@ -155,8 +238,14 @@ crypto-arbitrage/
 # 测试连接
 python3 test_connection.py
 
-# 启动系统
+# 启动单策略实盘
 python3 main.py
+
+# 启动多Agent交易系统
+python3 run_agents.py
+
+# Agent系统集成测试
+python3 test_agents_integration.py
 
 # 或使用启动脚本
 ./start.sh

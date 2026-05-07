@@ -13,6 +13,7 @@ ENV/
 # Data
 data/*.db
 data/*.db-journal
+data/*.json
 
 # Logs
 logs/*.log

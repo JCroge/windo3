@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 3 完成，系统验证通过，可开始实盘交易
-**下一阶段**：实盘运行与优化
+**当前阶段**：Phase 5d 完成（P0风控增强：Reviewer + Daily Hard Stop + Graceful Shutdown + 状态持久化）
+**下一阶段**：Phase 6 智能增强（Telegram告警、Predictor、Paper Trading）
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -114,24 +114,122 @@
    - 敏感信息已通过.gitignore排除
    - OKX真实账户连接成功（余额19.33 USDT）
 
+### ✅ Phase 5: 多Agent系统（2026-05-07完成）
+
+**Phase 5a - 基础框架**：
+
+1. **消息总线** (`agents/message_bus.py`)
+   - asyncio Queue进程内通信
+   - 主题订阅 + 定向消息 + topic:symbol路由
+   - 广播隔离（发送者不收自己的消息）
+
+2. **Agent基类** (`agents/base.py`)
+   - 生命周期管理（setup → run → stop）
+   - 消息收发（publish/receive）
+   - LLM调用接口（ask_claude/ask_claude_json）
+
+3. **Claude API客户端** (`agents/llm_client.py`)
+   - OpenAI兼容格式调用中转站
+   - 限流、重试
+   - JSON结构化输出
+
+4. **编排器** (`agents/orchestrator.py`)
+   - 两层架构生命周期管理
+   - 研判层每12小时触发，交易层持续运行
+   - 信号处理（SIGTERM优雅退出）
+
+**Phase 5b - 研判层（6个Agent）**：
+
+5. **MarketScanner** (`agents/research/market_scanner.py`)
+   - OKX 324永续合约扫描
+   - 指标：价格、24h量、波动率、涨跌幅、资金费率、多空比（Binance）、持仓量（OKX）
+   - 按成交量排序，取Top50
+
+6. **SentimentResearcher** (`agents/research/sentiment_researcher.py`)
+   - Alternative.me恐贪指数（0-100，含7日趋势）
+   - CoinGecko热门币种（社交热度Top15）
+   - Binance Taker买卖比（10个主流标的）
+
+7. **NewsResearcher** (`agents/research/news_researcher.py`)
+   - 6家加密媒体RSS：CoinDesk、Cointelegraph、The Block、CryptoSlate、Decrypt、Bitcoin Magazine
+   - 币种提及统计（35个已知币种）
+   - 按发布时间排序，取最新30条
+
+8. **Synthesizer** (`agents/research/synthesizer.py`)
+   - 两阶段决策：初选（Claude综合分析）→ 终选（纳入言官谏言）
+   - LLM不可用时规则降级选币
+   - 保底机制：言官全部驳回时保留1个低置信度标的
+
+9. **Censor** (`agents/research/censor.py`)
+   - 言官/Devil's Advocate角色
+   - 逆向思维审查：共识陷阱、利好出尽、时间窗口过期
+   - 对每个标的给出：风险等级、反对理由、盲点、最坏情况、建议（accept/reject/reduce_size）
+
+10. **SymbolRouter** (`agents/research/symbol_router.py`)
+    - 标的路由：研判结果 → 交易层活跃标的列表
+    - 轮换协议：新标的接入、旧标的发送平仓指令
+
+**Phase 5b - 交易层（6个Agent，多标的并行）**：
+
+11. **MultiDataCollector** (`agents/trading/multi_data_collector.py`)
+    - 9维度采集：K线(1h/4h) + Orderbook 20档 + 资金费率历史(8期) + OI delta + 爆仓订单 + Taker买卖比 + 大单检测 + 多空账户比 + 10s价格流
+    - 按频率分档：10s(ticker) / 30s(orderbook+爆仓) / 60s(全量) / 5min(4h K线)
+    - 数据源：OKX REST API + Binance Futures Data API
+    - K线连续性保障（缺口检测+补数据）+ 健康监控（连续失败告警）
+
+12. **MultiTechAnalyst** (`agents/trading/tech_analyst.py`)
+    - 9维度信号解读：趋势结构(含4h偏向) + 关键价位(swing high/low + orderbook墙) + 动量(RSI背离检测) + 资金流向(OI-价格背离/费率极值/Taker压力) + 微观结构(鲸鱼方向/深度偏向/爆仓强度) + 散户反指 + 风险评估(杠杆/波动/流动性)
+    - 规则计算层（纯Python）+ LLM综合层（Claude识别跨维度组合模式）
+    - LLM失败时规则降级输出完整结果
+
+13. **MultiJudge** (`agents/trading/judge.py`)
+    - 7维度加权评分（趋势25%/RSI背离15%/OI背离15%/鲸鱼15%/散户反指10%/Taker10%/高周期10%）
+    - 精确交易计划：入场区间 + 基于支撑阻力的多级止盈止损 + 动态杠杆1-20x(三因子) + 仓位管理
+    - 反欺骗/反人性决策：诱多陷阱识别、恐慌底部反人性做多、杠杆过热拒绝、主力洗盘不追空
+    - 8个极端场景验证全通过
+
+14. **MultiExecutor** (`agents/trading/executor.py`)
+    - 智能执行：读Judge plan动态杠杆+限价单+条件单
+    - Daily Hard Stop响应：收到熔断信号后拒绝新交易
+
+15. **PortfolioRiskGuard** (`agents/trading/portfolio_risk_guard.py`)
+    - 6维度风控 + risk_alert接入Executor强制平仓
+    - 状态持久化：持仓追踪/价格缓存/熔断状态（data/riskguard_state.json）
+    - Daily Hard Stop响应：收到熔断信号后全平持仓
+
+16. **ReviewerAgent** (`agents/trading/reviewer.py`)
+    - 交易历史追踪（data/trade_history.json）
+    - 滚动窗口指标：胜率、盈亏比、连续亏损
+    - 策略衰减检测：近期表现 vs 历史基线
+    - Daily Hard Stop触发：单日亏损≤-50 USDT 或 连续3次亏损
+
+**关键技术决策**：
+- Claude中转API通过OpenAI兼容接口调用（绕过Cloudflare Bot防护）
+- LLM不可用时自动降级为规则引擎
+- 两阶段研判（初选+言官谏言+终选）防止过度自信
+- 集成测试验证完整消息流水线（2/2通过）
+
 ## 待开发功能
 
-### 🔄 Phase 4: 实盘运行与优化（下一阶段）
+### 🔄 Phase 6: 智能增强（下一阶段）
 
-1. **实盘交易监控**
-   - 交易日志分析
-   - 实时性能监控
-   - 异常告警
+1. **Telegram告警系统**
+   - 交易通知（开仓/平仓/止损）
+   - 风控告警（熔断/RiskGuard警报）
+   - 每日摘要 + 手动命令
 
-2. **复盘系统**
-   - 交易记录分析
-   - 策略表现评估
-   - 改进建议生成
+2. **Predictor**
+   - 趋势预测Agent（综合技术+情绪+新闻）
+   - 方向+置信度+目标价
 
-3. **参数动态优化**
-   - 基于实盘数据调整参数
-   - A/B测试不同策略
-   - 风控参数优化
+3. **更多数据源**
+   - 链上大额转账监控
+   - 清算数据（Coinglass）
+   - 社交媒体情绪（Twitter/X）
+
+4. **Claude提示词优化**
+   - 基于复盘结果迭代提示词
+   - A/B测试不同研判策略
 
 ## 技术债务
 
@@ -185,6 +283,8 @@ ccxt>=4.3.0
 pandas>=2.0.0
 python-dotenv>=1.0.0
 pyyaml>=6.0.0
+openai>=1.0.0
+anthropic>=0.25.0
 ```
 
 ### 可选配置

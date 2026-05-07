@@ -255,3 +255,265 @@ class ContractExecutor:
     def get_all_positions(self) -> Dict:
         """获取所有持仓"""
         return self.positions.copy()
+
+    def open_position_with_plan(self, symbol: str, side: str, plan: dict) -> Optional[Dict]:
+        """基于Judge plan的智能开仓"""
+        try:
+            balance = self.get_balance()
+            can_trade, msg = self.risk_manager.check_can_trade(balance)
+            if not can_trade:
+                self.logger.warning(f"风控拒绝: {msg}")
+                return None
+
+            leverage = plan.get('leverage', self.leverage)
+            order_type = plan.get('order_type', 'market')
+            entry_zone = plan.get('entry_zone', {})
+            stop_loss = plan.get('stop_loss')
+            take_profit = plan.get('take_profit', [])
+            size_usdt = plan.get('size_usdt', self.risk_manager.max_trade_amount)
+
+            size_usdt = min(size_usdt, self.risk_manager.max_trade_amount)
+
+            try:
+                self.exchange.set_leverage(leverage, symbol)
+            except Exception as e:
+                self.logger.warning(f"设置杠杆失败: {e}")
+
+            ticker = self.exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+
+            if order_type == 'limit' and entry_zone:
+                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone)
+                if filled is None:
+                    return None
+                amount, fill_price = filled
+            else:
+                if not self._check_slippage(symbol, size_usdt, current_price):
+                    self.logger.info(f"滑点过大，降级为限价单")
+                    if entry_zone:
+                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone)
+                        if filled is None:
+                            return None
+                        amount, fill_price = filled
+                    else:
+                        return None
+                else:
+                    amount = size_usdt / current_price
+                    order_side = 'buy' if side == 'long' else 'sell'
+                    self.exchange.create_order(
+                        symbol=symbol, type='market', side=order_side,
+                        amount=amount, params={'reduceOnly': False}
+                    )
+                    fill_price = current_price
+
+            if stop_loss:
+                sl_order_id = self.place_stop_loss_order(symbol, side, stop_loss, amount)
+            else:
+                sl_order_id = None
+
+            if not stop_loss:
+                stop_loss = self.risk_manager.calculate_stop_loss(fill_price, side)
+            tp_first = take_profit[0] if take_profit else self.risk_manager.calculate_take_profit(fill_price, side)
+
+            position = {
+                'symbol': symbol,
+                'side': side,
+                'entry_price': fill_price,
+                'amount': amount,
+                'amount_usdt': size_usdt,
+                'leverage': leverage,
+                'stop_loss': stop_loss,
+                'take_profit': tp_first,
+                'take_profit_levels': take_profit,
+                'sl_order_id': sl_order_id,
+                'order_type': order_type,
+            }
+            self.positions[symbol] = position
+            self._save_positions()
+
+            self.logger.info(
+                f"智能开仓: {side} {symbol} @ {fill_price:.2f}, "
+                f"杠杆={leverage}x, SL={stop_loss}, TP={take_profit}"
+            )
+            return position
+
+        except Exception as e:
+            self.logger.error(f"智能开仓失败: {e}")
+            return None
+
+    def _execute_limit_order(self, symbol: str, side: str, size_usdt: float,
+                             current_price: float, entry_zone: dict) -> Optional[tuple]:
+        """限价单执行，30秒超时"""
+        import time
+
+        low = entry_zone.get('low', current_price * 0.999)
+        high = entry_zone.get('high', current_price * 1.001)
+        limit_price = (low + high) / 2
+
+        amount = size_usdt / limit_price
+        order_side = 'buy' if side == 'long' else 'sell'
+
+        order = self.exchange.create_order(
+            symbol=symbol, type='limit', side=order_side,
+            amount=amount, price=limit_price,
+            params={'reduceOnly': False}
+        )
+        order_id = order['id']
+        self.logger.info(f"限价单挂出: {order_side} {amount:.6f} @ {limit_price:.2f}")
+
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                status = self.exchange.fetch_order(order_id, symbol)
+                if status['status'] == 'closed':
+                    fill_price = status.get('average', limit_price)
+                    filled_amount = status.get('filled', amount)
+                    self.logger.info(f"限价单成交: {filled_amount:.6f} @ {fill_price:.2f}")
+                    return (filled_amount, fill_price)
+                elif status['status'] == 'canceled':
+                    return None
+            except Exception:
+                pass
+
+        try:
+            self.exchange.cancel_order(order_id, symbol)
+        except Exception:
+            pass
+
+        ticker = self.exchange.fetch_ticker(symbol)
+        new_price = ticker['last']
+        price_change = abs(new_price - current_price) / current_price
+        if price_change > 0.005:
+            self.logger.info(f"价格变化>{price_change*100:.1f}%，放弃入场")
+            return None
+
+        amount = size_usdt / new_price
+        order = self.exchange.create_order(
+            symbol=symbol, type='market', side=order_side,
+            amount=amount, params={'reduceOnly': False}
+        )
+        self.logger.info(f"限价单超时，市价成交: {amount:.6f} @ ~{new_price:.2f}")
+        return (amount, new_price)
+
+    def _check_slippage(self, symbol: str, size_usdt: float, current_price: float) -> bool:
+        """检查滑点：spread > 0.1% 或深度不足则返回False"""
+        try:
+            ob = self.exchange.fetch_order_book(symbol, limit=5)
+            if not ob['asks'] or not ob['bids']:
+                return False
+            best_ask = ob['asks'][0][0]
+            best_bid = ob['bids'][0][0]
+            spread = (best_ask - best_bid) / best_bid
+            if spread > 0.001:
+                self.logger.warning(f"spread过大: {spread*100:.3f}%")
+                return False
+            depth_usdt = sum(p * q for p, q in ob['asks'][:5])
+            if depth_usdt < size_usdt * 3:
+                self.logger.warning(f"深度不足: {depth_usdt:.0f} < {size_usdt*3:.0f}")
+                return False
+            return True
+        except Exception:
+            return True
+
+    def place_stop_loss_order(self, symbol: str, side: str, stop_price: float,
+                              amount: float) -> Optional[str]:
+        """挂交易所止损条件单"""
+        try:
+            close_side = 'sell' if side == 'long' else 'buy'
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type='stop',
+                side=close_side,
+                amount=amount,
+                price=stop_price,
+                params={
+                    'stopPrice': stop_price,
+                    'reduceOnly': True,
+                    'triggerPrice': stop_price,
+                }
+            )
+            self.logger.info(f"止损条件单: {symbol} {close_side} @ {stop_price}")
+            return order.get('id')
+        except Exception as e:
+            self.logger.warning(f"挂止损条件单失败（将用本地轮询兜底）: {e}")
+            return None
+
+    def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """撤单"""
+        try:
+            self.exchange.cancel_order(order_id, symbol)
+            return True
+        except Exception as e:
+            self.logger.warning(f"撤单失败: {e}")
+            return False
+
+    def sync_positions(self) -> dict:
+        """从交易所同步真实持仓，以交易所为准"""
+        try:
+            exchange_positions = self.exchange.fetch_positions()
+            active = {}
+            for pos in exchange_positions:
+                if pos['contracts'] and float(pos['contracts']) > 0:
+                    sym = pos['symbol']
+                    side = 'long' if pos['side'] == 'long' else 'short'
+                    active[sym] = {
+                        'symbol': sym,
+                        'side': side,
+                        'entry_price': float(pos.get('entryPrice', 0)),
+                        'amount': float(pos['contracts']),
+                        'amount_usdt': float(pos.get('notional', 0)),
+                        'leverage': int(pos.get('leverage', 1)),
+                        'unrealized_pnl': float(pos.get('unrealizedPnl', 0)),
+                    }
+
+            for sym in list(self.positions.keys()):
+                if sym not in active:
+                    self.logger.info(f"仓位同步: {sym} 已不在交易所，移除本地记录")
+                    del self.positions[sym]
+
+            for sym, ex_pos in active.items():
+                if sym in self.positions:
+                    local = self.positions[sym]
+                    if abs(local['amount'] - ex_pos['amount']) / max(ex_pos['amount'], 1e-8) > 0.01:
+                        self.logger.info(f"仓位同步: {sym} 数量不一致，以交易所为准")
+                        local['amount'] = ex_pos['amount']
+                        local['amount_usdt'] = ex_pos['amount_usdt']
+                else:
+                    self.logger.info(f"仓位同步: 发现交易所持仓 {sym}，补录本地")
+                    self.positions[sym] = ex_pos
+
+            self._save_positions()
+            return self.positions.copy()
+
+        except Exception as e:
+            self.logger.error(f"仓位同步失败: {e}")
+            return self.positions.copy()
+
+    def reduce_position(self, symbol: str, pct: float) -> Optional[Dict]:
+        """减仓指定百分比"""
+        if symbol not in self.positions:
+            return None
+        try:
+            position = self.positions[symbol]
+            reduce_amount = position['amount'] * pct
+
+            order_side = 'sell' if position['side'] == 'long' else 'buy'
+            order = self.exchange.create_order(
+                symbol=symbol, type='market', side=order_side,
+                amount=reduce_amount, params={'reduceOnly': True}
+            )
+
+            position['amount'] -= reduce_amount
+            position['amount_usdt'] *= (1 - pct)
+
+            if position['amount'] < 1e-8:
+                del self.positions[symbol]
+            self._save_positions()
+
+            self.logger.info(f"减仓: {symbol} 减{pct*100:.0f}%, 剩余{position.get('amount', 0):.6f}")
+            return {'symbol': symbol, 'reduced_pct': pct, 'order': order}
+
+        except Exception as e:
+            self.logger.error(f"减仓失败: {e}")
+            return None

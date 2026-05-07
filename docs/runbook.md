@@ -24,24 +24,39 @@ cp .env.example .env
 
 ### 启动系统
 
-**实盘交易（当前主系统）**：
+**单策略实盘交易**：
 ```bash
 python3 live_trading.py
+```
+
+**多Agent交易系统**：
+```bash
+python3 run_agents.py
 ```
 
 **后台运行**：
 ```bash
 nohup python3 live_trading.py &
+nohup python3 run_agents.py &
 ```
 
 **查看实时日志**：
 ```bash
 tail -f logs/live_trading_$(date +%Y%m%d).log
+tail -f logs/orchestrator_$(date +%Y%m%d).log
 ```
 
-**停止系统**：
+**停止系统（优雅停机）**：
+```bash
+# 发送SIGINT/SIGTERM，系统会自动保存状态后退出
+kill -SIGINT $(pgrep -f run_agents.py)
+# 或直接 Ctrl+C（前台运行时）
+```
+
+**强制停止**：
 ```bash
 pkill -f live_trading.py
+pkill -f run_agents.py
 ```
 
 **系统验证**：
@@ -49,6 +64,10 @@ pkill -f live_trading.py
 python3 verify_system.py          # 基础验证（9项）
 python3 verify_trading_flow.py    # 交易Flow验证（7项）
 python3 verify_okx_real.py        # OKX真实账户验证（5项）
+python3 test_agents_integration.py  # 多Agent集成测试
+python3 test_phase_c.py           # 研判层→交易层流水线测试
+python3 test_data_sources.py      # 研判层数据源验证（实时API）
+python3 test_p0_features.py       # P0功能测试（Reviewer/Hard Stop/Graceful Shutdown）
 ```
 
 ## 环境变量
@@ -65,6 +84,11 @@ python3 verify_okx_real.py        # OKX真实账户验证（5项）
 | LEVERAGE | 杠杆倍数 | 1 | 否 |
 | MAX_TRADE_AMOUNT | 单次最大交易额(USDT) | 10 | 否 |
 | MAX_DRAWDOWN | 最大回撤比例 | 0.20 | 否 |
+| ANTHROPIC_API_KEY | Claude API密钥 | - | 否（多Agent系统） |
+| ANTHROPIC_BASE_URL | Claude API地址（中转） | https://api.anthropic.com | 否 |
+| ANTHROPIC_MODEL | Claude模型名 | claude-sonnet-4-6 | 否 |
+| RESEARCH_INTERVAL | 研判层运行周期（秒） | 43200 (12h) | 否 |
+| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 3 | 否 |
 
 ## 配置文件
 
@@ -197,6 +221,25 @@ pip3 install --upgrade ccxt
 3. 切换到波动更大的币种
 
 **结论**：套利策略不可行，已转向趋势交易+合约策略。
+
+### 问题：Claude API "Your request was blocked"
+
+**症状**：多Agent系统日志显示 `LLM调用失败: Your request was blocked`
+
+**原因**：Cloudflare Bot防护拦截了SDK默认的User-Agent
+
+**解决**：
+- `llm_client.py` 已内置修复（设置 `User-Agent: curl/8.0`）
+- 如果仍然失败，检查中转站账户分组是否有对应模型的通道
+- 系统会自动降级为规则引擎，不影响交易
+
+**验证**：
+```bash
+curl -s https://www.dorocli.cc/v1/chat/completions \
+  -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+```
 
 ### 问题：数据库锁定
 
