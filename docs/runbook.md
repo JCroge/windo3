@@ -20,36 +20,49 @@ pip3 install -r requirements.txt
 cp .env.example .env
 ```
 
-2. 编辑`.env`填入API密钥（可选，只读行情无需密钥）
+2. 编辑`.env`填入API密钥
 
 ### 启动系统
 
-**当前可用（2026-05-06）**：
+**实盘交易（当前主系统）**：
 ```bash
-# K线数据采集
-python3 test_kline.py
+python3 live_trading.py
 ```
 
-**原套利系统（已归档）**：
+**后台运行**：
 ```bash
-# 方式1：直接运行
-python3 main.py
-
-# 方式2：使用启动脚本
-./start.sh
+nohup python3 live_trading.py &
 ```
 
-**注意**：趋势交易系统正在开发中，当前只有K线采集功能可用。
+**查看实时日志**：
+```bash
+tail -f logs/live_trading_$(date +%Y%m%d).log
+```
+
+**停止系统**：
+```bash
+pkill -f live_trading.py
+```
+
+**系统验证**：
+```bash
+python3 verify_system.py          # 基础验证（9项）
+python3 verify_trading_flow.py    # 交易Flow验证（7项）
+python3 verify_okx_real.py        # OKX真实账户验证（5项）
+```
 
 ## 环境变量
 
 | 变量 | 说明 | 默认值 | 必需 |
 |------|------|--------|------|
-| BINANCE_API_KEY | Binance API密钥 | - | 否 |
-| BINANCE_SECRET | Binance Secret | - | 否 |
-| OKX_API_KEY | OKX API密钥 | - | 否 |
-| OKX_SECRET | OKX Secret | - | 否 |
-| OKX_PASSWORD | OKX密码 | - | 否 |
+| EXCHANGE | 交易所（binance/okx） | binance | 是 |
+| OKX_API_KEY | OKX API密钥 | - | 是（OKX） |
+| OKX_SECRET | OKX Secret | - | 是（OKX） |
+| OKX_PASSWORD | OKX Passphrase | - | 是（OKX） |
+| BINANCE_API_KEY | Binance API密钥 | - | 是（Binance） |
+| BINANCE_SECRET | Binance Secret | - | 是（Binance） |
+| USE_TESTNET | 是否测试网 | false | 否 |
+| LEVERAGE | 杠杆倍数 | 1 | 否 |
 | MAX_TRADE_AMOUNT | 单次最大交易额(USDT) | 10 | 否 |
 | MAX_DRAWDOWN | 最大回撤比例 | 0.20 | 否 |
 
@@ -89,13 +102,11 @@ fees:
 ### 查看日志
 
 ```bash
+# 实时查看实盘交易日志
+tail -f logs/live_trading_$(date +%Y%m%d).log
+
 # 实时查看K线采集日志
 tail -f logs/kline_collector_$(date +%Y%m%d).log
-
-# 查看原套利系统日志（已归档）
-tail -f logs/main_$(date +%Y%m%d).log
-tail -f logs/aggregator_$(date +%Y%m%d).log
-tail -f logs/detector_$(date +%Y%m%d).log
 ```
 
 ### 检查数据库

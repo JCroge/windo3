@@ -39,17 +39,26 @@ crypto-arbitrage/
 ├── backtest.py            # ✅ 回测引擎
 ├── compare_timeframes.py  # ✅ 多时间周期对比
 ├── validate_out_of_sample.py  # ✅ 样本外验证
+├── risk_manager.py        # ✅ 风控管理器
+├── executor.py            # ✅ 合约执行器
+├── live_trading.py        # ✅ 实时交易系统
 ├── test_backtest.py       # ✅ 回测测试
+├── verify_system.py       # ✅ 系统完整性验证
+├── verify_trading_flow.py # ✅ 交易Flow验证
+├── verify_okx_real.py     # ✅ OKX真实账户验证
 ├── kline_collector.py     # ✅ K线数据采集器
 ├── data/
 │   ├── market.db          # 套利数据（已归档）
-│   └── klines.db          # ✅ K线数据
+│   ├── klines.db          # ✅ K线数据
+│   ├── risk_state.json    # ✅ 风控状态持久化
+│   └── positions.json     # ✅ 持仓记录持久化
 ├── docs/                  # 文档
 │   ├── architecture.md
 │   ├── handoff.md
 │   ├── integration-guide.md
 │   └── runbook.md
 ├── logs/                  # 日志文件
+├── ISSUES.md              # ✅ 问题清单（11/12已修复）
 ├── config.yaml            # 系统配置
 ├── .env                   # API密钥（不提交）
 └── main.py                # 主程序入口
@@ -75,11 +84,14 @@ crypto-arbitrage/
 
 | 变量名 | 说明 | 必需 |
 |--------|------|------|
-| BINANCE_API_KEY | Binance API密钥 | 否（只读行情可选） |
-| BINANCE_SECRET | Binance Secret | 否 |
-| OKX_API_KEY | OKX API密钥 | 否 |
-| OKX_SECRET | OKX Secret | 否 |
-| OKX_PASSWORD | OKX密码 | 否 |
+| EXCHANGE | 交易所选择（binance/okx） | 是 |
+| BINANCE_API_KEY | Binance API密钥 | 否（使用Binance时必需） |
+| BINANCE_SECRET | Binance Secret | 否（使用Binance时必需） |
+| OKX_API_KEY | OKX API密钥 | 否（使用OKX时必需） |
+| OKX_SECRET | OKX Secret | 否（使用OKX时必需） |
+| OKX_PASSWORD | OKX密码（Passphrase） | 否（使用OKX时必需） |
+| USE_TESTNET | 是否使用测试网（true/false） | 否（默认false） |
+| LEVERAGE | 杠杆倍数 | 否（默认1） |
 | MAX_TRADE_AMOUNT | 单次最大交易额 | 否（默认10） |
 | MAX_DRAWDOWN | 最大回撤 | 否（默认0.20） |
 
@@ -107,11 +119,27 @@ crypto-arbitrage/
 - 样本外验证通过，策略稳健
 - 最佳参数：MA 7/25，RSI阈值75，成交量因子1.0
 
-### 🔄 Phase 3: 实盘交易系统（下一阶段）
-- 合约执行模块
-- 风控引擎
-- 实时信号监控
-- 交易记录和复盘
+### ✅ Phase 3: 实盘交易系统（2026-05-06完成）
+- 风控管理器（余额/回撤/每日亏损限制，峰值余额持久化）
+- 合约执行器（CCXT统一接口，支持Binance/OKX，持仓持久化）
+- 实时交易系统（整合策略+执行+风控）
+- 止损止盈自动触发
+- 多空双向交易支持
+- 实时K线获取（含数据库降级）
+- 系统完整性验证（15/16测试通过）
+- OKX真实账户连接验证
+
+**关键修复**（参考Freqtrade/CCXT最佳实践）：
+- 合约交易实现：杠杆设置、reduceOnly参数、盈亏计算含杠杆
+- 使用已闭合K线（iloc[-2]）防止前视偏差
+- 风控逻辑：只限制亏损不限制盈利
+- 持久化：峰值余额和持仓记录重启不丢失
+
+### 🔄 Phase 4: 实盘运行与优化（下一阶段）
+- 实盘交易监控
+- 性能数据收集
+- 策略参数动态优化
+- 交易复盘分析
 
 ## 技术栈
 

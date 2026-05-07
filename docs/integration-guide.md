@@ -4,315 +4,123 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**重要变更（2026-05-06）**：
-- 原套利策略经全面验证不可行（0次机会），已放弃
-- 新方向：趋势交易 + 合约策略
-- 当前状态：MVP开发中，只有K线采集功能可用
-- 本文档将随新系统开发逐步更新
+**系统状态（2026-05-06）**：实盘交易系统已完成，OKX BTC-USDT 1h 3x杠杆运行中。
 
-## 当前可用接口
+## 核心模块接口
 
-### K线数据采集器 ✅
+### 实时交易系统 ✅
 
-**导入**：
 ```python
-from kline_collector import KlineCollector
+from live_trading import LiveTradingSystem
+
+system = LiveTradingSystem(
+    symbol='BTC-USDT',
+    interval='1h',
+    exchange='okx',
+    api_key='...',
+    secret='...',
+    password='...',
+    testnet=False,
+    leverage=3
+)
+system.run(check_interval=60)
 ```
 
-**使用示例**：
-```python
-import asyncio
+### 合约执行器 ✅
 
-# 初始化
-collector = KlineCollector(
-    symbols=['BTCUSDT', 'ETHUSDT'],
-    interval='1m',
-    db_path='data/klines.db'
+```python
+from executor import ContractExecutor
+
+executor = ContractExecutor(
+    exchange_id='okx',
+    api_key='...', secret='...', password='...',
+    testnet=False, leverage=3
 )
 
-# 启动采集
-async def collect():
-    await collector.stream()
-
-asyncio.run(collect())
+executor.open_long('BTC-USDT', amount_usdt=10.0)
+executor.open_short('BTC-USDT', amount_usdt=10.0)
+executor.close_position('BTC-USDT')
+executor.get_position('BTC-USDT')  # 返回持仓或None
 ```
 
-**数据库查询**：
+### 风控管理器 ✅
+
 ```python
-import sqlite3
+from risk_manager import RiskManager
 
-conn = sqlite3.connect('data/klines.db')
-cursor = conn.cursor()
+rm = RiskManager(
+    max_trade_amount=10,
+    max_drawdown=0.20,
+    max_daily_loss=50
+)
 
-# 查询最新K线
-cursor.execute('''
-    SELECT symbol, open_time, open, high, low, close, volume
-    FROM klines
-    WHERE symbol = 'BTCUSDT' AND interval = '1m'
-    ORDER BY open_time DESC
-    LIMIT 100
-''')
-
-klines = cursor.fetchall()
+can_trade, reason = rm.check_can_trade(balance=19.33)
+sl, tp = rm.calculate_stop_loss_take_profit(entry_price=81000, side='long')
+size = rm.calculate_position_size(balance=19.33, amount_usdt=10.0)
 ```
 
-## 待开发接口（计划中）
+### 策略系统 ✅
 
-### 技术指标计算器 ⏳
+```python
+from optimize_1h import RobustStrategy
 
-**计划接口**：
+strategy = RobustStrategy(ma_fast=7, ma_slow=25, rsi_period=14, rsi_threshold=75, volume_factor=1.0)
+df_analyzed = strategy.analyze(df)  # 返回含 entry_long/entry_short/exit_long/exit_short 列的DataFrame
+```
+
+### 技术指标 ✅
+
 ```python
 from indicators import TechnicalIndicators
 
-indicators = TechnicalIndicators()
-ma = indicators.calculate_ma(klines, period=20)
-macd = indicators.calculate_macd(klines)
-rsi = indicators.calculate_rsi(klines, period=14)
+ma = TechnicalIndicators.calculate_ma(df['close'], period=7)
+rsi = TechnicalIndicators.calculate_rsi(df['close'], period=14)
+macd, signal, hist = TechnicalIndicators.calculate_macd(df['close'])
+upper, mid, lower = TechnicalIndicators.calculate_bollinger(df['close'])
 ```
 
-### 信号生成器 ⏳
+### 币种筛选 Agent ✅
 
-**计划接口**：
 ```python
-from signal_generator import SignalGenerator
+from agents.coin_selector_v2 import CoinSelectorV2
 
-generator = SignalGenerator()
-signal = generator.generate(klines, indicators)
-# 返回: 'BUY', 'SELL', 'HOLD'
+selector = CoinSelectorV2()
+result = selector.analyze()  # 返回优质币种列表及评分
 ```
 
----
+## 数据持久化
 
-## 原套利系统接口（已归档）
-
-以下内容为原套利系统的集成指南，保留作为参考。
-
-**放弃原因**：2026-05-06全面验证，所有测试0次机会，市场效率极高，成本>收益。
-
-## 系统接口
-
-### 1. 行情聚合器
-
-**导入**：
-```python
-from core.aggregator import TickerAggregator
-```
-
-**使用示例**：
-```python
-import asyncio
-
-# 初始化
-aggregator = TickerAggregator(
-    exchanges=['binance', 'okx'],
-    symbols=['ETH/USDT', 'BTC/USDT']
-)
-
-# 获取行情
-async def get_prices():
-    tickers = await aggregator.fetch_all()
-    for ticker in tickers:
-        print(f"{ticker['exchange']} {ticker['symbol']}: {ticker['bid']}/{ticker['ask']}")
-
-asyncio.run(get_prices())
-```
-
-**返回格式**：
-```python
-[
-    {
-        'exchange': 'binance',
-        'symbol': 'ETH/USDT',
-        'bid': 2371.46,
-        'ask': 2371.47
-    },
-    ...
-]
-```
-
-### 2. 套利检测引擎
-
-**导入**：
-```python
-from core.detector import ArbitrageDetector
-```
-
-**使用示例**：
-```python
-detector = ArbitrageDetector('config.yaml')
-
-# 检测套利机会
-opportunities = detector.detect(tickers)
-
-for opp in opportunities:
-    print(f"套利: {opp['symbol']}")
-    print(f"  买入: {opp['buy_exchange']} @ {opp['buy_price']}")
-    print(f"  卖出: {opp['sell_exchange']} @ {opp['sell_price']}")
-    print(f"  利润率: {opp['profit_rate']:.4f}")
-```
-
-**返回格式**：
-```python
-[
-    {
-        'symbol': 'ETH/USDT',
-        'buy_exchange': 'binance',
-        'sell_exchange': 'okx',
-        'buy_price': 2371.47,
-        'sell_price': 2372.50,
-        'profit_rate': 0.0032  # 0.32%
-    },
-    ...
-]
-```
-
-### 3. 数据库
-
-**导入**：
-```python
-from utils.database import Database
-```
-
-**使用示例**：
-```python
-db = Database('data/market.db')
-
-# 插入行情
-db.insert_ticker('binance', 'ETH/USDT', 2371.46, 2371.47)
-
-# 插入交易记录
-db.insert_trade(
-    symbol='ETH/USDT',
-    buy_ex='binance',
-    sell_ex='okx',
-    buy_price=2371.47,
-    sell_price=2372.50,
-    amount=0.01,
-    profit=0.0103
-)
-```
+| 文件 | 内容 | 说明 |
+|------|------|------|
+| `data/klines.db` | K线数据（SQLite） | WebSocket实时采集 |
+| `data/positions.json` | 当前持仓 | 重启后恢复 |
+| `data/risk_state.json` | 峰值余额 | 回撤计算基准 |
 
 ## 扩展开发
 
+### 添加新策略
+
+继承 `StrategyBase`：
+
+```python
+from strategy_base import StrategyBase
+
+class MyStrategy(StrategyBase):
+    def populate_indicators(self, df): ...
+    def populate_entry_signals(self, df): ...
+    def populate_exit_signals(self, df): ...
+```
+
 ### 添加新交易所
 
-1. 确认ccxt支持该交易所
-2. 修改`config.yaml`：
-```yaml
-exchanges:
-  - binance
-  - okx
-  - huobi  # 新增
+1. 确认 ccxt 支持
+2. 在 `executor.py` 的 `__init__` 中添加对应的 `config` 分支
+3. 在 `.env` 中配置对应 API 密钥
+
+## 日志格式
+
+实盘交易每轮输出：
 ```
-
-3. 添加手续费配置：
-```yaml
-fees:
-  binance: 0.001
-  okx: 0.001
-  huobi: 0.002  # 新增
+[扫描] 价格=81524.20 RSI=57.3 MA(7/25)=82026.87/81549.03 多头信号=0 空头信号=0 持仓=无持仓
+风控状态: 今日盈亏=0.00, 回撤=100.00%
 ```
-
-### 添加新交易对
-
-修改`config.yaml`：
-```yaml
-symbols:
-  - ETH/USDT
-  - BTC/USDT  # 新增
-```
-
-### 开发币种研判Agent
-
-**位置**：`agents/coin_selector.py`
-
-**接口规范**：
-```python
-class CoinSelector:
-    def analyze(self, days=7):
-        """分析历史数据，返回优质币种列表"""
-        pass
-    
-    def get_recommendations(self, top_n=20):
-        """返回Top N推荐币种"""
-        return ['ETH/USDT', 'BTC/USDT', ...]
-```
-
-**集成方式**：
-```python
-from agents.coin_selector import CoinSelector
-
-selector = CoinSelector()
-symbols = selector.get_recommendations(top_n=20)
-
-# 更新配置
-config['symbols'] = symbols
-```
-
-## API参考
-
-### TickerAggregator
-
-**方法**：
-- `fetch_ticker(exchange, symbol)` - 获取单个交易对行情
-- `fetch_all()` - 并发获取所有行情
-- `get_latest(exchange, symbol)` - 获取缓存的最新行情
-
-### ArbitrageDetector
-
-**方法**：
-- `detect(tickers)` - 检测套利机会
-- `_calculate_opportunity(symbol, buy_ex, sell_ex, buy_price, sell_price)` - 计算单个机会
-
-### Database
-
-**方法**：
-- `insert_ticker(exchange, symbol, bid, ask)` - 插入行情
-- `insert_trade(symbol, buy_ex, sell_ex, buy_price, sell_price, amount, profit)` - 插入交易
-
-## 错误处理
-
-### 交易所连接失败
-
-```python
-try:
-    ticker = exchange.fetch_ticker(symbol)
-except Exception as e:
-    logger.error(f"获取行情失败: {e}")
-    # 继续处理其他交易所
-```
-
-### 数据库错误
-
-```python
-try:
-    db.insert_ticker(...)
-except sqlite3.Error as e:
-    logger.error(f"数据库错误: {e}")
-```
-
-## 测试
-
-### 单元测试示例
-
-```python
-import unittest
-from core.detector import ArbitrageDetector
-
-class TestDetector(unittest.TestCase):
-    def test_detect_opportunity(self):
-        detector = ArbitrageDetector()
-        tickers = [
-            {'exchange': 'binance', 'symbol': 'ETH/USDT', 'bid': 2370, 'ask': 2371},
-            {'exchange': 'okx', 'symbol': 'ETH/USDT', 'bid': 2380, 'ask': 2381}
-        ]
-        opps = detector.detect(tickers)
-        self.assertGreater(len(opps), 0)
-```
-
-## 性能建议
-
-- 使用asyncio并发获取行情
-- 缓存最新行情数据
-- 批量写入数据库
-- 合理设置检查间隔

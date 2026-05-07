@@ -155,7 +155,17 @@ class LiveTradingSystem:
                         if result:
                             self.logger.info(f"平仓成功: {result}")
 
-                # 显示风控状态
+                # 显示当前状态
+                rsi_val = latest.get('rsi', float('nan'))
+                ma_fast_val = latest.get('ma_fast', float('nan'))
+                ma_slow_val = latest.get('ma_slow', float('nan'))
+                pos_str = f"{position['side']}@{position['entry_price']}" if position else "无持仓"
+                self.logger.info(
+                    f"[扫描] 价格={latest['close']:.2f} RSI={rsi_val:.1f} "
+                    f"MA({self.strategy.ma_fast}/{self.strategy.ma_slow})={ma_fast_val:.2f}/{ma_slow_val:.2f} "
+                    f"多头信号={int(latest.get('entry_long',0))} 空头信号={int(latest.get('entry_short',0))} "
+                    f"持仓={pos_str}"
+                )
                 risk_status = self.executor.risk_manager.get_status()
                 self.logger.info(f"风控状态: 今日盈亏={risk_status['daily_pnl']:.2f}, "
                                f"回撤={risk_status['current_drawdown_pct']:.2f}%")
