@@ -113,7 +113,7 @@ class ReviewerAgent(BaseAgent):
         today = datetime.datetime.utcnow().date()
         daily_trades = [
             t for t in self.trade_history
-            if datetime.datetime.fromtimestamp(t['timestamp']).date() == today
+            if datetime.datetime.utcfromtimestamp(t['timestamp']).date() == today
         ]
 
         return sum(t['pnl'] for t in daily_trades)

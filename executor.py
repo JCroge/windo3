@@ -55,7 +55,11 @@ class ContractExecutor:
             self.logger.info(f"使用 {exchange_id} 测试网")
 
         # 风控管理器
-        self.risk_manager = RiskManager()
+        max_amount = float(os.getenv('MAX_TRADE_AMOUNT', 10))
+        self.risk_manager = RiskManager(
+            max_trade_amount=max_amount,
+            state_file='data/risk_state.json'
+        )
 
         # 持仓记录
         self.positions = {}
@@ -80,8 +84,15 @@ class ContractExecutor:
         """开空仓"""
         return self._open_position(symbol, 'short', amount_usdt)
 
+    def _normalize_symbol(self, symbol: str) -> str:
+        """确保使用SWAP格式"""
+        if not symbol.endswith('-SWAP') and '-USDT' in symbol:
+            return symbol + '-SWAP'
+        return symbol
+
     def _open_position(self, symbol: str, side: str, amount_usdt: float) -> Optional[Dict]:
         """开仓"""
+        symbol = self._normalize_symbol(symbol)
         try:
             # 风控检查
             balance = self.get_balance()
@@ -198,6 +209,14 @@ class ContractExecutor:
             return result
 
         except Exception as e:
+            error_msg = str(e)
+            # 51205: Reduce Only不可用 = 持仓已不存在
+            if '51205' in error_msg or 'Reduce Only' in error_msg:
+                self.logger.warning(f"持仓已不存在，清理本地记录: {symbol}")
+                if symbol in self.positions:
+                    del self.positions[symbol]
+                    self._save_positions()
+                return None
             self.logger.error(f"平仓失败: {e}")
             return None
 
@@ -258,6 +277,7 @@ class ContractExecutor:
 
     def open_position_with_plan(self, symbol: str, side: str, plan: dict) -> Optional[Dict]:
         """基于Judge plan的智能开仓"""
+        symbol = self._normalize_symbol(symbol)
         try:
             balance = self.get_balance()
             can_trade, msg = self.risk_manager.check_can_trade(balance)
@@ -283,7 +303,7 @@ class ContractExecutor:
             current_price = ticker['last']
 
             if order_type == 'limit' and entry_zone:
-                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone)
+                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage)
                 if filled is None:
                     return None
                 amount, fill_price = filled
@@ -291,14 +311,27 @@ class ContractExecutor:
                 if not self._check_slippage(symbol, size_usdt, current_price):
                     self.logger.info(f"滑点过大，降级为限价单")
                     if entry_zone:
-                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone)
+                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage)
                         if filled is None:
                             return None
                         amount, fill_price = filled
                     else:
                         return None
                 else:
-                    amount = size_usdt / current_price
+                    # 计算实际合约价值：保证金 × 杠杆
+                    contract_value = size_usdt * leverage
+                    market = self.exchange.market(symbol)
+                    contract_size = float(market.get('contractSize', 1) or 1)
+                    amount = float(self.exchange.amount_to_precision(
+                        symbol, contract_value / (current_price * contract_size)
+                    ))
+
+                    # 检查最小数量限制
+                    min_amount = market.get('limits', {}).get('amount', {}).get('min', 0)
+                    if min_amount and amount < min_amount:
+                        self.logger.warning(f"订单数量{amount:.4f}低于最小值{min_amount}，放弃交易")
+                        return None
+
                     order_side = 'buy' if side == 'long' else 'sell'
                     self.exchange.create_order(
                         symbol=symbol, type='market', side=order_side,
@@ -342,15 +375,23 @@ class ContractExecutor:
             return None
 
     def _execute_limit_order(self, symbol: str, side: str, size_usdt: float,
-                             current_price: float, entry_zone: dict) -> Optional[tuple]:
+                             current_price: float, entry_zone: dict,
+                             leverage: int = 1) -> Optional[tuple]:
         """限价单执行，30秒超时"""
         import time
 
-        low = entry_zone.get('low', current_price * 0.999)
-        high = entry_zone.get('high', current_price * 1.001)
+        if isinstance(entry_zone, list):
+            low, high = entry_zone[0], entry_zone[1]
+        else:
+            low = entry_zone.get('low', current_price * 0.999)
+            high = entry_zone.get('high', current_price * 1.001)
         limit_price = (low + high) / 2
 
-        amount = size_usdt / limit_price
+        market = self.exchange.market(symbol)
+        contract_size = float(market.get('contractSize', 1) or 1)
+        amount = float(self.exchange.amount_to_precision(
+            symbol, (size_usdt * leverage) / (limit_price * contract_size)
+        ))
         order_side = 'buy' if side == 'long' else 'sell'
 
         order = self.exchange.create_order(
@@ -388,7 +429,9 @@ class ContractExecutor:
             self.logger.info(f"价格变化>{price_change*100:.1f}%，放弃入场")
             return None
 
-        amount = size_usdt / new_price
+        amount = float(self.exchange.amount_to_precision(
+            symbol, (size_usdt * leverage) / (new_price * contract_size)
+        ))
         order = self.exchange.create_order(
             symbol=symbol, type='market', side=order_side,
             amount=amount, params={'reduceOnly': False}

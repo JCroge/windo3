@@ -42,7 +42,9 @@ class MarketScanner(BaseAgent):
     async def _scan_market(self):
         try:
             self.logger.info("[扫描] 开始采集市场数据...")
-            tickers = self.exchange.fetch_tickers()
+            import asyncio
+            loop = asyncio.get_event_loop()
+            tickers = await loop.run_in_executor(None, self.exchange.fetch_tickers)
 
             candidates = []
             for symbol, ticker in tickers.items():
@@ -87,11 +89,17 @@ class MarketScanner(BaseAgent):
             candidates.sort(key=lambda x: x['volume_24h'], reverse=True)
             top_candidates = candidates[:self.top_n]
 
-            for c in top_candidates:
-                c['funding_rate'] = self._fetch_funding(c['raw_symbol'])
-                inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
-                c['long_short_ratio'] = await self._fetch_long_short_ratio(inst_id)
-                c['open_interest_usd'] = await self._fetch_open_interest(inst_id)
+            # 简化：只获取前10个的详细数据，避免API超时
+            for i, c in enumerate(top_candidates):
+                if i < 10:
+                    c['funding_rate'] = await self._fetch_funding(c['raw_symbol'])
+                    inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
+                    c['long_short_ratio'] = await self._fetch_long_short_ratio(inst_id)
+                    c['open_interest_usd'] = await self._fetch_open_interest(inst_id)
+                else:
+                    c['funding_rate'] = None
+                    c['long_short_ratio'] = None
+                    c['open_interest_usd'] = None
                 del c['raw_symbol']
 
             await self.publish("research_market_data", {
@@ -105,9 +113,11 @@ class MarketScanner(BaseAgent):
         except Exception as e:
             self.logger.error(f"市场扫描失败: {e}")
 
-    def _fetch_funding(self, symbol: str):
+    async def _fetch_funding(self, symbol: str):
         try:
-            funding = self.exchange.fetch_funding_rate(symbol)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            funding = await loop.run_in_executor(None, self.exchange.fetch_funding_rate, symbol)
             return funding.get('fundingRate', None)
         except Exception:
             return None

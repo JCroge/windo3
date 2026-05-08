@@ -8,6 +8,8 @@
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
 - 2026-05-07：多Agent系统完成，两层架构（研判层6 Agent + 交易层6 Agent），含言官逆向审查机制
 - 2026-05-07：P0风控增强完成（ReviewerAgent + Daily Hard Stop + Graceful Shutdown + 状态持久化）
+- 2026-05-07：P1-A Telegram通知完成（TelegramNotifier，交易层7个Agent）
+- 2026-05-08：contractSize修复（DOGE/ETH等非1合约单位正确计算），Judge杠杆上限10x
 
 ## 架构图
 
@@ -67,7 +69,7 @@
 └─────────────────────────────────────────────┼───────────────┘
                                               │ symbol_update
 ┌─────────────────────────────────────────────┼───────────────┐
-│              交易层 Tier 2（持续运行，6个Agent）               │
+│              交易层 Tier 2（持续运行，7个Agent）               │
 │                                              ▼               │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
 │  │DataCollector  │  │ TechAnalyst  │  │    Judge     │       │
@@ -250,9 +252,11 @@ CREATE TABLE klines (
 | `research/symbol_router.py` | 研判 | 标的路由+轮换协议（平仓旧标的） | 无 |
 | `trading/multi_data_collector.py` | 交易 | 9维度数据采集（K线/orderbook/OI/爆仓/费率/Taker/大单/多空比） | 无 |
 | `trading/tech_analyst.py` | 交易 | 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险） | Claude综合研判 |
-| `trading/judge.py` | 交易 | 精确交易计划（入场区间/止盈止损/动态杠杆1-20x/仓位） | Claude最终裁决 |
+| `trading/judge.py` | 交易 | 精确交易计划（入场区间/止盈止损/动态杠杆1-10x/仓位） | Claude最终裁决 |
 | `trading/executor.py` | 交易 | 多标的交易执行 | 无 |
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
+| `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |
+| `trading/telegram_notifier.py` | 交易 | Telegram实时告警+每日摘要 | 无 |
 
 **LLM降级机制**：Claude不可用时自动回退到规则引擎，系统不中断。
 
@@ -271,8 +275,10 @@ CREATE TABLE klines (
 - `price_tick:{symbol}`：10秒价格流（DataCollector → RiskGuard）
 - `tech_analysis:{symbol}`：9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险）（TechAnalyst → Judge）
 - `trade_decision:{symbol}`：精确交易计划（入场区间/止盈止损/杠杆/仓位）（Judge → Executor）
-- `execution_result:{symbol}`：执行结果（Executor → RiskGuard）
-- `risk_alert`：风控警报（RiskGuard → broadcast）
+- `execution_result:{symbol}`：执行结果（Executor → RiskGuard, Reviewer, TelegramNotifier）
+- `risk_alert`：风控警报（RiskGuard → broadcast，Executor + TelegramNotifier响应）
+- `daily_hard_stop_triggered`：熔断信号（Reviewer → broadcast，Executor + RiskGuard + TelegramNotifier响应）
+- `strategy_review`：策略复盘报告（Reviewer → TelegramNotifier）
 
 ## 数据流
 
@@ -380,7 +386,7 @@ CREATE TABLE klines (
 **Phase 5c - 交易层深度升级（2026-05-07）**：
 - DataCollector 9维度采集：K线(多周期) + Orderbook 20档 + 资金费率历史 + OI delta + 爆仓订单 + Taker买卖比 + 大单检测 + 多空账户比 + 实时价格流
 - TechAnalyst 9维度信号解读：趋势结构 + 关键价位(含orderbook墙) + 动量(RSI背离) + 资金流向(OI背离/费率极值) + 微观结构(鲸鱼/深度偏向) + 散户反指 + 风险评估
-- Judge 精确交易计划：7维度加权评分 + 基于支撑阻力的止盈止损 + 动态杠杆1-20x + 反欺骗/反人性决策
+- Judge 精确交易计划：7维度加权评分 + 基于支撑阻力的止盈止损 + 动态杠杆1-10x + 反欺骗/反人性决策
 - 反欺骗验证通过：诱多陷阱识别、恐慌底部反人性做多、假突破拒绝、杠杆过热拒绝、主力洗盘识别
 
 **Phase 5d - P0风控增强（2026-05-07）**：

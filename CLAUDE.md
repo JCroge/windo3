@@ -216,11 +216,23 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - 每日摘要：UTC日切时自动发送（交易笔数/胜率/盈亏/告警次数）
 - Rate limiting：1 msg/sec 防止Telegram API限流
 - 交易层Agent数量：6→7（新增TelegramNotifier）
+- 首次实盘验证（2026-05-07 16:53-17:05）：研判层完成选标的SOL-USDT，交易层持续监控，信号不足正确观望，11分钟无崩溃
 
-### 🔄 Phase 6b: 智能增强（下一阶段）
+### ✅ Phase 6b: OKX下单修复（2026-05-07完成）
+- Judge余额检查：新增`_update_balance()`，每次决策前查询USDT余额，余额不足时自动调整仓位或放弃
+- 杠杆圆整：`_calc_leverage()`圆整到OKX允许值 [1, 2, 3, 5, 10, 20]
+- 下单数量计算修复：`amount = (size_usdt * leverage) / price`（修复前漏乘杠杆）
+- 最小订单检查：executor.py下单前检查合约最小数量限制，不足则放弃
+- 言官提示词调整：降低驳回阈值，避免过度保守导致无标的可交易
+
+### ✅ Phase 6b: contractSize修复 + 杠杆上限（2026-05-08完成）
+- contractSize修复：`amount = (size_usdt * leverage) / (price * contract_size)` + `amount_to_precision()`（修复前DOGE会多下1000倍）
+- Judge杠杆上限10x：小账户保护，OKX允许值列表改为[1, 2, 3, 5, 10]
+
+### 🔄 Phase 7: 待开发
+- 修复资金费率API（`fetchFundingRate() is only valid for swap markets`）
 - Predictor（趋势预测Agent）
 - 更多数据源（链上大额转账、清算数据）
-- Claude提示词优化
 - Paper Trading模式
 
 ## 技术栈
@@ -253,8 +265,9 @@ python3 test_agents_integration.py
 
 ## 已知问题
 
-1. **ETH/USDT价差过小**：Binance和OKX之间价差<0.01%，需要寻找波动更大的币种
-2. **币种选择**：需要开发自动筛选机制，目标是24h交易量1000万-1亿美元、波动率>2%的币种
+1. **资金费率API**：`fetchFundingRate() is only valid for swap markets`（持续警告，待修复）
+2. **OKX错误11045**：设置杠杆偶发失败，不影响交易，可忽略
+3. **Claude中转API偶尔被阻断**：系统自动降级为规则引擎，不影响交易
 
 ## 开发注意事项
 

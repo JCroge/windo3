@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 5d 完成（P0风控增强：Reviewer + Daily Hard Stop + Graceful Shutdown + 状态持久化）
-**下一阶段**：Phase 6 智能增强（Telegram告警、Predictor、Paper Trading）
+**当前阶段**：Phase 6a 完成（Telegram通知 + contractSize修复 + 杠杆上限10x）
+**下一阶段**：Phase 7（Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -211,25 +211,27 @@
 
 ## 待开发功能
 
-### 🔄 Phase 6: 智能增强（下一阶段）
+### ✅ Phase 6a: Telegram通知（2026-05-07完成）
 
-1. **Telegram告警系统**
-   - 交易通知（开仓/平仓/止损）
-   - 风控告警（熔断/RiskGuard警报）
-   - 每日摘要 + 手动命令
+1. **TelegramNotifier** (`agents/trading/telegram_notifier.py`)
+   - 实时推送：交易执行、critical级别风控告警、Daily Hard Stop触发
+   - 每日摘要：UTC日切时自动发送（交易笔数/胜率/盈亏/告警次数）
+   - 零配置降级：无TELEGRAM_BOT_TOKEN/CHAT_ID时自动禁用
+   - Rate limiting：1 msg/sec 防止API限流
+   - 交易层Agent数量：6→7
 
-2. **Predictor**
-   - 趋势预测Agent（综合技术+情绪+新闻）
-   - 方向+置信度+目标价
+### ✅ Phase 6b: 关键Bug修复（2026-05-08完成）
 
-3. **更多数据源**
-   - 链上大额转账监控
-   - 清算数据（Coinglass）
-   - 社交媒体情绪（Twitter/X）
+1. **contractSize修复** (`executor.py`)
+   - 修复前：`amount = (size_usdt * leverage) / price`（对DOGE contractSize=1000会多下1000倍）
+   - 修复后：`amount = (size_usdt * leverage) / (price * contract_size)` + `amount_to_precision()`
+   - 影响：DOGE/ETH等非1合约单位的标的下单数量正确
 
-4. **Claude提示词优化**
-   - 基于复盘结果迭代提示词
-   - A/B测试不同研判策略
+2. **Judge杠杆上限10x** (`agents/trading/judge.py`)
+   - 小账户（<50 USDT）20x杠杆在5%逆向波动即触发清算
+   - 上限从20x降至10x，OKX允许值列表：[1, 2, 3, 5, 10]
+
+### 🔄 Phase 7: 待开发
 
 ## 技术债务
 

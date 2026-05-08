@@ -88,7 +88,8 @@ python3 test_p0_features.py       # P0功能测试（Reviewer/Hard Stop/Graceful
 | ANTHROPIC_BASE_URL | Claude API地址（中转） | https://api.anthropic.com | 否 |
 | ANTHROPIC_MODEL | Claude模型名 | claude-sonnet-4-6 | 否 |
 | RESEARCH_INTERVAL | 研判层运行周期（秒） | 43200 (12h) | 否 |
-| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 3 | 否 |
+| TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
+| TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
 ## 配置文件
 
@@ -221,6 +222,29 @@ pip3 install --upgrade ccxt
 3. 切换到波动更大的币种
 
 **结论**：套利策略不可行，已转向趋势交易+合约策略。
+
+### 问题：OKX下单错误
+
+**错误51008：余额不足**
+- 原因：账户USDT余额不足以开仓
+- 处理：系统自动调整仓位大小或放弃本次交易，无需人工干预
+
+**错误51020：订单金额低于最小值**
+- 原因：计算出的下单数量低于OKX合约最小数量限制
+- 处理：系统自动放弃本次交易，无需人工干预
+
+**错误11045：设置杠杆失败**
+- 原因：偶发性API错误，通常不影响后续交易
+- 处理：忽略，系统继续运行；如持续出现，检查账户是否有未平仓持仓
+
+**OKX下单数量计算公式**：
+```
+market = exchange.market(symbol)
+contract_size = market.get('contractSize', 1)
+amount = (size_usdt * leverage) / (price * contract_size)
+amount = exchange.amount_to_precision(symbol, amount)
+```
+OKX允许的杠杆值（小账户上限10x）：[1, 2, 3, 5, 10]
 
 ### 问题：Claude API "Your request was blocked"
 

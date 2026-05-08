@@ -53,6 +53,7 @@ class MultiDataCollector(BaseAgent):
             ex_config['secret'] = os.getenv('BINANCE_SECRET')
             self.exchange = ccxt.binance(ex_config)
 
+        await asyncio.to_thread(self.exchange.load_markets)
         self.logger.info(f"9维度数据采集就绪: {exchange_id}")
 
     async def on_message(self, msg: dict):
@@ -67,10 +68,26 @@ class MultiDataCollector(BaseAgent):
                 self._orderbook_cache.pop(s, None)
                 self._liquidation_cache.pop(s, None)
 
-            self._active_symbols = new_symbols
-            self.logger.info(f"[采集] 标的更新: {new_symbols} +{added} -{removed}")
+            # 过滤非加密货币标的（商品期货等）
+            CRYPTO_BLACKLIST = {'CL', 'XAU', 'XAG', 'OIL', 'GAS', 'SPX', 'NDX'}
+            valid_symbols = []
+            for s in new_symbols:
+                base = s.split('-')[0].upper()
+                if base in CRYPTO_BLACKLIST:
+                    self.logger.warning(f"[采集] 标的 {s} 为非加密货币，跳过")
+                    continue
+                swap_sym = s.replace('-USDT', '/USDT:USDT')
+                if swap_sym in self.exchange.markets or s in self.exchange.markets:
+                    valid_symbols.append(s)
+                else:
+                    self.logger.warning(f"[采集] 标的 {s} 在交易所不存在，跳过")
+
+            self._active_symbols = valid_symbols
+            self.logger.info(f"[采集] 标的更新: {valid_symbols} +{added} -{removed}")
 
             for s in added:
+                if s not in valid_symbols:
+                    continue
                 self._init_health(s)
                 await self._full_collect(s)
                 await asyncio.sleep(0.3)
@@ -147,7 +164,9 @@ class MultiDataCollector(BaseAgent):
         # 2. 资金费率(当前)
         funding_rate = None
         try:
-            funding = self.exchange.fetch_funding_rate(symbol)
+            base = symbol.split('-')[0]
+            ccxt_sym = f"{base}/USDT:USDT"
+            funding = self.exchange.fetch_funding_rate(ccxt_sym)
             funding_rate = funding.get('fundingRate')
             dimensions_ok += 1
         except Exception as e:

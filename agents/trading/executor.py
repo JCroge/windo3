@@ -66,6 +66,9 @@ class MultiExecutor(BaseAgent):
             self.logger.info(f"[执行] {symbol} 跳过：置信度不足 ({confidence} < {self.min_confidence})")
             return
 
+        # normalize symbol 确保与持仓key一致
+        norm_symbol = self.executor._normalize_symbol(symbol)
+
         balance = self._get_balance()
         if balance < 0:
             self.logger.warning(f"[执行] {symbol} 跳过：余额获取失败")
@@ -78,23 +81,44 @@ class MultiExecutor(BaseAgent):
             }, symbol=symbol)
             return
 
-        position = self.executor.get_position(symbol)
+        try:
+            position = self.executor.get_position(norm_symbol)
+        except Exception as e:
+            self.logger.error(f"[执行] {symbol} 获取持仓失败: {e}")
+            await self.publish("execution_result", {
+                "status": "error", "reason": str(e), "action": action, "symbol": symbol
+            }, symbol=symbol)
+            return
+
+        result = None
 
         if action in ('open_long', 'open_short') and position is None:
             side = 'long' if action == 'open_long' else 'short'
-            if plan:
-                result = await self._execute_with_plan(symbol, side, plan)
-            else:
-                result = await self._execute_legacy(symbol, side, decision)
+            try:
+                if plan:
+                    result = await self._execute_with_plan(symbol, side, plan)
+                else:
+                    result = await self._execute_legacy(symbol, side, decision)
+            except Exception as e:
+                self.logger.error(f"[执行] {symbol} 开仓失败: {e}")
+                await self.publish("execution_result", {
+                    "status": "error", "reason": str(e), "action": action, "symbol": symbol
+                }, symbol=symbol)
+                return
 
         elif action == 'close' and position is not None:
-            if position.get('sl_order_id'):
-                self.executor.cancel_order(symbol, position['sl_order_id'])
-            result = self.executor.close_position(symbol)
-            if result:
-                self.logger.info(f"[执行] {symbol} 平仓 PnL={result.get('pnl', 0):.2f}")
-        else:
-            result = None
+            try:
+                if position.get('sl_order_id'):
+                    self.executor.cancel_order(norm_symbol, position['sl_order_id'])
+                result = self.executor.close_position(norm_symbol)
+                if result:
+                    self.logger.info(f"[执行] {symbol} 平仓 PnL={result.get('pnl', 0):.2f}")
+            except Exception as e:
+                self.logger.error(f"[执行] {symbol} 平仓失败: {e}")
+                await self.publish("execution_result", {
+                    "status": "error", "reason": str(e), "action": action, "symbol": symbol
+                }, symbol=symbol)
+                return
 
         if result:
             await self.publish("execution_result", {
@@ -114,9 +138,8 @@ class MultiExecutor(BaseAgent):
             f"类型={plan.get('order_type')}, "
             f"仓位={plan.get('size_usdt')} USDT"
         )
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, self.executor.open_position_with_plan, symbol, side, plan
+        result = await asyncio.to_thread(
+            self.executor.open_position_with_plan, symbol, side, plan
         )
         return result
 
@@ -126,11 +149,10 @@ class MultiExecutor(BaseAgent):
         max_amount = self.config.get('max_trade_amount', 10)
         amount = max_amount * size_pct
 
-        loop = asyncio.get_event_loop()
         if side == 'long':
-            result = await loop.run_in_executor(None, self.executor.open_long, symbol, amount)
+            result = await asyncio.to_thread(self.executor.open_long, symbol, amount)
         else:
-            result = await loop.run_in_executor(None, self.executor.open_short, symbol, amount)
+            result = await asyncio.to_thread(self.executor.open_short, symbol, amount)
 
         if result:
             self.logger.info(f"[执行] {symbol} 旧模式开{side} {amount:.2f} USDT")
@@ -149,12 +171,13 @@ class MultiExecutor(BaseAgent):
 
         elif alert_type in ('position_danger', 'high_leverage_danger', 'trailing_stop'):
             symbol = alert.get('symbol')
-            if symbol and self.executor.get_position(symbol):
-                self.logger.warning(f"[风控] {alert_type}: 平仓 {symbol}")
-                pos = self.executor.positions.get(symbol)
+            norm_sym = self.executor._normalize_symbol(symbol) if symbol else None
+            if norm_sym and self.executor.get_position(norm_sym):
+                self.logger.warning(f"[风控] {alert_type}: 平仓 {norm_sym}")
+                pos = self.executor.positions.get(norm_sym)
                 if pos and pos.get('sl_order_id'):
-                    self.executor.cancel_order(symbol, pos['sl_order_id'])
-                result = self.executor.close_position(symbol)
+                    self.executor.cancel_order(norm_sym, pos['sl_order_id'])
+                result = self.executor.close_position(norm_sym)
                 if result:
                     await self.publish("execution_result", {
                         "status": "force_closed",
@@ -201,7 +224,7 @@ class MultiExecutor(BaseAgent):
     def _get_balance(self) -> float:
         try:
             balance = self.executor.exchange.fetch_balance()
-            return float(balance.get('total', {}).get('USDT', 0))
+            return float(balance.get('USDT', {}).get('free', 0))
         except Exception as e:
             self.logger.error(f"获取余额失败: {e}")
             return -1.0
@@ -211,18 +234,26 @@ class MultiExecutor(BaseAgent):
         self._sync_counter += 1
 
         if self._sync_counter % 6 == 0:
-            self.executor.sync_positions()
+            await asyncio.to_thread(self.executor.sync_positions)
 
-        self._check_all_positions()
+        await self._check_all_positions()
 
-    def _check_all_positions(self):
+    async def _check_all_positions(self):
         """兜底止损检查（交易所条件单失败时的安全网）"""
         positions = self.executor.get_all_positions()
         for symbol in list(positions.keys()):
-            trigger = self.executor.check_stop_loss_take_profit(symbol)
+            trigger = await asyncio.to_thread(self.executor.check_stop_loss_take_profit, symbol)
             if trigger:
                 self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
                 pos = self.executor.positions.get(symbol)
                 if pos and pos.get('sl_order_id'):
                     self.executor.cancel_order(symbol, pos['sl_order_id'])
-                self.executor.close_position(symbol)
+                result = self.executor.close_position(symbol)
+                if result:
+                    await self.publish("execution_result", {
+                        "status": "force_closed",
+                        "action": "close",
+                        "symbol": symbol,
+                        "reason": trigger,
+                        "result": result,
+                    }, symbol=symbol)

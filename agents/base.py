@@ -52,7 +52,8 @@ class BaseAgent(ABC):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.logger.error(f"运行错误: {e}")
+                import traceback
+                self.logger.error(f"运行错误: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(1)
 
         self.logger.info(f"Agent [{self.name}] 停止")

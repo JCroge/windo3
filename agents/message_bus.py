@@ -38,12 +38,17 @@ class MessageBus:
         - "market_data:*"        通配符（匹配所有symbol的market_data）
         """
         if agent_name not in self._queues:
-            self._queues[agent_name] = asyncio.Queue()
+            self._queues[agent_name] = None  # 延迟创建Queue
         for topic in topics:
             if topic not in self._subscriptions:
                 self._subscriptions[topic] = []
             if agent_name not in self._subscriptions[topic]:
                 self._subscriptions[topic].append(agent_name)
+
+    def _ensure_queue(self, agent_name: str):
+        """确保Queue在当前event loop中创建"""
+        if agent_name in self._queues and self._queues[agent_name] is None:
+            self._queues[agent_name] = asyncio.Queue()
 
     async def publish(self, from_agent: str, msg_type: str, payload: dict,
                       to: str = "broadcast", symbol: str = None):
@@ -70,9 +75,11 @@ class MessageBus:
         if to == "broadcast":
             subscribers = self._find_subscribers(msg_type, symbol, from_agent)
             for agent_name in subscribers:
+                self._ensure_queue(agent_name)
                 await self._queues[agent_name].put(msg)
         else:
             if to in self._queues:
+                self._ensure_queue(to)
                 await self._queues[to].put(msg)
 
     def _find_subscribers(self, msg_type: str, symbol: Optional[str],
@@ -104,6 +111,7 @@ class MessageBus:
     async def receive(self, agent_name: str, timeout: float = 1.0) -> Optional[dict]:
         if agent_name not in self._queues:
             return None
+        self._ensure_queue(agent_name)
         try:
             return await asyncio.wait_for(
                 self._queues[agent_name].get(), timeout=timeout

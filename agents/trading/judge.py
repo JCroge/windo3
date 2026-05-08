@@ -4,8 +4,13 @@
 入场区间、多级止盈、止损位、杠杆倍数、仓位大小
 """
 
+import os
 import time
+import ccxt
 from agents.base import BaseAgent
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 JUDGE_PROMPT = """你是加密货币合约交易的最终裁判。基于技术分析师提供的多维度市场信号，做出交易决策。
@@ -36,6 +41,8 @@ class MultiJudge(BaseAgent):
         self._symbol_state = {}
         self._decision_cooldown = 55
         self._max_trade_amount = config.get('max_trade_amount', 10) if config else 10
+        self.exchange = None
+        self._available_balance = 0.0
 
     def _get_state(self, symbol: str) -> dict:
         if symbol not in self._symbol_state:
@@ -47,6 +54,17 @@ class MultiJudge(BaseAgent):
 
     async def setup(self):
         self.init_llm()
+        exchange_id = self.config.get('exchange', 'okx')
+        ex_config = {'enableRateLimit': True, 'options': {'defaultType': 'swap'}}
+        if exchange_id == 'okx':
+            ex_config['apiKey'] = os.getenv('OKX_API_KEY')
+            ex_config['secret'] = os.getenv('OKX_SECRET')
+            ex_config['password'] = os.getenv('OKX_PASSWORD')
+            self.exchange = ccxt.okx(ex_config)
+        else:
+            ex_config['apiKey'] = os.getenv('BINANCE_API_KEY')
+            ex_config['secret'] = os.getenv('BINANCE_SECRET')
+            self.exchange = ccxt.binance(ex_config)
         self.logger.info("精确决策裁判Agent就绪")
 
     async def on_message(self, msg: dict):
@@ -73,6 +91,8 @@ class MultiJudge(BaseAgent):
         await self._make_decision(symbol, msg['payload'])
 
     async def _make_decision(self, symbol: str, tech: dict):
+        await self._update_balance()
+
         score = self._compute_score(tech)
         price = tech.get('indicators', {}).get('price', 0)
 
@@ -109,18 +129,47 @@ class MultiJudge(BaseAgent):
                     plan = self._build_plan(tech, final_action, price, confidence)
 
                 final_conf = llm_result.get('confidence', confidence)
-                plan['size_usdt'] = self._calc_size(final_conf)
 
-                decision = {
-                    "symbol": symbol, "timestamp": time.time(),
-                    "action": final_action,
-                    "confidence": final_conf,
-                    "plan": plan,
-                    "size_pct": plan['size_usdt'] / self._max_trade_amount,
-                    "reasoning": llm_result.get('reasoning', ''),
-                    "key_factors": llm_result.get('key_factors', []),
-                    "risk_warnings": llm_result.get('risk_warnings', []),
-                }
+                if final_action in ('open_long', 'open_short'):
+                    plan['size_usdt'] = self._calc_size(final_conf)
+                    required_margin = plan['size_usdt'] / plan['leverage']
+                    if self._available_balance < required_margin * 1.1:
+                        adjusted_size = self._available_balance * 0.9 * plan['leverage']
+                        if adjusted_size < 1.0:
+                            self.logger.warning(f"[{symbol}] 余额不足({self._available_balance:.2f} USDT)，放弃交易")
+                            decision = {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": f"余额不足，需要{required_margin:.2f} USDT保证金",
+                                "key_factors": [], "risk_warnings": ["余额不足"],
+                            }
+                            await self.publish("trade_decision", decision, symbol=symbol)
+                            return
+                        plan['size_usdt'] = round(adjusted_size, 2)
+                        self.logger.info(f"[{symbol}] 调整仓位: {plan['size_usdt']} USDT (余额{self._available_balance:.2f})")
+
+                    decision = {
+                        "symbol": symbol, "timestamp": time.time(),
+                        "action": final_action,
+                        "confidence": final_conf,
+                        "plan": plan,
+                        "size_pct": plan['size_usdt'] / self._max_trade_amount,
+                        "reasoning": llm_result.get('reasoning', ''),
+                        "key_factors": llm_result.get('key_factors', []),
+                        "risk_warnings": llm_result.get('risk_warnings', []),
+                    }
+                else:
+                    decision = {
+                        "symbol": symbol, "timestamp": time.time(),
+                        "action": final_action,
+                        "confidence": final_conf,
+                        "plan": None,
+                        "size_pct": 0,
+                        "reasoning": llm_result.get('reasoning', ''),
+                        "key_factors": llm_result.get('key_factors', []),
+                        "risk_warnings": llm_result.get('risk_warnings', []),
+                    }
 
         await self.publish("trade_decision", decision, symbol=symbol)
         self.logger.info(
@@ -194,7 +243,7 @@ class MultiJudge(BaseAgent):
         micro = tech.get('microstructure', {})
         momentum = tech.get('momentum', {})
 
-        is_long = action == 'open_long'
+        is_long = (action == 'open_long')
 
         stop_loss = self._calc_stop_loss(levels, price, is_long)
         take_profit = self._calc_take_profit(levels, price, is_long)
@@ -220,12 +269,12 @@ class MultiJudge(BaseAgent):
 
     def _calc_stop_loss(self, levels: dict, price: float, is_long: bool) -> float:
         if is_long:
-            supports = levels.get('support', [])
+            supports = [s for s in levels.get('support', []) if s < price]
             if supports:
                 return supports[0] * 0.995
             return price * 0.97
         else:
-            resistances = levels.get('resistance', [])
+            resistances = [r for r in levels.get('resistance', []) if r > price]
             if resistances:
                 return resistances[0] * 1.005
             return price * 1.03
@@ -236,6 +285,8 @@ class MultiJudge(BaseAgent):
             wall = levels.get('orderbook_wall_above')
             tps = []
             for r in resistances[:3]:
+                if r <= price:  # 多单止盈必须高于入场价
+                    continue
                 if wall and r > wall:
                     tps.append(wall * 0.998)
                     break
@@ -248,6 +299,8 @@ class MultiJudge(BaseAgent):
             wall = levels.get('orderbook_wall_below')
             tps = []
             for s in supports[:3]:
+                if s >= price:  # 空单止盈必须低于入场价
+                    continue
                 if wall and s < wall:
                     tps.append(wall * 1.002)
                     break
@@ -280,7 +333,14 @@ class MultiJudge(BaseAgent):
         elif liquidity < 60:
             base = int(base * 0.75)
 
-        return max(1, min(20, base))
+        leverage = max(1, min(10, base))  # 小账户(<50 USDT)上限10x
+
+        # 圆整到OKX允许的杠杆倍数：1,2,3,5,10
+        allowed = [1, 2, 3, 5, 10]
+        for lev in allowed:
+            if leverage <= lev:
+                return lev
+        return 20
 
     def _calc_entry_zone(self, price: float, micro: dict, momentum: dict) -> list:
         spread = micro.get('spread_pct', 0.01)
@@ -358,3 +418,14 @@ class MultiJudge(BaseAgent):
             "key_factors": [f"综合评分={score:+.0f}"],
             "risk_warnings": ["LLM不可用，仅规则判断"],
         }
+
+    async def _update_balance(self):
+        """查询可用USDT余额"""
+        try:
+            import asyncio
+            balance = await asyncio.to_thread(self.exchange.fetch_balance)
+            self._available_balance = float(balance.get('USDT', {}).get('free', 0))
+            self.logger.info(f"余额查询成功: {self._available_balance:.2f} USDT")
+        except Exception as e:
+            self.logger.error(f"查询余额失败: {e}")
+            self._available_balance = 0.0

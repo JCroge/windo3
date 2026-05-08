@@ -16,7 +16,7 @@ class PortfolioRiskGuard(BaseAgent):
         self._price_history = {}
         self._alert_cooldown = 60
         self._last_alert_times = {}
-        self._account_balance = config.get('max_trade_amount', 10) * 10 if config else 100
+        self._account_balance = 0.0  # 动态更新，从execution_result中读取
         self._trading_halted = False
         self._state_file = 'data/riskguard_state.json'
 
@@ -67,6 +67,17 @@ class PortfolioRiskGuard(BaseAgent):
             return
         status = payload.get('status')
         result = payload.get('result', {})
+
+        # 从执行结果中更新账户余额基准
+        if 'balance' in result:
+            self._account_balance = float(result['balance'])
+        elif status == 'executed' and payload.get('action') in ('open_long', 'open_short'):
+            # 开仓后余额 = 开仓前余额 - 保证金
+            size_usdt = result.get('amount_usdt', 0)
+            leverage = result.get('leverage', 1)
+            margin = size_usdt / leverage if leverage else size_usdt
+            if self._account_balance > 0:
+                self._account_balance = max(0, self._account_balance - margin)
 
         if status == 'executed':
             action = payload.get('action', '')
@@ -176,19 +187,22 @@ class PortfolioRiskGuard(BaseAgent):
             pnl_pct = self._calc_pnl_pct(pos, price)
             total_pnl_usdt += pos['amount_usdt'] * pnl_pct / 100
 
-        if self._account_balance > 0:
-            drawdown_pct = abs(total_pnl_usdt) / self._account_balance * 100
-            if total_pnl_usdt < 0 and drawdown_pct > self._max_portfolio_drawdown_pct:
-                if self._can_alert("max_drawdown"):
-                    self.logger.warning(
-                        f"[风控] 组合回撤{drawdown_pct:.1f}% > {self._max_portfolio_drawdown_pct}%!"
-                    )
-                    await self.publish("risk_alert", {
-                        "type": "max_drawdown",
-                        "drawdown_pct": drawdown_pct,
-                        "total_pnl_usdt": total_pnl_usdt,
-                        "action": "close_all"
-                    })
+        # 余额未初始化时用持仓保证金兜底
+        balance = self._account_balance if self._account_balance > 0 else (
+            sum(pos['amount_usdt'] / pos.get('leverage', 1) for pos in self._positions.values()) or 20.0
+        )
+        drawdown_pct = abs(total_pnl_usdt) / balance * 100
+        if total_pnl_usdt < 0 and drawdown_pct > self._max_portfolio_drawdown_pct:
+            if self._can_alert("max_drawdown"):
+                self.logger.warning(
+                    f"[风控] 组合回撤{drawdown_pct:.1f}% > {self._max_portfolio_drawdown_pct}%!"
+                )
+                await self.publish("risk_alert", {
+                    "type": "max_drawdown",
+                    "drawdown_pct": drawdown_pct,
+                    "total_pnl_usdt": total_pnl_usdt,
+                    "action": "close_all"
+                })
 
     async def _check_flash_move(self, symbol: str):
         """维度3: 闪崩检测（60秒窗口）"""
