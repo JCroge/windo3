@@ -155,7 +155,12 @@ class MultiJudge(BaseAgent):
 
             llm_result = await self._ask_llm(symbol, tech, score)
 
-            if llm_result.get('action') == 'hold' and confidence < 75:
+            # LLM作为修正因子，不作为否决权
+            # rule_signal触发时（score含±35基础分），LLM只能降低仓位，不能阻止入场
+            has_rule_signal = tech.get('rule_signal', {}).get('entry_long') or \
+                             tech.get('rule_signal', {}).get('entry_short')
+
+            if llm_result.get('action') == 'hold' and not has_rule_signal and confidence < 75:
                 decision = {
                     "symbol": symbol, "timestamp": time.time(),
                     "action": "hold", "confidence": llm_result.get('confidence', 40),
@@ -165,14 +170,21 @@ class MultiJudge(BaseAgent):
                     "risk_warnings": llm_result.get('risk_warnings', []),
                 }
             else:
-                final_action = llm_result.get('action', action)
-                if final_action not in ('open_long', 'open_short', 'close', 'hold'):
-                    final_action = action
+                final_action = action  # rule_signal有时，锁定方向
+                if not has_rule_signal:
+                    final_action = llm_result.get('action', action)
+                    if final_action not in ('open_long', 'open_short', 'close', 'hold'):
+                        final_action = action
 
                 if final_action != action and final_action in ('open_long', 'open_short'):
                     plan = self._build_plan(tech, final_action, price, confidence)
 
                 final_conf = llm_result.get('confidence', confidence)
+
+                # LLM反对但rule_signal触发：降低仓位30%而非阻止入场
+                if has_rule_signal and llm_result.get('action') == 'hold':
+                    final_conf = max(40, int(confidence * 0.7))
+                    self.logger.info(f"[Judge] {symbol} rule_signal触发但LLM观望，仓位衰减30%")
 
                 if final_action in ('open_long', 'open_short'):
                     # R:R门槛过滤：参考Freqtrade minimal_roi原则，赔率不足不入场
@@ -242,12 +254,18 @@ class MultiJudge(BaseAgent):
     def _compute_score(self, tech: dict) -> float:
         """多空评分: +100=极度看多, -100=极度看空, 0=中性
 
-        核心逻辑：
-        - 趋势跟随 + 极端值保护 + 信号矛盾检测
-        - RSI极端区域禁止顺势追单（防止追涨杀跌到顶底）
-        - 趋势强度过高时衰减（强度>90往往是反转前兆）
+        架构：rule_signal（回测验证83%胜率）为主驱动，其他维度为辅助加减分。
+        rule_signal触发时基础分±35，确保能过30分入场门槛。
         """
         score = 0.0
+
+        # ═══ 0. 回测验证信号（主驱动）═══
+        rule = tech.get('rule_signal', {})
+        if rule.get('entry_long'):
+            score += 35
+        elif rule.get('entry_short'):
+            score -= 35
+
         momentum = tech.get('momentum', {})
         rsi = momentum.get('rsi', 50)
         div = momentum.get('rsi_divergence')
