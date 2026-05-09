@@ -89,18 +89,16 @@ class MarketScanner(BaseAgent):
             candidates.sort(key=lambda x: x['volume_24h'], reverse=True)
             top_candidates = candidates[:self.top_n]
 
-            # 简化：只获取前10个的详细数据，避免API超时
-            for i, c in enumerate(top_candidates):
-                if i < 10:
-                    c['funding_rate'] = await self._fetch_funding(c['raw_symbol'])
-                    inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
-                    c['long_short_ratio'] = await self._fetch_long_short_ratio(inst_id)
-                    c['open_interest_usd'] = await self._fetch_open_interest(inst_id)
-                else:
-                    c['funding_rate'] = None
-                    c['long_short_ratio'] = None
-                    c['open_interest_usd'] = None
+            import asyncio
+
+            async def _enrich(c):
+                c['funding_rate'] = await self._fetch_funding(c['raw_symbol'])
+                inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
+                c['long_short_ratio'] = await self._fetch_long_short_ratio(inst_id)
+                c['open_interest_usd'] = await self._fetch_open_interest(inst_id)
                 del c['raw_symbol']
+
+            await asyncio.gather(*[_enrich(c) for c in top_candidates])
 
             await self.publish("research_market_data", {
                 "candidates": top_candidates,

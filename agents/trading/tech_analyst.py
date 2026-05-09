@@ -15,9 +15,11 @@ TECH_PROMPT = """你是加密货币衍生品市场的技术分析师。基于以
 你的职责是"看到什么"——识别模式和信号，不做交易建议。
 
 重点关注：
-1. 跨维度组合信号（如价涨+OI跌+大单卖出=诱多陷阱）
-2. 背离信号（价格vs指标、价格vsOI、散户vs鲸鱼）
-3. 当前最值得关注的1-2个关键事实
+1. 多周期共振与矛盾：1h/4h/日线方向是否一致？矛盾时以大周期为准
+2. 跨维度组合信号（如价涨+OI跌+大单卖出=诱多陷阱；日线阻力位附近+1h超买=假突破风险）
+3. 反欺骗识别：价格在日线关键阻力区附近的突破往往是诱多；散户极度看多时往往是顶部
+4. 背离信号（价格vs指标、价格vsOI、散户vs鲸鱼）
+5. 当前最值得关注的1-2个关键事实
 
 以JSON格式回复：
 {
@@ -75,8 +77,8 @@ class MultiTechAnalyst(BaseAgent):
         strategy = self._get_strategy(symbol)
         df = strategy.analyze(df)
 
-        trend = self._analyze_trend(df, payload.get('klines_4h', []))
-        levels = self._analyze_levels(df, payload.get('orderbook', {}))
+        trend = self._analyze_trend(df, payload.get('klines_4h', []), payload.get('klines_1d', []))
+        levels = self._analyze_levels(df, payload.get('orderbook', {}), payload.get('klines_1d', []))
         momentum = self._analyze_momentum(df)
         money_flow = self._analyze_money_flow(payload)
         microstructure = self._analyze_microstructure(payload)
@@ -125,7 +127,7 @@ class MultiTechAnalyst(BaseAgent):
 
     # ═══ 1. 趋势结构 ═══
 
-    def _analyze_trend(self, df: pd.DataFrame, klines_4h: list) -> dict:
+    def _analyze_trend(self, df: pd.DataFrame, klines_4h: list, klines_1d: list = None) -> dict:
         latest = df.iloc[-2]
         ma_fast = float(latest.get('ma_fast', 0))
         ma_slow = float(latest.get('ma_slow', 0))
@@ -152,26 +154,69 @@ class MultiTechAnalyst(BaseAgent):
             direction = "neutral"
             strength = int(50 - abs(trend_pct - 0.5) * 60)
 
+        # 4h偏向：MA方向 + RSI状态
         higher_tf_bias = "neutral"
+        tf_4h_rsi = None
         if klines_4h and len(klines_4h) >= 10:
             df_4h = pd.DataFrame(klines_4h, columns=['open_time', 'open', 'high', 'low', 'close', 'volume'])
             ma7_4h = df_4h['close'].tail(7).mean()
             ma25_4h = df_4h['close'].tail(25).mean() if len(df_4h) >= 25 else ma7_4h
+            # 4h RSI
+            delta = df_4h['close'].diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean()
+            rs = gain / loss.replace(0, 1e-9)
+            tf_4h_rsi = float(100 - 100 / (1 + rs.iloc[-1])) if not rs.empty else 50
             if ma7_4h > ma25_4h:
                 higher_tf_bias = "bullish"
             elif ma7_4h < ma25_4h:
                 higher_tf_bias = "bearish"
+
+        # 日线偏向：大趋势方向 + 是否处于日线关键阻力区
+        daily_bias = "neutral"
+        daily_near_resistance = False
+        daily_near_support = False
+        if klines_1d and len(klines_1d) >= 10:
+            df_1d = pd.DataFrame(klines_1d, columns=['open_time', 'open', 'high', 'low', 'close', 'volume'])
+            ma7_1d = df_1d['close'].tail(7).mean()
+            ma25_1d = df_1d['close'].tail(25).mean() if len(df_1d) >= 25 else ma7_1d
+            if ma7_1d > ma25_1d:
+                daily_bias = "bullish"
+            elif ma7_1d < ma25_1d:
+                daily_bias = "bearish"
+            # 检测价格是否接近日线高点（潜在阻力）或低点（潜在支撑）
+            recent_high = df_1d['high'].tail(20).max()
+            recent_low = df_1d['low'].tail(20).min()
+            if price > recent_high * 0.97:  # 距日线高点3%以内
+                daily_near_resistance = True
+            if price < recent_low * 1.03:   # 距日线低点3%以内
+                daily_near_support = True
+
+        # 多周期共振：1h+4h+日线方向一致时提升强度，矛盾时降低
+        tf_votes = [direction, higher_tf_bias, daily_bias]
+        bullish_votes = tf_votes.count("bullish")
+        bearish_votes = tf_votes.count("bearish")
+        if bullish_votes == 3:
+            strength = min(100, strength + 20)  # 三周期共振，强度提升
+        elif bearish_votes == 3:
+            strength = min(100, strength + 20)
+        elif bullish_votes == 1 and bearish_votes == 1:
+            strength = max(20, strength - 20)   # 周期矛盾，强度下降
 
         return {
             "direction": direction,
             "strength": strength,
             "ma_alignment": ma_alignment,
             "higher_tf_bias": higher_tf_bias,
+            "daily_bias": daily_bias,
+            "daily_near_resistance": daily_near_resistance,
+            "daily_near_support": daily_near_support,
+            "tf_4h_rsi": round(tf_4h_rsi, 1) if tf_4h_rsi else None,
         }
 
     # ═══ 2. 关键价位 ═══
 
-    def _analyze_levels(self, df: pd.DataFrame, orderbook: dict) -> dict:
+    def _analyze_levels(self, df: pd.DataFrame, orderbook: dict, klines_1d: list = None) -> dict:
         price = float(df.iloc[-2]['close'])
         highs = df['high'].tail(20).values
         lows = df['low'].tail(20).values
@@ -186,6 +231,23 @@ class MultiTechAnalyst(BaseAgent):
 
         resistance = sorted([h for h in swing_highs if h > price])[:3]
         support = sorted([l for l in swing_lows if l < price], reverse=True)[:3]
+
+        # 日线关键价位：比1h swing更可靠的止损止盈锚点
+        daily_resistance = []
+        daily_support = []
+        if klines_1d and len(klines_1d) >= 5:
+            df_1d = pd.DataFrame(klines_1d, columns=['open_time', 'open', 'high', 'low', 'close', 'volume'])
+            d_highs = df_1d['high'].tail(20).values
+            d_lows = df_1d['low'].tail(20).values
+            for i in range(1, len(d_highs) - 1):
+                if d_highs[i] > d_highs[i-1] and d_highs[i] > d_highs[i+1]:
+                    if d_highs[i] > price:
+                        daily_resistance.append(float(d_highs[i]))
+                if d_lows[i] < d_lows[i-1] and d_lows[i] < d_lows[i+1]:
+                    if d_lows[i] < price:
+                        daily_support.append(float(d_lows[i]))
+            daily_resistance = sorted(daily_resistance)[:2]
+            daily_support = sorted(daily_support, reverse=True)[:2]
 
         if not resistance:
             resistance = [round(price * 1.02, 2), round(price * 1.04, 2)]
@@ -207,6 +269,8 @@ class MultiTechAnalyst(BaseAgent):
         return {
             "support": support,
             "resistance": resistance,
+            "daily_support": daily_support,
+            "daily_resistance": daily_resistance,
             "orderbook_wall_above": wall_above,
             "orderbook_wall_below": wall_below,
         }
@@ -420,10 +484,14 @@ class MultiTechAnalyst(BaseAgent):
 
     async def _llm_synthesize(self, symbol, trend, levels, momentum,
                               money_flow, micro, crowd, risk, price) -> dict:
-        summary = f"""交易对: {symbol} | 当前价格: {price:.2f}
+        summary = f"""交易对: {symbol} | 当前价格: {price:.4g}
 
-【趋势】{trend['direction']} 强度{trend['strength']} | 1h均线={trend['ma_alignment']} 4h偏向={trend['higher_tf_bias']}
-【价位】支撑={levels['support'][:2]} 阻力={levels['resistance'][:2]} | 挂单墙↑{levels['orderbook_wall_above']} ↓{levels['orderbook_wall_below']}
+【多周期趋势】1h={trend['direction']} 强度{trend['strength']} | 4h偏向={trend['higher_tf_bias']} 4h_RSI={trend.get('tf_4h_rsi','?')} | 日线={trend['daily_bias']}
+【日线位置】接近日线阻力={trend['daily_near_resistance']} 接近日线支撑={trend['daily_near_support']}
+【1h均线】{trend['ma_alignment']}
+【价位-1h】支撑={levels['support'][:2]} 阻力={levels['resistance'][:2]}
+【价位-日线】日线支撑={levels['daily_support']} 日线阻力={levels['daily_resistance']}
+【挂单墙】↑{levels['orderbook_wall_above']} ↓{levels['orderbook_wall_below']}
 【动量】RSI={momentum['rsi']:.1f} 背离={momentum['rsi_divergence']} | 量比={momentum['volume_ratio']} 异常={momentum['volume_anomaly']}
 【资金】费率={money_flow['funding_rate']:.6f}({money_flow['funding_trend']}) 极值={money_flow['funding_extreme']} | OI 1h={money_flow['oi_delta_1h_pct']:+.1f}% OI背离={money_flow['oi_price_divergence']}
 【Taker】买卖比={money_flow['taker_buy_sell_ratio']:.2f} 压力={money_flow['taker_pressure']}

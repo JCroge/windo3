@@ -125,6 +125,16 @@ class MultiJudge(BaseAgent):
         score = self._compute_score(tech)
         price = tech.get('indicators', {}).get('price', 0)
 
+        # 日线阻力区反欺骗：价格接近日线高点时禁止追多（假突破陷阱）
+        trend = tech.get('trend', {})
+        if score > 0 and trend.get('daily_near_resistance'):
+            score *= 0.3
+            self.logger.info(f"[Judge] {symbol} 接近日线阻力区，做多信号衰减70%（防假突破）")
+        # 日线支撑区：价格接近日线低点时禁止追空（反弹陷阱）
+        if score < 0 and trend.get('daily_near_support'):
+            score *= 0.3
+            self.logger.info(f"[Judge] {symbol} 接近日线支撑区，做空信号衰减70%（防反弹陷阱）")
+
         # price-in衰减：催化剂已被价格消化，信号可靠性下降
         action_hint = "open_long" if score > 0 else "open_short"
         if abs(score) >= 30 and self._check_price_in(symbol, action_hint, tech):
@@ -419,16 +429,23 @@ class MultiJudge(BaseAgent):
         }
 
     def _calc_stop_loss(self, levels: dict, price: float, is_long: bool) -> float:
-        min_sl_pct = 0.015  # 最小止损距离1.5%，防止高杠杆下正常波动触发
+        min_sl_pct = 0.015
         if is_long:
-            supports = [s for s in levels.get('support', []) if s < price * (1 - min_sl_pct)]
-            if supports:
-                return supports[0] * 0.995
+            # 优先用日线支撑（更可靠的锚点），其次1h swing
+            daily_sup = [s for s in levels.get('daily_support', []) if s < price * (1 - min_sl_pct)]
+            hourly_sup = [s for s in levels.get('support', []) if s < price * (1 - min_sl_pct)]
+            if daily_sup:
+                return daily_sup[0] * 0.995
+            if hourly_sup:
+                return hourly_sup[0] * 0.995
             return price * (1 - min_sl_pct)
         else:
-            resistances = [r for r in levels.get('resistance', []) if r > price * (1 + min_sl_pct)]
-            if resistances:
-                return resistances[0] * 1.005
+            daily_res = [r for r in levels.get('daily_resistance', []) if r > price * (1 + min_sl_pct)]
+            hourly_res = [r for r in levels.get('resistance', []) if r > price * (1 + min_sl_pct)]
+            if daily_res:
+                return daily_res[0] * 1.005
+            if hourly_res:
+                return hourly_res[0] * 1.005
             return price * (1 + min_sl_pct)
 
     def _calc_take_profit(self, levels: dict, price: float, is_long: bool) -> list:

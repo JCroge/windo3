@@ -149,6 +149,7 @@ class MultiDataCollector(BaseAgent):
     async def _tick_slow(self):
         for symbol in self._active_symbols:
             await self._collect_4h(symbol)
+            await self._collect_1d(symbol)
             await asyncio.sleep(0.3)
 
     async def _tick_news(self):
@@ -295,12 +296,14 @@ class MultiDataCollector(BaseAgent):
 
         health = self._symbol_health.get(symbol, {})
         klines_4h = health.get('klines_4h', [])
+        klines_1d = health.get('klines_1d', [])
 
         payload = {
             "symbol": symbol,
             "interval": self.interval,
             "klines": klines,
             "klines_4h": klines_4h,
+            "klines_1d": klines_1d,
             "funding_rate": funding_rate,
             "funding_history": funding_history or [],
             "latest_price": klines[-1][4] if klines else None,
@@ -569,6 +572,15 @@ class MultiDataCollector(BaseAgent):
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} 4h K线失败: {e}")
 
+    async def _collect_1d(self, symbol: str):
+        try:
+            klines_1d = self.exchange.fetch_ohlcv(symbol, '1d', limit=30)
+            health = self._symbol_health.get(symbol, {})
+            health['klines_1d'] = klines_1d
+            self._symbol_health[symbol] = health
+        except Exception as e:
+            self.logger.warning(f"[采集] {symbol} 1d K线失败: {e}")
+
     # ═══ K线连续性 ═══
 
     def _check_gaps(self, symbol: str, klines: list) -> int:
@@ -601,6 +613,7 @@ class MultiDataCollector(BaseAgent):
             "consecutive_failures": 0,
             "last_success": None, "last_error": None,
             "klines_4h": [],
+            "klines_1d": [],
         }
 
     def _record_success(self, symbol: str):
