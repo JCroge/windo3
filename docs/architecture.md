@@ -15,6 +15,9 @@
 - 2026-05-09：入场质量优化（R:R门槛≥1.5、负面催化剂否决、30min新闻轮询+price-in检测）
 - 2026-05-09：日线多周期升级（1d K线采集、日线趋势/价位/反欺骗、多周期共振1h+4h+1d、标的限制放开）
 - 2026-05-09：Judge主驱动修复（rule_signal±35基础分、LLM降为修正因子不再一票否决）
+- 2026-05-09：做空信号修复（RobustStrategy新增entry_short：MA死叉+RSI不超卖+放量+价格下跌）
+- 2026-05-09：日线阻力区阈值收紧（3%→1.5%，减少横盘误触发）
+- 2026-05-09：PROS-USDT ticker格式修复（_fetch_price_tick统一用/USDT:USDT格式）
 
 ## 架构图
 
@@ -188,9 +191,11 @@ CREATE TABLE klines (
   - populate_entry_signals()：入场信号
   - populate_exit_signals()：出场信号
   
-- **RobustStrategy稳健策略**：带反欺骗机制的趋势跟踪策略
-  - 4重入场确认：MA金叉 + RSI不超买 + 成交量确认 + 价格上涨
-  - 2重出场保护：MA死叉 或 RSI超买
+- **RobustStrategy稳健策略**：带反欺骗机制的趋势跟踪策略，支持多空双向
+  - 做多4重确认：MA金叉 + RSI不超买(<75) + 成交量确认 + 价格上涨
+  - 做空4重确认：MA死叉 + RSI不超卖(>25) + 成交量确认 + 价格下跌
+  - 做多出场：MA死叉 或 RSI超买(>80)
+  - 做空出场：MA金叉 或 RSI超卖(<20)
   - 最佳参数：MA 7/25，RSI阈值75，成交量因子1.0
   - 验证结果：83.3%胜率，7.68盈亏比
 
@@ -417,10 +422,10 @@ CREATE TABLE klines (
 
 **Phase 6f - 日线多周期升级（2026-05-09）**：
 - DataCollector：`_collect_1d()` 每慢周期采集30根日线K线，payload新增`klines_1d`
-- TechAnalyst：`_analyze_trend()` 新增日线偏向+`daily_near_resistance/support`检测（距20日高低点3%以内）
+- TechAnalyst：`_analyze_trend()` 新增日线偏向+`daily_near_resistance/support`检测（距20日高低点**1.5%**以内）
 - TechAnalyst：多周期共振投票（1h+4h+1d三周期一致+20强度，矛盾-20）；4h RSI计算
 - TechAnalyst：`_analyze_levels()` 新增日线swing支撑阻力（更可靠的止损止盈锚点）
-- Judge：接近日线阻力区做多信号衰减70%（防假突破）；接近日线支撑区做空信号衰减70%（防反弹陷阱）
+- Judge：接近日线阻力区（1.5%以内）做多信号衰减70%（防假突破）；接近日线支撑区（1.5%以内）做空信号衰减70%（防反弹陷阱）
 - Judge：止损优先用日线价位锚点（daily_support/daily_resistance）
 - Synthesizer：放开标的限制（含XAU/CL等非加密标的），波动率范围扩至50%，成交量门槛降至$30M
 - MarketScanner：并发enrichment（asyncio.gather替代串行循环）

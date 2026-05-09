@@ -248,7 +248,7 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 ### ✅ Phase 6f: 日线多周期升级（2026-05-09完成）
 - **DataCollector**：`_collect_1d()` 每慢周期采集30根日线K线，payload新增`klines_1d`
 - **TechAnalyst多周期共振**：1h+4h+1d三周期投票（一致+20强度，矛盾-20）；4h RSI计算
-- **TechAnalyst日线价位**：`daily_near_resistance/support`检测（距20日高低点3%以内）；日线swing支撑阻力
+- **TechAnalyst日线价位**：`daily_near_resistance/support`检测（距20日高低点**1.5%**以内）；日线swing支撑阻力
 - **Judge日线反欺骗**：接近日线阻力区做多信号衰减70%；接近日线支撑区做空信号衰减70%
 - **Judge止损锚点**：优先用日线支撑阻力（比1h swing更可靠）
 - **Synthesizer放开限制**：所有USDT永续合约均可选（含XAU/CL等），波动率范围扩至50%，成交量门槛$30M
@@ -259,6 +259,11 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - **修复**：rule_signal触发时给±35基础分，确保过30分入场门槛
 - **LLM降权**：rule_signal触发时LLM从一票否决改为仓位修正（最多降30%仓位，不能阻止入场）
 - **保守逻辑保留**：无rule_signal时维持原有逻辑（LLM可否决弱信号）
+
+### ✅ 2026-05-09 Bug修复（做空+ticker+阈值）
+- **做空信号修复**（`optimize_1h.py`）：RobustStrategy新增`entry_short`/`exit_short`，做空4重确认（MA死叉+RSI>25+放量+价格下跌），`exit_short`（MA金叉或RSI<20）
+- **PROS-USDT ticker修复**（`multi_data_collector.py`）：`_fetch_price_tick`改用`symbol.replace('-USDT', '/USDT:USDT')`，修复OKX symbol格式不匹配
+- **日线阻力区阈值收紧**（`tech_analyst.py`）：3%→1.5%，横盘行情不再持续误触发衰减
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

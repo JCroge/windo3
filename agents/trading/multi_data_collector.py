@@ -334,7 +334,7 @@ class MultiDataCollector(BaseAgent):
 
     async def _fetch_price_tick(self, symbol: str):
         try:
-            ticker = self.exchange.fetch_ticker(symbol)
+            ticker = self.exchange.fetch_ticker(symbol.replace('-USDT', '/USDT:USDT'))
             payload = {
                 "symbol": symbol,
                 "price": float(ticker.get('last', 0)),

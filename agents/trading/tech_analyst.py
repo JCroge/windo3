@@ -187,9 +187,9 @@ class MultiTechAnalyst(BaseAgent):
             # 检测价格是否接近日线高点（潜在阻力）或低点（潜在支撑）
             recent_high = df_1d['high'].tail(20).max()
             recent_low = df_1d['low'].tail(20).min()
-            if price > recent_high * 0.97:  # 距日线高点3%以内
+            if price > recent_high * 0.985:  # 距日线高点1.5%以内
                 daily_near_resistance = True
-            if price < recent_low * 1.03:   # 距日线低点3%以内
+            if price < recent_low * 1.015:   # 距日线低点1.5%以内
                 daily_near_support = True
 
         # 多周期共振：1h+4h+日线方向一致时提升强度，矛盾时降低

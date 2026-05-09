@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 6g 完成（日线多周期升级 + Judge主驱动修复：rule_signal±35基础分+LLM降为修正因子）
+**当前阶段**：Phase 6g 完成 + 2026-05-09 Bug修复（做空信号、ticker格式、日线阈值）
 **下一阶段**：Phase 7（资金费率API修复、Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -257,7 +257,25 @@
 4. **30min新闻轮询**（`multi_data_collector.py`）：交易层每30min抓3家RSS，发布`news_snapshot`
 5. **price-in检测**（`judge.py`）：近4h有新闻+价格已同向移动>3% → score×0.5（催化剂已消化）
 
-### 🔄 Phase 7: 待开发
+### ✅ Phase 6g: Judge主驱动修复（2026-05-09完成）
+
+- rule_signal±35基础分，确保MA交叉信号能过30分入场门槛
+- LLM从一票否决改为仓位修正（rule_signal触发时最多降30%仓位）
+- 无rule_signal时保持保守逻辑（LLM可否决弱信号）
+
+### ✅ 2026-05-09 Bug修复
+
+1. **做空信号修复**（`optimize_1h.py` `RobustStrategy`）
+   - 修复前：只有`entry_long`，`entry_short`从未被赋值，系统无法做空
+   - 修复后：新增做空4重确认（MA死叉+RSI>25+放量+价格下跌）和`exit_short`（MA金叉或RSI<20）
+
+2. **PROS-USDT ticker格式修复**（`agents/trading/multi_data_collector.py`）
+   - 修复前：`fetch_ticker('PROS-USDT')` → OKX报错 `does not have market symbol`
+   - 修复后：`fetch_ticker('PROS/USDT:USDT')` 统一用永续合约格式
+
+3. **日线阻力区阈值收紧**（`agents/trading/tech_analyst.py`）
+   - 修复前：距20日高低点3%以内触发，横盘行情持续误触发导致信号被衰减
+   - 修复后：1.5%以内才触发，只有真正贴近关键位时才衰减
 
 ## 技术债务
 

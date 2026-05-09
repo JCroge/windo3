@@ -38,36 +38,33 @@ class RobustStrategy(StrategyBase):
     def populate_entry_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """入场信号 - 多重确认机制"""
         df['entry_long'] = 0
+        df['entry_short'] = 0
 
-        # 条件1：MA金叉
-        ma_cross = (df['ma_fast'] > df['ma_slow']) & (df['ma_fast'].shift(1) <= df['ma_slow'].shift(1))
-
-        # 条件2：RSI不超买（避免追高）
-        rsi_ok = df['rsi'] < self.rsi_threshold
-
-        # 条件3：成交量确认（放量突破，避免假突破）
+        # 做多：MA金叉 + RSI不超买 + 放量 + 价格上涨
+        ma_cross_up = (df['ma_fast'] > df['ma_slow']) & (df['ma_fast'].shift(1) <= df['ma_slow'].shift(1))
+        rsi_not_overbought = df['rsi'] < self.rsi_threshold
         volume_confirm = df['volume'] > (df['volume_ma'] * self.volume_factor)
-
-        # 条件4：价格在上涨（避免死叉后的反弹陷阱）
         price_rising = df['close'] > df['close'].shift(1)
+        df.loc[ma_cross_up & rsi_not_overbought & volume_confirm & price_rising, 'entry_long'] = 1
 
-        # 所有条件同时满足
-        df.loc[ma_cross & rsi_ok & volume_confirm & price_rising, 'entry_long'] = 1
+        # 做空：MA死叉 + RSI不超卖（避免超卖区做空，Phase 6d教训）+ 放量 + 价格下跌
+        ma_cross_down = (df['ma_fast'] < df['ma_slow']) & (df['ma_fast'].shift(1) >= df['ma_slow'].shift(1))
+        rsi_not_oversold = df['rsi'] > (100 - self.rsi_threshold)  # 对称：默认>25
+        price_falling = df['close'] < df['close'].shift(1)
+        df.loc[ma_cross_down & rsi_not_oversold & volume_confirm & price_falling, 'entry_short'] = 1
 
         return df
 
     def populate_exit_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """出场信号 - 及时止盈"""
         df['exit_long'] = 0
+        df['exit_short'] = 0
 
-        # 条件1：MA死叉
+        ma_cross_up = (df['ma_fast'] > df['ma_slow']) & (df['ma_fast'].shift(1) <= df['ma_slow'].shift(1))
         ma_cross_down = (df['ma_fast'] < df['ma_slow']) & (df['ma_fast'].shift(1) >= df['ma_slow'].shift(1))
 
-        # 条件2：RSI超买（获利了结）
-        rsi_overbought = df['rsi'] > 80
-
-        # 任一条件满足即出场
-        df.loc[ma_cross_down | rsi_overbought, 'exit_long'] = 1
+        df.loc[ma_cross_down | (df['rsi'] > 80), 'exit_long'] = 1
+        df.loc[ma_cross_up | (df['rsi'] < 20), 'exit_short'] = 1
 
         return df
 
