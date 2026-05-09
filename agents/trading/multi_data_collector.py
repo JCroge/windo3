@@ -10,8 +10,10 @@
 import asyncio
 import time
 import os
+import calendar
 import ccxt
 import aiohttp
+import feedparser
 from dotenv import load_dotenv
 from agents.base import BaseAgent
 
@@ -34,10 +36,11 @@ class MultiDataCollector(BaseAgent):
         self._active_symbols = []
         self._symbol_health = {}
         self._last_kline_time = {}
-        self._counters = {"price": 0, "mid": 0, "low": 0, "slow": 0}
+        self._counters = {"price": 0, "mid": 0, "low": 0, "slow": 0, "news": 0}
         self._max_consecutive_failures = 3
         self._orderbook_cache = {}
         self._liquidation_cache = {}
+        self._news_cache = {}  # {symbol: {"headlines": [...], "fetched_at": ts}}
 
     async def setup(self):
         exchange_id = self.config.get('exchange', 'okx')
@@ -101,6 +104,7 @@ class MultiDataCollector(BaseAgent):
         self._counters["mid"] += 1
         self._counters["low"] += 1
         self._counters["slow"] += 1
+        self._counters["news"] += 1
 
         if self._counters["price"] >= 10:
             self._counters["price"] = 0
@@ -117,6 +121,11 @@ class MultiDataCollector(BaseAgent):
         if self._counters["slow"] >= 300:
             self._counters["slow"] = 0
             await self._tick_slow()
+
+        # 新闻轮询：每30分钟一次（参考QuantConnect Alpha Streams 4h衰减窗口，30min足够捕获新事件）
+        if self._counters["news"] >= 1800:
+            self._counters["news"] = 0
+            await self._tick_news()
 
     # ═══ 频率分档 ═══
 
@@ -141,6 +150,77 @@ class MultiDataCollector(BaseAgent):
         for symbol in self._active_symbols:
             await self._collect_4h(symbol)
             await asyncio.sleep(0.3)
+
+    async def _tick_news(self):
+        """30min新闻轮询：为活跃标的抓取近期新闻，发布news_snapshot供Judge做price-in检测
+
+        设计参考：Freqtrade news-filter的交易层注入模式
+        只抓取与活跃标的相关的新闻，不做全量采集，控制延迟
+        """
+        if not self._active_symbols:
+            return
+
+        RSS_FEEDS = [
+            ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+            ("Cointelegraph", "https://cointelegraph.com/rss"),
+            ("The Block", "https://www.theblock.co/rss.xml"),
+        ]
+        active_bases = {s.split('-')[0].upper() for s in self._active_symbols}
+        all_headlines = []
+
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10),
+                headers={"User-Agent": "Mozilla/5.0 CryptoResearchBot/1.0"}
+            ) as session:
+                for name, url in RSS_FEEDS:
+                    try:
+                        async with session.get(url) as resp:
+                            if resp.status != 200:
+                                continue
+                            parsed = feedparser.parse(await resp.text())
+                            for entry in parsed.entries[:8]:
+                                ts = 0
+                                if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                                    ts = calendar.timegm(entry.published_parsed)
+                                all_headlines.append({
+                                    "title": entry.get('title', ''),
+                                    "source": name,
+                                    "published_ts": ts,
+                                    "summary": entry.get('summary', '')[:200],
+                                })
+                    except Exception:
+                        continue
+        except Exception as e:
+            self.logger.warning(f"[新闻轮询] 采集失败: {e}")
+            return
+
+        if not all_headlines:
+            return
+
+        # 按标的分组，只保留相关新闻
+        now = time.time()
+        symbol_news = {}
+        for base in active_bases:
+            relevant = []
+            for h in all_headlines:
+                text = (h['title'] + ' ' + h.get('summary', '')).upper()
+                if base in text or f"${base}" in text:
+                    relevant.append(h)
+            if relevant:
+                symbol_news[base] = relevant
+
+        if not symbol_news:
+            return
+
+        self._news_cache = {"symbol_news": symbol_news, "fetched_at": now}
+
+        await self.publish("news_snapshot", {
+            "symbol_news": symbol_news,
+            "fetched_at": now,
+            "active_symbols": self._active_symbols,
+        })
+        self.logger.info(f"[新闻轮询] 完成: 涉及标的 {list(symbol_news.keys())}")
 
     # ═══ 完整采集（低频，发布market_data） ═══
 

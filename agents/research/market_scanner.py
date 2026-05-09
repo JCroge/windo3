@@ -117,6 +117,9 @@ class MarketScanner(BaseAgent):
         try:
             import asyncio
             loop = asyncio.get_event_loop()
+            market = self.exchange.market(symbol)
+            if not market.get('swap'):
+                return None
             funding = await loop.run_in_executor(None, self.exchange.fetch_funding_rate, symbol)
             return funding.get('fundingRate', None)
         except Exception:

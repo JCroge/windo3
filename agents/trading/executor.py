@@ -224,7 +224,7 @@ class MultiExecutor(BaseAgent):
     def _get_balance(self) -> float:
         try:
             balance = self.executor.exchange.fetch_balance()
-            return float(balance.get('USDT', {}).get('free', 0))
+            return float(balance.get('USDT', {}).get('total', 0))
         except Exception as e:
             self.logger.error(f"获取余额失败: {e}")
             return -1.0
@@ -235,8 +235,25 @@ class MultiExecutor(BaseAgent):
 
         if self._sync_counter % 6 == 0:
             await asyncio.to_thread(self.executor.sync_positions)
+            await self._notify_synced_positions()
 
         await self._check_all_positions()
+
+    async def _notify_synced_positions(self):
+        """将同步发现的新持仓通知RiskGuard"""
+        newly_synced = self.executor.get_newly_synced()
+        for pos in newly_synced:
+            symbol = pos['symbol']
+            action = 'open_long' if pos['side'] == 'long' else 'open_short'
+            await self.publish("execution_result", {
+                "status": "executed",
+                "action": action,
+                "symbol": symbol,
+                "result": pos,
+                "confidence": 0,
+                "used_plan": False,
+                "source": "sync",
+            }, symbol=symbol)
 
     async def _check_all_positions(self):
         """兜底止损检查（交易所条件单失败时的安全网）"""
@@ -244,7 +261,10 @@ class MultiExecutor(BaseAgent):
         for symbol in list(positions.keys()):
             trigger = await asyncio.to_thread(self.executor.check_stop_loss_take_profit, symbol)
             if trigger:
-                self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
+                if trigger == 'price_fetch_failed':
+                    self.logger.error(f"[兜底] {symbol} 价格获取连续失败，强制平仓保护资金!")
+                else:
+                    self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
                 pos = self.executor.positions.get(symbol)
                 if pos and pos.get('sl_order_id'):
                     self.executor.cancel_order(symbol, pos['sl_order_id'])

@@ -223,6 +223,26 @@ pip3 install --upgrade ccxt
 
 **结论**：套利策略不可行，已转向趋势交易+合约策略。
 
+### 问题：correlation_risk误报导致持续减仓
+
+**症状**：日志频繁出现 `[风控] 同多/空方向敞口XX > 20`，持仓被反复减半
+
+**根因**：旧版本用名义价值（amount_usdt）计算敞口，4 USDT×20x=80 USDT远超20 USDT阈值
+
+**状态**：2026-05-09已修复，现用保证金（amount_usdt/leverage）计算，无需人工干预
+
+---
+
+### 问题：强平后立即重开同方向
+
+**症状**：日志显示force_close后几秒内又出现open_long/open_short同标的
+
+**根因**：旧版本Judge无force_close记忆
+
+**状态**：2026-05-09已修复，force_close后300s冷却期，无需人工干预
+
+---
+
 ### 问题：OKX下单错误
 
 **错误51008：余额不足**
@@ -244,7 +264,7 @@ contract_size = market.get('contractSize', 1)
 amount = (size_usdt * leverage) / (price * contract_size)
 amount = exchange.amount_to_precision(symbol, amount)
 ```
-OKX允许的杠杆值（小账户上限10x）：[1, 2, 3, 5, 10]
+OKX允许的杠杆值：[1, 2, 3, 5, 10, 20]
 
 ### 问题：Claude API "Your request was blocked"
 

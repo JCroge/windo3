@@ -25,7 +25,7 @@ class PortfolioRiskGuard(BaseAgent):
         self._max_portfolio_drawdown_pct = 10.0
         self._flash_move_threshold = 3.0
         self._flash_move_window = 60
-        self._high_leverage_threshold = 10
+        self._high_leverage_threshold = 20
         self._high_leverage_loss_pct = 5.0
         self._correlation_exposure_limit = 20.0
         self._stale_position_hours = 24
@@ -49,24 +49,25 @@ class PortfolioRiskGuard(BaseAgent):
             symbol = msg.get('symbol') or msg['payload'].get('symbol')
             price = msg['payload'].get('price')
             if symbol and price:
-                self._update_price(symbol, price)
+                self._update_price(self._to_ccxt_key(symbol), price)
             return
 
         if msg['type'] == 'market_data':
             symbol = msg.get('symbol') or msg['payload'].get('symbol')
             price = msg['payload'].get('latest_price')
             if symbol and price:
-                self._update_price(symbol, price)
+                self._update_price(self._to_ccxt_key(symbol), price)
 
         elif msg['type'] == 'execution_result':
             self._handle_execution_result(msg['payload'])
 
     def _handle_execution_result(self, payload: dict):
-        symbol = payload.get('symbol')
+        result = payload.get('result', {})
+        # 优先使用result中的ccxt格式symbol，保持与positions.json一致
+        symbol = result.get('symbol') or payload.get('symbol')
         if not symbol:
             return
         status = payload.get('status')
-        result = payload.get('result', {})
 
         # 从执行结果中更新账户余额基准
         if 'balance' in result:
@@ -185,7 +186,8 @@ class PortfolioRiskGuard(BaseAgent):
             if not price:
                 continue
             pnl_pct = self._calc_pnl_pct(pos, price)
-            total_pnl_usdt += pos['amount_usdt'] * pnl_pct / 100
+            margin = pos['amount_usdt'] / pos.get('leverage', 1)
+            total_pnl_usdt += margin * pnl_pct / 100
 
         # 余额未初始化时用持仓保证金兜底
         balance = self._account_balance if self._account_balance > 0 else (
@@ -263,10 +265,11 @@ class PortfolioRiskGuard(BaseAgent):
         long_exposure = 0.0
         short_exposure = 0.0
         for pos in self._positions.values():
+            margin = pos['amount_usdt'] / pos.get('leverage', 1)
             if pos['side'] == 'long':
-                long_exposure += pos['amount_usdt']
+                long_exposure += margin
             else:
-                short_exposure += pos['amount_usdt']
+                short_exposure += margin
 
         max_dir_exposure = max(long_exposure, short_exposure)
         num_positions = len(self._positions)
@@ -406,25 +409,81 @@ class PortfolioRiskGuard(BaseAgent):
             self.logger.error(f"保存状态失败: {e}")
 
     def _load_state(self):
-        """加载持仓追踪状态"""
+        """加载持仓追踪状态，并与executor持仓交叉验证"""
         import json
         import os
 
-        if not os.path.exists(self._state_file):
-            return
+        if os.path.exists(self._state_file):
+            try:
+                with open(self._state_file, 'r') as f:
+                    state = json.load(f)
 
-        try:
-            with open(self._state_file, 'r') as f:
-                state = json.load(f)
+                self._positions = state.get('positions', {})
+                self._prices = state.get('prices', {})
+                self._trading_halted = state.get('trading_halted', False)
+                self._last_alert_times = state.get('last_alert_times', {})
 
-            self._positions = state.get('positions', {})
-            self._prices = state.get('prices', {})
-            self._trading_halted = state.get('trading_halted', False)
-            self._last_alert_times = state.get('last_alert_times', {})
+                if self._trading_halted:
+                    self.logger.warning("系统处于熔断状态（从上次会话恢复）")
+            except Exception as e:
+                self.logger.error(f"加载状态失败: {e}")
 
-            self.logger.info(f"RiskGuard状态已加载: {len(self._positions)}个持仓")
+        # 交叉验证：从positions.json补录RiskGuard不知道的持仓
+        positions_file = 'data/positions.json'
+        if os.path.exists(positions_file):
+            try:
+                with open(positions_file, 'r') as f:
+                    executor_positions = json.load(f)
+                # 构建已有持仓的base symbol集合（去掉格式差异）
+                existing_bases = set()
+                for k in self._positions:
+                    existing_bases.add(self._normalize_key(k))
+                for sym, pos in executor_positions.items():
+                    base = self._normalize_key(sym)
+                    if base not in existing_bases and 'stop_loss' in pos:
+                        entry = pos.get('entry_price', 0)
+                        self._positions[sym] = {
+                            "symbol": sym,
+                            "side": pos['side'],
+                            "entry_price": entry,
+                            "amount_usdt": pos.get('amount_usdt', 0),
+                            "leverage": pos.get('leverage', 1),
+                            "stop_loss": pos.get('stop_loss'),
+                            "take_profit": pos.get('take_profit'),
+                            "highest_price": entry if pos['side'] == 'long' else entry,
+                            "lowest_price": entry if pos['side'] == 'short' else entry,
+                        }
+                        existing_bases.add(base)
+                        self.logger.info(f"RiskGuard补录持仓: {sym} ({pos['side']} {pos.get('leverage',1)}x)")
+                # 清理旧格式key（保留ccxt统一格式）
+                keys_to_remove = [k for k in self._positions if '/' not in k and self._normalize_key(k) in existing_bases and any(
+                    '/' in k2 and self._normalize_key(k2) == self._normalize_key(k) for k2 in self._positions if k2 != k
+                )]
+                for k in keys_to_remove:
+                    del self._positions[k]
+                    self.logger.info(f"RiskGuard清理旧格式key: {k}")
+            except Exception as e:
+                self.logger.warning(f"交叉验证positions.json失败: {e}")
 
-            if self._trading_halted:
-                self.logger.warning("系统处于熔断状态（从上次会话恢复）")
-        except Exception as e:
-            self.logger.error(f"加载状态失败: {e}")
+        self.logger.info(f"RiskGuard状态已加载: {len(self._positions)}个持仓")
+
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        """将不同格式的symbol统一为base（如ETH-USDT）用于比较"""
+        # "ETH/USDT:USDT" → "ETH-USDT"
+        # "ETH-USDT" → "ETH-USDT"
+        key = key.split(':')[0]  # 去掉 :USDT
+        key = key.replace('/', '-')  # / → -
+        return key.upper()
+
+    @staticmethod
+    def _to_ccxt_key(symbol: str) -> str:
+        """将任意格式转为ccxt统一格式（与positions.json一致）"""
+        # "ETH-USDT" → "ETH/USDT:USDT"
+        # "ETH/USDT:USDT" → "ETH/USDT:USDT" (不变)
+        if '/' in symbol:
+            return symbol
+        parts = symbol.split('-')
+        if len(parts) == 2:
+            return f"{parts[0]}/{parts[1]}:{parts[1]}"
+        return symbol

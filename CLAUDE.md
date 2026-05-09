@@ -1,5 +1,3 @@
-# Crypto Arbitrage System - AI协作指南
-
 # Crypto Trading System - AI协作指南
 
 ## 项目概述
@@ -120,8 +118,9 @@ crypto-arbitrage/
 | MAX_DRAWDOWN | 最大回撤 | 否（默认0.20） |
 | ANTHROPIC_API_KEY | Claude API密钥 | 否（使用多Agent系统时必需） |
 | ANTHROPIC_BASE_URL | Claude API地址（支持中转） | 否（默认api.anthropic.com） |
-| ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-opus-4-6） |
+| ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-sonnet-4-6） |
 | RESEARCH_INTERVAL | 研判层运行周期（秒） | 否（默认43200=12h） |
+| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认3） |
 | MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认3） |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | 否（留空则不启用通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | 否（留空则不启用通知） |
@@ -180,7 +179,7 @@ crypto-arbitrage/
 ### ✅ Phase 5c: 交易层深度升级（2026-05-07完成）
 - DataCollector 9维度采集：K线(1h/4h) + Orderbook 20档 + 资金费率历史(8期) + OI delta(Binance) + 爆仓订单(OKX) + Taker买卖比 + 大单检测(P90阈值) + 多空账户比 + 10s价格流
 - TechAnalyst 9维度信号解读：趋势结构(含4h偏向) + 关键价位(swing+orderbook墙) + 动量(RSI背离检测) + 资金流向(OI-价格背离/费率极值/Taker压力) + 微观结构(鲸鱼方向/深度偏向/爆仓强度) + 散户反指 + 风险评估(杠杆/波动/流动性)
-- Judge 精确交易计划：7维度加权评分 → 入场区间 + 基于支撑阻力的多级止盈止损 + 动态杠杆1-20x(三因子) + 仓位管理 + 反欺骗/反人性决策
+- Judge 精确交易计划：7维度加权评分 → 入场区间 + 基于支撑阻力的多级止盈止损 + 动态杠杆1-20x(三因子) + 仓位管理 + RSI极端值保护 + 反欺骗/反人性决策
 - 反欺骗验证8场景全通过：诱多陷阱→做空、恐慌底部→反人性做多、假突破→hold、杠杆过热→拒绝、信号矛盾→hold、完美做空→12x、主力洗盘→不追空、缩量阴跌→不做多
 
 ### ✅ Phase 5d: P0风控增强（2026-05-07完成）
@@ -227,7 +226,33 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 
 ### ✅ Phase 6b: contractSize修复 + 杠杆上限（2026-05-08完成）
 - contractSize修复：`amount = (size_usdt * leverage) / (price * contract_size)` + `amount_to_precision()`（修复前DOGE会多下1000倍）
-- Judge杠杆上限10x：小账户保护，OKX允许值列表改为[1, 2, 3, 5, 10]
+- Judge杠杆上限20x：OKX允许值列表[1, 2, 3, 5, 10, 20]
+
+### ✅ Phase 6d: 方向决策修复（2026-05-08完成）
+- 根因分析：之前所有交易亏损是因为在RSI极端超卖区域做空（DOGE RSI=20.1、ETH RSI=29.1）
+- _compute_score重写：RSI极端值硬性保护（RSI<25禁空score≥-15、RSI>75禁多score≤15）
+- 趋势强度衰减：strength>90时 `effective_strength = 90 - (strength-90)*2`（趋势末期信号）
+- 散户反指条件化：RSI极端区域禁用反指（超卖时散户做多可能是正确抄底）
+- RSI背离权重提升：极端区域+背离从+15提升到+35（强反转信号）
+- JUDGE_PROMPT增加【关键禁令】：明确RSI禁区规则给LLM
+- 验证结果：DOGE/ETH场景从错误的open_short变为正确的hold
+
+### ✅ Phase 6e: Post-mortem修复 + 入场质量优化（2026-05-09完成）
+- **Post-mortem修复**：correlation_risk改用保证金计算（非名义价值），Judge force_close冷却300s
+- **R:R门槛**（`judge.py`）：`risk_reward_ratio < 1.5` → hold，赔率不足不入场
+- **负面催化剂否决**（`synthesizer.py`）：近4h内hack/exploit/监管关键词 → confidence=0 → censor reject
+- **Censor兜底**（`censor.py`）：规则降级时confidence<40 → reject
+- **30min新闻轮询**（`multi_data_collector.py`）：`_tick_news()`每30min抓3家RSS，发布`news_snapshot`
+- **price-in检测**（`judge.py`）：订阅`news_snapshot`，近4h有新闻+价格移动>3% → score×0.5
+
+### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
+- 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
+- 杠杆上限调整为20x：OKX允许值列表[1,2,3,5,10,20]，RiskGuard高杠杆阈值同步更新为20
+- 止损最小距离保护：过滤距当前价<1.5%的支撑/阻力位，防止高杠杆下正常波动触发止损
+- 组合回撤计算修复：用保证金（amount_usdt/leverage）而非名义价值计算盈亏，消除高杠杆下的误报
+- Daily Hard Stop浮亏感知：Reviewer订阅risk_alert，组合回撤超限时将浮亏计入当日PnL触发熔断
+- 止盈orderbook墙逻辑修复：`r >= wall`时插入wall止盈（原`r > wall`导致wall恰好等于阻力位时漏加）
+- 趋势评分阈值收紧：strength>70才加分（原>60），减少弱趋势主导决策的情况
 
 ### 🔄 Phase 7: 待开发
 - 修复资金费率API（`fetchFundingRate() is only valid for swap markets`）

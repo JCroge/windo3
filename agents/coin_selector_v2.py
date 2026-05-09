@@ -204,7 +204,9 @@ class CoinSelectorV2:
     def _analyze_funding_rate(self, symbol):
         """分析资金费率（借鉴prompt的衍生品市场分析）"""
         try:
-            # 尝试获取永续合约资金费率
+            market = self.binance.market(symbol)
+            if not market.get('swap'):
+                return 3
             funding = self.binance.fetch_funding_rate(symbol)
             rate = funding.get('fundingRate', 0) or 0
 

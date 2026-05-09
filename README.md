@@ -1,6 +1,8 @@
 # Crypto Trading System
 
-**重要变更（2026-05-06）**：原套利策略经全面验证不可行，已转向趋势交易+合约策略。
+加密货币趋势交易系统，基于技术分析 + 合约交易 + 13个AI Agent协作决策。
+
+**系统状态（2026-05-09）**：Phase 6e 完成，多Agent系统全功能上线。
 
 ## 快速开始
 
@@ -10,38 +12,40 @@ cd crypto-arbitrage
 pip install -r requirements.txt
 ```
 
-### 2. 配置API密钥（可选）
-复制 `.env.example` 为 `.env` 并填入你的API密钥：
+### 2. 配置API密钥
 ```bash
 cp .env.example .env
+# 编辑 .env，填入 OKX_API_KEY / OKX_SECRET / OKX_PASSWORD
+# 多Agent系统还需填入 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
 ```
 
-编辑 `.env` 文件，填入真实的API密钥（K线采集无需API密钥）。
+### 3. 启动系统
 
-### 3. 运行K线采集
+**多Agent交易系统（推荐）**：
 ```bash
-python3 test_kline.py
+python3 run_agents.py
 ```
 
-## 当前功能（2026-05-06）
+**单策略实盘交易**：
+```bash
+python3 live_trading.py
+```
 
-✅ K线数据实时采集（WebSocket）
-✅ SQLite数据存储
-✅ 多币种、多周期支持
+## 系统能力
 
-## MVP开发计划（1-2周）
+✅ 13个AI Agent两层架构（研判层6个 + 交易层7个）  
+✅ 研判层每12h自动扫描全市场选币（OKX 324合约）  
+✅ 交易层9维度数据采集 + Claude综合研判 + 精确交易计划  
+✅ 动态杠杆1-20x + R:R门槛≥1.5 + RSI极端值保护  
+✅ 反欺骗机制：胜率83.3%（4重入场确认）  
+✅ 风控：Daily Hard Stop + 组合级RiskGuard + Telegram实时告警  
+✅ LLM不可用时自动降级为规则引擎  
 
-- [x] K线数据采集
-- [ ] 技术指标计算（MA, MACD, RSI, 布林带）
-- [ ] 信号生成器（趋势识别、买卖信号）
-- [ ] 回测引擎
-- [ ] 合约执行 + 风控系统
+## 风控参数（硬限制）
 
-## 配置说明
-
-风控参数（硬限制）：
-- `MAX_TRADE_AMOUNT`: 单次最大交易额（默认10 USDT）
-- `MAX_DRAWDOWN`: 最大回撤（默认20%）
+- 单次最大交易额：10 USDT
+- 最大回撤：20%
+- 每日最大亏损：50 USDT
 
 ## 文档
 

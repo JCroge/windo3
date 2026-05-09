@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 6a 完成（Telegram通知 + contractSize修复 + 杠杆上限10x）
+**当前阶段**：Phase 6e 完成（post-mortem修复 + 入场质量优化：R:R门槛+新闻催化剂过滤+price-in检测）
 **下一阶段**：Phase 7（Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -227,9 +227,35 @@
    - 修复后：`amount = (size_usdt * leverage) / (price * contract_size)` + `amount_to_precision()`
    - 影响：DOGE/ETH等非1合约单位的标的下单数量正确
 
-2. **Judge杠杆上限10x** (`agents/trading/judge.py`)
-   - 小账户（<50 USDT）20x杠杆在5%逆向波动即触发清算
-   - 上限从20x降至10x，OKX允许值列表：[1, 2, 3, 5, 10]
+2. **Judge杠杆上限20x** (`agents/trading/judge.py`)
+   - OKX允许值列表：[1, 2, 3, 5, 10, 20]
+   - 高杠杆时RiskGuard高杠杆阈值同步为20
+
+### ✅ Phase 6d: 方向决策修复（2026-05-08完成）
+
+**根因**：之前所有交易亏损（-1.34 USDT）是因为在RSI极端超卖区域做空（DOGE RSI=20.1、ETH RSI=29.1）。`_compute_score`中趋势+鲸鱼+散户反指+Taker信号累加压过RSI背离的+15分。
+
+**修复**（`agents/trading/judge.py` `_compute_score`方法重写）：
+1. RSI极端值硬性保护：RSI<25时score不低于-15（禁空），RSI>75时score不高于15（禁多）
+2. 趋势强度衰减：strength>90时 `effective_strength = 90 - (strength-90)*2`
+3. 散户反指条件化：RSI极端区域禁用反指信号
+4. RSI背离权重提升：极端区域+背离从+15提升到+35
+5. JUDGE_PROMPT增加【关键禁令】：明确RSI禁区规则给LLM
+
+**验证**：DOGE/ETH场景从错误的open_short变为正确的hold
+
+### ✅ Phase 6e: Post-mortem修复 + 入场质量优化（2026-05-09完成）
+
+**Post-mortem根因（2026-05-08四场全负）**：
+1. `correlation_risk`用名义价值（4 USDT×20x=80 USDT）触发20 USDT阈值 → 每60s减仓50%循环 → 已修复为用保证金计算
+2. Judge无force_close记忆 → 强平后立即重开同方向 → 已修复为300s冷却
+
+**入场质量优化（参考Freqtrade/QuantConnect最佳实践）**：
+1. **R:R门槛**（`judge.py`）：`risk_reward_ratio < 1.5` → 强制hold，赔率不足不入场
+2. **负面催化剂否决**（`synthesizer.py`）：近4h内hack/exploit/监管等关键词 → confidence=0 → Censor自动reject
+3. **Censor兜底**（`censor.py`）：规则降级时confidence<40 → reject
+4. **30min新闻轮询**（`multi_data_collector.py`）：交易层每30min抓3家RSS，发布`news_snapshot`
+5. **price-in检测**（`judge.py`）：近4h有新闻+价格已同向移动>3% → score×0.5（催化剂已消化）
 
 ### 🔄 Phase 7: 待开发
 

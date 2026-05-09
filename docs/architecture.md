@@ -6,10 +6,13 @@
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
-- 2026-05-07：多Agent系统完成，两层架构（研判层6 Agent + 交易层6 Agent），含言官逆向审查机制
+- 2026-05-07：多Agent系统完成，两层架构（研判层6 Agent + 交易层7 Agent），含言官逆向审查机制
 - 2026-05-07：P0风控增强完成（ReviewerAgent + Daily Hard Stop + Graceful Shutdown + 状态持久化）
 - 2026-05-07：P1-A Telegram通知完成（TelegramNotifier，交易层7个Agent）
-- 2026-05-08：contractSize修复（DOGE/ETH等非1合约单位正确计算），Judge杠杆上限10x
+- 2026-05-08：contractSize修复（DOGE/ETH等非1合约单位正确计算），Judge杠杆上限20x
+- 2026-05-08：方向决策修复（_compute_score重写：RSI极端值保护+趋势强度衰减+条件化散户反指）
+- 2026-05-09：post-mortem修复（correlation_risk用保证金计算、Judge force_close冷却300s）
+- 2026-05-09：入场质量优化（R:R门槛≥1.5、负面催化剂否决、30min新闻轮询+price-in检测）
 
 ## 架构图
 
@@ -252,7 +255,7 @@ CREATE TABLE klines (
 | `research/symbol_router.py` | 研判 | 标的路由+轮换协议（平仓旧标的） | 无 |
 | `trading/multi_data_collector.py` | 交易 | 9维度数据采集（K线/orderbook/OI/爆仓/费率/Taker/大单/多空比） | 无 |
 | `trading/tech_analyst.py` | 交易 | 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险） | Claude综合研判 |
-| `trading/judge.py` | 交易 | 精确交易计划（入场区间/止盈止损/动态杠杆1-10x/仓位） | Claude最终裁决 |
+| `trading/judge.py` | 交易 | 精确交易计划（入场区间/止盈止损/动态杠杆1-20x/仓位/RSI极端值保护） | Claude最终裁决 |
 | `trading/executor.py` | 交易 | 多标的交易执行 | 无 |
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
 | `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |
@@ -279,6 +282,7 @@ CREATE TABLE klines (
 - `risk_alert`：风控警报（RiskGuard → broadcast，Executor + TelegramNotifier响应）
 - `daily_hard_stop_triggered`：熔断信号（Reviewer → broadcast，Executor + RiskGuard + TelegramNotifier响应）
 - `strategy_review`：策略复盘报告（Reviewer → TelegramNotifier）
+- `news_snapshot`：30min新闻快照（DataCollector → Judge，用于price-in检测）
 
 ## 数据流
 
@@ -386,7 +390,7 @@ CREATE TABLE klines (
 **Phase 5c - 交易层深度升级（2026-05-07）**：
 - DataCollector 9维度采集：K线(多周期) + Orderbook 20档 + 资金费率历史 + OI delta + 爆仓订单 + Taker买卖比 + 大单检测 + 多空账户比 + 实时价格流
 - TechAnalyst 9维度信号解读：趋势结构 + 关键价位(含orderbook墙) + 动量(RSI背离) + 资金流向(OI背离/费率极值) + 微观结构(鲸鱼/深度偏向) + 散户反指 + 风险评估
-- Judge 精确交易计划：7维度加权评分 + 基于支撑阻力的止盈止损 + 动态杠杆1-10x + 反欺骗/反人性决策
+- Judge 精确交易计划：7维度加权评分 + 基于支撑阻力的止盈止损 + 动态杠杆1-20x + RSI极端值保护 + 反欺骗/反人性决策
 - 反欺骗验证通过：诱多陷阱识别、恐慌底部反人性做多、假突破拒绝、杠杆过热拒绝、主力洗盘识别
 
 **Phase 5d - P0风控增强（2026-05-07）**：
@@ -396,11 +400,22 @@ CREATE TABLE klines (
 - RiskGuard状态持久化：持仓追踪/价格缓存/熔断状态重启恢复
 - Executor/RiskGuard升级：动态杠杆+限价单+条件单 + risk_alert接入强制平仓
 
-### Phase 6: 智能增强（下一阶段）
+**Phase 6 - 智能增强（2026-05-07~08）**：
+- P1-A Telegram通知：TelegramNotifier实时推送+每日摘要+零配置降级
+- contractSize修复：`amount = (size_usdt * leverage) / (price * contract_size)` + `amount_to_precision()`
+- 方向决策修复（2026-05-08）：_compute_score重写，RSI极端值硬性保护+趋势强度衰减+条件化散户反指+RSI背离权重提升
+- 系统逻辑校验：止损最小距离1.5%、组合回撤用保证金计算、止盈orderbook墙逻辑修复
+
+**Phase 6e - 入场质量优化（2026-05-09）**：
+- Post-mortem修复：correlation_risk改用保证金计算（非名义价值），Judge force_close冷却300s
+- R:R门槛：`risk_reward_ratio < 1.5` → hold（参考Freqtrade minimal_roi原则）
+- 负面催化剂否决：synthesizer近4h新闻关键词检测 → confidence=0 → censor reject（veto层设计）
+- 30min新闻轮询：DataCollector新增`_tick_news()`，发布`news_snapshot`消息到交易层
+- price-in检测：Judge订阅`news_snapshot`，近4h有新闻+价格移动>3% → score×0.5
+
+### Phase 7: 待开发
 - Predictor（趋势预测Agent）
-- Telegram实时告警
 - Paper Trading模式
-- Claude提示词持续优化
 - 更多数据源接入（链上大额转账、清算数据）
 
 ## 性能考虑

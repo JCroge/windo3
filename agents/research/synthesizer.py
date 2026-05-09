@@ -5,6 +5,7 @@
 2. 终选：收到言官谏言后，综合考虑风险，做出最终决策 → 发给SymbolRouter
 """
 
+import time
 from agents.base import BaseAgent
 
 SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是综合市场数据、链上信号和新闻舆情，筛选出未来12小时最有交易价值的2-3个永续合约标的。
@@ -115,6 +116,14 @@ class ResearchSynthesizer(BaseAgent):
             self.logger.warning(f"LLM研判失败，规则降级: {e}")
             selected = self._rule_fallback(candidates)
             market_regime = 'unknown'
+
+        # 负面催化剂否决：有近4h负面新闻的标的直接降confidence至0
+        # 设计原则：新闻做veto层而非加分层（参考Freqtrade news-filter）
+        if news_data:
+            for s in selected:
+                if self._check_negative_catalyst(s['symbol'], news_data):
+                    s['confidence'] = 0
+                    s['risk_factor'] = '近4h检测到负面催化剂新闻'
 
         self._preliminary_result = {
             "selected": selected,
@@ -286,6 +295,47 @@ class ResearchSynthesizer(BaseAgent):
 
         parts.append(f"\n总扫描合约数: {len(candidates)}")
         return "\n".join(parts)
+
+    # 负面催化剂关键词（参考Freqtrade news-filter veto层设计）
+    _NEGATIVE_KEYWORDS = [
+        'hack', 'exploit', 'breach', 'stolen', 'rug', 'scam', 'fraud',
+        'sec', 'lawsuit', 'ban', 'crackdown', 'arrest', 'seized',
+        'insolvent', 'bankrupt', 'shutdown', 'suspend',
+        '黑客', '漏洞', '被盗', '跑路', '诈骗', '监管', '起诉', '查封', '暂停',
+    ]
+
+    def _check_negative_catalyst(self, symbol: str, news_data: dict) -> bool:
+        """检查近4h内是否有负面催化剂新闻，返回True表示有风险应否决"""
+        headlines = news_data.get('headlines', [])
+        symbol_mentions = news_data.get('symbol_mentions', {})
+        now = time.time()
+        window = 4 * 3600  # 4小时窗口（参考QuantConnect Alpha Streams研究）
+
+        # 获取该标的相关的新闻标题
+        base = symbol.split('-')[0].upper()
+        relevant_titles = []
+
+        # 从symbol_mentions获取该标的的新闻标题
+        for key, data in symbol_mentions.items():
+            if key.upper() == base:
+                relevant_titles.extend(data.get('headlines', []))
+
+        # 从全局headlines中找近4h内提及该标的的新闻
+        for h in headlines:
+            if not h.get('published_ts') or now - h['published_ts'] > window:
+                continue
+            title_lower = (h.get('title', '') + ' ' + h.get('summary', '')).lower()
+            if base.lower() in title_lower:
+                relevant_titles.append(h.get('title', ''))
+
+        # 关键词匹配
+        for title in relevant_titles:
+            title_lower = title.lower()
+            for kw in self._NEGATIVE_KEYWORDS:
+                if kw in title_lower:
+                    self.logger.warning(f"[研判] {symbol} 检测到负面催化剂: '{kw}' in '{title[:60]}'")
+                    return True
+        return False
 
     def _rule_fallback(self, candidates: list) -> list:
         """LLM不可用时的规则降级选币"""

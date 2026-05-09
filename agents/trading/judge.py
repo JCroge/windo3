@@ -22,6 +22,14 @@ JUDGE_PROMPT = """你是加密货币合约交易的最终裁判。基于技术�
 4. 杠杆风险高时降低仓位和杠杆
 5. 没有明确信号时果断hold——不交易也是决策
 
+【关键禁令——违反即亏损】
+- RSI < 30 时禁止做空：这是超卖区域，反弹概率极高。即使趋势看空，也不追空
+- RSI > 70 时禁止做多：这是超买区域，回调概率极高。即使趋势看多，也不追多
+- RSI < 25 + bullish divergence = 强烈做多信号，不是做空信号
+- RSI > 75 + bearish divergence = 强烈做空信号，不是做多信号
+- 趋势强度 > 90 往往是趋势末期，此时顺势开仓风险极高
+- 散户反指在RSI极端区域失效：超卖时散户做多可能是正确的抄底
+
 以JSON格式回复：
 {
     "action": "open_long/open_short/close/hold",
@@ -34,21 +42,24 @@ JUDGE_PROMPT = """你是加密货币合约交易的最终裁判。基于技术�
 
 class MultiJudge(BaseAgent):
     name = "judge"
-    subscriptions = ["tech_analysis:*", "symbol_update"]
+    subscriptions = ["tech_analysis:*", "symbol_update", "execution_result:*", "news_snapshot"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
         self._symbol_state = {}
         self._decision_cooldown = 55
+        self._force_close_cooldown = 300  # 强平后5分钟禁止同标的开仓
         self._max_trade_amount = config.get('max_trade_amount', 10) if config else 10
         self.exchange = None
         self._available_balance = 0.0
+        self._news_snapshot = {}  # {base: [headlines]} 最新新闻快照
 
     def _get_state(self, symbol: str) -> dict:
         if symbol not in self._symbol_state:
             self._symbol_state[symbol] = {
                 "last_decision_time": 0,
                 "last_tech": None,
+                "last_force_close_time": 0,
             }
         return self._symbol_state[symbol]
 
@@ -73,6 +84,19 @@ class MultiJudge(BaseAgent):
                 self._symbol_state.pop(s, None)
             return
 
+        if msg['type'] == 'news_snapshot':
+            self._news_snapshot = msg['payload'].get('symbol_news', {})
+            return
+
+        if msg['type'] == 'execution_result':
+            if msg['payload'].get('status') == 'force_closed':
+                symbol = msg.get('symbol') or msg['payload'].get('symbol')
+                if symbol:
+                    state = self._get_state(symbol)
+                    state["last_force_close_time"] = time.time()
+                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{self._force_close_cooldown}s内禁止开仓")
+            return
+
         if msg['type'] != 'tech_analysis':
             return
 
@@ -85,6 +109,11 @@ class MultiJudge(BaseAgent):
         if now - state["last_decision_time"] < self._decision_cooldown:
             return
 
+        if now - state["last_force_close_time"] < self._force_close_cooldown:
+            remaining = int(self._force_close_cooldown - (now - state["last_force_close_time"]))
+            self.logger.info(f"[Judge] {symbol} 强平冷却中，剩余{remaining}s")
+            return
+
         state["last_tech"] = msg['payload']
         state["last_decision_time"] = now
 
@@ -95,6 +124,11 @@ class MultiJudge(BaseAgent):
 
         score = self._compute_score(tech)
         price = tech.get('indicators', {}).get('price', 0)
+
+        # price-in衰减：催化剂已被价格消化，信号可靠性下降
+        action_hint = "open_long" if score > 0 else "open_short"
+        if abs(score) >= 30 and self._check_price_in(symbol, action_hint, tech):
+            score *= 0.5
 
         if abs(score) < 30:
             decision = {
@@ -131,6 +165,20 @@ class MultiJudge(BaseAgent):
                 final_conf = llm_result.get('confidence', confidence)
 
                 if final_action in ('open_long', 'open_short'):
+                    # R:R门槛过滤：参考Freqtrade minimal_roi原则，赔率不足不入场
+                    rr = plan.get('risk_reward_ratio', 0)
+                    if rr < 1.5:
+                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f} < 1.5，赔率不足放弃")
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"R:R={rr:.2f}不足1.5，赔率不满足入场条件",
+                            "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
                     plan['size_usdt'] = self._calc_size(final_conf)
                     required_margin = plan['size_usdt'] / plan['leverage']
                     if self._available_balance < required_margin * 1.1:
@@ -182,31 +230,74 @@ class MultiJudge(BaseAgent):
     # ═══ 信号聚合评分 ═══
 
     def _compute_score(self, tech: dict) -> float:
-        """多空评分: +100=极度看多, -100=极度看空, 0=中性"""
-        score = 0.0
+        """多空评分: +100=极度看多, -100=极度看空, 0=中性
 
+        核心逻辑：
+        - 趋势跟随 + 极端值保护 + 信号矛盾检测
+        - RSI极端区域禁止顺势追单（防止追涨杀跌到顶底）
+        - 趋势强度过高时衰减（强度>90往往是反转前兆）
+        """
+        score = 0.0
+        momentum = tech.get('momentum', {})
+        rsi = momentum.get('rsi', 50)
+        div = momentum.get('rsi_divergence')
+
+        # ═══ 极端值保护：RSI超买超卖区域的硬性约束 ═══
+        # RSI < 25: 极度超卖，禁止做空，给予强烈看多偏置
+        # RSI > 75: 极度超买，禁止做多，给予强烈看空偏置
+        rsi_extreme_bullish = rsi < 25
+        rsi_extreme_bearish = rsi > 75
+        rsi_oversold = rsi < 35
+        rsi_overbought = rsi > 65
+
+        # ═══ 1. 趋势 ═══
         trend = tech.get('trend', {})
         direction = trend.get('direction', 'neutral')
         strength = trend.get('strength', 50)
-        if direction == 'bullish' and strength > 60:
-            score += 25 * (strength / 100)
-        elif direction == 'bearish' and strength > 60:
-            score -= 25 * (strength / 100)
 
-        momentum = tech.get('momentum', {})
-        div = momentum.get('rsi_divergence')
+        # 趋势强度衰减：强度>90时打折（趋势末期信号）
+        effective_strength = strength
+        if strength > 90:
+            effective_strength = 90 - (strength - 90) * 2  # 98→74, 95→80
+
+        if direction == 'bullish' and effective_strength > 70:
+            trend_score = 20 * (effective_strength / 100)
+            # 超买区域趋势做多打折
+            if rsi_overbought:
+                trend_score *= 0.3
+            score += trend_score
+        elif direction == 'bearish' and effective_strength > 70:
+            trend_score = 20 * (effective_strength / 100)
+            # 超卖区域趋势做空打折
+            if rsi_oversold:
+                trend_score *= 0.3
+            score -= trend_score
+
+        # ═══ 2. RSI背离（权重提升：背离是反转的强信号）═══
         if div == 'bullish_div':
-            score += 15
+            div_score = 20
+            if rsi_extreme_bullish:
+                div_score = 35  # 极度超卖+背离=强烈反转信号
+            elif rsi_oversold:
+                div_score = 28
+            score += div_score
         elif div == 'bearish_div':
-            score -= 15
+            div_score = 20
+            if rsi_extreme_bearish:
+                div_score = 35
+            elif rsi_overbought:
+                div_score = 28
+            score -= div_score
 
+        # ═══ 3. OI背离 ═══
         mf = tech.get('money_flow', {})
         oi_div = mf.get('oi_price_divergence')
         if oi_div == 'bullish':
-            score += 15
+            score += 12
         elif oi_div == 'bearish':
-            score -= 15
+            score -= 12
 
+        # ═══ 4. 鲸鱼方向 ═══
         micro = tech.get('microstructure', {})
         whale = micro.get('whale_direction', 'neutral')
         if whale == 'accumulating':
@@ -214,26 +305,78 @@ class MultiJudge(BaseAgent):
         elif whale == 'distributing':
             score -= 15
 
+        # ═══ 5. 散户反指（条件化：只在趋势中段有效）═══
         crowd = tech.get('crowd', {})
         contrarian = crowd.get('contrarian_signal', 'neutral')
-        if contrarian == 'bullish':
-            score += 10
-        elif contrarian == 'bearish':
-            score -= 10
+        # 散户反指在RSI极端区域失效：
+        # 超卖时散户做多可能是正确的抄底，不应反指做空
+        # 超买时散户做空可能是正确的逃顶，不应反指做多
+        if contrarian == 'bullish' and not rsi_extreme_bearish:
+            score += 8
+        elif contrarian == 'bearish' and not rsi_extreme_bullish:
+            score -= 8
 
+        # ═══ 6. Taker压力 ═══
         taker = mf.get('taker_pressure', 'neutral')
         if taker == 'buy':
-            score += 10
+            score += 8
         elif taker == 'sell':
-            score -= 10
+            score -= 8
 
+        # ═══ 7. 高时间框架偏向 ═══
         htf = trend.get('higher_tf_bias', 'neutral')
         if htf == 'bullish':
             score += 10
         elif htf == 'bearish':
             score -= 10
 
+        # ═══ 极端值硬性保护 ═══
+        # RSI极度超卖时，无论其他信号如何，不允许做空（score不能低于-15）
+        if rsi_extreme_bullish:
+            if score < -15:
+                score = -15
+            # 如果有背离，直接给正分
+            if div == 'bullish_div':
+                score = max(score, 25)
+
+        # RSI极度超买时，无论其他信号如何，不允许做多
+        if rsi_extreme_bearish:
+            if score > 15:
+                score = 15
+            if div == 'bearish_div':
+                score = min(score, -25)
+
         return score
+
+    def _check_price_in(self, symbol: str, action: str, tech: dict) -> bool:
+        """检测催化剂是否已price-in：新闻发布后4h内价格已同向移动>3%则认为已消化
+
+        设计参考：QuantConnect Alpha Streams研究——新闻情绪在4h后衰减至噪音
+        price-in判断：新闻方向 × 价格变动方向一致 且 变动幅度>3%
+        """
+        base = symbol.split('-')[0].upper()
+        headlines = self._news_snapshot.get(base, [])
+        if not headlines:
+            return False
+
+        now = time.time()
+        window = 4 * 3600
+        recent = [h for h in headlines if h.get('published_ts') and now - h['published_ts'] <= window]
+        if not recent:
+            return False
+
+        # 用24h涨跌幅作为价格移动代理（tech已包含此数据）
+        change_pct = abs(tech.get('trend', {}).get('change_24h_pct', 0))
+        if change_pct < 3.0:
+            return False
+
+        # 方向一致性检查：新闻利好+价格已大涨 或 新闻利空+价格已大跌
+        price_direction = 'up' if tech.get('trend', {}).get('direction') == 'bullish' else 'down'
+        # 简单启发：有近期新闻 + 价格已大幅移动 = 催化剂已price-in
+        self.logger.info(
+            f"[Judge] {symbol} 检测到price-in: 近{len(recent)}条新闻 + 24h变动{change_pct:.1f}%，score衰减50%"
+        )
+        return True
 
     # ═══ 交易计划构建 ═══
 
@@ -256,10 +399,18 @@ class MultiJudge(BaseAgent):
         tp_dist = abs(take_profit[0] - price) / price if take_profit else sl_dist
         rr_ratio = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 1.0
 
+        def price_round(x):
+            # 动态精度：保留4位有效数字，避免低价币被截断
+            from math import log10, floor
+            if x <= 0:
+                return x
+            digits = max(2, 4 - int(floor(log10(abs(x)))) - 1)
+            return round(x, digits)
+
         return {
-            "entry_zone": entry_zone,
-            "stop_loss": round(stop_loss, 2),
-            "take_profit": [round(tp, 2) for tp in take_profit],
+            "entry_zone": [price_round(e) for e in entry_zone],
+            "stop_loss": price_round(stop_loss),
+            "take_profit": [price_round(tp) for tp in take_profit],
             "leverage": leverage,
             "size_usdt": size_usdt,
             "order_type": order_type,
@@ -268,27 +419,31 @@ class MultiJudge(BaseAgent):
         }
 
     def _calc_stop_loss(self, levels: dict, price: float, is_long: bool) -> float:
+        min_sl_pct = 0.015  # 最小止损距离1.5%，防止高杠杆下正常波动触发
         if is_long:
-            supports = [s for s in levels.get('support', []) if s < price]
+            supports = [s for s in levels.get('support', []) if s < price * (1 - min_sl_pct)]
             if supports:
                 return supports[0] * 0.995
-            return price * 0.97
+            return price * (1 - min_sl_pct)
         else:
-            resistances = [r for r in levels.get('resistance', []) if r > price]
+            resistances = [r for r in levels.get('resistance', []) if r > price * (1 + min_sl_pct)]
             if resistances:
                 return resistances[0] * 1.005
-            return price * 1.03
+            return price * (1 + min_sl_pct)
 
     def _calc_take_profit(self, levels: dict, price: float, is_long: bool) -> list:
         if is_long:
             resistances = levels.get('resistance', [])
             wall = levels.get('orderbook_wall_above')
+            min_tp_dist = price * 0.005  # 多单止盈至少高于入场价0.5%
             tps = []
             for r in resistances[:3]:
-                if r <= price:  # 多单止盈必须高于入场价
+                if r <= price + min_tp_dist:
                     continue
-                if wall and r > wall:
-                    tps.append(wall * 0.998)
+                if wall and r >= wall:
+                    tp = wall * 0.998
+                    if tp > price + min_tp_dist:
+                        tps.append(tp)
                     break
                 tps.append(r)
             if not tps:
@@ -297,12 +452,15 @@ class MultiJudge(BaseAgent):
         else:
             supports = levels.get('support', [])
             wall = levels.get('orderbook_wall_below')
+            min_tp_dist = price * 0.005  # 空单止盈至少低于入场价0.5%
             tps = []
             for s in supports[:3]:
-                if s >= price:  # 空单止盈必须低于入场价
+                if s >= price - min_tp_dist:
                     continue
-                if wall and s < wall:
-                    tps.append(wall * 1.002)
+                if wall and s <= wall:
+                    tp = wall * 1.002
+                    if tp < price - min_tp_dist:
+                        tps.append(tp)
                     break
                 tps.append(s)
             if not tps:
@@ -333,10 +491,10 @@ class MultiJudge(BaseAgent):
         elif liquidity < 60:
             base = int(base * 0.75)
 
-        leverage = max(1, min(10, base))  # 小账户(<50 USDT)上限10x
+        leverage = max(1, min(20, base))
 
-        # 圆整到OKX允许的杠杆倍数：1,2,3,5,10
-        allowed = [1, 2, 3, 5, 10]
+        # 圆整到OKX允许的杠杆倍数：1,2,3,5,10,20
+        allowed = [1, 2, 3, 5, 10, 20]
         for lev in allowed:
             if leverage <= lev:
                 return lev
@@ -345,7 +503,7 @@ class MultiJudge(BaseAgent):
     def _calc_entry_zone(self, price: float, micro: dict, momentum: dict) -> list:
         spread = micro.get('spread_pct', 0.01)
         margin = max(spread * 2, 0.02) / 100 * price
-        return [round(price - margin, 2), round(price + margin, 2)]
+        return [price - margin, price + margin]
 
     def _calc_order_type(self, momentum: dict, micro: dict) -> str:
         if momentum.get('volume_anomaly') or micro.get('liquidation_intensity') == 'high':

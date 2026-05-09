@@ -105,12 +105,21 @@ class Censor(BaseAgent):
             recommendation = "proceed_with_caution"
 
             confidence = s.get('confidence', 0)
-            if confidence > 85:
+            # 负面催化剂否决：confidence=0是synthesizer标记的负面新闻信号
+            if confidence == 0:
+                objections.append("检测到负面催化剂新闻，风险不可控")
+                risk_level = "high"
+                recommendation = "reject"
+            elif confidence < 40:
+                objections.append(f"置信度{confidence}过低，信号不足以支撑入场")
+                risk_level = "high"
+                recommendation = "reject"
+            elif confidence > 85:
                 objections.append("置信度过高，可能存在确认偏误")
                 risk_level = "medium"
 
             direction = s.get('direction_bias', '')
-            if direction in ('long', 'short'):
+            if direction in ('long', 'short') and recommendation != "reject":
                 objections.append(f"单边{direction}信号可能是趋势末端")
 
             if not objections:

@@ -4,6 +4,7 @@
 import ccxt
 import json
 import os
+import time
 from typing import Dict, Optional
 from risk_manager import RiskManager
 from utils.logger import setup_logger
@@ -65,13 +66,17 @@ class ContractExecutor:
         self.positions = {}
         self._load_positions()
 
+        # 止损检查连续失败计数器（key=symbol）
+        self._sl_check_failures = {}
+        self._sl_max_failures = 3  # 连续失败N次后强制平仓
+
         self.logger.info(f"杠杆设置: {leverage}x")
 
     def get_balance(self) -> float:
-        """获取USDT余额"""
+        """获取USDT余额（total，含持仓保证金，用于回撤计算）"""
         try:
             balance = self.exchange.fetch_balance()
-            return balance['USDT']['free']
+            return balance['USDT']['total']
         except Exception as e:
             self.logger.error(f"获取余额失败: {e}")
             return 0.0
@@ -221,40 +226,90 @@ class ContractExecutor:
             return None
 
     def check_stop_loss_take_profit(self, symbol: str) -> Optional[str]:
-        """检查止损止盈"""
+        """检查止损止盈 — 多源价格获取 + 连续失败强制平仓"""
         if symbol not in self.positions:
+            self._sl_check_failures.pop(symbol, None)
             return None
 
+        position = self.positions[symbol]
+        if 'stop_loss' not in position or 'take_profit' not in position:
+            return None
+
+        current_price = self._fetch_price_robust(symbol)
+
+        if current_price is None:
+            count = self._sl_check_failures.get(symbol, 0) + 1
+            self._sl_check_failures[symbol] = count
+            self.logger.warning(
+                f"止损检查: {symbol} 价格获取失败 (连续{count}次)"
+            )
+            if count >= self._sl_max_failures:
+                self.logger.error(
+                    f"止损检查: {symbol} 连续{count}次失败，强制平仓保护资金"
+                )
+                return 'price_fetch_failed'
+            return None
+
+        self._sl_check_failures[symbol] = 0
+
+        if position['side'] == 'long' and current_price <= position['stop_loss']:
+            return 'stop_loss'
+        if position['side'] == 'short' and current_price >= position['stop_loss']:
+            return 'stop_loss'
+
+        if position['side'] == 'long' and current_price >= position['take_profit']:
+            return 'take_profit'
+        if position['side'] == 'short' and current_price <= position['take_profit']:
+            return 'take_profit'
+
+        return None
+
+    def _fetch_price_robust(self, symbol: str) -> Optional[float]:
+        """多源价格获取：ticker → orderbook mid → 短暂重试"""
+        # 方法1: fetch_ticker
         try:
-            position = self.positions[symbol]
             ticker = self.exchange.fetch_ticker(symbol)
-            current_price = ticker['last']
+            if ticker and ticker.get('last'):
+                return float(ticker['last'])
+        except Exception:
+            pass
 
-            # 检查止损
-            if position['side'] == 'long' and current_price <= position['stop_loss']:
-                return 'stop_loss'
-            if position['side'] == 'short' and current_price >= position['stop_loss']:
-                return 'stop_loss'
+        # 方法2: orderbook中间价
+        try:
+            ob = self.exchange.fetch_order_book(symbol, limit=5)
+            if ob.get('asks') and ob.get('bids'):
+                best_ask = ob['asks'][0][0]
+                best_bid = ob['bids'][0][0]
+                return (best_ask + best_bid) / 2
+        except Exception:
+            pass
 
-            # 检查止盈
-            if position['side'] == 'long' and current_price >= position['take_profit']:
-                return 'take_profit'
-            if position['side'] == 'short' and current_price <= position['take_profit']:
-                return 'take_profit'
+        # 方法3: 等1秒重试ticker
+        time.sleep(1)
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            if ticker and ticker.get('last'):
+                return float(ticker['last'])
+        except Exception:
+            pass
 
-            return None
-
-        except Exception as e:
-            self.logger.error(f"检查止损止盈失败: {e}")
-            return None
+        return None
 
     def _load_positions(self):
         """加载持仓记录"""
         if os.path.exists(self.positions_file):
             try:
                 with open(self.positions_file, 'r') as f:
-                    self.positions = json.load(f)
-                    self.logger.info(f"加载持仓记录: {len(self.positions)}个")
+                    raw = json.load(f)
+                # 过滤掉缺少止损/止盈字段的残缺持仓，避免重启后崩溃
+                self.positions = {
+                    k: v for k, v in raw.items()
+                    if 'stop_loss' in v and 'take_profit' in v
+                }
+                skipped = len(raw) - len(self.positions)
+                if skipped:
+                    self.logger.warning(f"跳过{skipped}个残缺持仓记录（缺少止损/止盈）")
+                self.logger.info(f"加载持仓记录: {len(self.positions)}个")
             except Exception as e:
                 self.logger.warning(f"加载持仓失败: {e}")
 
@@ -286,13 +341,18 @@ class ContractExecutor:
                 return None
 
             leverage = plan.get('leverage', self.leverage)
+            size_usdt = plan.get('size_usdt', self.risk_manager.max_trade_amount)
+            size_usdt = min(size_usdt, self.risk_manager.max_trade_amount)
+            required_margin = size_usdt / leverage
+            free_balance = self.exchange.fetch_balance()['USDT']['free']
+            if free_balance < required_margin * 1.1:
+                self.logger.warning(f"可用余额不足: free={free_balance:.2f} < 需要{required_margin:.2f}")
+                return None
+
             order_type = plan.get('order_type', 'market')
             entry_zone = plan.get('entry_zone', {})
             stop_loss = plan.get('stop_loss')
             take_profit = plan.get('take_profit', [])
-            size_usdt = plan.get('size_usdt', self.risk_manager.max_trade_amount)
-
-            size_usdt = min(size_usdt, self.risk_manager.max_trade_amount)
 
             try:
                 self.exchange.set_leverage(leverage, symbol)
@@ -302,8 +362,16 @@ class ContractExecutor:
             ticker = self.exchange.fetch_ticker(symbol)
             current_price = ticker['last']
 
+            # 预计算止盈止损价格（开仓时一并提交）
+            if not stop_loss:
+                stop_loss = self.risk_manager.calculate_stop_loss(current_price, side)
+            tp_first = take_profit[0] if take_profit else self.risk_manager.calculate_take_profit(current_price, side)
+
+            # 构建附带TP/SL的下单参数
+            tp_sl_params = self._build_tp_sl_params(side, stop_loss, tp_first)
+
             if order_type == 'limit' and entry_zone:
-                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage)
+                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params)
                 if filled is None:
                     return None
                 amount, fill_price = filled
@@ -311,14 +379,13 @@ class ContractExecutor:
                 if not self._check_slippage(symbol, size_usdt, current_price):
                     self.logger.info(f"滑点过大，降级为限价单")
                     if entry_zone:
-                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage)
+                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params)
                         if filled is None:
                             return None
                         amount, fill_price = filled
                     else:
                         return None
                 else:
-                    # 计算实际合约价值：保证金 × 杠杆
                     contract_value = size_usdt * leverage
                     market = self.exchange.market(symbol)
                     contract_size = float(market.get('contractSize', 1) or 1)
@@ -326,27 +393,24 @@ class ContractExecutor:
                         symbol, contract_value / (current_price * contract_size)
                     ))
 
-                    # 检查最小数量限制
                     min_amount = market.get('limits', {}).get('amount', {}).get('min', 0)
                     if min_amount and amount < min_amount:
                         self.logger.warning(f"订单数量{amount:.4f}低于最小值{min_amount}，放弃交易")
                         return None
 
                     order_side = 'buy' if side == 'long' else 'sell'
+                    params = {'reduceOnly': False}
+                    params.update(tp_sl_params)
                     self.exchange.create_order(
                         symbol=symbol, type='market', side=order_side,
-                        amount=amount, params={'reduceOnly': False}
+                        amount=amount, params=params
                     )
                     fill_price = current_price
 
-            if stop_loss:
-                sl_order_id = self.place_stop_loss_order(symbol, side, stop_loss, amount)
-            else:
-                sl_order_id = None
-
-            if not stop_loss:
-                stop_loss = self.risk_manager.calculate_stop_loss(fill_price, side)
-            tp_first = take_profit[0] if take_profit else self.risk_manager.calculate_take_profit(fill_price, side)
+            # 成交后用实际成交价修正止盈止损（如果偏差较大）
+            if abs(fill_price - current_price) / current_price > 0.002:
+                stop_loss = self.risk_manager.calculate_stop_loss(fill_price, side) if not plan.get('stop_loss') else stop_loss
+                tp_first = take_profit[0] if take_profit else self.risk_manager.calculate_take_profit(fill_price, side)
 
             position = {
                 'symbol': symbol,
@@ -358,7 +422,7 @@ class ContractExecutor:
                 'stop_loss': stop_loss,
                 'take_profit': tp_first,
                 'take_profit_levels': take_profit,
-                'sl_order_id': sl_order_id,
+                'sl_order_id': None,
                 'order_type': order_type,
             }
             self.positions[symbol] = position
@@ -366,7 +430,7 @@ class ContractExecutor:
 
             self.logger.info(
                 f"智能开仓: {side} {symbol} @ {fill_price:.2f}, "
-                f"杠杆={leverage}x, SL={stop_loss}, TP={take_profit}"
+                f"杠杆={leverage}x, SL={stop_loss}, TP={tp_first}"
             )
             return position
 
@@ -374,10 +438,23 @@ class ContractExecutor:
             self.logger.error(f"智能开仓失败: {e}")
             return None
 
+    def _build_tp_sl_params(self, side: str, stop_loss: float, take_profit: float) -> dict:
+        """构建OKX附带止盈止损的下单参数（OCO条件单，触发后市价平仓）"""
+        if not stop_loss and not take_profit:
+            return {}
+        algo_ord = {}
+        if stop_loss:
+            algo_ord['slTriggerPx'] = str(stop_loss)
+            algo_ord['slOrdPx'] = '-1'
+        if take_profit:
+            algo_ord['tpTriggerPx'] = str(take_profit)
+            algo_ord['tpOrdPx'] = '-1'
+        return {'attachAlgoOrds': [algo_ord]}
+
     def _execute_limit_order(self, symbol: str, side: str, size_usdt: float,
                              current_price: float, entry_zone: dict,
-                             leverage: int = 1) -> Optional[tuple]:
-        """限价单执行，30秒超时"""
+                             leverage: int = 1, tp_sl_params: dict = None) -> Optional[tuple]:
+        """限价单执行，30秒超时，附带TP/SL"""
         import time
 
         if isinstance(entry_zone, list):
@@ -394,10 +471,14 @@ class ContractExecutor:
         ))
         order_side = 'buy' if side == 'long' else 'sell'
 
+        params = {'reduceOnly': False}
+        if tp_sl_params:
+            params.update(tp_sl_params)
+
         order = self.exchange.create_order(
             symbol=symbol, type='limit', side=order_side,
             amount=amount, price=limit_price,
-            params={'reduceOnly': False}
+            params=params
         )
         order_id = order['id']
         self.logger.info(f"限价单挂出: {order_side} {amount:.6f} @ {limit_price:.2f}")
@@ -432,9 +513,12 @@ class ContractExecutor:
         amount = float(self.exchange.amount_to_precision(
             symbol, (size_usdt * leverage) / (new_price * contract_size)
         ))
+        fallback_params = {'reduceOnly': False}
+        if tp_sl_params:
+            fallback_params.update(tp_sl_params)
         order = self.exchange.create_order(
             symbol=symbol, type='market', side=order_side,
-            amount=amount, params={'reduceOnly': False}
+            amount=amount, params=fallback_params
         )
         self.logger.info(f"限价单超时，市价成交: {amount:.6f} @ ~{new_price:.2f}")
         return (amount, new_price)
@@ -492,7 +576,7 @@ class ContractExecutor:
             return False
 
     def sync_positions(self) -> dict:
-        """从交易所同步真实持仓，以交易所为准"""
+        """从交易所同步真实持仓，以交易所为准。返回新发现的持仓列表"""
         try:
             exchange_positions = self.exchange.fetch_positions()
             active = {}
@@ -514,7 +598,9 @@ class ContractExecutor:
                 if sym not in active:
                     self.logger.info(f"仓位同步: {sym} 已不在交易所，移除本地记录")
                     del self.positions[sym]
+                    self._sl_check_failures.pop(sym, None)
 
+            newly_synced = []
             for sym, ex_pos in active.items():
                 if sym in self.positions:
                     local = self.positions[sym]
@@ -522,16 +608,36 @@ class ContractExecutor:
                         self.logger.info(f"仓位同步: {sym} 数量不一致，以交易所为准")
                         local['amount'] = ex_pos['amount']
                         local['amount_usdt'] = ex_pos['amount_usdt']
+                    local['unrealized_pnl'] = ex_pos['unrealized_pnl']
                 else:
-                    self.logger.info(f"仓位同步: 发现交易所持仓 {sym}，补录本地")
+                    entry = ex_pos['entry_price']
+                    if ex_pos['side'] == 'long':
+                        ex_pos['stop_loss'] = entry * 0.97
+                        ex_pos['take_profit'] = entry * 1.03
+                    else:
+                        ex_pos['stop_loss'] = entry * 1.03
+                        ex_pos['take_profit'] = entry * 0.97
+                    ex_pos['take_profit_levels'] = [ex_pos['take_profit']]
+                    ex_pos['sl_order_id'] = None
+                    ex_pos['order_type'] = 'market'
+                    self.logger.info(f"仓位同步: 发现交易所持仓 {sym}，补录本地 (SL={ex_pos['stop_loss']:.6f} TP={ex_pos['take_profit']:.6f})")
                     self.positions[sym] = ex_pos
+                    newly_synced.append(ex_pos)
 
             self._save_positions()
+            self._last_sync_result = newly_synced
             return self.positions.copy()
 
         except Exception as e:
             self.logger.error(f"仓位同步失败: {e}")
+            self._last_sync_result = []
             return self.positions.copy()
+
+    def get_newly_synced(self) -> list:
+        """获取上次sync_positions发现的新持仓（供agent层发布通知）"""
+        result = getattr(self, '_last_sync_result', [])
+        self._last_sync_result = []
+        return result
 
     def reduce_position(self, symbol: str, pct: float) -> Optional[Dict]:
         """减仓指定百分比"""

@@ -65,6 +65,9 @@ class DataCollectorAgent(BaseAgent):
 
     def _fetch_funding_rate(self):
         try:
+            market = self.exchange.market(self.symbol)
+            if not market.get('swap'):
+                return None
             funding = self.exchange.fetch_funding_rate(self.symbol)
             return funding.get('fundingRate', None)
         except Exception:

@@ -213,7 +213,7 @@ class MyAgent(BaseAgent):
 
 `trade_decision:{symbol}` — Judge发布，精确交易计划：
 - action, confidence, reasoning, key_factors[], risk_warnings[]
-- plan: {entry_zone, stop_loss, take_profit[], leverage(1-10x), size_usdt, order_type, risk_reward_ratio}
+- plan: {entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt, order_type, risk_reward_ratio}
 
 `execution_result:{symbol}` — Executor发布，交易执行结果：
 - status (executed/force_closed/rejected/risk_reduced)

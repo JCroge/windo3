@@ -10,7 +10,7 @@ from agents.base import BaseAgent
 
 class ReviewerAgent(BaseAgent):
     name = "reviewer"
-    subscriptions = ["execution_result", "research_trigger"]
+    subscriptions = ["execution_result", "research_trigger", "risk_alert"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -38,6 +38,19 @@ class ReviewerAgent(BaseAgent):
             await self._check_daily_hard_stop()
         elif msg['type'] == 'research_trigger':
             await self._run_strategy_review()
+        elif msg['type'] == 'risk_alert':
+            # 组合回撤超限时，将浮亏计入当日PnL触发熔断
+            if msg['payload'].get('type') == 'max_drawdown':
+                unrealized = msg['payload'].get('total_pnl_usdt', 0)
+                daily_pnl = self._calculate_daily_pnl() + unrealized
+                if daily_pnl <= self.daily_pnl_hard_stop:
+                    self.logger.critical(f"[熔断] 含浮亏当日亏损{daily_pnl:.2f} USDT 超过限制")
+                    await self.publish("daily_hard_stop_triggered", {
+                        "reason": "daily_loss_limit_with_unrealized",
+                        "daily_pnl": daily_pnl,
+                        "limit": self.daily_pnl_hard_stop,
+                        "timestamp": time.time()
+                    })
 
     async def tick(self):
         await asyncio.sleep(60)
