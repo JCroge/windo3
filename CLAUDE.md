@@ -65,9 +65,9 @@ crypto-arbitrage/
 │   │   ├── censor.py               # 言官逆向审查（Devil's Advocate）
 │   │   └── symbol_router.py        # 标的路由+轮换协议
 │   └── trading/           # 交易层（7个Agent，多标的并行）
-│       ├── multi_data_collector.py  # 9维度数据采集（K线/orderbook/OI/爆仓/费率/Taker/大单/多空比）
-│       ├── tech_analyst.py          # 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险）
-│       ├── judge.py                 # 精确交易计划（入场区间/止盈止损/动态杠杆1-20x/仓位）
+│       ├── multi_data_collector.py  # 9维度数据采集（K线1h/4h/1d + orderbook/OI/爆仓/费率/Taker/大单/多空比）
+│       ├── tech_analyst.py          # 9维度信号解读（多周期共振1h+4h+1d/日线价位/动量/资金流/微观结构/散户/风险）
+│       ├── judge.py                 # 精确交易计划（rule_signal主驱动±35分/LLM修正/日线反欺骗/动态杠杆1-20x）
 │       ├── executor.py              # 多标的交易执行 + Daily Hard Stop响应
 │       ├── portfolio_risk_guard.py  # 组合级风控盯盘 + 状态持久化
 │       ├── reviewer.py              # 交易复盘 + 策略衰减检测 + Daily Hard Stop触发
@@ -177,9 +177,9 @@ crypto-arbitrage/
 - 集成测试通过（研判层→交易层完整流水线）
 
 ### ✅ Phase 5c: 交易层深度升级（2026-05-07完成）
-- DataCollector 9维度采集：K线(1h/4h) + Orderbook 20档 + 资金费率历史(8期) + OI delta(Binance) + 爆仓订单(OKX) + Taker买卖比 + 大单检测(P90阈值) + 多空账户比 + 10s价格流
-- TechAnalyst 9维度信号解读：趋势结构(含4h偏向) + 关键价位(swing+orderbook墙) + 动量(RSI背离检测) + 资金流向(OI-价格背离/费率极值/Taker压力) + 微观结构(鲸鱼方向/深度偏向/爆仓强度) + 散户反指 + 风险评估(杠杆/波动/流动性)
-- Judge 精确交易计划：7维度加权评分 → 入场区间 + 基于支撑阻力的多级止盈止损 + 动态杠杆1-20x(三因子) + 仓位管理 + RSI极端值保护 + 反欺骗/反人性决策
+- DataCollector 9维度采集：K线(1h/4h/1d) + Orderbook 20档 + 资金费率历史(8期) + OI delta(Binance) + 爆仓订单(OKX) + Taker买卖比 + 大单检测(P90阈值) + 多空账户比 + 10s价格流
+- TechAnalyst 9维度信号解读：趋势结构(多周期共振1h+4h+1d) + 关键价位(swing+orderbook墙+日线价位) + 动量(RSI背离检测) + 资金流向(OI-价格背离/费率极值/Taker压力) + 微观结构(鲸鱼方向/深度偏向/爆仓强度) + 散户反指 + 风险评估(杠杆/波动/流动性)
+- Judge 精确交易计划：rule_signal主驱动(±35基础分) + 7维度辅助加减分 → 入场区间 + 基于日线支撑阻力的多级止盈止损 + 动态杠杆1-20x(三因子) + 仓位管理 + RSI极端值保护 + 日线反欺骗（阻力区做多衰减70%/支撑区做空衰减70%）+ LLM修正因子（非否决权）
 - 反欺骗验证8场景全通过：诱多陷阱→做空、恐慌底部→反人性做多、假突破→hold、杠杆过热→拒绝、信号矛盾→hold、完美做空→12x、主力洗盘→不追空、缩量阴跌→不做多
 
 ### ✅ Phase 5d: P0风控增强（2026-05-07完成）
@@ -244,6 +244,21 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - **Censor兜底**（`censor.py`）：规则降级时confidence<40 → reject
 - **30min新闻轮询**（`multi_data_collector.py`）：`_tick_news()`每30min抓3家RSS，发布`news_snapshot`
 - **price-in检测**（`judge.py`）：订阅`news_snapshot`，近4h有新闻+价格移动>3% → score×0.5
+
+### ✅ Phase 6f: 日线多周期升级（2026-05-09完成）
+- **DataCollector**：`_collect_1d()` 每慢周期采集30根日线K线，payload新增`klines_1d`
+- **TechAnalyst多周期共振**：1h+4h+1d三周期投票（一致+20强度，矛盾-20）；4h RSI计算
+- **TechAnalyst日线价位**：`daily_near_resistance/support`检测（距20日高低点3%以内）；日线swing支撑阻力
+- **Judge日线反欺骗**：接近日线阻力区做多信号衰减70%；接近日线支撑区做空信号衰减70%
+- **Judge止损锚点**：优先用日线支撑阻力（比1h swing更可靠）
+- **Synthesizer放开限制**：所有USDT永续合约均可选（含XAU/CL等），波动率范围扩至50%，成交量门槛$30M
+- **MarketScanner并发**：asyncio.gather替代串行enrichment
+
+### ✅ Phase 6g: Judge主驱动修复（2026-05-09完成）
+- **根因**：rule_signal（回测83%胜率的MA交叉信号）未参与_compute_score评分，系统永远hold
+- **修复**：rule_signal触发时给±35基础分，确保过30分入场门槛
+- **LLM降权**：rule_signal触发时LLM从一票否决改为仓位修正（最多降30%仓位，不能阻止入场）
+- **保守逻辑保留**：无rule_signal时维持原有逻辑（LLM可否决弱信号）
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

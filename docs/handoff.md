@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 6e 完成（post-mortem修复 + 入场质量优化：R:R门槛+新闻催化剂过滤+price-in检测）
-**下一阶段**：Phase 7（Predictor、Paper Trading、更多数据源）
+**当前阶段**：Phase 6g 完成（日线多周期升级 + Judge主驱动修复：rule_signal±35基础分+LLM降为修正因子）
+**下一阶段**：Phase 7（资金费率API修复、Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
 

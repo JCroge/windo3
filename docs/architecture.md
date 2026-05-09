@@ -13,6 +13,8 @@
 - 2026-05-08：方向决策修复（_compute_score重写：RSI极端值保护+趋势强度衰减+条件化散户反指）
 - 2026-05-09：post-mortem修复（correlation_risk用保证金计算、Judge force_close冷却300s）
 - 2026-05-09：入场质量优化（R:R门槛≥1.5、负面催化剂否决、30min新闻轮询+price-in检测）
+- 2026-05-09：日线多周期升级（1d K线采集、日线趋势/价位/反欺骗、多周期共振1h+4h+1d、标的限制放开）
+- 2026-05-09：Judge主驱动修复（rule_signal±35基础分、LLM降为修正因子不再一票否决）
 
 ## 架构图
 
@@ -413,7 +415,24 @@ CREATE TABLE klines (
 - 30min新闻轮询：DataCollector新增`_tick_news()`，发布`news_snapshot`消息到交易层
 - price-in检测：Judge订阅`news_snapshot`，近4h有新闻+价格移动>3% → score×0.5
 
+**Phase 6f - 日线多周期升级（2026-05-09）**：
+- DataCollector：`_collect_1d()` 每慢周期采集30根日线K线，payload新增`klines_1d`
+- TechAnalyst：`_analyze_trend()` 新增日线偏向+`daily_near_resistance/support`检测（距20日高低点3%以内）
+- TechAnalyst：多周期共振投票（1h+4h+1d三周期一致+20强度，矛盾-20）；4h RSI计算
+- TechAnalyst：`_analyze_levels()` 新增日线swing支撑阻力（更可靠的止损止盈锚点）
+- Judge：接近日线阻力区做多信号衰减70%（防假突破）；接近日线支撑区做空信号衰减70%（防反弹陷阱）
+- Judge：止损优先用日线价位锚点（daily_support/daily_resistance）
+- Synthesizer：放开标的限制（含XAU/CL等非加密标的），波动率范围扩至50%，成交量门槛降至$30M
+- MarketScanner：并发enrichment（asyncio.gather替代串行循环）
+
+**Phase 6g - Judge主驱动修复（2026-05-09）**：
+- 根因：rule_signal（回测83%胜率的MA交叉信号）未参与评分，系统永远hold
+- 修复：rule_signal触发时给±35基础分，确保过30分入场门槛
+- LLM从一票否决改为仓位修正：rule_signal触发时LLM最多降30%仓位，不能阻止入场
+- 无rule_signal时保持原有保守逻辑（LLM可否决弱信号）
+
 ### Phase 7: 待开发
+- 资金费率API修复（`fetchFundingRate() is only valid for swap markets`）
 - Predictor（趋势预测Agent）
 - Paper Trading模式
 - 更多数据源接入（链上大额转账、清算数据）
