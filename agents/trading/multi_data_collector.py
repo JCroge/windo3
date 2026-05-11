@@ -231,8 +231,9 @@ class MultiDataCollector(BaseAgent):
 
         # 1. K线
         klines = []
+        ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
         try:
-            klines = self.exchange.fetch_ohlcv(symbol, self.interval, limit=100)
+            klines = self.exchange.fetch_ohlcv(ccxt_symbol, self.interval, limit=100)
             gaps = self._check_gaps(symbol, klines)
             if gaps > 0:
                 klines = self._fill_gaps(symbol, klines)
@@ -247,9 +248,11 @@ class MultiDataCollector(BaseAgent):
         try:
             base = symbol.split('-')[0]
             ccxt_sym = f"{base}/USDT:USDT"
-            funding = self.exchange.fetch_funding_rate(ccxt_sym)
-            funding_rate = funding.get('fundingRate')
-            dimensions_ok += 1
+            market = self.exchange.market(ccxt_sym)
+            if market.get('swap'):
+                funding = await asyncio.to_thread(self.exchange.fetch_funding_rate, ccxt_sym)
+                funding_rate = funding.get('fundingRate')
+                dimensions_ok += 1
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} 资金费率失败: {e}")
 
@@ -565,7 +568,8 @@ class MultiDataCollector(BaseAgent):
 
     async def _collect_4h(self, symbol: str):
         try:
-            klines_4h = self.exchange.fetch_ohlcv(symbol, '4h', limit=50)
+            ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
+            klines_4h = self.exchange.fetch_ohlcv(ccxt_symbol, '4h', limit=50)
             health = self._symbol_health.get(symbol, {})
             health['klines_4h'] = klines_4h
             self._symbol_health[symbol] = health
@@ -574,7 +578,8 @@ class MultiDataCollector(BaseAgent):
 
     async def _collect_1d(self, symbol: str):
         try:
-            klines_1d = self.exchange.fetch_ohlcv(symbol, '1d', limit=30)
+            ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
+            klines_1d = self.exchange.fetch_ohlcv(ccxt_symbol, '1d', limit=30)
             health = self._symbol_health.get(symbol, {})
             health['klines_1d'] = klines_1d
             self._symbol_health[symbol] = health
@@ -598,8 +603,9 @@ class MultiDataCollector(BaseAgent):
         if not last_time:
             return klines
         try:
+            ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
             filled = self.exchange.fetch_ohlcv(
-                symbol, self.interval, since=last_time, limit=200
+                ccxt_symbol, self.interval, since=last_time, limit=200
             )
             return filled if filled else klines
         except Exception:

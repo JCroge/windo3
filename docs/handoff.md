@@ -277,13 +277,33 @@
    - 修复前：距20日高低点3%以内触发，横盘行情持续误触发导致信号被衰减
    - 修复后：1.5%以内才触发，只有真正贴近关键位时才衰减
 
+### ✅ Phase 6h: MA alignment信号 + Symbol sync修复（2026-05-11完成）
+
+1. **MA alignment信号**（`agents/trading/tech_analyst.py` + `agents/trading/judge.py`）
+   - 根因：MA crossover是点事件，crossover后下一根K线`entry_short=0`，score≈0，系统永远hold
+   - 修复：新增`ma_aligned_long/short`（MA fast/slow已对齐≥3根K线），Judge给±20基础分作为次驱动
+   - 效果：LAYER-USDT score=-52.6，R:R=1.91，首次成功开仓
+
+2. **Symbol sync修复**（`executor.py` `sync_positions`）
+   - 根因：OKX返回`LAYER/USDT:USDT`，内部格式`LAYER-USDT-SWAP`，每次sync删除本地持仓再重建（SL/TP丢失）
+   - 修复：sync_positions中将`BASE/USDT:USDT`格式自动转换为`BASE-USDT-SWAP`
+
+3. **Daily Hard Stop reset**
+   - 根因：4条`entry_price=0`的ETH脏数据被计为4次连续亏损，触发熔断
+   - 修复：清空`data/trade_history.json`，重置`trading_halted=false`
+
 ## 技术债务
 
-1. **套利代码可以清理**
+1. **R:R计算系统性缺陷**（已有修复方案，见plan文件）
+   - 支撑/阻力只用1h swing，缺4h锚点
+   - `atr_pct`固定0.02（ATR未实际计算）
+   - R:R门槛1.2过严（应改为0.5，即止盈≥止损×0.5）
+
+2. **套利代码可以清理**
    - 套利相关代码已验证不可行
    - 可以保留作为参考，或移到archive目录
 
-2. **低优先级问题**
+3. **低优先级问题**
    - 异常处理粒度可以更细（ISSUES.md #12）
    - 当前不影响核心功能
 

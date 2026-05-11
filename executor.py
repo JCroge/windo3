@@ -582,7 +582,13 @@ class ContractExecutor:
             active = {}
             for pos in exchange_positions:
                 if pos['contracts'] and float(pos['contracts']) > 0:
-                    sym = pos['symbol']
+                    # 统一转换为内部格式 LAYER/USDT:USDT → LAYER-USDT-SWAP
+                    raw_sym = pos['symbol']
+                    if '/' in raw_sym and ':' in raw_sym:
+                        base = raw_sym.split('/')[0]
+                        sym = f"{base}-USDT-SWAP"
+                    else:
+                        sym = raw_sym
                     side = 'long' if pos['side'] == 'long' else 'short'
                     active[sym] = {
                         'symbol': sym,

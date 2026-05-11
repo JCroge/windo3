@@ -86,8 +86,15 @@ class MarketScanner(BaseAgent):
                     "low_24h": low,
                 })
 
-            candidates.sort(key=lambda x: x['volume_24h'], reverse=True)
+            # 综合排序：成交量权重 + 动量权重（有趋势的标的优先）
+            for c in candidates:
+                vol_score = min(c['volume_24h'] / 50_000_000, 1.0)  # 5000万封顶归一化
+                momentum_score = min(abs(c['change_24h_pct']) / 10, 1.0)  # 10%封顶归一化
+                c['_rank_score'] = vol_score * 0.5 + momentum_score * 0.5
+            candidates.sort(key=lambda x: x['_rank_score'], reverse=True)
             top_candidates = candidates[:self.top_n]
+            for c in top_candidates:
+                del c['_rank_score']
 
             import asyncio
 
@@ -96,6 +103,7 @@ class MarketScanner(BaseAgent):
                 inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
                 c['long_short_ratio'] = await self._fetch_long_short_ratio(inst_id)
                 c['open_interest_usd'] = await self._fetch_open_interest(inst_id)
+                c['sl_structure'] = await self._fetch_sl_structure(inst_id, c['price'])
                 del c['raw_symbol']
 
             await asyncio.gather(*[_enrich(c) for c in top_candidates])
@@ -156,3 +164,48 @@ class MarketScanner(BaseAgent):
             return None
         except Exception:
             return None
+
+    async def _fetch_sl_structure(self, inst_id: str, price: float) -> dict:
+        """预计算止损结构可行性：近20根1h K线的支撑/阻力距离和ATR"""
+        try:
+            url = "https://www.okx.com/api/v5/market/candles"
+            params = {"instId": inst_id, "bar": "1H", "limit": "25"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(url, params=params) as resp:
+                    if resp.status != 200:
+                        return {"sl_viable": True}  # 拉取失败不过滤
+                    data = await resp.json()
+            rows = data.get('data', [])
+            if len(rows) < 10:
+                return {"sl_viable": True}
+
+            import pandas as pd
+            klines = [[float(x) for x in row[:6]] for row in reversed(rows)]
+            df = pd.DataFrame(klines, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+
+            # 用倒数第3~22根K线（排除最近2根未完成），计算近20根范围
+            window = df.iloc[-22:-2]
+            low_20 = float(window['l'].min())
+            high_20 = float(window['h'].max())
+            tr = pd.concat([df['h'] - df['l'],
+                            (df['h'] - df['c'].shift()).abs(),
+                            (df['l'] - df['c'].shift()).abs()], axis=1).max(axis=1)
+            atr_pct = float(tr.rolling(14).mean().iloc[-2]) / price if price > 0 else 0.02
+
+            support_dist = (price - low_20) / price  # 做多止损空间
+            resist_dist = (high_20 - price) / price   # 做空止损空间
+
+            # 可交易：止损空间在 1.5%~15% 之间（放得下且不过宽）
+            long_viable = 0.015 <= support_dist <= 0.15
+            short_viable = 0.015 <= resist_dist <= 0.15
+
+            return {
+                "support_dist_pct": round(support_dist * 100, 2),
+                "resist_dist_pct": round(resist_dist * 100, 2),
+                "atr_pct": round(atr_pct * 100, 2),
+                "long_viable": long_viable,
+                "short_viable": short_viable,
+                "sl_viable": long_viable or short_viable,
+            }
+        except Exception:
+            return {"sl_viable": True}  # 异常不过滤

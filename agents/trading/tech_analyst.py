@@ -78,7 +78,7 @@ class MultiTechAnalyst(BaseAgent):
         df = strategy.analyze(df)
 
         trend = self._analyze_trend(df, payload.get('klines_4h', []), payload.get('klines_1d', []))
-        levels = self._analyze_levels(df, payload.get('orderbook', {}), payload.get('klines_1d', []))
+        levels = self._analyze_levels(df, payload.get('orderbook', {}), payload.get('klines_1d', []), payload.get('klines_4h', []))
         momentum = self._analyze_momentum(df)
         money_flow = self._analyze_money_flow(payload)
         microstructure = self._analyze_microstructure(payload)
@@ -86,11 +86,16 @@ class MultiTechAnalyst(BaseAgent):
         risk = self._analyze_risk(payload)
 
         latest = df.iloc[-2]
+        # MA alignment持续信号：MA fast/slow已对齐≥3根K线（趋势已建立，非仅crossover那一根）
+        ma_aligned_long = (df['ma_fast'] > df['ma_slow']).iloc[-4:-1].all() if len(df) >= 4 else False
+        ma_aligned_short = (df['ma_fast'] < df['ma_slow']).iloc[-4:-1].all() if len(df) >= 4 else False
         rule_signal = {
             "entry_long": int(latest.get('entry_long', 0)),
             "entry_short": int(latest.get('entry_short', 0)),
             "exit_long": int(latest.get('exit_long', 0)),
             "exit_short": int(latest.get('exit_short', 0)),
+            "ma_aligned_long": int(ma_aligned_long),
+            "ma_aligned_short": int(ma_aligned_short),
         }
 
         llm_analysis = await self._llm_synthesize(
@@ -216,7 +221,7 @@ class MultiTechAnalyst(BaseAgent):
 
     # ═══ 2. 关键价位 ═══
 
-    def _analyze_levels(self, df: pd.DataFrame, orderbook: dict, klines_1d: list = None) -> dict:
+    def _analyze_levels(self, df: pd.DataFrame, orderbook: dict, klines_1d: list = None, klines_4h: list = None) -> dict:
         price = float(df.iloc[-2]['close'])
         highs = df['high'].tail(20).values
         lows = df['low'].tail(20).values
@@ -249,6 +254,23 @@ class MultiTechAnalyst(BaseAgent):
             daily_resistance = sorted(daily_resistance)[:2]
             daily_support = sorted(daily_support, reverse=True)[:2]
 
+        # 4h关键价位：介于日线和1h之间的可靠锚点
+        h4_resistance = []
+        h4_support = []
+        if klines_4h and len(klines_4h) >= 5:
+            df_4h = pd.DataFrame(klines_4h, columns=['open_time', 'open', 'high', 'low', 'close', 'volume'])
+            h4_highs = df_4h['high'].tail(20).values
+            h4_lows = df_4h['low'].tail(20).values
+            for i in range(1, len(h4_highs) - 1):
+                if h4_highs[i] > h4_highs[i-1] and h4_highs[i] > h4_highs[i+1]:
+                    if h4_highs[i] > price:
+                        h4_resistance.append(float(h4_highs[i]))
+                if h4_lows[i] < h4_lows[i-1] and h4_lows[i] < h4_lows[i+1]:
+                    if h4_lows[i] < price:
+                        h4_support.append(float(h4_lows[i]))
+            h4_resistance = sorted(h4_resistance)[:2]
+            h4_support = sorted(h4_support, reverse=True)[:2]
+
         if not resistance:
             resistance = [round(price * 1.02, 2), round(price * 1.04, 2)]
         if not support:
@@ -271,6 +293,8 @@ class MultiTechAnalyst(BaseAgent):
             "resistance": resistance,
             "daily_support": daily_support,
             "daily_resistance": daily_resistance,
+            "h4_support": h4_support,
+            "h4_resistance": h4_resistance,
             "orderbook_wall_above": wall_above,
             "orderbook_wall_below": wall_below,
         }
@@ -299,12 +323,22 @@ class MultiTechAnalyst(BaseAgent):
         else:
             macd_trend = "flat"
 
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - df['close'].shift()).abs(),
+            (df['low'] - df['close'].shift()).abs()
+        ], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean().iloc[-2]
+        close_price = float(df.iloc[-2]['close'])
+        atr_pct = round(float(atr) / close_price, 4) if close_price > 0 else 0.02
+
         return {
             "rsi": rsi,
             "rsi_divergence": rsi_div,
             "macd_histogram_trend": macd_trend,
             "volume_anomaly": volume_ratio > 2.5,
             "volume_ratio": volume_ratio,
+            "atr_pct": atr_pct,
         }
 
     def _detect_rsi_divergence(self, df: pd.DataFrame) -> str:

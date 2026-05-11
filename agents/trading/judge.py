@@ -60,6 +60,8 @@ class MultiJudge(BaseAgent):
                 "last_decision_time": 0,
                 "last_tech": None,
                 "last_force_close_time": 0,
+                "trend_streak": 0,
+                "trend_streak_dir": None,
             }
         return self._symbol_state[symbol]
 
@@ -123,10 +125,33 @@ class MultiJudge(BaseAgent):
         await self._update_balance()
 
         score = self._compute_score(tech)
+        self.logger.info(f"[Judge] {symbol} 原始score={score:.1f} RSI={tech.get('momentum',{}).get('rsi',0):.0f}")
         price = tech.get('indicators', {}).get('price', 0)
 
-        # 日线阻力区反欺骗：价格接近日线高点时禁止追多（假突破陷阱）
+        # 趋势持续性加分：连续多轮同方向强趋势时累加
         trend = tech.get('trend', {})
+        state = self._get_state(symbol)
+        cur_dir = trend.get('direction', 'neutral')
+        cur_strength = trend.get('strength', 50)
+        if cur_dir in ('bullish', 'bearish') and cur_strength >= 75:
+            if cur_dir == state.get('trend_streak_dir'):
+                state['trend_streak'] += 1
+            else:
+                state['trend_streak'] = 1
+                state['trend_streak_dir'] = cur_dir
+        else:
+            state['trend_streak'] = 0
+            state['trend_streak_dir'] = None
+
+        if state['trend_streak'] >= 5:
+            streak_bonus = 10
+            if cur_dir == 'bearish':
+                score -= streak_bonus
+            else:
+                score += streak_bonus
+            self.logger.info(f"[Judge] {symbol} 趋势持续{state['trend_streak']}轮({cur_dir}/{cur_strength})，加分±{streak_bonus}")
+
+        # 日线阻力区反欺骗：价格接近日线高点时禁止追多（假突破陷阱）
         if score > 0 and trend.get('daily_near_resistance'):
             score *= 0.3
             self.logger.info(f"[Judge] {symbol} 接近日线阻力区，做多信号衰减70%（防假突破）")
@@ -140,12 +165,13 @@ class MultiJudge(BaseAgent):
         if abs(score) >= 30 and self._check_price_in(symbol, action_hint, tech):
             score *= 0.5
 
-        if abs(score) < 30:
+        if abs(score) < 25:
+            hold_reason = self._hold_reason(tech, score)
             decision = {
                 "symbol": symbol, "timestamp": time.time(),
                 "action": "hold", "confidence": 50 - abs(score),
                 "plan": None, "size_pct": 0,
-                "reasoning": "信号分歧或强度不足，观望",
+                "reasoning": hold_reason,
                 "key_factors": [], "risk_warnings": [],
             }
         else:
@@ -157,10 +183,11 @@ class MultiJudge(BaseAgent):
 
             # LLM作为修正因子，不作为否决权
             # rule_signal触发时（score含±35基础分），LLM只能降低仓位，不能阻止入场
-            has_rule_signal = tech.get('rule_signal', {}).get('entry_long') or \
-                             tech.get('rule_signal', {}).get('entry_short')
+            rule = tech.get('rule_signal', {})
+            has_rule_signal = rule.get('entry_long') or rule.get('entry_short') or \
+                             rule.get('ma_aligned_long') or rule.get('ma_aligned_short')
 
-            if llm_result.get('action') == 'hold' and not has_rule_signal and confidence < 75:
+            if llm_result.get('action') == 'hold' and not has_rule_signal and confidence < 55:
                 decision = {
                     "symbol": symbol, "timestamp": time.time(),
                     "action": "hold", "confidence": llm_result.get('confidence', 40),
@@ -181,21 +208,31 @@ class MultiJudge(BaseAgent):
 
                 final_conf = llm_result.get('confidence', confidence)
 
+                # LLM同意开仓方向：confidence至少65（已过score门槛+LLM方向确认）
+                llm_action = llm_result.get('action', 'hold')
+                if llm_action in ('open_long', 'open_short') and final_conf < 65:
+                    self.logger.info(f"[Judge] {symbol} LLM同意{llm_action}但confidence={final_conf}偏低，提升至65")
+                    final_conf = 65
+
                 # LLM反对但rule_signal触发：降低仓位30%而非阻止入场
-                if has_rule_signal and llm_result.get('action') == 'hold':
+                if has_rule_signal and llm_action == 'hold':
                     final_conf = max(40, int(confidence * 0.7))
                     self.logger.info(f"[Judge] {symbol} rule_signal触发但LLM观望，仓位衰减30%")
 
                 if final_action in ('open_long', 'open_short'):
-                    # R:R门槛过滤：参考Freqtrade minimal_roi原则，赔率不足不入场
+                    # R:R门槛：基于期望值 E = win_rate * rr - (1 - win_rate) > 0
+                    # win_rate由confidence代理（confidence/100），要求正期望且rr不低于0.3
                     rr = plan.get('risk_reward_ratio', 0)
-                    if rr < 1.5:
-                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f} < 1.5，赔率不足放弃")
+                    win_rate = final_conf / 100.0
+                    expected_value = win_rate * rr - (1 - win_rate)
+                    min_rr = max(0.2, (1 - win_rate) / win_rate)  # 保本线：rr >= (1-w)/w，0.2为手续费保底
+                    if rr < min_rr or expected_value < 0:
+                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f} 期望值={expected_value:.3f} 不足(需rr>={min_rr:.2f})，放弃")
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
                             "plan": None, "size_pct": 0,
-                            "reasoning": f"R:R={rr:.2f}不足1.5，赔率不满足入场条件",
+                            "reasoning": f"R:R={rr:.2f}期望值={expected_value:.3f}<0，赔率不满足入场条件",
                             "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
@@ -251,6 +288,21 @@ class MultiJudge(BaseAgent):
 
     # ═══ 信号聚合评分 ═══
 
+    def _hold_reason(self, tech: dict, score: float) -> str:
+        trend = tech.get('trend', {})
+        direction = trend.get('direction', 'neutral')
+        strength = trend.get('strength', 50)
+        rsi = tech.get('momentum', {}).get('rsi', 50)
+        if direction == 'bearish' and strength > 70 and rsi < 35:
+            return f"趋势bearish/{strength}但RSI={rsi:.0f}超卖，追空风险高，观望"
+        if direction == 'bullish' and strength > 70 and rsi > 65:
+            return f"趋势bullish/{strength}但RSI={rsi:.0f}超买，追多风险高，观望"
+        if direction == 'neutral':
+            return "趋势中性，无明确方向，观望"
+        if abs(score) < 10:
+            return "多空信号对冲，净得分接近零，观望"
+        return "信号强度不足，观望"
+
     def _compute_score(self, tech: dict) -> float:
         """多空评分: +100=极度看多, -100=极度看空, 0=中性
 
@@ -265,6 +317,11 @@ class MultiJudge(BaseAgent):
             score += 35
         elif rule.get('entry_short'):
             score -= 35
+        # MA alignment持续信号（次驱动）：趋势已建立≥3根K线，无crossover时提供基础分
+        elif rule.get('ma_aligned_long'):
+            score += 20
+        elif rule.get('ma_aligned_short'):
+            score -= 20
 
         momentum = tech.get('momentum', {})
         rsi = momentum.get('rsi', 50)
@@ -413,11 +470,12 @@ class MultiJudge(BaseAgent):
         risk = tech.get('risk', {})
         micro = tech.get('microstructure', {})
         momentum = tech.get('momentum', {})
+        trend = tech.get('trend', {})
 
         is_long = (action == 'open_long')
 
-        stop_loss = self._calc_stop_loss(levels, price, is_long)
-        take_profit = self._calc_take_profit(levels, price, is_long)
+        stop_loss = self._calc_stop_loss(levels, price, is_long, trend)
+        take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum)
         leverage = self._calc_leverage(risk)
         entry_zone = self._calc_entry_zone(price, micro, momentum)
         order_type = self._calc_order_type(momentum, micro)
@@ -426,6 +484,7 @@ class MultiJudge(BaseAgent):
         sl_dist = abs(price - stop_loss) / price
         tp_dist = abs(take_profit[0] - price) / price if take_profit else sl_dist
         rr_ratio = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 1.0
+        self.logger.info(f"[Plan] price={price:.4f} sl={stop_loss:.4f}({sl_dist:.3f}) tp={take_profit[0]:.4f}({tp_dist:.3f}) atr={momentum.get('atr_pct',0):.4f} R:R={rr_ratio}")
 
         def price_round(x):
             # 动态精度：保留4位有效数字，避免低价币被截断
@@ -446,31 +505,50 @@ class MultiJudge(BaseAgent):
             "max_holding_hours": 24,
         }
 
-    def _calc_stop_loss(self, levels: dict, price: float, is_long: bool) -> float:
+    def _calc_stop_loss(self, levels: dict, price: float, is_long: bool, trend: dict = None) -> float:
         min_sl_pct = 0.015
+        strength = (trend or {}).get('strength', 50)
+        if strength >= 80:
+            min_sl_pct = 0.025
+        elif strength >= 60:
+            min_sl_pct = 0.02
+
         if is_long:
-            # 优先用日线支撑（更可靠的锚点），其次1h swing
-            daily_sup = [s for s in levels.get('daily_support', []) if s < price * (1 - min_sl_pct)]
-            hourly_sup = [s for s in levels.get('support', []) if s < price * (1 - min_sl_pct)]
-            if daily_sup:
-                return daily_sup[0] * 0.995
-            if hourly_sup:
-                return hourly_sup[0] * 0.995
+            for key in ['daily_support', 'h4_support', 'support']:
+                candidates = [s for s in levels.get(key, []) if s < price * (1 - min_sl_pct)]
+                if candidates:
+                    return candidates[0] * 0.995
             return price * (1 - min_sl_pct)
         else:
-            daily_res = [r for r in levels.get('daily_resistance', []) if r > price * (1 + min_sl_pct)]
-            hourly_res = [r for r in levels.get('resistance', []) if r > price * (1 + min_sl_pct)]
-            if daily_res:
-                return daily_res[0] * 1.005
-            if hourly_res:
-                return hourly_res[0] * 1.005
+            for key in ['daily_resistance', 'h4_resistance', 'resistance']:
+                candidates = [r for r in levels.get(key, []) if r > price * (1 + min_sl_pct)]
+                if candidates:
+                    return candidates[0] * 1.005
             return price * (1 + min_sl_pct)
 
-    def _calc_take_profit(self, levels: dict, price: float, is_long: bool) -> list:
+    def _calc_take_profit(self, levels: dict, price: float, is_long: bool,
+                           trend: dict = None, momentum: dict = None) -> list:
+        trend = trend or {}
+        momentum = momentum or {}
+        strength = trend.get('strength', 50)
+        direction = trend.get('direction', 'neutral')
+        atr_pct = momentum.get('atr_pct', 0.02)
+
+        # 强趋势模式：趋势强度>80且方向与开仓一致时，用ATR倍数止盈
+        strong_trend = (strength >= 80 and
+                        ((direction == 'bearish' and not is_long) or
+                         (direction == 'bullish' and is_long)))
+
+        rsi = momentum.get('rsi', 50)
+
         if is_long:
+            if strong_trend or rsi < 20:
+                # 强趋势或极度超卖反弹：用ATR倍数止盈，不依赖头顶阻力位
+                tps = [price * (1 + atr_pct * m) for m in [1.5, 2.5, 3.5]]
+                return tps
             resistances = levels.get('resistance', [])
             wall = levels.get('orderbook_wall_above')
-            min_tp_dist = price * 0.005  # 多单止盈至少高于入场价0.5%
+            min_tp_dist = price * 0.005
             tps = []
             for r in resistances[:3]:
                 if r <= price + min_tp_dist:
@@ -483,11 +561,18 @@ class MultiJudge(BaseAgent):
                 tps.append(r)
             if not tps:
                 tps = [price * 1.02, price * 1.04, price * 1.06]
+            # ATR保底：止盈距离不能低于1×ATR，否则改用ATR倍数
+            if tps and atr_pct > 0 and abs(tps[0] - price) / price < atr_pct:
+                tps = [price * (1 + atr_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
         else:
+            if strong_trend or rsi > 80:
+                # 强趋势或极度超买做空：用ATR倍数止盈，不依赖脚下支撑位
+                tps = [price * (1 - atr_pct * m) for m in [1.5, 2.5, 3.5]]
+                return tps
             supports = levels.get('support', [])
             wall = levels.get('orderbook_wall_below')
-            min_tp_dist = price * 0.005  # 空单止盈至少低于入场价0.5%
+            min_tp_dist = price * 0.005
             tps = []
             for s in supports[:3]:
                 if s >= price - min_tp_dist:
@@ -500,6 +585,9 @@ class MultiJudge(BaseAgent):
                 tps.append(s)
             if not tps:
                 tps = [price * 0.98, price * 0.96, price * 0.94]
+            # ATR保底：止盈距离不能低于1×ATR，否则改用ATR倍数
+            if tps and atr_pct > 0 and abs(tps[0] - price) / price < atr_pct:
+                tps = [price * (1 - atr_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
 
     def _calc_leverage(self, risk: dict) -> int:
@@ -594,10 +682,10 @@ class MultiJudge(BaseAgent):
             return self._rule_fallback(tech, rule_score)
 
     def _rule_fallback(self, tech: dict, score: float) -> dict:
-        if score > 30:
+        if score > 25:
             action = "open_long"
             reasoning = "规则引擎：多维度看多共振"
-        elif score < -30:
+        elif score < -25:
             action = "open_short"
             reasoning = "规则引擎：多维度看空共振"
         else:

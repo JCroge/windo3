@@ -8,7 +8,7 @@
 import time
 from agents.base import BaseAgent
 
-SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是综合市场数据、链上信号和新闻舆情，筛选出未来12小时最有交易价值的2-3个永续合约标的。
+SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是综合市场数据、链上信号和新闻舆情，筛选出未来4小时最有交易价值的2-3个永续合约标的。
 
 分析维度：
 1. 预期差识别：市场定价是否偏离基本面？资金费率是否暗示过度拥挤的方向？
@@ -22,10 +22,15 @@ SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是�
 筛选标准：
 - OKX上所有USDT永续合约均可选，包括XAU/XAG/CL/股票合约等，只要有波动和成交量
 - 波动率范围：3%-50%均可考虑，高波动（>15%）配合方向明确的信号是高质量机会，不要因为波动率高就回避
-- 【重要】不要总是选BTC/ETH/SOL——它们流动性好但机会平庸。优先寻找有明确催化剂、动量强劲的标的
+- 【最重要】必须选有明确趋势方向的标的！趋势中性/横盘的标的没有交易价值。优先选：
+  * 24h涨跌幅>3%且方向一致的标的（说明有趋势）
+  * MA5/MA20已形成金叉或死叉的标的
+  * 成交量持续放大+价格单边运动的标的
+- 不要总是选BTC/ETH/SOL——它们流动性好但机会平庸。优先寻找有明确催化剂、动量强劲的标的
 - 高动量信号（24h涨跌>10%+成交量放大）是重要的入场机会，尤其是趋势初期
 - 资金费率极端值（>0.1%或<-0.1%）是重要的反向信号
 - 成交量>$30M即可考虑，不必局限于大市值标的
+- 【止损结构】优先选止损结构=[✓可交易]的标的（支撑/阻力距当前价1.5%~15%，止损放得下且不过宽）；止损结构=[✗止损结构差]的标的即使趋势好也难以开仓，应降低优先级
 
 以JSON格式回复：
 {
@@ -252,13 +257,15 @@ class ResearchSynthesizer(BaseAgent):
             ls_str = f"{ls_ratio:.2f}" if ls_ratio else "N/A"
             oi = c.get('open_interest_usd')
             oi_str = f"${oi/1e6:.0f}M" if oi else "N/A"
+            sl = c.get('sl_structure', {})
+            sl_str = f"支撑距{sl.get('support_dist_pct','?')}%/阻力距{sl.get('resist_dist_pct','?')}% ATR={sl.get('atr_pct','?')}% {'✓可交易' if sl.get('sl_viable', True) else '✗止损结构差'}" if sl else "N/A"
             parts.append(
                 f"{i}. {c['symbol']}: 价格=${c['price']:.4f}, "
                 f"24h量=${c['volume_24h']/1e6:.1f}M, "
                 f"波动率={c['volatility_pct']}%, "
                 f"涨跌={c['change_24h_pct']}%, "
                 f"资金费率={funding_str}, "
-                f"多空比={ls_str}, 持仓量={oi_str}"
+                f"多空比={ls_str}, 持仓量={oi_str}, 止损结构=[{sl_str}]"
             )
 
         if sentiment:

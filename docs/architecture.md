@@ -18,6 +18,8 @@
 - 2026-05-09：做空信号修复（RobustStrategy新增entry_short：MA死叉+RSI不超卖+放量+价格下跌）
 - 2026-05-09：日线阻力区阈值收紧（3%→1.5%，减少横盘误触发）
 - 2026-05-09：PROS-USDT ticker格式修复（_fetch_price_tick统一用/USDT:USDT格式）
+- 2026-05-11：MA alignment信号（tech_analyst.py+judge.py）：ma_aligned_long/short给±20分，解决crossover后系统永远hold
+- 2026-05-11：Symbol sync修复（executor.py）：OKX格式BASE/USDT:USDT自动转换为BASE-USDT-SWAP
 
 ## 架构图
 
@@ -435,6 +437,12 @@ CREATE TABLE klines (
 - 修复：rule_signal触发时给±35基础分，确保过30分入场门槛
 - LLM从一票否决改为仓位修正：rule_signal触发时LLM最多降30%仓位，不能阻止入场
 - 无rule_signal时保持原有保守逻辑（LLM可否决弱信号）
+
+**Phase 6h - MA alignment信号 + Symbol sync修复（2026-05-11）**：
+- 根因：MA crossover是点事件，crossover后下一根K线entry_short=0，score≈0，系统永远hold
+- 修复：tech_analyst.py新增`ma_aligned_long/short`（MA fast/slow已对齐≥3根K线），judge.py给±20基础分作为次驱动
+- Symbol sync修复：executor.py sync_positions将OKX格式`BASE/USDT:USDT`自动转换为内部格式`BASE-USDT-SWAP`，防止每次sync循环删除并重建持仓
+- 首次成功开仓：LAYER-USDT short @ 0.12171，3x杠杆
 
 ### Phase 7: 待开发
 - 资金费率API修复（`fetchFundingRate() is only valid for swap markets`）

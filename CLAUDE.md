@@ -265,6 +265,12 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - **PROS-USDT ticker修复**（`multi_data_collector.py`）：`_fetch_price_tick`改用`symbol.replace('-USDT', '/USDT:USDT')`，修复OKX symbol格式不匹配
 - **日线阻力区阈值收紧**（`tech_analyst.py`）：3%→1.5%，横盘行情不再持续误触发衰减
 
+### ✅ Phase 6h: MA alignment信号 + Symbol sync修复（2026-05-11完成）
+- **MA alignment信号**（`tech_analyst.py` + `judge.py`）：新增`ma_aligned_long/short`（MA fast/slow已对齐≥3根K线），Judge给±20基础分作为次驱动；解决MA crossover仅触发1根K线后系统永远hold的根因
+- **Symbol sync修复**（`executor.py` `sync_positions`）：OKX返回`LAYER/USDT:USDT`自动转换为内部格式`LAYER-USDT-SWAP`，防止每次sync循环删除并重建持仓（导致SL/TP丢失）
+- **Daily Hard Stop reset**：清除`data/trade_history.json`中4条`entry_price=0`的ETH脏数据，重置`trading_halted=false`
+- **首次成功开仓**：LAYER-USDT short @ 0.12171，3x杠杆，SL=0.1254，TP=0.1181
+
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
 - 杠杆上限调整为20x：OKX允许值列表[1,2,3,5,10,20]，RiskGuard高杠杆阈值同步更新为20
