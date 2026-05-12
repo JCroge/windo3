@@ -35,7 +35,7 @@ class Orchestrator:
             "max_trade_amount": float(os.getenv("MAX_TRADE_AMOUNT", "10")),
             "use_testnet": os.getenv("USE_TESTNET", "false").lower() == "true",
             "research_interval": int(os.getenv("RESEARCH_INTERVAL", str(4 * 3600))),
-            "max_active_symbols": int(os.getenv("MAX_ACTIVE_SYMBOLS", "3")),
+            "max_active_symbols": int(os.getenv("MAX_ACTIVE_SYMBOLS", "5")),
             "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
             "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
         }

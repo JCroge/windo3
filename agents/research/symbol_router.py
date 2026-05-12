@@ -12,7 +12,7 @@ class SymbolRouter(BaseAgent):
         super().__init__(config)
         self._active_symbols = []
         self._symbol_meta = {}
-        self._max_active = 3
+        self._max_active = (config or {}).get('max_active_symbols', 5)
         self._last_update_time = 0
         self._min_rotation_interval = 3600
 

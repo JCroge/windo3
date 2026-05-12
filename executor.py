@@ -457,12 +457,24 @@ class ContractExecutor:
         """限价单执行，30秒超时，附带TP/SL"""
         import time
 
+        # 获取实时价格，防止plan过期导致限价单超出交易所允许范围
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            live_price = ticker['last']
+        except Exception:
+            live_price = current_price
+
         if isinstance(entry_zone, list):
             low, high = entry_zone[0], entry_zone[1]
         else:
             low = entry_zone.get('low', current_price * 0.999)
             high = entry_zone.get('high', current_price * 1.001)
         limit_price = (low + high) / 2
+
+        # 限价单价格偏离实时价格超过2%时，基于实时价格重新计算
+        if abs(limit_price - live_price) / live_price > 0.02:
+            self.logger.warning(f"限价单价格{limit_price:.4f}偏离实时价{live_price:.4f}超2%，重新校准")
+            limit_price = live_price * (0.999 if side == 'long' else 1.001)
 
         market = self.exchange.market(symbol)
         contract_size = float(market.get('contractSize', 1) or 1)

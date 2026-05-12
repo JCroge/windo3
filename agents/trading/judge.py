@@ -62,6 +62,9 @@ class MultiJudge(BaseAgent):
                 "last_force_close_time": 0,
                 "trend_streak": 0,
                 "trend_streak_dir": None,
+                "pending_pullback": None,
+                "pending_pullback_time": 0,
+                "pullback_bonus": 0,
             }
         return self._symbol_state[symbol]
 
@@ -124,7 +127,33 @@ class MultiJudge(BaseAgent):
     async def _make_decision(self, symbol: str, tech: dict):
         await self._update_balance()
 
+        # 回调入场检查：之前因RSI超买/超卖被拒，现在RSI回落到合理区间
+        state = self._get_state(symbol)
+        rsi = tech.get('momentum', {}).get('rsi', 50)
+        pending = state.get('pending_pullback')
+        if pending:
+            pullback_age = time.time() - state.get('pending_pullback_time', 0)
+            if pullback_age > 4 * 3600:
+                state['pending_pullback'] = None
+            elif pending == 'long' and rsi < 65:
+                self.logger.info(f"[Judge] {symbol} RSI回落至{rsi:.0f}，回调入场触发")
+                state['pending_pullback'] = None
+                state['pullback_bonus'] = 15
+            elif pending == 'short' and rsi > 35:
+                self.logger.info(f"[Judge] {symbol} RSI回升至{rsi:.0f}，回调入场触发")
+                state['pending_pullback'] = None
+                state['pullback_bonus'] = -15
+
         score = self._compute_score(tech)
+
+        # 回调入场bonus
+        state = self._get_state(symbol)
+        pullback_bonus = state.get('pullback_bonus', 0)
+        if pullback_bonus != 0:
+            score += pullback_bonus
+            state['pullback_bonus'] = 0
+            self.logger.info(f"[Judge] {symbol} 回调入场bonus={pullback_bonus:+d}")
+
         self.logger.info(f"[Judge] {symbol} 原始score={score:.1f} RSI={tech.get('momentum',{}).get('rsi',0):.0f}")
         price = tech.get('indicators', {}).get('price', 0)
 
@@ -220,6 +249,37 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} rule_signal触发但LLM观望，仓位衰减30%")
 
                 if final_action in ('open_long', 'open_short'):
+                    # RSI超买/超卖硬性入场禁令：不追高不追低，标记待回调
+                    rsi = tech.get('momentum', {}).get('rsi', 50)
+                    if final_action == 'open_long' and rsi > 72:
+                        self.logger.info(f"[Judge] {symbol} RSI={rsi:.0f}>72超买，禁止追多，标记待回调")
+                        state = self._get_state(symbol)
+                        state['pending_pullback'] = 'long'
+                        state['pending_pullback_time'] = time.time()
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"RSI={rsi:.0f}超买，等待回调至65以下再入场",
+                            "key_factors": [], "risk_warnings": [f"RSI={rsi:.0f}超买"],
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+                    if final_action == 'open_short' and rsi < 28:
+                        self.logger.info(f"[Judge] {symbol} RSI={rsi:.0f}<28超卖，禁止追空，标记待回调")
+                        state = self._get_state(symbol)
+                        state['pending_pullback'] = 'short'
+                        state['pending_pullback_time'] = time.time()
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"RSI={rsi:.0f}超卖，等待回调至35以上再入场",
+                            "key_factors": [], "risk_warnings": [f"RSI={rsi:.0f}超卖"],
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
                     # R:R门槛：基于期望值 E = win_rate * rr - (1 - win_rate) > 0
                     # win_rate由confidence代理（confidence/100），要求正期望且rr不低于0.3
                     rr = plan.get('risk_reward_ratio', 0)
@@ -725,7 +785,7 @@ class MultiJudge(BaseAgent):
 
         return {
             "action": action,
-            "confidence": min(90, int(abs(score) + 20)),
+            "confidence": min(50, int(abs(score))),
             "reasoning": reasoning,
             "key_factors": [f"综合评分={score:+.0f}"],
             "risk_warnings": ["LLM不可用，仅规则判断"],
