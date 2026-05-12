@@ -45,8 +45,8 @@ class DataCollectorAgent(BaseAgent):
 
     async def _collect_and_publish(self):
         try:
-            klines = self.exchange.fetch_ohlcv(self.symbol, self.interval, limit=100)
-            funding = self._fetch_funding_rate()
+            klines = await asyncio.to_thread(self.exchange.fetch_ohlcv, self.symbol, self.interval, 100)
+            funding = await self._fetch_funding_rate()
 
             payload = {
                 "symbol": self.symbol,
@@ -63,12 +63,12 @@ class DataCollectorAgent(BaseAgent):
         except Exception as e:
             self.logger.error(f"数据采集失败: {e}")
 
-    def _fetch_funding_rate(self):
+    async def _fetch_funding_rate(self):
         try:
             market = self.exchange.market(self.symbol)
             if not market.get('swap'):
                 return None
-            funding = self.exchange.fetch_funding_rate(self.symbol)
+            funding = await asyncio.to_thread(self.exchange.fetch_funding_rate, self.symbol)
             return funding.get('fundingRate', None)
         except Exception:
             return None
