@@ -164,7 +164,21 @@ class MultiExecutor(BaseAgent):
         self.logger.warning(f"[风控警报] 收到: {alert_type}")
 
         if alert_type == 'flash_move':
-            await self._close_all_positions("闪崩警报")
+            symbol = alert.get('symbol')
+            norm_sym = self.executor._normalize_symbol(symbol) if symbol else None
+            if norm_sym and self.executor.get_position(norm_sym):
+                self.logger.warning(f"[风控平仓] {norm_sym} 因闪崩警报")
+                pos = self.executor.positions.get(norm_sym)
+                if pos and pos.get('sl_order_id'):
+                    self.executor.cancel_order(norm_sym, pos['sl_order_id'])
+                result = self.executor.close_position(norm_sym)
+                if result:
+                    await self.publish("execution_result", {
+                        "status": "force_closed",
+                        "symbol": symbol,
+                        "reason": "flash_move",
+                        "result": result,
+                    }, symbol=symbol)
 
         elif alert_type == 'max_drawdown':
             await self._close_all_positions("最大回撤触发")

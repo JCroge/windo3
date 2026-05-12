@@ -234,7 +234,7 @@ class PortfolioRiskGuard(BaseAgent):
                     "symbol": symbol,
                     "direction": direction,
                     "magnitude_pct": change_pct,
-                    "action": "close_all"
+                    "action": "close_symbol"
                 }, symbol=symbol)
 
     async def _check_high_leverage(self, symbol: str, price: float):
