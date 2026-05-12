@@ -8,7 +8,7 @@
 import time
 from agents.base import BaseAgent
 
-SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是综合市场数据、链上信号和新闻舆情，筛选出未来4小时最有交易价值的2-3个永续合约标的。
+SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是综合市场数据、链上信号和新闻舆情，筛选出未来4小时最有交易价值的5-12个永续合约标的。
 
 分析维度：
 1. 预期差识别：市场定价是否偏离基本面？资金费率是否暗示过度拥挤的方向？
@@ -83,7 +83,7 @@ class ResearchSynthesizer(BaseAgent):
     def __init__(self, config: dict = None):
         super().__init__(config)
         self._pending_data = {}
-        self._max_symbols = 3
+        self._max_symbols = 12
         self._preliminary_result = None
         self._market_context = ""
 

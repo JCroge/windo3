@@ -272,6 +272,12 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - **首次成功开仓**：LAYER-USDT short @ 0.12171，3x杠杆，SL=0.1254，TP=0.1181
 - **止损止盈计算修复**（`judge.py`，2026-05-12）：止损锚点距离上限10%（修复86%离谱值）；ATR下限1%（修复贴脸止盈）；TP距离≥SL距离×0.6（保证R:R≥0.6）
 
+### ✅ Phase 6i: flash_move修复 + 研判扩容 + 持仓监控补充（2026-05-12完成）
+- **flash_move修复**（`executor.py` + `portfolio_risk_guard.py`）：从全平所有持仓改为只平触发标的，单币闪崩不等于系统性风险（修复INJ因BILL暴涨被误平的问题）
+- **Synthesizer扩容**（`synthesizer.py`）：初选上限3→12，prompt更新为"5-12个"，增加机会面供Censor筛选
+- **持仓监控补充**（`multi_data_collector.py`）：新增`_get_position_symbols()`，自动将持仓标的纳入监控，即使不在SymbolRouter活跃列表中，确保所有持仓持续接收技术分析
+- **当前持仓**：UB-USDT long 3x、TON-USDT short 10x、CRV-USDT long 10x
+
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
 - 杠杆上限调整为20x：OKX允许值列表[1,2,3,5,10,20]，RiskGuard高杠杆阈值同步更新为20

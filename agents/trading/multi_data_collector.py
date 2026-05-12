@@ -65,16 +65,24 @@ class MultiDataCollector(BaseAgent):
             added = msg['payload'].get('added', [])
             removed = msg['payload'].get('removed', [])
 
+            # 读取持仓标的，确保持仓标的始终被监控
+            position_symbols = self._get_position_symbols()
+
             for s in removed:
-                self._symbol_health.pop(s, None)
-                self._last_kline_time.pop(s, None)
-                self._orderbook_cache.pop(s, None)
-                self._liquidation_cache.pop(s, None)
+                # 如果标的有持仓，不清理缓存
+                if s not in position_symbols:
+                    self._symbol_health.pop(s, None)
+                    self._last_kline_time.pop(s, None)
+                    self._orderbook_cache.pop(s, None)
+                    self._liquidation_cache.pop(s, None)
+
+            # 合并活跃标的和持仓标的
+            all_symbols = list(set(new_symbols + position_symbols))
 
             # 过滤非加密货币标的（商品期货等）
             CRYPTO_BLACKLIST = {'CL', 'XAU', 'XAG', 'OIL', 'GAS', 'SPX', 'NDX'}
             valid_symbols = []
-            for s in new_symbols:
+            for s in all_symbols:
                 base = s.split('-')[0].upper()
                 if base in CRYPTO_BLACKLIST:
                     self.logger.warning(f"[采集] 标的 {s} 为非加密货币，跳过")
@@ -86,7 +94,11 @@ class MultiDataCollector(BaseAgent):
                     self.logger.warning(f"[采集] 标的 {s} 在交易所不存在，跳过")
 
             self._active_symbols = valid_symbols
-            self.logger.info(f"[采集] 标的更新: {valid_symbols} +{added} -{removed}")
+            extra = [s for s in position_symbols if s in valid_symbols and s not in new_symbols]
+            if extra:
+                self.logger.info(f"[采集] 标的更新: {valid_symbols} +{added} -{removed} (持仓补充: {extra})")
+            else:
+                self.logger.info(f"[采集] 标的更新: {valid_symbols} +{added} -{removed}")
 
             for s in added:
                 if s not in valid_symbols:
@@ -94,6 +106,22 @@ class MultiDataCollector(BaseAgent):
                 self._init_health(s)
                 await self._full_collect(s)
                 await asyncio.sleep(0.3)
+
+    def _get_position_symbols(self) -> list:
+        """读取持仓标的列表"""
+        import json
+        import os
+        positions_file = 'data/positions.json'
+        if not os.path.exists(positions_file):
+            return []
+        try:
+            with open(positions_file, 'r') as f:
+                positions = json.load(f)
+            # 转换格式: "XXX-USDT-SWAP" → "XXX-USDT"
+            return [s.replace('-SWAP', '').replace('/USDT:USDT', '-USDT') for s in positions.keys()]
+        except Exception as e:
+            self.logger.warning(f"读取持仓失败: {e}")
+            return []
 
     async def tick(self):
         await asyncio.sleep(1)
