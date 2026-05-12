@@ -54,6 +54,8 @@ class Orchestrator:
         from agents.trading.reviewer import ReviewerAgent
         from agents.trading.portfolio_risk_guard import PortfolioRiskGuard
         from agents.trading.telegram_notifier import TelegramNotifier
+        from agents.trading.position_analyst import PositionAnalyst
+        from agents.trading.behavioral_critic import BehavioralCritic
 
         MessageBus.reset()
 
@@ -73,6 +75,8 @@ class Orchestrator:
             MultiExecutor(self.config),
             ReviewerAgent(self.config),
             PortfolioRiskGuard(self.config),
+            PositionAnalyst(self.config),
+            BehavioralCritic(self.config),
             TelegramNotifier(self.config),
         ]
 

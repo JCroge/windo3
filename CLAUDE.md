@@ -64,13 +64,15 @@ crypto-arbitrage/
 │   │   ├── synthesizer.py          # Claude综合研判（两阶段决策）
 │   │   ├── censor.py               # 言官逆向审查（Devil's Advocate）
 │   │   └── symbol_router.py        # 标的路由+轮换协议
-│   └── trading/           # 交易层（7个Agent，多标的并行）
+│   └── trading/           # 交易层（9个Agent，多标的并行）
 │       ├── multi_data_collector.py  # 9维度数据采集（K线1h/4h/1d + orderbook/OI/爆仓/费率/Taker/大单/多空比）
 │       ├── tech_analyst.py          # 9维度信号解读（多周期共振1h+4h+1d/日线价位/动量/资金流/微观结构/散户/风险）
 │       ├── judge.py                 # 精确交易计划（rule_signal主驱动±35分/LLM修正/日线反欺骗/动态杠杆1-20x）
 │       ├── executor.py              # 多标的交易执行 + Daily Hard Stop响应
 │       ├── portfolio_risk_guard.py  # 组合级风控盯盘 + 状态持久化
 │       ├── reviewer.py              # 交易复盘 + 策略衰减检测 + Daily Hard Stop触发
+│       ├── position_analyst.py      # 持仓6因子评分 + 裁决引擎（每30min）
+│       ├── behavioral_critic.py     # 行为金融学偏差检测（7种认知偏差）
 │       └── telegram_notifier.py     # Telegram实时告警 + 每日摘要
 ├── run_agents.py          # ✅ 多Agent系统启动入口
 ├── test_p0_features.py    # ✅ P0功能测试（Reviewer/Hard Stop/Graceful Shutdown）
@@ -201,6 +203,9 @@ MarketScanner+SentimentResearcher+NewsResearcher → Synthesizer(初选) → Cen
 **交易层流水线（per-symbol）**：
 DataCollector →[market_data:symbol]→ TechAnalyst →[tech_analysis:symbol]→ Judge →[trade_decision:symbol]→ Executor →[execution_result:symbol]→ RiskGuard + Reviewer
 
+**持仓管理流水线（每30min）**：
+PositionAnalyst(6因子评分) →[position_review:symbol]→ BehavioralCritic(偏差检测) →[position_verdict:symbol]→ PositionAnalyst(裁决) →[trade_decision:symbol]→ Executor
+
 **Reviewer反馈闭环**：
 execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h） → 衰减检测 → Daily Hard Stop触发（如需）
 
@@ -272,11 +277,13 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - **首次成功开仓**：LAYER-USDT short @ 0.12171，3x杠杆，SL=0.1254，TP=0.1181
 - **止损止盈计算修复**（`judge.py`，2026-05-12）：止损锚点距离上限10%（修复86%离谱值）；ATR下限1%（修复贴脸止盈）；TP距离≥SL距离×0.6（保证R:R≥0.6）
 
-### ✅ Phase 6i: flash_move修复 + 研判扩容 + 持仓监控补充（2026-05-12完成）
+### ✅ Phase 6i: flash_move修复 + 研判扩容 + 持仓管理三角决策（2026-05-12完成）
 - **flash_move修复**（`executor.py` + `portfolio_risk_guard.py`）：从全平所有持仓改为只平触发标的，单币闪崩不等于系统性风险（修复INJ因BILL暴涨被误平的问题）
 - **Synthesizer扩容**（`synthesizer.py`）：初选上限3→12，prompt更新为"5-12个"，增加机会面供Censor筛选
 - **持仓监控补充**（`multi_data_collector.py`）：新增`_get_position_symbols()`，自动将持仓标的纳入监控，即使不在SymbolRouter活跃列表中，确保所有持仓持续接收技术分析
-- **当前持仓**：UB-USDT long 3x、TON-USDT short 10x、CRV-USDT long 10x
+- **PositionAnalyst**（`position_analyst.py`）：6因子规则评分（趋势对齐/动量变化/时间衰减/浮盈状态/成交量确认/剩余R:R）+ 5条硬性覆盖规则 + 4级severity裁决矩阵，每30min评估
+- **BehavioralCritic**（`behavioral_critic.py`）：LLM检测7种认知偏差（loss_aversion/sunk_cost/anchoring/fomo/disposition/overconfidence/panic），规则降级兜底
+- **交易层Agent数量**：7→9（新增PositionAnalyst + BehavioralCritic）
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

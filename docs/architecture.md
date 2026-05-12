@@ -79,7 +79,7 @@
 └─────────────────────────────────────────────┼───────────────┘
                                               │ symbol_update
 ┌─────────────────────────────────────────────┼───────────────┐
-│              交易层 Tier 2（持续运行，7个Agent）               │
+│              交易层 Tier 2（持续运行，9个Agent）               │
 │                                              ▼               │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
 │  │DataCollector  │  │ TechAnalyst  │  │    Judge     │       │
@@ -95,6 +95,11 @@
 │  │  Reviewer    │                                           │
 │  │ 交易复盘+熔断 │                                           │
 │  └──────────────┘                                           │
+│                                                              │
+│  ┌──────────────┐  ┌──────────────┐                         │
+│  │PositionAnalyst│  │BehavioralCritic│                       │
+│  │持仓分析+裁决  │  │行为偏差检测    │                         │
+│  └──────────────┘  └──────────────┘                         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -131,6 +136,32 @@ Executor（风控审核 → 执行）
     ▼
 PortfolioRiskGuard（组合级实时监控）
 ```
+
+### 持仓管理决策流水线（每30分钟）
+
+```
+PositionAnalyst（6因子规则评分）
+    │ [position_review:SOL-USDT]
+    ▼
+BehavioralCritic（LLM偏差检测 / 规则降级）
+    │ [position_verdict:SOL-USDT]
+    ▼
+PositionAnalyst 裁决引擎（纯规则矩阵）
+    │ 硬性覆盖 > 裁决矩阵 > 分析官建议
+    ▼
+[trade_decision:SOL-USDT] → Executor执行
+```
+
+**6因子评分**：趋势对齐(±20) + 动量变化(±20) + 时间衰减(-15~0) + 浮盈状态(±20) + 成交量确认(±10) + 剩余R:R(±15)
+
+**硬性覆盖规则**（无视分析官和批判官）：
+- 浮亏>12% → close
+- 持仓>48h+浮亏 → close
+- 趋势反转+浮亏>3% → close
+- 浮盈>15%+动量反转 → reduce 50%
+- 剩余R:R<0.3 → close
+
+**执行优先级**：RiskGuard强制平仓 > 硬性覆盖 > 裁决矩阵 > 分析官建议
 
 ## 核心模块
 
@@ -269,6 +300,8 @@ CREATE TABLE klines (
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
 | `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |
 | `trading/telegram_notifier.py` | 交易 | Telegram实时告警+每日摘要 | 无 |
+| `trading/position_analyst.py` | 交易 | 持仓6因子评分+裁决引擎（每30min） | 无 |
+| `trading/behavioral_critic.py` | 交易 | 行为金融学偏差检测（7种认知偏差） | Claude检测偏差 |
 
 **LLM降级机制**：Claude不可用时自动回退到规则引擎，系统不中断。
 
@@ -292,6 +325,8 @@ CREATE TABLE klines (
 - `daily_hard_stop_triggered`：熔断信号（Reviewer → broadcast，Executor + RiskGuard + TelegramNotifier响应）
 - `strategy_review`：策略复盘报告（Reviewer → TelegramNotifier）
 - `news_snapshot`：30min新闻快照（DataCollector → Judge，用于price-in检测）
+- `position_review:{symbol}`：持仓评估结果（PositionAnalyst → BehavioralCritic）
+- `position_verdict:{symbol}`：偏差检测结果（BehavioralCritic → PositionAnalyst裁决引擎）
 
 ## 数据流
 
@@ -444,6 +479,15 @@ CREATE TABLE klines (
 - Symbol sync修复：executor.py sync_positions将OKX格式`BASE/USDT:USDT`自动转换为内部格式`BASE-USDT-SWAP`，防止每次sync循环删除并重建持仓
 - 首次成功开仓：LAYER-USDT short @ 0.12171，3x杠杆
 - 止损止盈计算修复（2026-05-12）：止损锚点距离上限10%；ATR下限1%；TP距离≥SL距离×0.6（保证R:R≥0.6）。根因：BZ-USDT止盈贴脸（ATR=0.9%×1.5=1.35%）而止损2.5%，赔率倒挂
+
+**Phase 6i - 持仓管理三角决策 + flash_move修复（2026-05-12）**：
+- PositionAnalyst：6因子规则评分（趋势对齐/动量变化/时间衰减/浮盈状态/成交量确认/剩余R:R），每30min评估所有持仓
+- BehavioralCritic：LLM检测7种认知偏差（loss_aversion/sunk_cost/anchoring/fomo/disposition/overconfidence/panic），LLM不可用时规则降级
+- 裁决引擎（内嵌PositionAnalyst）：5条硬性覆盖规则 + 4级severity裁决矩阵（none/low/medium/high）
+- flash_move修复：从全平所有持仓改为只平触发标的（单币闪崩≠系统性风险）
+- Synthesizer扩容：初选上限3→12，增加机会面供Censor筛选
+- 持仓监控补充：DataCollector自动将持仓标的纳入监控（即使不在SymbolRouter活跃列表）
+- 交易层Agent数量：7→9（新增PositionAnalyst + BehavioralCritic）
 
 ### Phase 7: 待开发
 - 资金费率API修复（`fetchFundingRate() is only valid for swap markets`）

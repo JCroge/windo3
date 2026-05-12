@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 6g 完成 + 2026-05-09 Bug修复（做空信号、ticker格式、日线阈值）
+**当前阶段**：Phase 6i 完成（持仓管理三角决策 + flash_move修复）
 **下一阶段**：Phase 7（资金费率API修复、Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -288,9 +288,33 @@
    - 根因：OKX返回`LAYER/USDT:USDT`，内部格式`LAYER-USDT-SWAP`，每次sync删除本地持仓再重建（SL/TP丢失）
    - 修复：sync_positions中将`BASE/USDT:USDT`格式自动转换为`BASE-USDT-SWAP`
 
-3. **Daily Hard Stop reset**
-   - 根因：4条`entry_price=0`的ETH脏数据被计为4次连续亏损，触发熔断
-   - 修复：清空`data/trade_history.json`，重置`trading_halted=false`
+3. **止损止盈计算修复**（`judge.py`，2026-05-12）
+   - 止损锚点距离上限10%（修复86%离谱值）
+   - ATR下限1%（修复贴脸止盈）
+   - TP距离≥SL距离×0.6（保证R:R≥0.6）
+
+### ✅ Phase 6i: 持仓管理三角决策 + flash_move修复（2026-05-12完成）
+
+1. **PositionAnalyst**（`agents/trading/position_analyst.py`）
+   - 6因子规则评分：趋势对齐(±20) + 动量变化(±20) + 时间衰减(-15~0) + 浮盈状态(±20) + 成交量确认(±10) + 剩余R:R(±15)
+   - 每30分钟评估所有持仓
+   - 5条硬性覆盖规则（浮亏>12%/持仓>48h+浮亏/趋势反转+浮亏>3%/浮盈>15%+动量反转/R:R<0.3）
+   - 4级severity裁决矩阵（综合分析官建议 × 批判官偏差检测）
+
+2. **BehavioralCritic**（`agents/trading/behavioral_critic.py`）
+   - LLM检测7种认知偏差：loss_aversion/sunk_cost/anchoring/fomo/disposition/overconfidence/panic
+   - LLM不可用时规则降级（基于浮盈/持仓时间/杠杆的简单检测）
+
+3. **flash_move修复**（`executor.py` + `portfolio_risk_guard.py`）
+   - 从全平所有持仓改为只平触发标的（单币闪崩≠系统性风险）
+
+4. **Synthesizer扩容**（`synthesizer.py`）
+   - 初选上限3→12，prompt更新为"5-12个"
+
+5. **持仓监控补充**（`multi_data_collector.py`）
+   - 新增`_get_position_symbols()`，自动将持仓标的纳入监控
+
+6. **交易层Agent数量**：7→9（新增PositionAnalyst + BehavioralCritic）
 
 ## 技术债务
 
