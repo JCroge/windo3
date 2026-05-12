@@ -482,9 +482,25 @@ class MultiJudge(BaseAgent):
         size_usdt = self._calc_size(confidence)
 
         sl_dist = abs(price - stop_loss) / price
+
+        # 杠杆-止损联动：防跳空爆仓（价格反向2倍sl_dist时保证金亏损不超50%）
+        max_lev_by_sl = max(1, int(0.5 / sl_dist)) if sl_dist > 0 else 20
+        if leverage > max_lev_by_sl:
+            leverage = min(leverage, max_lev_by_sl)
+            allowed = [1, 2, 3, 5, 10, 20]
+            for lev in allowed:
+                if leverage <= lev:
+                    leverage = lev
+                    break
+
+        # 仓位-止损联动：单笔最大亏损不超过可用余额的15%
+        max_risk_usdt = self._available_balance * 0.15
+        max_size_by_risk = max_risk_usdt / sl_dist if sl_dist > 0 else size_usdt
+        size_usdt = min(size_usdt, max_size_by_risk)
+
         tp_dist = abs(take_profit[0] - price) / price if take_profit else sl_dist
         rr_ratio = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 1.0
-        self.logger.info(f"[Plan] price={price:.4f} sl={stop_loss:.4f}({sl_dist:.3f}) tp={take_profit[0]:.4f}({tp_dist:.3f}) atr={momentum.get('atr_pct',0):.4f} R:R={rr_ratio}")
+        self.logger.info(f"[Plan] price={price:.4f} sl={stop_loss:.4f}({sl_dist:.3f}) tp={take_profit[0]:.4f}({tp_dist:.3f}) atr={momentum.get('atr_pct',0):.4f} R:R={rr_ratio} lev={leverage}x size={size_usdt:.2f}")
 
         def price_round(x):
             # 动态精度：保留4位有效数字，避免低价币被截断
@@ -655,7 +671,9 @@ class MultiJudge(BaseAgent):
             factor = 0.5
         else:
             factor = 0.3
-        return round(self._max_trade_amount * factor, 2)
+        # 动态仓位：基于可用余额的30%为基准，而非写死的max_trade_amount
+        base_size = self._available_balance * 0.30 if self._available_balance > 0 else self._max_trade_amount
+        return round(base_size * factor, 2)
 
     # ═══ LLM决策 ═══
 

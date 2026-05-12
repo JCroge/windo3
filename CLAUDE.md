@@ -270,6 +270,7 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - **Symbol sync修复**（`executor.py` `sync_positions`）：OKX返回`LAYER/USDT:USDT`自动转换为内部格式`LAYER-USDT-SWAP`，防止每次sync循环删除并重建持仓（导致SL/TP丢失）
 - **Daily Hard Stop reset**：清除`data/trade_history.json`中4条`entry_price=0`的ETH脏数据，重置`trading_halted=false`
 - **首次成功开仓**：LAYER-USDT short @ 0.12171，3x杠杆，SL=0.1254，TP=0.1181
+- **止损止盈计算修复**（`judge.py`，2026-05-12）：止损锚点距离上限10%（修复86%离谱值）；ATR下限1%（修复贴脸止盈）；TP距离≥SL距离×0.6（保证R:R≥0.6）
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

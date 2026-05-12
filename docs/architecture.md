@@ -443,6 +443,7 @@ CREATE TABLE klines (
 - 修复：tech_analyst.py新增`ma_aligned_long/short`（MA fast/slow已对齐≥3根K线），judge.py给±20基础分作为次驱动
 - Symbol sync修复：executor.py sync_positions将OKX格式`BASE/USDT:USDT`自动转换为内部格式`BASE-USDT-SWAP`，防止每次sync循环删除并重建持仓
 - 首次成功开仓：LAYER-USDT short @ 0.12171，3x杠杆
+- 止损止盈计算修复（2026-05-12）：止损锚点距离上限10%；ATR下限1%；TP距离≥SL距离×0.6（保证R:R≥0.6）。根因：BZ-USDT止盈贴脸（ATR=0.9%×1.5=1.35%）而止损2.5%，赔率倒挂
 
 ### Phase 7: 待开发
 - 资金费率API修复（`fetchFundingRate() is only valid for swap markets`）
