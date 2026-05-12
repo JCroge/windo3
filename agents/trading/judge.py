@@ -475,7 +475,7 @@ class MultiJudge(BaseAgent):
         is_long = (action == 'open_long')
 
         stop_loss = self._calc_stop_loss(levels, price, is_long, trend)
-        take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum)
+        take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum, stop_loss)
         leverage = self._calc_leverage(risk)
         entry_zone = self._calc_entry_zone(price, micro, momentum)
         order_type = self._calc_order_type(momentum, micro)
@@ -507,6 +507,7 @@ class MultiJudge(BaseAgent):
 
     def _calc_stop_loss(self, levels: dict, price: float, is_long: bool, trend: dict = None) -> float:
         min_sl_pct = 0.015
+        max_sl_pct = 0.10
         strength = (trend or {}).get('strength', 50)
         if strength >= 80:
             min_sl_pct = 0.025
@@ -515,24 +516,24 @@ class MultiJudge(BaseAgent):
 
         if is_long:
             for key in ['daily_support', 'h4_support', 'support']:
-                candidates = [s for s in levels.get(key, []) if s < price * (1 - min_sl_pct)]
+                candidates = [s for s in levels.get(key, []) if price * (1 - max_sl_pct) < s < price * (1 - min_sl_pct)]
                 if candidates:
                     return candidates[0] * 0.995
             return price * (1 - min_sl_pct)
         else:
             for key in ['daily_resistance', 'h4_resistance', 'resistance']:
-                candidates = [r for r in levels.get(key, []) if r > price * (1 + min_sl_pct)]
+                candidates = [r for r in levels.get(key, []) if price * (1 + min_sl_pct) < r < price * (1 + max_sl_pct)]
                 if candidates:
                     return candidates[0] * 1.005
             return price * (1 + min_sl_pct)
 
     def _calc_take_profit(self, levels: dict, price: float, is_long: bool,
-                           trend: dict = None, momentum: dict = None) -> list:
+                           trend: dict = None, momentum: dict = None, stop_loss: float = None) -> list:
         trend = trend or {}
         momentum = momentum or {}
         strength = trend.get('strength', 50)
         direction = trend.get('direction', 'neutral')
-        atr_pct = momentum.get('atr_pct', 0.02)
+        atr_pct = max(momentum.get('atr_pct', 0.02), 0.01)
 
         # 强趋势模式：趋势强度>80且方向与开仓一致时，用ATR倍数止盈
         strong_trend = (strength >= 80 and
@@ -541,10 +542,15 @@ class MultiJudge(BaseAgent):
 
         rsi = momentum.get('rsi', 50)
 
+        # 止盈下限：不能小于止损距离的60%（保证R:R >= 0.6）
+        sl_dist = abs(price - stop_loss) / price if stop_loss else 0.015
+        min_tp_pct = sl_dist * 0.6
+
         if is_long:
             if strong_trend or rsi < 20:
-                # 强趋势或极度超卖反弹：用ATR倍数止盈，不依赖头顶阻力位
                 tps = [price * (1 + atr_pct * m) for m in [1.5, 2.5, 3.5]]
+                if abs(tps[0] - price) / price < min_tp_pct:
+                    tps = [price * (1 + min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
                 return tps
             resistances = levels.get('resistance', [])
             wall = levels.get('orderbook_wall_above')
@@ -561,14 +567,18 @@ class MultiJudge(BaseAgent):
                 tps.append(r)
             if not tps:
                 tps = [price * 1.02, price * 1.04, price * 1.06]
-            # ATR保底：止盈距离不能低于1×ATR，否则改用ATR倍数
+            # ATR保底：止盈距离不能低于1×ATR
             if tps and atr_pct > 0 and abs(tps[0] - price) / price < atr_pct:
                 tps = [price * (1 + atr_pct * m) for m in [1.0, 2.0, 3.0]]
+            # 止损关联保底：TP1不能小于SL距离的60%
+            if tps and abs(tps[0] - price) / price < min_tp_pct:
+                tps = [price * (1 + min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
         else:
             if strong_trend or rsi > 80:
-                # 强趋势或极度超买做空：用ATR倍数止盈，不依赖脚下支撑位
                 tps = [price * (1 - atr_pct * m) for m in [1.5, 2.5, 3.5]]
+                if abs(tps[0] - price) / price < min_tp_pct:
+                    tps = [price * (1 - min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
                 return tps
             supports = levels.get('support', [])
             wall = levels.get('orderbook_wall_below')
@@ -585,9 +595,12 @@ class MultiJudge(BaseAgent):
                 tps.append(s)
             if not tps:
                 tps = [price * 0.98, price * 0.96, price * 0.94]
-            # ATR保底：止盈距离不能低于1×ATR，否则改用ATR倍数
+            # ATR保底
             if tps and atr_pct > 0 and abs(tps[0] - price) / price < atr_pct:
                 tps = [price * (1 - atr_pct * m) for m in [1.0, 2.0, 3.0]]
+            # 止损关联保底
+            if tps and abs(tps[0] - price) / price < min_tp_pct:
+                tps = [price * (1 - min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
 
     def _calc_leverage(self, risk: dict) -> int:
