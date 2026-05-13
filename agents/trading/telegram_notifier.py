@@ -1,6 +1,8 @@
-"""Telegram告警Agent - 实时推送交易通知、风控告警、每日摘要"""
+"""Telegram告警Agent - 实时推送交易通知、风控告警、每日摘要 + 远程命令控制"""
 
 import asyncio
+import json
+import os
 import time
 import datetime
 import aiohttp
@@ -28,6 +30,12 @@ class TelegramNotifier(BaseAgent):
         self._msg_queue = asyncio.Queue()
         self._rate_limit_interval = 1.0
         self._last_send_time = 0
+        self._update_offset = 0
+        self._last_poll_time = 0
+        self._poll_interval = 5
+        self._start_time = time.time()
+        self._last_balance = 0.0
+        self._active_symbols = []
 
     async def setup(self):
         if not self._enabled:
@@ -36,7 +44,7 @@ class TelegramNotifier(BaseAgent):
         self._reset_daily_summary()
         ok = await self._send_message("🟢 交易系统启动")
         if ok:
-            self.logger.info("Telegram通知Agent就绪")
+            self.logger.info("Telegram通知Agent就绪（含远程命令）")
         else:
             self.logger.error("Telegram连接失败，通知功能降级")
             self._enabled = False
@@ -55,10 +63,13 @@ class TelegramNotifier(BaseAgent):
             await self._handle_strategy_review(msg)
 
     async def tick(self):
-        await asyncio.sleep(30)
         if not self._enabled:
+            await asyncio.sleep(30)
             return
+
+        await self._poll_commands()
         self._check_daily_reset()
+        await asyncio.sleep(self._poll_interval)
 
     async def _handle_execution(self, msg: dict):
         payload = msg['payload']
@@ -175,6 +186,141 @@ class TelegramNotifier(BaseAgent):
             f"风控告警: {s['alerts']}次"
         )
         await self._send_message(text)
+
+    # ==================== 远程命令系统 ====================
+
+    async def _poll_commands(self):
+        url = f"https://api.telegram.org/bot{self._bot_token}/getUpdates"
+        params = {"offset": self._update_offset, "timeout": 0, "limit": 10}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for update in data.get('result', []):
+                            self._update_offset = update['update_id'] + 1
+                            await self._handle_command(update)
+        except Exception:
+            pass
+
+    async def _handle_command(self, update: dict):
+        msg = update.get('message', {})
+        chat_id = msg.get('chat', {}).get('id')
+        text = (msg.get('text') or '').strip()
+
+        if str(chat_id) != str(self._chat_id):
+            return
+
+        cmd = text.split()[0] if text else ''
+        handlers = {
+            '/status': self._cmd_status,
+            '/positions': self._cmd_positions,
+            '/stop': self._cmd_stop,
+            '/restart': self._cmd_restart,
+            '/halt': self._cmd_halt,
+            '/resume': self._cmd_resume,
+            '/log': self._cmd_log,
+        }
+
+        handler = handlers.get(cmd)
+        if handler:
+            await handler()
+
+    async def _cmd_status(self):
+        uptime = time.time() - self._start_time
+        hours = uptime / 3600
+
+        positions = {}
+        try:
+            with open('data/positions.json', 'r') as f:
+                positions = json.load(f)
+        except Exception:
+            pass
+
+        halted = False
+        try:
+            with open('data/trade_history.json', 'r') as f:
+                history = json.load(f)
+                halted = history.get('trading_halted', False)
+        except Exception:
+            pass
+
+        text = f"📊 系统状态\n"
+        text += f"运行: {hours:.1f}h\n"
+        text += f"持仓: {len(positions)}个\n"
+        text += f"熔断: {'是' if halted else '否'}\n"
+        text += f"今日交易: {self._daily_summary['trades']}笔\n"
+        text += f"今日PnL: {self._daily_summary['pnl']:+.2f} USDT"
+        await self._send_message(text)
+
+    async def _cmd_positions(self):
+        positions = {}
+        try:
+            with open('data/positions.json', 'r') as f:
+                positions = json.load(f)
+        except Exception:
+            pass
+
+        if not positions:
+            await self._send_message("📭 当前无持仓")
+            return
+
+        text = "📈 当前持仓:\n"
+        for sym, pos in positions.items():
+            side = pos.get('side', '?')
+            lev = pos.get('leverage', '?')
+            entry = pos.get('entry_price', 0)
+            text += f"\n<b>{sym}</b>\n"
+            text += f"  {side} {lev}x @ {entry}\n"
+            if pos.get('stop_loss'):
+                text += f"  SL: {pos['stop_loss']}"
+            if pos.get('take_profit'):
+                text += f" | TP: {pos['take_profit']}"
+            text += "\n"
+        await self._send_message(text)
+
+    async def _cmd_stop(self):
+        await self._send_message("⏹ 正在优雅退出...")
+        await asyncio.sleep(1)
+        await self.publish("system_command", {"command": "shutdown"})
+
+    async def _cmd_restart(self):
+        await self._send_message("🔄 正在重启...")
+        os.makedirs('data', exist_ok=True)
+        with open('data/.restart_flag', 'w') as f:
+            f.write(str(time.time()))
+        await asyncio.sleep(1)
+        await self.publish("system_command", {"command": "shutdown"})
+
+    async def _cmd_halt(self):
+        await self.publish("system_command", {"command": "halt"})
+        await self._send_message("🛑 已手动熔断，停止新交易")
+
+    async def _cmd_resume(self):
+        await self.publish("system_command", {"command": "resume"})
+        await self._send_message("✅ 已解除熔断，恢复交易")
+
+    async def _cmd_log(self):
+        import subprocess
+        try:
+            result = subprocess.run(
+                ['grep', '-E', '决策|执行|平仓|熔断|硬性规则|持仓分析|开仓',
+                 'logs/system.log'],
+                capture_output=True, text=True, timeout=5
+            )
+            lines = result.stdout.strip().split('\n')[-10:]
+            if lines and lines[0]:
+                text = "📋 最近日志:\n\n"
+                for line in lines:
+                    text += line[-80:] + "\n"
+            else:
+                text = "📋 暂无关键日志"
+        except Exception:
+            text = "📋 日志读取失败"
+        await self._send_message(text)
+
+    # ==================== 消息发送 ====================
 
     async def _send_message(self, text: str) -> bool:
         if not self._enabled:

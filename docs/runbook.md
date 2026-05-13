@@ -51,7 +51,25 @@ tail -f logs/orchestrator_$(date +%Y%m%d).log
 # 发送SIGINT/SIGTERM，系统会自动保存状态后退出
 kill -SIGINT $(pgrep -f run_agents.py)
 # 或直接 Ctrl+C（前台运行时）
+# 或通过Telegram发送 /stop 命令
 ```
+
+**远程重启**：
+```bash
+# 通过Telegram发送 /restart 命令
+# 系统写入 data/.restart_flag 后优雅退出，run_agents.py 检测标记后自动重启
+```
+
+**Telegram远程命令**（需配置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID）：
+| 命令 | 功能 |
+|------|------|
+| `/status` | 运行时长、持仓数、熔断状态、今日PnL |
+| `/positions` | 每个持仓的方向/杠杆/入场价/SL/TP |
+| `/stop` | 优雅退出 |
+| `/restart` | 优雅退出后自动重启 |
+| `/halt` | 手动熔断（停止新交易，保留持仓） |
+| `/resume` | 解除熔断 |
+| `/log` | 最近10条关键日志 |
 
 **强制停止**：
 ```bash

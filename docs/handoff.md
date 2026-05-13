@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 6i 完成（持仓管理三角决策 + flash_move修复）
+**当前阶段**：Phase 6j 完成（持仓管理防遗憾优化 + Telegram远程命令）
 **下一阶段**：Phase 7（资金费率API修复、Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -315,6 +315,41 @@
    - 新增`_get_position_symbols()`，自动将持仓标的纳入监控
 
 6. **交易层Agent数量**：7→9（新增PositionAnalyst + BehavioralCritic）
+
+### ✅ Phase 6j: 持仓管理防遗憾优化 + Telegram远程命令（2026-05-13完成）
+
+1. **PositionAnalyst防遗憾优化**（`agents/trading/position_analyst.py`）
+   - 评估周期30min→2h（减少过度干预）
+   - 6因子→7因子：新增`entry_thesis_intact`（高时间框架方向保护，±25分）
+   - 动量因子区分pullback vs reversal（MACD histogram趋势）
+   - 时间衰减：盈利持仓豁免
+   - 浮盈状态：杠杆感知正常波动范围 `min(5, leverage*0.5)`
+   - 动作阈值放宽：reduce从-21→-31，close从-51→-61
+   - 硬性覆盖放宽：loss>15%（原12%）、72h+3%loss（原48h+浮亏）、趋势反转需HTF确认+5%loss
+   - 裁决引擎：趋势顺向时批判官close→reduce、reduce→hold
+
+2. **BehavioralCritic防遗憾优化**（`agents/trading/behavioral_critic.py`）
+   - 规则降级增加趋势方向验证：`trend_aligned`和`htf_aligned`
+   - loss_aversion/sunk_cost只在趋势已反转时才标记
+   - sunk_cost时间阈值24h→36h
+
+3. **Telegram远程命令**（`agents/trading/telegram_notifier.py`）
+   - getUpdates轮询（每5秒），只响应配置的chat_id
+   - 7个命令：/status、/positions、/stop、/restart、/halt、/resume、/log
+   - /stop和/restart通过消息总线发送system_command→Orchestrator触发优雅退出
+   - /halt和/resume通过system_command→Executor切换熔断状态
+   - /restart写入`data/.restart_flag`，run_agents.py检测后自动重启
+
+4. **Orchestrator远程控制**（`agents/orchestrator.py`）
+   - 注册system_command订阅 + _command_listener协程
+   - 收到shutdown命令时触发优雅停机
+
+5. **Executor远程熔断**（`agents/trading/executor.py`）
+   - 订阅system_command，响应halt/resume切换_trading_halted
+
+6. **run_agents.py重启循环**
+   - while循环包裹Orchestrator.start()
+   - 退出后检测`data/.restart_flag`决定是否重启
 
 ## 技术债务
 

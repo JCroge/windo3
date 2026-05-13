@@ -120,12 +120,15 @@ class BehavioralCritic(BaseAgent):
         await self.publish("position_verdict", result, symbol=symbol)
 
     def _rule_fallback(self, review: dict) -> dict:
-        """LLM不可用时的规则降级"""
+        """LLM不可用时的规则降级（防遗憾优化：趋势顺向时不误判）"""
         ctx = review.get('context', {})
         action = review.get('action', 'hold')
         pnl_pct = ctx.get('pnl_pct', 0)
         hours_held = ctx.get('hours_held', 0)
         leverage = ctx.get('leverage', 1)
+        trend = ctx.get('trend', 'neutral')
+        side = ctx.get('side', 'long')
+        higher_trend = ctx.get('higher_trend', 'neutral')
         symbol = review.get('symbol', '')
 
         bias = None
@@ -134,18 +137,25 @@ class BehavioralCritic(BaseAgent):
         counter = None
         confidence = 0
 
-        # 规则检测
-        if action == 'hold' and pnl_pct < -5:
+        # 方向验证：趋势仍顺向时，hold/reduce不是偏差
+        trend_aligned = (side == 'long' and trend == 'bullish') or \
+                        (side == 'short' and trend == 'bearish')
+        htf_aligned = (side == 'long' and higher_trend == 'bullish') or \
+                      (side == 'short' and higher_trend == 'bearish')
+
+        # loss_aversion: 只在趋势已反转时才标记
+        if action == 'hold' and pnl_pct < -5 and not trend_aligned and not htf_aligned:
             bias = 'loss_aversion'
             severity = 'medium' if pnl_pct < -8 else 'low'
-            challenge = f"浮亏{pnl_pct:.1f}%仍建议hold，可能存在损失厌恶"
+            challenge = f"浮亏{pnl_pct:.1f}%+趋势不利仍hold，可能存在损失厌恶"
             counter = 'close' if pnl_pct < -8 else 'reduce'
             confidence = 60
 
-        elif action == 'hold' and pnl_pct < 0 and hours_held > 24:
+        # sunk_cost: 需要趋势不利+较长时间
+        elif action == 'hold' and pnl_pct < 0 and hours_held > 36 and not trend_aligned and not htf_aligned:
             bias = 'sunk_cost'
-            severity = 'medium' if hours_held > 36 else 'low'
-            challenge = f"持仓{hours_held:.0f}h+浮亏，可能存在沉没成本偏差"
+            severity = 'medium' if hours_held > 48 else 'low'
+            challenge = f"持仓{hours_held:.0f}h+浮亏+方向不利，可能存在沉没成本偏差"
             counter = 'close'
             confidence = 50
 

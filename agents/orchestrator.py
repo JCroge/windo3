@@ -106,9 +106,13 @@ class Orchestrator:
         loop.add_signal_handler(signal.SIGTERM, lambda: self._shutdown_event.set())
         loop.add_signal_handler(signal.SIGINT, lambda: self._shutdown_event.set())
 
+        self.bus.register("orchestrator", ["system_command"])
+
         self._tasks = [asyncio.create_task(agent.run()) for agent in all_agents]
         research_task = asyncio.create_task(self._research_loop())
+        cmd_task = asyncio.create_task(self._command_listener())
         self._tasks.append(research_task)
+        self._tasks.append(cmd_task)
 
         self.logger.info("所有Agent已启动，进入运行状态...")
 
@@ -131,6 +135,16 @@ class Orchestrator:
             await asyncio.sleep(self._research_interval)
             self.logger.info(f"[编排] 定时研判触发（每{self._research_interval//3600}h）")
             await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+
+    async def _command_listener(self):
+        """监听system_command消息"""
+        while not self._shutdown_event.is_set():
+            msg = await self.bus.receive("orchestrator", timeout=2.0)
+            if msg and msg.get('type') == 'system_command':
+                cmd = msg.get('payload', {}).get('command', '')
+                if cmd == 'shutdown':
+                    self.logger.info("[编排] 收到远程shutdown命令")
+                    self._shutdown_event.set()
 
     async def _graceful_shutdown(self, all_agents):
         """优雅停机流程"""

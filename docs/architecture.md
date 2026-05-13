@@ -20,6 +20,8 @@
 - 2026-05-09：PROS-USDT ticker格式修复（_fetch_price_tick统一用/USDT:USDT格式）
 - 2026-05-11：MA alignment信号（tech_analyst.py+judge.py）：ma_aligned_long/short给±20分，解决crossover后系统永远hold
 - 2026-05-11：Symbol sync修复（executor.py）：OKX格式BASE/USDT:USDT自动转换为BASE-USDT-SWAP
+- 2026-05-13：持仓管理防遗憾优化（position_analyst.py）：7因子评分+entry_thesis_intact+2h周期+阈值放宽
+- 2026-05-13：Telegram远程命令（telegram_notifier.py）：7命令(/status/positions/stop/restart/halt/resume/log)+system_command总线
 
 ## 架构图
 
@@ -137,10 +139,10 @@ Executor（风控审核 → 执行）
 PortfolioRiskGuard（组合级实时监控）
 ```
 
-### 持仓管理决策流水线（每30分钟）
+### 持仓管理决策流水线（每2小时）
 
 ```
-PositionAnalyst（6因子规则评分）
+PositionAnalyst（7因子规则评分）
     │ [position_review:SOL-USDT]
     ▼
 BehavioralCritic（LLM偏差检测 / 规则降级）
@@ -152,14 +154,16 @@ PositionAnalyst 裁决引擎（纯规则矩阵）
 [trade_decision:SOL-USDT] → Executor执行
 ```
 
-**6因子评分**：趋势对齐(±20) + 动量变化(±20) + 时间衰减(-15~0) + 浮盈状态(±20) + 成交量确认(±10) + 剩余R:R(±15)
+**7因子评分**：趋势对齐(±20) + 动量变化(±20) + 时间衰减(-15~0) + 浮盈状态(±20) + 成交量确认(±10) + 剩余R:R(±15) + 入场逻辑验证(-10~+25)
 
 **硬性覆盖规则**（无视分析官和批判官）：
-- 浮亏>12% → close
-- 持仓>48h+浮亏 → close
-- 趋势反转+浮亏>3% → close
+- 浮亏>15% → close
+- 持仓>72h+浮亏>3% → close
+- HTF趋势反转+浮亏>5% → close
 - 浮盈>15%+动量反转 → reduce 50%
 - 剩余R:R<0.3 → close
+
+**防遗憾机制**：高时间框架（4h/日线）仍确认入场方向时，裁决引擎保护持仓（批判官close→reduce，reduce→hold）
 
 **执行优先级**：RiskGuard强制平仓 > 硬性覆盖 > 裁决矩阵 > 分析官建议
 

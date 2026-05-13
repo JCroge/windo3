@@ -71,10 +71,10 @@ crypto-arbitrage/
 │       ├── executor.py              # 多标的交易执行 + Daily Hard Stop响应
 │       ├── portfolio_risk_guard.py  # 组合级风控盯盘 + 状态持久化
 │       ├── reviewer.py              # 交易复盘 + 策略衰减检测 + Daily Hard Stop触发
-│       ├── position_analyst.py      # 持仓6因子评分 + 裁决引擎（每30min）
-│       ├── behavioral_critic.py     # 行为金融学偏差检测（7种认知偏差）
-│       └── telegram_notifier.py     # Telegram实时告警 + 每日摘要
-├── run_agents.py          # ✅ 多Agent系统启动入口
+│       ├── position_analyst.py      # 持仓7因子评分 + 裁决引擎（每2h，防遗憾优化）
+│       ├── behavioral_critic.py     # 行为金融学偏差检测（7种认知偏差，趋势保护）
+│       └── telegram_notifier.py     # Telegram实时告警 + 每日摘要 + 远程命令控制
+├── run_agents.py          # ✅ 多Agent系统启动入口（支持远程重启循环）
 ├── test_p0_features.py    # ✅ P0功能测试（Reviewer/Hard Stop/Graceful Shutdown）
 ├── docs/                  # 文档
 │   ├── architecture.md
@@ -203,8 +203,8 @@ MarketScanner+SentimentResearcher+NewsResearcher → Synthesizer(初选) → Cen
 **交易层流水线（per-symbol）**：
 DataCollector →[market_data:symbol]→ TechAnalyst →[tech_analysis:symbol]→ Judge →[trade_decision:symbol]→ Executor →[execution_result:symbol]→ RiskGuard + Reviewer
 
-**持仓管理流水线（每30min）**：
-PositionAnalyst(6因子评分) →[position_review:symbol]→ BehavioralCritic(偏差检测) →[position_verdict:symbol]→ PositionAnalyst(裁决) →[trade_decision:symbol]→ Executor
+**持仓管理流水线（每2h）**：
+PositionAnalyst(7因子评分) →[position_review:symbol]→ BehavioralCritic(偏差检测) →[position_verdict:symbol]→ PositionAnalyst(裁决) →[trade_decision:symbol]→ Executor
 
 **Reviewer反馈闭环**：
 execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h） → 衰减检测 → Daily Hard Stop触发（如需）
@@ -284,6 +284,14 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - **PositionAnalyst**（`position_analyst.py`）：6因子规则评分（趋势对齐/动量变化/时间衰减/浮盈状态/成交量确认/剩余R:R）+ 5条硬性覆盖规则 + 4级severity裁决矩阵，每30min评估
 - **BehavioralCritic**（`behavioral_critic.py`）：LLM检测7种认知偏差（loss_aversion/sunk_cost/anchoring/fomo/disposition/overconfidence/panic），规则降级兜底
 - **交易层Agent数量**：7→9（新增PositionAnalyst + BehavioralCritic）
+
+### ✅ Phase 6j: 持仓管理防遗憾优化 + Telegram远程命令（2026-05-13完成）
+- PositionAnalyst防遗憾优化：7因子(+entry_thesis_intact ±25)、2h周期、阈值放宽(loss>15%/72h+3%/HTF反转+5%)、裁决引擎趋势保护
+- BehavioralCritic防遗憾优化：规则降级增加trend_aligned/htf_aligned验证
+- Telegram远程命令：getUpdates轮询+7命令(/status/positions/stop/restart/halt/resume/log)+system_command总线
+- Orchestrator：system_command订阅+_command_listener协程
+- Executor：system_command订阅，halt/resume响应
+- run_agents.py：while循环+.restart_flag检测，支持远程重启
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

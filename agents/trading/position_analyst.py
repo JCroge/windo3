@@ -1,9 +1,9 @@
-"""持仓分析官 Agent - 6因子评分 + 裁决引擎
+"""持仓分析官 Agent - 7因子评分 + 裁决引擎（防遗憾优化版）
 
-每30分钟对所有持仓进行重新评估：
-1. 规则评分（6因子）→ 输出建议
+每2小时对所有持仓进行重新评估：
+1. 规则评分（7因子，含入场逻辑验证）→ 输出建议
 2. 发送给BehavioralCritic审视
-3. 收到批判意见后执行裁决逻辑
+3. 收到批判意见后执行裁决逻辑（方向正确时保护持仓）
 4. 最终决策发送给Executor执行
 """
 
@@ -13,7 +13,7 @@ import os
 import asyncio
 from agents.base import BaseAgent
 
-REVIEW_INTERVAL = 3600  # 60分钟
+REVIEW_INTERVAL = 7200  # 2小时
 
 
 class PositionAnalyst(BaseAgent):
@@ -32,7 +32,7 @@ class PositionAnalyst(BaseAgent):
     async def setup(self):
         self._load_positions()
         self._last_review_time = time.time()
-        self.logger.info(f"持仓分析官就绪 (评估周期={REVIEW_INTERVAL//60}min, 持仓={len(self._positions)}个)")
+        self.logger.info(f"持仓分析官就绪 (评估周期={REVIEW_INTERVAL//3600}h, 持仓={len(self._positions)}个, 7因子防遗憾版)")
         # 备选：事件触发评估（价格单小时移动>3%时插入额外评估），当前未启用
 
     def _load_positions(self):
@@ -97,7 +97,19 @@ class PositionAnalyst(BaseAgent):
             await self._evaluate_all_positions()
 
     async def _evaluate_all_positions(self):
-        self._load_positions()
+        # 从文件补充，但不覆盖内存中通过execution_result积累的数据
+        positions_file = 'data/positions.json'
+        if os.path.exists(positions_file):
+            try:
+                with open(positions_file, 'r') as f:
+                    file_positions = json.load(f)
+                if file_positions:
+                    for k, v in file_positions.items():
+                        if k not in self._positions:
+                            self._positions[k] = v
+            except Exception:
+                pass
+
         if not self._positions:
             return
 
@@ -131,8 +143,7 @@ class PositionAnalyst(BaseAgent):
                 del self._pending_reviews[symbol]
 
     def _compute_position_score(self, symbol: str, pos: dict) -> dict:
-        """6因子持仓评分"""
-        # 转换symbol格式用于查找tech_cache
+        """7因子持仓评分（防遗憾优化版）"""
         lookup_key = symbol.replace('-SWAP', '').replace('/', '-').replace(':USDT', '')
         tech = None
         for k, v in self._tech_cache.items():
@@ -153,12 +164,10 @@ class PositionAnalyst(BaseAgent):
         take_profit = pos.get('take_profit', 0)
         open_time = pos.get('open_time', time.time())
 
-        # 获取当前价格
         current_price = self._get_current_price(symbol)
         if not current_price:
             return None
 
-        # 计算浮盈
         if side == 'long':
             pnl_pct = (current_price - entry_price) / entry_price * 100 * leverage
         else:
@@ -166,7 +175,7 @@ class PositionAnalyst(BaseAgent):
 
         hours_held = (time.time() - open_time) / 3600
 
-        # === 6因子评分 ===
+        # === 7因子评分 ===
         trend_data = tech.get('trend', {})
         momentum = tech.get('momentum', {})
 
@@ -179,38 +188,56 @@ class PositionAnalyst(BaseAgent):
         else:
             trend_alignment = -20
 
-        # 2. 动量变化 (-20 ~ +20)
+        # 2. 动量变化 (-20 ~ +15) — 结合MACD方向区分回调和反转
         rsi = momentum.get('rsi', 50)
+        macd_trend = momentum.get('macd_histogram_trend', 'flat')
+
         if side == 'long':
-            if rsi > 60:
+            if rsi > 55:
                 momentum_shift = 15
-            elif rsi > 45:
-                momentum_shift = 5
-            elif rsi > 35:
+            elif rsi > 40:
+                if macd_trend == 'rising':
+                    momentum_shift = 10
+                elif macd_trend == 'flat':
+                    momentum_shift = 0
+                else:
+                    momentum_shift = -5
+            elif rsi > 30:
                 momentum_shift = -10
             else:
                 momentum_shift = -20
         else:
-            if rsi < 40:
+            if rsi < 45:
                 momentum_shift = 15
-            elif rsi < 55:
-                momentum_shift = 5
-            elif rsi > 65:
+            elif rsi < 60:
+                if macd_trend == 'falling':
+                    momentum_shift = 10
+                elif macd_trend == 'flat':
+                    momentum_shift = 0
+                else:
+                    momentum_shift = -5
+            elif rsi < 70:
                 momentum_shift = -10
             else:
                 momentum_shift = -20
 
-        # 3. 时间衰减 (-15 ~ 0)
-        time_decay = -min(15, hours_held / 4)
+        # 3. 时间衰减 (-15 ~ 0) — 盈利仓位不惩罚
+        if pnl_pct > 0:
+            time_decay = 0
+        elif pnl_pct > -3:
+            time_decay = -min(10, hours_held / 6)
+        else:
+            time_decay = -min(15, hours_held / 4)
 
-        # 4. 浮盈状态 (-20 ~ +20)
+        # 4. 浮盈状态 (-20 ~ +20) — 考虑杠杆的正常波动范围
+        normal_fluctuation = min(5, leverage * 0.5)
         if pnl_pct > 5:
             pnl_status = 20
         elif pnl_pct > 1:
             pnl_status = 10
-        elif pnl_pct > -1:
+        elif pnl_pct > -normal_fluctuation:
             pnl_status = 0
-        elif pnl_pct > -5:
+        elif pnl_pct > -(normal_fluctuation * 2):
             pnl_status = -10
         else:
             pnl_status = -20
@@ -244,20 +271,36 @@ class PositionAnalyst(BaseAgent):
                 elif remaining_rr < 0.5:
                     rr_bonus = -10
 
-        # 总分
-        position_score = trend_alignment + momentum_shift + time_decay + pnl_status + volume_confirm + rr_bonus
+        # 7. 入场逻辑验证 (-10 ~ +25) — 高时间框架方向保护
+        entry_thesis_intact = 0
+        htf_bias = trend_data.get('higher_tf_bias', 'neutral')
+        daily_bias = trend_data.get('daily_bias', 'neutral')
+        higher_trend = daily_bias if daily_bias != 'neutral' else htf_bias
 
-        # action映射
+        if (side == 'long' and higher_trend == 'bullish') or \
+           (side == 'short' and higher_trend == 'bearish'):
+            entry_thesis_intact = 25
+        elif higher_trend == 'neutral':
+            entry_thesis_intact = 10
+        elif (side == 'long' and higher_trend == 'bearish') or \
+             (side == 'short' and higher_trend == 'bullish'):
+            entry_thesis_intact = -10
+
+        # 总分
+        position_score = (trend_alignment + momentum_shift + time_decay +
+                          pnl_status + volume_confirm + rr_bonus + entry_thesis_intact)
+
+        # action映射 — 提高close/reduce门槛
         if position_score >= 50:
             action = 'add'
             conviction = min(95, position_score)
-        elif position_score >= 20:
+        elif position_score >= 10:
             action = 'hold'
             conviction = position_score
-        elif position_score >= -20:
+        elif position_score >= -30:
             action = 'hold'
             conviction = 50 - abs(position_score)
-        elif position_score >= -50:
+        elif position_score >= -60:
             action = 'reduce'
             conviction = abs(position_score)
         else:
@@ -276,6 +319,7 @@ class PositionAnalyst(BaseAgent):
                 "pnl_status": pnl_status,
                 "volume_confirm": volume_confirm,
                 "rr_bonus": rr_bonus,
+                "entry_thesis_intact": entry_thesis_intact,
             },
             "context": {
                 "side": side,
@@ -286,41 +330,43 @@ class PositionAnalyst(BaseAgent):
                 "hours_held": round(hours_held, 1),
                 "rsi": rsi,
                 "trend": trend_dir,
+                "higher_trend": higher_trend,
             },
-            "reasoning": self._build_reasoning(action, position_score, trend_alignment, momentum_shift, pnl_pct),
+            "reasoning": self._build_reasoning(action, position_score, trend_alignment, momentum_shift, pnl_pct, entry_thesis_intact),
         }
 
     def _check_hard_override(self, symbol: str, pos: dict, verdict: dict) -> dict:
-        """硬性覆盖规则 — 无论分析官和批判官怎么说"""
+        """硬性覆盖规则 — 无论分析官和批判官怎么说（防遗憾优化版）"""
         ctx = verdict['context']
         pnl_pct = ctx['pnl_pct']
         hours_held = ctx['hours_held']
-        trend = ctx['trend']
         side = pos.get('side', 'long')
+        higher_trend = ctx.get('higher_trend', 'neutral')
 
-        # 规则1: 浮亏>12% → close
-        if pnl_pct < -12:
+        # 规则1: 浮亏>15% → close（放宽：原12%，高杠杆下给更多空间）
+        if pnl_pct < -15:
             return self._make_final("close", 1.0, symbol, verdict['action'],
-                                    None, None, f"硬性规则：浮亏{pnl_pct:.1f}%>12%")
+                                    None, None, f"硬性规则：浮亏{pnl_pct:.1f}%>15%")
 
-        # 规则2: 持仓>48h + 浮亏 → close
-        if hours_held > 48 and pnl_pct < 0:
+        # 规则2: 持仓>72h + 浮亏>3% → close（放宽：原48h+任何浮亏）
+        if hours_held > 72 and pnl_pct < -3:
             return self._make_final("close", 1.0, symbol, verdict['action'],
-                                    None, None, f"硬性规则：持仓{hours_held:.0f}h>48h且浮亏")
+                                    None, None, f"硬性规则：持仓{hours_held:.0f}h>72h且浮亏{pnl_pct:.1f}%")
 
-        # 规则3: 趋势完全反转 + 浮亏>3% → close
-        trend_reversed = (side == 'long' and trend == 'bearish') or (side == 'short' and trend == 'bullish')
-        if trend_reversed and pnl_pct < -3:
+        # 规则3: 高时间框架趋势反转 + 浮亏>5% → close（放宽：原1h反转+3%）
+        htf_reversed = (side == 'long' and higher_trend == 'bearish') or \
+                       (side == 'short' and higher_trend == 'bullish')
+        if htf_reversed and pnl_pct < -5:
             return self._make_final("close", 1.0, symbol, verdict['action'],
-                                    None, None, f"硬性规则：趋势反转+浮亏{pnl_pct:.1f}%")
+                                    None, None, f"硬性规则：高级别趋势反转+浮亏{pnl_pct:.1f}%")
 
-        # 规则4: 浮盈>15% + 动量反转 → reduce 50%
+        # 规则4: 浮盈>15% + 动量反转 → reduce 50%（保持不变）
         momentum_reversed = verdict['factors']['momentum_shift'] <= -10
         if pnl_pct > 15 and momentum_reversed:
             return self._make_final("reduce", 0.5, symbol, verdict['action'],
                                     None, None, f"硬性规则：浮盈{pnl_pct:.1f}%+动量反转，锁定利润")
 
-        # 规则5: 剩余R:R < 0.3 → close
+        # 规则5: 剩余R:R < 0.3 → close（保持不变）
         if verdict['factors']['rr_bonus'] == -15:
             return self._make_final("close", 1.0, symbol, verdict['action'],
                                     None, None, "硬性规则：剩余R:R<0.3，空间不足")
@@ -346,7 +392,7 @@ class PositionAnalyst(BaseAgent):
             await self._execute_final_decision(final)
 
     def _arbitrate(self, analyst: dict, critic: dict) -> dict:
-        """核心裁决矩阵"""
+        """核心裁决矩阵（防遗憾优化版：方向正确时保护持仓）"""
         a_action = analyst['action']
         a_conviction = analyst['conviction']
         bias = critic.get('bias_detected')
@@ -354,6 +400,19 @@ class PositionAnalyst(BaseAgent):
         counter = critic.get('counter_recommendation')
         symbol = analyst['symbol']
         pnl_pct = analyst['context']['pnl_pct']
+
+        # 方向验证：高时间框架趋势仍与持仓方向一致
+        side = analyst['context'].get('side', 'long')
+        higher_trend = analyst['context'].get('higher_trend', 'neutral')
+        trend_aligned = (side == 'long' and higher_trend == 'bullish') or \
+                        (side == 'short' and higher_trend == 'bearish')
+
+        # 方向保护：趋势仍顺向时，critic的平仓建议降级
+        if trend_aligned and bias and severity in ('medium', 'high'):
+            if counter == 'close':
+                counter = 'reduce'
+            elif counter == 'reduce' and severity == 'medium':
+                counter = 'hold'
 
         # Case 1: 批判官无异议
         if not bias or severity == 'none':
@@ -390,8 +449,11 @@ class PositionAnalyst(BaseAgent):
         if a_action == 'add':
             return self._make_final("hold", 0, symbol, a_action, bias, severity, "高度偏差，绝对禁止加仓")
         if a_action == 'hold' and bias in ('loss_aversion', 'sunk_cost') and counter == 'close':
+            if trend_aligned:
+                return self._make_final("hold", 0, symbol, a_action, bias, severity,
+                                        f"高度{bias}偏差但方向仍正确，维持观察")
             return self._make_final("close", 1.0, symbol, a_action, bias, severity,
-                                    f"高度{bias}偏差，采纳批判官平仓建议")
+                                    f"高度{bias}偏差+方向失效，采纳批判官平仓建议")
         if a_action == 'hold' and counter == 'reduce':
             return self._make_final("reduce", 0.5, symbol, a_action, bias, severity, "高度偏差，减仓50%")
         if a_action == 'close' and bias == 'panic':
@@ -472,7 +534,7 @@ class PositionAnalyst(BaseAgent):
         pos = self._positions.get(symbol, {})
         return pos.get('entry_price', 0)
 
-    def _build_reasoning(self, action: str, score: float, trend: float, momentum: float, pnl: float) -> str:
+    def _build_reasoning(self, action: str, score: float, trend: float, momentum: float, pnl: float, thesis: float = 0) -> str:
         parts = []
         if trend > 0:
             parts.append("趋势顺向")
@@ -486,4 +548,8 @@ class PositionAnalyst(BaseAgent):
             parts.append(f"浮盈{pnl:.1f}%")
         elif pnl < -3:
             parts.append(f"浮亏{pnl:.1f}%")
+        if thesis >= 25:
+            parts.append("高级别方向正确")
+        elif thesis <= -10:
+            parts.append("入场逻辑失效")
         return f"score={score:.0f}, " + ", ".join(parts) if parts else f"score={score:.0f}, 信号中性"

@@ -11,7 +11,7 @@ load_dotenv()
 
 class MultiExecutor(BaseAgent):
     name = "executor"
-    subscriptions = ["trade_decision:*", "risk_alert", "daily_hard_stop_triggered"]
+    subscriptions = ["trade_decision:*", "risk_alert", "daily_hard_stop_triggered", "system_command"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -38,6 +38,16 @@ class MultiExecutor(BaseAgent):
         if msg['type'] == 'daily_hard_stop_triggered':
             self._trading_halted = True
             self.logger.critical("[熔断] 停止接收新交易决策")
+            return
+
+        if msg['type'] == 'system_command':
+            cmd = msg.get('payload', {}).get('command', '')
+            if cmd == 'halt':
+                self._trading_halted = True
+                self.logger.warning("[手动熔断] 通过Telegram触发")
+            elif cmd == 'resume':
+                self._trading_halted = False
+                self.logger.info("[解除熔断] 通过Telegram触发")
             return
 
         if msg['type'] == 'trade_decision':
