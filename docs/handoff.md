@@ -288,10 +288,10 @@
    - 根因：OKX返回`LAYER/USDT:USDT`，内部格式`LAYER-USDT-SWAP`，每次sync删除本地持仓再重建（SL/TP丢失）
    - 修复：sync_positions中将`BASE/USDT:USDT`格式自动转换为`BASE-USDT-SWAP`
 
-3. **止损止盈计算修复**（`judge.py`，2026-05-12）
-   - 止损锚点距离上限10%（修复86%离谱值）
-   - ATR下限1%（修复贴脸止盈）
-   - TP距离≥SL距离×0.6（保证R:R≥0.6）
+3. **止损止盈计算修复**（`judge.py`，2026-05-13）
+   - R:R硬性门槛1.5（不因confidence高而放松，修复LLM提升confidence绕过旧公式的漏洞）
+   - SL距离ATR封顶：2.5×ATR，max 5%（Turtle Traders方法论，修复远距离结构性止损导致R:R天然不达标）
+   - TP下限=SL×1.5（plan构建阶段保证R:R≥1.5）
 
 ### ✅ Phase 6i: 持仓管理三角决策 + flash_move修复（2026-05-12完成）
 
@@ -353,11 +353,11 @@
 
 ## 技术债务
 
-1. **R:R计算部分修复**（2026-05-12已修复止损上限+止盈下限+ATR兜底，剩余：4h锚点缺失待plan实施）
-   - ✅ 止损锚点距离上限10%（修复86%离谱值）
-   - ✅ ATR下限1%（修复贴脸止盈）
-   - ✅ TP距离≥SL距离×0.6（保证R:R≥0.6）
-   - 待做：4h swing支撑/阻力锚点、tech_analyst实际计算ATR
+1. **R:R计算已修复**（2026-05-13）
+   - ✅ R:R硬性门槛1.5（不因confidence放松）
+   - ✅ SL距离ATR封顶（2.5×ATR，max 5%）
+   - ✅ TP下限=SL×1.5（plan构建阶段保证R:R≥1.5）
+   - 剩余：4h swing支撑/阻力锚点缺失（部分标的SL用ATR fallback而非结构性价位）
 
 2. **套利代码可以清理**
    - 套利相关代码已验证不可行

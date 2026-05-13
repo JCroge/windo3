@@ -21,7 +21,7 @@
 - 2026-05-11：MA alignment信号（tech_analyst.py+judge.py）：ma_aligned_long/short给±20分，解决crossover后系统永远hold
 - 2026-05-11：Symbol sync修复（executor.py）：OKX格式BASE/USDT:USDT自动转换为BASE-USDT-SWAP
 - 2026-05-13：持仓管理防遗憾优化（position_analyst.py）：7因子评分+entry_thesis_intact+2h周期+阈值放宽
-- 2026-05-13：Telegram远程命令（telegram_notifier.py）：7命令(/status/positions/stop/restart/halt/resume/log)+system_command总线
+- 2026-05-13：R:R硬性门槛修复（judge.py）：min_rr=1.5不可绕过 + SL距离ATR封顶(2.5×ATR) + TP下限=SL×1.5
 
 ## 架构图
 
@@ -482,7 +482,7 @@ CREATE TABLE klines (
 - 修复：tech_analyst.py新增`ma_aligned_long/short`（MA fast/slow已对齐≥3根K线），judge.py给±20基础分作为次驱动
 - Symbol sync修复：executor.py sync_positions将OKX格式`BASE/USDT:USDT`自动转换为内部格式`BASE-USDT-SWAP`，防止每次sync循环删除并重建持仓
 - 首次成功开仓：LAYER-USDT short @ 0.12171，3x杠杆
-- 止损止盈计算修复（2026-05-12）：止损锚点距离上限10%；ATR下限1%；TP距离≥SL距离×0.6（保证R:R≥0.6）。根因：BZ-USDT止盈贴脸（ATR=0.9%×1.5=1.35%）而止损2.5%，赔率倒挂
+- 止损止盈计算修复（2026-05-13）：SL距离ATR封顶（2.5倍ATR，max 5%，Turtle Traders方法论）；TP下限=SL×1.5（保证R:R≥1.5）；R:R硬性门槛1.5（不因confidence高而放松）。根因：旧公式用confidence动态计算min_rr，LLM提升confidence到65时min_rr降至0.538，R:R=0.6即可通过
 
 **Phase 6i - 持仓管理三角决策 + flash_move修复（2026-05-12）**：
 - PositionAnalyst：6因子规则评分（趋势对齐/动量变化/时间衰减/浮盈状态/成交量确认/剩余R:R），每30min评估所有持仓

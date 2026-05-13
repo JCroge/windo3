@@ -280,19 +280,16 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
-                    # R:R门槛：基于期望值 E = win_rate * rr - (1 - win_rate) > 0
-                    # win_rate由confidence代理（confidence/100），要求正期望且rr不低于0.3
+                    # R:R硬性门槛：最低1.5，不因confidence高而放松
                     rr = plan.get('risk_reward_ratio', 0)
-                    win_rate = final_conf / 100.0
-                    expected_value = win_rate * rr - (1 - win_rate)
-                    min_rr = max(0.2, (1 - win_rate) / win_rate)  # 保本线：rr >= (1-w)/w，0.2为手续费保底
-                    if rr < min_rr or expected_value < 0:
-                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f} 期望值={expected_value:.3f} 不足(需rr>={min_rr:.2f})，放弃")
+                    min_rr = 1.5
+                    if rr < min_rr:
+                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f} < {min_rr}，赔率不足放弃")
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
                             "plan": None, "size_pct": 0,
-                            "reasoning": f"R:R={rr:.2f}期望值={expected_value:.3f}<0，赔率不满足入场条件",
+                            "reasoning": f"R:R={rr:.2f}<{min_rr}，赔率不满足入场条件",
                             "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
@@ -534,7 +531,7 @@ class MultiJudge(BaseAgent):
 
         is_long = (action == 'open_long')
 
-        stop_loss = self._calc_stop_loss(levels, price, is_long, trend)
+        stop_loss = self._calc_stop_loss(levels, price, is_long, trend, momentum)
         take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum, stop_loss)
         leverage = self._calc_leverage(risk)
         entry_zone = self._calc_entry_zone(price, micro, momentum)
@@ -581,24 +578,29 @@ class MultiJudge(BaseAgent):
             "max_holding_hours": 24,
         }
 
-    def _calc_stop_loss(self, levels: dict, price: float, is_long: bool, trend: dict = None) -> float:
+    def _calc_stop_loss(self, levels: dict, price: float, is_long: bool, trend: dict = None, momentum: dict = None) -> float:
         min_sl_pct = 0.015
-        max_sl_pct = 0.10
+        max_sl_pct = 0.05
         strength = (trend or {}).get('strength', 50)
         if strength >= 80:
             min_sl_pct = 0.025
         elif strength >= 60:
             min_sl_pct = 0.02
 
+        # ATR-based cap: SL不超过2.5倍ATR（Turtle Traders方法论）
+        atr_pct = (momentum or {}).get('atr_pct', 0.02)
+        atr_sl_cap = min(max_sl_pct, atr_pct * 2.5)
+        effective_max = max(min_sl_pct + 0.005, atr_sl_cap)
+
         if is_long:
             for key in ['daily_support', 'h4_support', 'support']:
-                candidates = [s for s in levels.get(key, []) if price * (1 - max_sl_pct) < s < price * (1 - min_sl_pct)]
+                candidates = [s for s in levels.get(key, []) if price * (1 - effective_max) < s < price * (1 - min_sl_pct)]
                 if candidates:
                     return candidates[0] * 0.995
             return price * (1 - min_sl_pct)
         else:
             for key in ['daily_resistance', 'h4_resistance', 'resistance']:
-                candidates = [r for r in levels.get(key, []) if price * (1 + min_sl_pct) < r < price * (1 + max_sl_pct)]
+                candidates = [r for r in levels.get(key, []) if price * (1 + min_sl_pct) < r < price * (1 + effective_max)]
                 if candidates:
                     return candidates[0] * 1.005
             return price * (1 + min_sl_pct)
@@ -618,9 +620,9 @@ class MultiJudge(BaseAgent):
 
         rsi = momentum.get('rsi', 50)
 
-        # 止盈下限：不能小于止损距离的60%（保证R:R >= 0.6）
+        # 止盈下限：不能小于止损距离的1.5倍（配合R:R>=1.5硬性门槛）
         sl_dist = abs(price - stop_loss) / price if stop_loss else 0.015
-        min_tp_pct = sl_dist * 0.6
+        min_tp_pct = sl_dist * 1.5
 
         if is_long:
             if strong_trend or rsi < 20:
@@ -646,7 +648,7 @@ class MultiJudge(BaseAgent):
             # ATR保底：止盈距离不能低于1×ATR
             if tps and atr_pct > 0 and abs(tps[0] - price) / price < atr_pct:
                 tps = [price * (1 + atr_pct * m) for m in [1.0, 2.0, 3.0]]
-            # 止损关联保底：TP1不能小于SL距离的60%
+            # R:R保底：TP1 >= SL距离×1.5
             if tps and abs(tps[0] - price) / price < min_tp_pct:
                 tps = [price * (1 + min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
@@ -674,7 +676,7 @@ class MultiJudge(BaseAgent):
             # ATR保底
             if tps and atr_pct > 0 and abs(tps[0] - price) / price < atr_pct:
                 tps = [price * (1 - atr_pct * m) for m in [1.0, 2.0, 3.0]]
-            # 止损关联保底
+            # R:R保底
             if tps and abs(tps[0] - price) / price < min_tp_pct:
                 tps = [price * (1 - min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps

@@ -132,12 +132,15 @@ class ReviewerAgent(BaseAgent):
         return sum(t['pnl'] for t in daily_trades)
 
     def _track_consecutive_losses(self) -> int:
-        """追踪连续亏损次数"""
+        """追踪最近24h内的连续亏损次数"""
         if not self.trade_history:
             return 0
 
+        cutoff = time.time() - 24 * 3600
+        recent_trades = [t for t in self.trade_history if t.get('timestamp', 0) > cutoff]
+
         consecutive_count = 0
-        for trade in reversed(self.trade_history):
+        for trade in reversed(recent_trades):
             if trade['pnl'] < 0:
                 consecutive_count += 1
             else:
