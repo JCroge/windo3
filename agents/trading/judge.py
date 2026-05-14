@@ -287,8 +287,8 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
-                    # R:R硬性门槛：最低1.5，不因confidence高而放松
-                    rr = plan.get('risk_reward_ratio', 0)
+                    # R:R硬性门槛：最低1.5，不因confidence高而放松（含资金费率成本）
+                    rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
                     min_rr = 1.5
                     if rr < min_rr:
                         self.logger.info(f"[Judge] {symbol} R:R={rr:.2f} < {min_rr}，赔率不足放弃")
@@ -302,11 +302,11 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
-                    plan['size_usdt'] = self._calc_size(final_conf)
-                    required_margin = plan['size_usdt'] / plan['leverage']
-                    if self._available_balance < required_margin * 1.1:
-                        adjusted_size = self._available_balance * 0.9 * plan['leverage']
-                        if adjusted_size < 1.0:
+                    # 余额兜底检查（size_usdt已经是保证金）
+                    required_margin = plan['size_usdt']
+                    if self._available_balance > 0 and self._available_balance < required_margin * 1.1:
+                        plan['size_usdt'] = round(self._available_balance * 0.9, 2)
+                        if plan['size_usdt'] < 1.0:
                             self.logger.warning(f"[{symbol}] 余额不足({self._available_balance:.2f} USDT)，放弃交易")
                             decision = {
                                 "symbol": symbol, "timestamp": time.time(),
@@ -317,7 +317,6 @@ class MultiJudge(BaseAgent):
                             }
                             await self.publish("trade_decision", decision, symbol=symbol)
                             return
-                        plan['size_usdt'] = round(adjusted_size, 2)
                         self.logger.info(f"[{symbol}] 调整仓位: {plan['size_usdt']} USDT (余额{self._available_balance:.2f})")
 
                     decision = {
@@ -539,35 +538,33 @@ class MultiJudge(BaseAgent):
         is_long = (action == 'open_long')
 
         stop_loss = self._calc_stop_loss(levels, price, is_long, trend, momentum)
-        take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum, stop_loss)
-        leverage = self._calc_leverage(risk)
-        entry_zone = self._calc_entry_zone(price, micro, momentum)
-        order_type = self._calc_order_type(momentum, micro)
-        size_usdt = self._calc_size(confidence)
-
         sl_dist = abs(price - stop_loss) / price
 
-        # 杠杆-止损联动：防跳空爆仓（价格反向2倍sl_dist时保证金亏损不超50%）
-        max_lev_by_sl = max(1, int(0.5 / sl_dist)) if sl_dist > 0 else 20
-        if leverage > max_lev_by_sl:
-            leverage = min(leverage, max_lev_by_sl)
-            allowed = [1, 2, 3, 5, 10, 20]
-            for lev in allowed:
-                if leverage <= lev:
-                    leverage = lev
-                    break
+        budget = self._calc_risk_budget(tech, action, sl_dist)
+        leverage = budget['leverage']
+        size_usdt = budget['size_usdt']
 
-        # 仓位-止损联动：单笔最大亏损不超过可用余额的15%
-        max_risk_usdt = self._available_balance * 0.15
-        max_size_by_risk = max_risk_usdt / sl_dist if sl_dist > 0 else size_usdt
-        size_usdt = min(size_usdt, max_size_by_risk)
+        take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum, stop_loss)
+        entry_zone = self._calc_entry_zone(price, micro, momentum)
+        order_type = self._calc_order_type(momentum, micro)
 
         tp_dist = abs(take_profit[0] - price) / price if take_profit else sl_dist
-        rr_ratio = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 1.0
-        self.logger.info(f"[Plan] price={price:.4f} sl={stop_loss:.4f}({sl_dist:.3f}) tp={take_profit[0]:.4f}({tp_dist:.3f}) atr={momentum.get('atr_pct',0):.4f} R:R={rr_ratio} lev={leverage}x size={size_usdt:.2f}")
+        gross_rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 1.0
+
+        notional = budget['notional_usdt']
+        gross_profit = notional * tp_dist
+        gross_loss = budget['max_loss_usdt']
+        total_cost = budget['total_cost_usdt']
+        effective_rr = round((gross_profit - total_cost) / (gross_loss + total_cost), 2) if (gross_loss + total_cost) > 0 else 1.0
+
+        self.logger.info(
+            f"[Plan] price={price:.4f} sl={stop_loss:.4f}({sl_dist:.3f}) "
+            f"tp={take_profit[0]:.4f}({tp_dist:.3f}) atr={momentum.get('atr_pct',0):.4f} "
+            f"R:R={effective_rr}(gross={gross_rr}) lev={leverage}x size={size_usdt:.2f} "
+            f"funding_cost={budget['funding_cost_usdt']:.3f} fee={budget['fee_cost_usdt']:.3f}"
+        )
 
         def price_round(x):
-            # 动态精度：保留4位有效数字，避免低价币被截断
             from math import log10, floor
             if x <= 0:
                 return x
@@ -581,7 +578,10 @@ class MultiJudge(BaseAgent):
             "leverage": leverage,
             "size_usdt": size_usdt,
             "order_type": order_type,
-            "risk_reward_ratio": rr_ratio,
+            "risk_reward_ratio": gross_rr,
+            "effective_risk_reward_ratio": effective_rr,
+            "funding_cost": round(budget['funding_cost_usdt'], 3),
+            "est_hold_hours": budget['est_hold_hours'],
             "max_holding_hours": 24,
         }
 
@@ -688,38 +688,76 @@ class MultiJudge(BaseAgent):
                 tps = [price * (1 - min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
 
-    def _calc_leverage(self, risk: dict) -> int:
-        """动态杠杆 1-20x，基于风险等级+波动率+流动性综合判断"""
-        lev_risk = risk.get('leverage_risk', 'low')
-        vol = risk.get('volatility_regime', 'normal')
-        liquidity = risk.get('liquidity_score', 80)
+    def _calc_risk_budget(self, tech: dict, action: str, sl_dist: float) -> dict:
+        """统一风险预算：从风险约束推导杠杆和仓位
 
-        # 基础杠杆：风险越低越敢加
-        if lev_risk == 'high':
-            base = 3
-        elif lev_risk == 'medium':
-            base = 7
-        else:
-            base = 12
+        核心公式：leverage = max_loss / (margin × sl_dist) = 0.5 / sl_dist
+        固定保证金(余额10%) + 固定最大亏损(余额5%) → 杠杆由止损距离决定
+        """
+        balance = self._available_balance if self._available_balance > 0 else self._max_trade_amount * 3
 
-        # 波动率调节
-        vol_mult = {"low": 1.5, "normal": 1.0, "high": 0.6, "extreme": 0.3}
-        base = int(base * vol_mult.get(vol, 1.0))
+        MARGIN_PCT = 0.10
+        MAX_LOSS_PCT = 0.05
 
-        # 流动性调节：流动性差时砍杠杆
-        if liquidity < 30:
-            base = int(base * 0.5)
-        elif liquidity < 60:
-            base = int(base * 0.75)
+        margin_usdt = min(balance * MARGIN_PCT, self._max_trade_amount)
+        max_loss_usdt = balance * MAX_LOSS_PCT
 
-        leverage = max(1, min(20, base))
+        if sl_dist <= 0:
+            sl_dist = 0.02
 
-        # 圆整到OKX允许的杠杆倍数：1,2,3,5,10,20
+        raw_leverage = max_loss_usdt / (margin_usdt * sl_dist)
+        leverage = max(1, min(20, int(raw_leverage)))
+
+        # 向下圆整到OKX允许值（保证max_loss不超预算）
         allowed = [1, 2, 3, 5, 10, 20]
+        final_lev = allowed[0]
         for lev in allowed:
-            if leverage <= lev:
-                return lev
-        return 20
+            if lev <= leverage:
+                final_lev = lev
+            else:
+                break
+        leverage = final_lev
+
+        # size_usdt = 保证金（Executor会乘leverage得到名义价值）
+        size_usdt = round(float(margin_usdt), 2)
+        notional = margin_usdt * leverage
+        actual_max_loss = margin_usdt * sl_dist * leverage
+
+        money_flow = tech.get('money_flow', {})
+        current_funding = money_flow.get('funding_rate', 0)
+        funding_rate = abs(current_funding)
+
+        atr_pct = tech.get('momentum', {}).get('atr_pct', 0.02)
+        if atr_pct >= 0.03:
+            est_hours = 16
+        elif atr_pct >= 0.015:
+            est_hours = 32
+        else:
+            est_hours = 48
+
+        is_long = (action == 'open_long')
+        if is_long:
+            funding_direction_mult = 1.0 if current_funding > 0 else -0.5
+        else:
+            funding_direction_mult = -0.5 if current_funding > 0 else 1.0
+
+        funding_periods = est_hours / 8
+        funding_cost_pct = funding_rate * funding_periods * funding_direction_mult
+        funding_cost_usdt = notional * funding_cost_pct
+        fee_cost_usdt = notional * 0.001
+        total_cost_usdt = max(0, funding_cost_usdt) + fee_cost_usdt
+
+        return {
+            "leverage": leverage,
+            "size_usdt": size_usdt,
+            "margin_usdt": margin_usdt,
+            "notional_usdt": notional,
+            "max_loss_usdt": actual_max_loss,
+            "funding_cost_usdt": max(0, funding_cost_usdt),
+            "fee_cost_usdt": fee_cost_usdt,
+            "total_cost_usdt": total_cost_usdt,
+            "est_hold_hours": est_hours,
+        }
 
     def _calc_entry_zone(self, price: float, micro: dict, momentum: dict) -> list:
         spread = micro.get('spread_pct', 0.01)
@@ -730,19 +768,6 @@ class MultiJudge(BaseAgent):
         if momentum.get('volume_anomaly') or micro.get('liquidation_intensity') == 'high':
             return "market"
         return "limit"
-
-    def _calc_size(self, confidence: int) -> float:
-        if confidence >= 80:
-            factor = 1.0
-        elif confidence >= 70:
-            factor = 0.7
-        elif confidence >= 60:
-            factor = 0.5
-        else:
-            factor = 0.3
-        # 动态仓位：基于可用余额的30%为基准，而非写死的max_trade_amount
-        base_size = self._available_balance * 0.30 if self._available_balance > 0 else self._max_trade_amount
-        return round(base_size * factor, 2)
 
     # ═══ LLM决策 ═══
 

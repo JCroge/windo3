@@ -303,6 +303,19 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **验证**：16个Judge场景+11个PositionAnalyst场景全通过；Monte Carlo模拟开仓率12.6%→7.8%，预估胜率58%→75%
 - **设计参考**：Freqtrade confirm_trade_entry模式、Jesse Livermore "When in doubt, stay out"
 
+### ✅ 统一风险预算框架（2026-05-14完成）
+- **核心公式**：`leverage = max_loss / (margin × sl_dist) = 0.5 / sl_dist`
+- **设计原则**：杠杆不是独立输入，而是从风险约束推导的结果
+- **固定参数**：margin = min(余额×10%, max_trade_amount)，max_loss = 余额×5%
+- **杠杆向下圆整**到OKX允许值[1,2,3,5,10,20]，保证max_loss不超预算
+- **size_usdt语义**：= 保证金（margin），Executor内部乘leverage得名义价值
+- **effective_rr**：(gross_profit - funding_cost - fee) / (max_loss + costs)，含资金费率方向性
+- **资金费率方向性**：正费率做多付费/做空收费，负费率反之
+- **ATR持仓时间估算**：高ATR→16h，中→32h，低→48h
+- **删除旧函数**：`_calc_leverage` + `_calc_size` → 统一为 `_calc_risk_budget`
+- **实盘验证**：BTC 20x/ETH 10x/ZEC 10x，单笔最大亏损≤5%余额，高费率做多被R:R拒绝
+- **Monte Carlo模拟**：开仓率31%，日均1.6笔，日化预期1.0%~1.5%
+
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
 - 杠杆上限调整为20x：OKX允许值列表[1,2,3,5,10,20]，RiskGuard高杠杆阈值同步更新为20

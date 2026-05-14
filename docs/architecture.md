@@ -25,6 +25,7 @@
 - 2026-05-14：Judge LLM-Rule方向冲突修复（judge.py）：confidence提升需方向一致 + LLM反向衰减50% + rule_signal+LLM反向衰减60% + RSI禁区inclusive(>=70/<=30)
 - 2026-05-14：PositionAnalyst规则3b（position_analyst.py）：浮亏>10%+趋势非顺向→强制平仓
 - 2026-05-14：llm_client.py chat_json支持temperature参数传递
+- 2026-05-14：统一风险预算框架（judge.py）：杠杆由风险约束推导 `leverage = 0.5/sl_dist`，删除旧`_calc_leverage`+`_calc_size`，新增`_calc_risk_budget`统一函数，effective_rr含资金费率+手续费
 
 ## 架构图
 
@@ -303,7 +304,7 @@ CREATE TABLE klines (
 | `research/symbol_router.py` | 研判 | 标的路由+轮换协议（平仓旧标的） | 无 |
 | `trading/multi_data_collector.py` | 交易 | 9维度数据采集（K线/orderbook/OI/爆仓/费率/Taker/大单/多空比） | 无 |
 | `trading/tech_analyst.py` | 交易 | 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险） | Claude综合研判 |
-| `trading/judge.py` | 交易 | 精确交易计划（入场区间/止盈止损/动态杠杆1-20x/仓位/RSI极端值保护） | Claude最终裁决 |
+| `trading/judge.py` | 交易 | 精确交易计划（统一风险预算/入场区间/止盈止损/动态杠杆1-20x/仓位/RSI极端值保护） | Claude最终裁决 |
 | `trading/executor.py` | 交易 | 多标的交易执行 | 无 |
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
 | `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |

@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-05-14）**：两层多Agent系统完成，研判层每4h自动选币，交易层持续运行。Judge含LLM-Rule方向冲突保护。
+**系统状态（2026-05-14）**：两层多Agent系统完成，研判层每4h自动选币，交易层持续运行。Judge含统一风险预算框架（杠杆由风险约束推导）+ LLM-Rule方向冲突保护。
 
 ## 核心模块接口
 
@@ -213,7 +213,7 @@ class MyAgent(BaseAgent):
 
 `trade_decision:{symbol}` — Judge发布，精确交易计划：
 - action, confidence, reasoning, key_factors[], risk_warnings[]
-- plan: {entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt, order_type, risk_reward_ratio}
+- plan: {entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt(=margin), order_type, risk_reward_ratio, effective_risk_reward_ratio, funding_cost, est_hold_hours}
 
 `execution_result:{symbol}` — Executor发布，交易执行结果：
 - status (executed/force_closed/rejected/risk_reduced)
