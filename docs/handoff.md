@@ -351,6 +351,30 @@
    - while循环包裹Orchestrator.start()
    - 退出后检测`data/.restart_flag`决定是否重启
 
+### ✅ Phase 6k: 回调入场 + Censor超时修复 + Executor margin修复（2026-05-14完成）
+
+1. **回调入场机制**（`agents/trading/judge.py`）
+   - 问题：统一风险预算上线后，正确方向信号因R:R<1.5被拒（BASED R:R=1.18, TON R:R=1.39）
+   - 三级响应：R:R≥1.5正常 / 1.2≤R:R<1.5强信号追价(仓位=rr/1.5) / 弱信号等回调(3h) / R:R<1.2放弃
+   - deferred_entry状态机：每tick检查回调到位/追价触发/过期/趋势反转取消
+   - 余额保护：触发时重新_build_plan，size_usdt<1.0则放弃
+   - 理论基础：Al Brooks Signal/Entry Bar、Turtle Traders回踩确认
+
+2. **Censor分批审查**（`agents/research/censor.py`）
+   - 根因：Synthesizer扩容12标的后单次LLM调用超Cloudflare 100s网关超时
+   - 修复：BATCH_SIZE=4分批处理，每批独立调用，失败则该批规则降级
+
+3. **LLM客户端加固**（`agents/llm_client.py`）
+   - 新增httpx.Timeout(connect=10, read=90, write=10, pool=10)
+   - max_retries=2（OpenAI SDK内置指数退避）
+
+4. **Executor required_margin修复**（`executor.py`）
+   - 修复前：`required_margin = size_usdt / leverage`（错误，因size_usdt已是margin）
+   - 修复后：`required_margin = size_usdt`（统一风险预算语义对齐）
+
+5. **RiskGuard陈旧数据清理**（`data/riskguard_state.json`）
+   - 清除13条已被SL/TP平仓但未从state中移除的持仓记录
+
 ## 技术债务
 
 1. **R:R计算已修复**（2026-05-13）

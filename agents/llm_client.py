@@ -4,6 +4,7 @@ import os
 import time
 import json
 import asyncio
+import httpx
 from openai import AsyncOpenAI
 from utils.logger import setup_logger
 
@@ -25,7 +26,9 @@ class LLMClient:
         self.client = AsyncOpenAI(
             api_key=self.api_key,
             base_url=api_base,
-            default_headers={'User-Agent': 'curl/8.0'}
+            default_headers={'User-Agent': 'curl/8.0'},
+            timeout=httpx.Timeout(connect=10, read=90, write=10, pool=10),
+            max_retries=2,
         )
 
         self._last_call_time = 0

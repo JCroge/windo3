@@ -26,6 +26,9 @@
 - 2026-05-14：PositionAnalyst规则3b（position_analyst.py）：浮亏>10%+趋势非顺向→强制平仓
 - 2026-05-14：llm_client.py chat_json支持temperature参数传递
 - 2026-05-14：统一风险预算框架（judge.py）：杠杆由风险约束推导 `leverage = 0.5/sl_dist`，删除旧`_calc_leverage`+`_calc_size`，新增`_calc_risk_budget`统一函数，effective_rr含资金费率+手续费
+- 2026-05-14：回调入场机制（judge.py）：R:R<1.5分级响应（追价/等回调/放弃），deferred_entry状态机
+- 2026-05-14：Censor分批审查（censor.py）：BATCH_SIZE=4避免Cloudflare超时，LLM timeout=90s+max_retries=2
+- 2026-05-14：Executor required_margin修复（executor.py）：size_usdt即margin，不再除以leverage
 
 ## 架构图
 
@@ -304,12 +307,12 @@ CREATE TABLE klines (
 | `research/symbol_router.py` | 研判 | 标的路由+轮换协议（平仓旧标的） | 无 |
 | `trading/multi_data_collector.py` | 交易 | 9维度数据采集（K线/orderbook/OI/爆仓/费率/Taker/大单/多空比） | 无 |
 | `trading/tech_analyst.py` | 交易 | 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险） | Claude综合研判 |
-| `trading/judge.py` | 交易 | 精确交易计划（统一风险预算/入场区间/止盈止损/动态杠杆1-20x/仓位/RSI极端值保护） | Claude最终裁决 |
+| `trading/judge.py` | 交易 | 精确交易计划（统一风险预算/入场区间/止盈止损/动态杠杆1-20x/仓位/RSI极端值保护/回调入场） | Claude最终裁决 |
 | `trading/executor.py` | 交易 | 多标的交易执行 | 无 |
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
 | `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |
 | `trading/telegram_notifier.py` | 交易 | Telegram实时告警+每日摘要 | 无 |
-| `trading/position_analyst.py` | 交易 | 持仓6因子评分+裁决引擎（每30min） | 无 |
+| `trading/position_analyst.py` | 交易 | 持仓7因子评分+裁决引擎（每2h） | 无 |
 | `trading/behavioral_critic.py` | 交易 | 行为金融学偏差检测（7种认知偏差） | Claude检测偏差 |
 
 **LLM降级机制**：Claude不可用时自动回退到规则引擎，系统不中断。
@@ -366,6 +369,10 @@ CREATE TABLE klines (
 1. DataCollector 9维度采集（10s价格/30s深度+爆仓/60s全量/5min 4h K线）
 2. TechAnalyst 收到数据后：规则引擎解读9维度 + Claude综合研判
 3. Judge 收到分析后：信号聚合评分 + Claude裁决 → 精确交易计划（入场/止盈止损/杠杆/仓位）
+   - R:R≥1.5 → 正常入场
+   - 1.2≤R:R<1.5 + 强信号(|score|≥50) → 追价入场（缩仓）
+   - 1.2≤R:R<1.5 + 弱信号 → deferred_entry等回调（3h有效）
+   - R:R<1.2 → 放弃
 4. Executor 收到决策后：风控审核 → 执行交易
 5. RiskGuard 持续监控：闪崩检测、敞口超限
 ```

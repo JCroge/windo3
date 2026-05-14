@@ -343,7 +343,7 @@ class ContractExecutor:
             leverage = plan.get('leverage', self.leverage)
             size_usdt = plan.get('size_usdt', self.risk_manager.max_trade_amount)
             size_usdt = min(size_usdt, self.risk_manager.max_trade_amount)
-            required_margin = size_usdt / leverage
+            required_margin = size_usdt
             free_balance = self.exchange.fetch_balance()['USDT']['free']
             if free_balance < required_margin * 1.1:
                 self.logger.warning(f"可用余额不足: free={free_balance:.2f} < 需要{required_margin:.2f}")

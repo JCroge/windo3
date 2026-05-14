@@ -316,6 +316,25 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **实盘验证**：BTC 20x/ETH 10x/ZEC 10x，单笔最大亏损≤5%余额，高费率做多被R:R拒绝
 - **Monte Carlo模拟**：开仓率31%，日均1.6笔，日化预期1.0%~1.5%
 
+### ✅ 回调入场机制（2026-05-14完成）
+- **问题**：统一风险预算上线后，多个正确方向信号因R:R<1.5被拒（BASED score=-65 R:R=1.18, TON score=-45 R:R=1.39）
+- **理论基础**：Al Brooks Signal/Entry Bar、ICT Fair Value Gap回填、Turtle Traders回踩确认
+- **三级响应矩阵**：
+  - R:R≥1.5 → 正常入场（现有逻辑）
+  - 1.2≤R:R<1.5 且 |score|≥50 → 追价入场（仓位=rr/1.5，min 60%）
+  - 1.2≤R:R<1.5 且 |score|<50 → 回调等待（target_price由R:R反推，3h有效）
+  - R:R<1.2 → 放弃
+- **deferred_entry状态机**：每tick检查回调到位/追价触发(移动>1.5%无回调)/过期(3h)/趋势反转取消
+- **余额保护**：回调/追价触发时重新调用_build_plan，size_usdt<1.0则放弃
+- **Executor适配**：confidence=60满足门槛，通过key_factors区分入场类型
+- **验证**：8个单元测试全通过，实盘TIA/INJ通过deferred entry入场并盈利
+
+### ✅ Censor分批审查 + LLM超时修复（2026-05-14完成）
+- **根因**：Synthesizer扩容（3→12标的）后，9个symbol一次性发给Censor LLM，prompt过长超Cloudflare 100s网关超时
+- **修复**：censor.py分批处理BATCH_SIZE=4，每批独立LLM调用，失败则该批规则降级
+- **LLM客户端加固**：llm_client.py新增httpx.Timeout(connect=10, read=90, write=10, pool=10) + max_retries=2
+- **Executor required_margin修复**：`required_margin = size_usdt`（不再除以leverage，因size_usdt在统一风险预算中已是margin语义）
+
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
 - 杠杆上限调整为20x：OKX允许值列表[1,2,3,5,10,20]，RiskGuard高杠杆阈值同步更新为20

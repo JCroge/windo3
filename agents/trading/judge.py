@@ -65,6 +65,7 @@ class MultiJudge(BaseAgent):
                 "pending_pullback": None,
                 "pending_pullback_time": 0,
                 "pullback_bonus": 0,
+                "deferred_entry": None,
             }
         return self._symbol_state[symbol]
 
@@ -86,7 +87,9 @@ class MultiJudge(BaseAgent):
     async def on_message(self, msg: dict):
         if msg['type'] == 'symbol_update':
             for s in msg['payload'].get('removed', []):
-                self._symbol_state.pop(s, None)
+                removed_state = self._symbol_state.pop(s, None)
+                if removed_state and removed_state.get('deferred_entry'):
+                    self.logger.info(f"[Judge] {s} 移除，取消延迟入场")
             return
 
         if msg['type'] == 'news_snapshot':
@@ -143,6 +146,88 @@ class MultiJudge(BaseAgent):
                 self.logger.info(f"[Judge] {symbol} RSI回升至{rsi:.0f}，回调入场触发")
                 state['pending_pullback'] = None
                 state['pullback_bonus'] = -15
+
+        # 延迟入场检查（R:R不足时等待回调）
+        deferred = state.get('deferred_entry')
+        if deferred:
+            current_price = tech.get('indicators', {}).get('price', 0)
+            age_seconds = time.time() - deferred['created_at']
+            def_action = deferred['action']
+            target = deferred['target_price']
+            is_long = (def_action == 'open_long')
+
+            if is_long:
+                deferred['lowest_since'] = min(deferred['lowest_since'], current_price)
+            else:
+                deferred['highest_since'] = max(deferred['highest_since'], current_price)
+
+            pullback_hit = (is_long and current_price <= target) or \
+                           (not is_long and current_price >= target)
+            if pullback_hit:
+                self.logger.info(f"[Judge] {symbol} 回调到位 price={current_price:.4f} target={target:.4f}，重新构建plan")
+                plan = self._build_plan(tech, def_action, current_price, 60)
+                if plan['size_usdt'] < 1.0:
+                    self.logger.info(f"[Judge] {symbol} 回调入场时余额不足，放弃")
+                    state['deferred_entry'] = None
+                    return
+                new_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
+                if new_rr < 1.2:
+                    self.logger.info(f"[Judge] {symbol} 回调入场重算R:R={new_rr:.2f}<1.2，放弃")
+                    state['deferred_entry'] = None
+                    return
+                plan['order_type'] = 'limit'
+                state['deferred_entry'] = None
+                decision = {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": def_action, "confidence": 60,
+                    "plan": plan, "size_pct": 1.0,
+                    "reasoning": f"回调入场触发：目标价{target:.4f}达到，R:R={new_rr:.2f}",
+                    "key_factors": ["deferred_pullback_filled"],
+                    "risk_warnings": [],
+                }
+                await self.publish("trade_decision", decision, symbol=symbol)
+                return
+
+            signal_price = deferred['signal_price']
+            if is_long:
+                move_pct = (current_price - signal_price) / signal_price
+            else:
+                move_pct = (signal_price - current_price) / signal_price
+
+            if move_pct > 0.015 and deferred.get('chase_eligible'):
+                plan = self._build_plan(tech, def_action, current_price, 60)
+                plan['size_usdt'] = round(plan['size_usdt'] * 0.6, 2)
+                if plan['size_usdt'] < 1.0:
+                    self.logger.info(f"[Judge] {symbol} 追价入场时余额不足，放弃")
+                    state['deferred_entry'] = None
+                    return
+                plan['order_type'] = 'market'
+                state['deferred_entry'] = None
+                self.logger.info(f"[Judge] {symbol} 价格已移动{move_pct:.1%}无回调，追价入场（仓位60%）")
+                decision = {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": def_action, "confidence": 60,
+                    "plan": plan, "size_pct": 0.6,
+                    "reasoning": f"追价入场：价格移动{move_pct:.1%}无回调，缩仓60%补偿",
+                    "key_factors": ["chase_entry_no_pullback"],
+                    "risk_warnings": ["R:R<1.5, 仓位已缩小"],
+                }
+                await self.publish("trade_decision", decision, symbol=symbol)
+                return
+
+            if age_seconds > 3 * 3600:
+                self.logger.info(f"[Judge] {symbol} 延迟入场过期（{age_seconds/3600:.1f}h），放弃")
+                state['deferred_entry'] = None
+                return
+
+            trend_dir = tech.get('trend', {}).get('direction', 'neutral')
+            if (is_long and trend_dir == 'bearish') or (not is_long and trend_dir == 'bullish'):
+                self.logger.info(f"[Judge] {symbol} 趋势反转({trend_dir})，取消延迟入场")
+                state['deferred_entry'] = None
+                return
+
+            state['pullback_bonus'] = 0
+            return
 
         score = self._compute_score(tech)
 
@@ -287,20 +372,74 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
-                    # R:R硬性门槛：最低1.5，不因confidence高而放松（含资金费率成本）
+                    # R:R分级响应：强信号追价入场，弱信号等待回调
                     rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
                     min_rr = 1.5
                     if rr < min_rr:
-                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f} < {min_rr}，赔率不足放弃")
-                        decision = {
-                            "symbol": symbol, "timestamp": time.time(),
-                            "action": "hold", "confidence": 0,
-                            "plan": None, "size_pct": 0,
-                            "reasoning": f"R:R={rr:.2f}<{min_rr}，赔率不满足入场条件",
-                            "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
-                        }
-                        await self.publish("trade_decision", decision, symbol=symbol)
-                        return
+                        if rr < 1.2:
+                            self.logger.info(f"[Judge] {symbol} R:R={rr:.2f}<1.2，赔率过低放弃")
+                            decision = {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": f"R:R={rr:.2f}<1.2，赔率过低无法补救",
+                                "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
+                            }
+                            await self.publish("trade_decision", decision, symbol=symbol)
+                            return
+
+                        abs_score = abs(score)
+                        if abs_score >= 50:
+                            chase_pct = max(0.6, min(0.9, rr / min_rr))
+                            plan['size_usdt'] = round(plan['size_usdt'] * chase_pct, 2)
+                            self.logger.info(
+                                f"[Judge] {symbol} R:R={rr:.2f}<1.5但score={score:.0f}强信号，"
+                                f"追价入场仓位缩至{chase_pct:.0%}"
+                            )
+                        else:
+                            sl_dist = abs(price - plan['stop_loss']) / price if price > 0 else 0.02
+                            needed_improve = (min_rr - rr) * sl_dist / (1 + min_rr)
+                            if needed_improve > 0.03:
+                                self.logger.info(f"[Judge] {symbol} 需回调{needed_improve:.1%}>3%，不现实，放弃")
+                                decision = {
+                                    "symbol": symbol, "timestamp": time.time(),
+                                    "action": "hold", "confidence": 0,
+                                    "plan": None, "size_pct": 0,
+                                    "reasoning": f"R:R={rr:.2f}，需回调{needed_improve:.1%}不现实",
+                                    "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
+                                }
+                                await self.publish("trade_decision", decision, symbol=symbol)
+                                return
+
+                            is_long = (final_action == 'open_long')
+                            target_price = price * (1 - needed_improve) if is_long else price * (1 + needed_improve)
+                            state = self._get_state(symbol)
+                            state['deferred_entry'] = {
+                                'action': final_action,
+                                'signal_price': price,
+                                'signal_score': score,
+                                'target_price': target_price,
+                                'created_at': time.time(),
+                                'expiry_bars': 3,
+                                'chase_eligible': False,
+                                'highest_since': price,
+                                'lowest_since': price,
+                            }
+                            state['pullback_bonus'] = 0
+                            self.logger.info(
+                                f"[Judge] {symbol} R:R={rr:.2f}<1.5，score={score:.0f}弱信号，"
+                                f"等待回调至{target_price:.4f}（需{needed_improve:.2%}）"
+                            )
+                            decision = {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": f"R:R={rr:.2f}<1.5，等待回调至{target_price:.4f}入场（3h有效）",
+                                "key_factors": [f"deferred_entry: target={target_price:.4f}"],
+                                "risk_warnings": [f"R:R={rr:.2f}"],
+                            }
+                            await self.publish("trade_decision", decision, symbol=symbol)
+                            return
 
                     # 余额兜底检查（size_usdt已经是保证金）
                     required_margin = plan['size_usdt']
@@ -545,7 +684,7 @@ class MultiJudge(BaseAgent):
         size_usdt = budget['size_usdt']
 
         take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum, stop_loss)
-        entry_zone = self._calc_entry_zone(price, micro, momentum)
+        entry_zone = self._calc_entry_zone(price, micro, momentum, is_long)
         order_type = self._calc_order_type(momentum, micro)
 
         tp_dist = abs(take_profit[0] - price) / price if take_profit else sl_dist
@@ -759,10 +898,13 @@ class MultiJudge(BaseAgent):
             "est_hold_hours": est_hours,
         }
 
-    def _calc_entry_zone(self, price: float, micro: dict, momentum: dict) -> list:
+    def _calc_entry_zone(self, price: float, micro: dict, momentum: dict, is_long: bool = True) -> list:
         spread = micro.get('spread_pct', 0.01)
-        margin = max(spread * 2, 0.02) / 100 * price
-        return [price - margin, price + margin]
+        offset = max(spread * 2, 0.03) / 100 * price
+        if is_long:
+            return [price - offset * 2, price - offset * 0.5]
+        else:
+            return [price + offset * 0.5, price + offset * 2]
 
     def _calc_order_type(self, momentum: dict, micro: dict) -> str:
         if momentum.get('volume_anomaly') or micro.get('liquidation_intensity') == 'high':

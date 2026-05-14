@@ -52,28 +52,42 @@ class Censor(BaseAgent):
         if not selected:
             return
 
-        user_msg = self._build_challenge_request(selected, market_context)
+        # 分批审查：每批最多4个标的，避免prompt过长触发中转站超时
+        BATCH_SIZE = 4
+        all_challenges = []
+        all_systemic = []
+        overall_verdict = ""
 
-        try:
-            result = await self.ask_claude_json(CENSOR_PROMPT, user_msg)
-            challenges = result.get('challenges', [])
-        except Exception as e:
-            self.logger.warning(f"言官LLM失败，规则降级: {e}")
-            challenges = self._rule_fallback_challenge(selected)
-            result = {"challenges": challenges, "systemic_risks": [], "overall_verdict": "规则降级审查"}
+        for i in range(0, len(selected), BATCH_SIZE):
+            batch = selected[i:i + BATCH_SIZE]
+            user_msg = self._build_challenge_request(batch, market_context if i == 0 else "")
 
-        rejected = [c['symbol'] for c in challenges if c.get('recommendation') == 'reject']
-        cautioned = [c['symbol'] for c in challenges if c.get('recommendation') == 'proceed_with_caution']
+            try:
+                result = await self.ask_claude_json(CENSOR_PROMPT, user_msg)
+                all_challenges.extend(result.get('challenges', []))
+                all_systemic.extend(result.get('systemic_risks', []))
+                if not overall_verdict:
+                    overall_verdict = result.get('overall_verdict', '')
+            except Exception as e:
+                self.logger.warning(f"言官LLM失败(batch {i//BATCH_SIZE+1})，规则降级: {e}")
+                all_challenges.extend(self._rule_fallback_challenge(batch))
+
+        if not all_challenges:
+            all_challenges = self._rule_fallback_challenge(selected)
+            overall_verdict = "规则降级审查"
+
+        rejected = [c['symbol'] for c in all_challenges if c.get('recommendation') == 'reject']
+        cautioned = [c['symbol'] for c in all_challenges if c.get('recommendation') == 'proceed_with_caution']
 
         self.logger.info(
             f"[言官] 审查完成: 驳回{rejected}, 警告{cautioned}, "
-            f"系统性风险{len(result.get('systemic_risks', []))}条"
+            f"系统性风险{len(all_systemic)}条"
         )
 
         await self.publish("research_challenge", {
-            "challenges": challenges,
-            "systemic_risks": result.get('systemic_risks', []),
-            "overall_verdict": result.get('overall_verdict', ''),
+            "challenges": all_challenges,
+            "systemic_risks": list(set(all_systemic)),
+            "overall_verdict": overall_verdict,
             "original_selected": selected,
         })
 
