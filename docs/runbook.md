@@ -105,7 +105,7 @@ python3 test_p0_features.py       # P0功能测试（Reviewer/Hard Stop/Graceful
 | ANTHROPIC_API_KEY | Claude API密钥 | - | 否（多Agent系统） |
 | ANTHROPIC_BASE_URL | Claude API地址（中转） | https://api.anthropic.com | 否 |
 | ANTHROPIC_MODEL | Claude模型名 | claude-sonnet-4-6 | 否 |
-| RESEARCH_INTERVAL | 研判层运行周期（秒） | 43200 (12h) | 否 |
+| RESEARCH_INTERVAL | 研判层运行周期（秒） | 14400 (4h) | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 

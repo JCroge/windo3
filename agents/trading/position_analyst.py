@@ -360,6 +360,13 @@ class PositionAnalyst(BaseAgent):
             return self._make_final("close", 1.0, symbol, verdict['action'],
                                     None, None, f"硬性规则：高级别趋势反转+浮亏{pnl_pct:.1f}%")
 
+        # 规则3b: 浮亏>10% + 趋势非顺向(neutral或反转) → close（入场逻辑已失效，不值得继续扛）
+        trend_aligned = (side == 'long' and higher_trend == 'bullish') or \
+                        (side == 'short' and higher_trend == 'bearish')
+        if pnl_pct < -10 and not trend_aligned:
+            return self._make_final("close", 1.0, symbol, verdict['action'],
+                                    None, None, f"硬性规则：浮亏{pnl_pct:.1f}%>10%且趋势非顺向({higher_trend})")
+
         # 规则4: 浮盈>15% + 动量反转 → reduce 50%（保持不变）
         momentum_reversed = verdict['factors']['momentum_shift'] <= -10
         if pnl_pct > 15 and momentum_reversed:

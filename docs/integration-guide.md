@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-05-07）**：两层多Agent系统完成，研判层每12h自动选币，交易层持续运行。
+**系统状态（2026-05-14）**：两层多Agent系统完成，研判层每4h自动选币，交易层持续运行。Judge含LLM-Rule方向冲突保护。
 
 ## 核心模块接口
 
@@ -24,14 +24,14 @@ orchestrator = Orchestrator(config={
     "leverage": 3,
     "max_trade_amount": 10,
     "use_testnet": False,
-    "research_interval": 43200,   # 研判周期12h
-    "max_active_symbols": 3,      # 最多同时交易3个标的
+    "research_interval": 14400,   # 研判周期4h
+    "max_active_symbols": 5,      # 最多同时交易5个标的
 })
 orchestrator.start()
 ```
 
 **架构说明**：
-- 研判层（Tier 1）：每12h运行，扫描全市场选出2-3个最优标的
+- 研判层（Tier 1）：每4h运行，扫描全市场选出最优标的（最多5个）
 - 交易层（Tier 2）：持续运行，对活跃标的并行分析+交易
 - 标的动态轮换：研判层选出新标的时，旧标的自动平仓
 

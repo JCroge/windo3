@@ -60,9 +60,9 @@ class LLMClient:
             raise
 
     async def chat_json(self, system_prompt: str, user_message: str,
-                        max_tokens: int = 2000) -> dict:
+                        max_tokens: int = 2000, temperature: float = 0.2) -> dict:
         system_with_json = system_prompt + "\n\n请以纯JSON格式回复，不要包含markdown代码块。"
-        result = await self.chat(system_with_json, user_message, max_tokens, temperature=0.2)
+        result = await self.chat(system_with_json, user_message, max_tokens, temperature=temperature)
 
         result = result.strip()
         if result.startswith("```"):

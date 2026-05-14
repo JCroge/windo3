@@ -237,22 +237,29 @@ class MultiJudge(BaseAgent):
 
                 final_conf = llm_result.get('confidence', confidence)
 
-                # LLM同意开仓方向：confidence至少65（已过score门槛+LLM方向确认）
+                # LLM方向确认/冲突处理
                 llm_action = llm_result.get('action', 'hold')
-                if llm_action in ('open_long', 'open_short') and final_conf < 65:
-                    self.logger.info(f"[Judge] {symbol} LLM同意{llm_action}但confidence={final_conf}偏低，提升至65")
+                if llm_action == final_action and final_conf < 65:
+                    self.logger.info(f"[Judge] {symbol} LLM确认{llm_action}方向，confidence提升至65")
                     final_conf = 65
+                elif llm_action in ('open_long', 'open_short') and llm_action != final_action:
+                    final_conf = max(30, int(final_conf * 0.5))
+                    self.logger.warning(f"[Judge] {symbol} LLM建议{llm_action}与规则方向{final_action}冲突，confidence衰减至{final_conf}")
 
                 # LLM反对但rule_signal触发：降低仓位30%而非阻止入场
                 if has_rule_signal and llm_action == 'hold':
                     final_conf = max(40, int(confidence * 0.7))
                     self.logger.info(f"[Judge] {symbol} rule_signal触发但LLM观望，仓位衰减30%")
+                # LLM给出反向开仓建议：比hold更强的冲突信号，衰减60%
+                elif has_rule_signal and llm_action in ('open_long', 'open_short') and llm_action != action:
+                    final_conf = max(30, int(confidence * 0.4))
+                    self.logger.warning(f"[Judge] {symbol} rule_signal={action}但LLM建议反向{llm_action}，强冲突衰减60%，confidence={final_conf}")
 
                 if final_action in ('open_long', 'open_short'):
                     # RSI超买/超卖硬性入场禁令：不追高不追低，标记待回调
                     rsi = tech.get('momentum', {}).get('rsi', 50)
-                    if final_action == 'open_long' and rsi > 72:
-                        self.logger.info(f"[Judge] {symbol} RSI={rsi:.0f}>72超买，禁止追多，标记待回调")
+                    if final_action == 'open_long' and rsi >= 70:
+                        self.logger.info(f"[Judge] {symbol} RSI={rsi:.0f}>=70超买，禁止追多，标记待回调")
                         state = self._get_state(symbol)
                         state['pending_pullback'] = 'long'
                         state['pending_pullback_time'] = time.time()
@@ -265,8 +272,8 @@ class MultiJudge(BaseAgent):
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
-                    if final_action == 'open_short' and rsi < 28:
-                        self.logger.info(f"[Judge] {symbol} RSI={rsi:.0f}<28超卖，禁止追空，标记待回调")
+                    if final_action == 'open_short' and rsi <= 30:
+                        self.logger.info(f"[Judge] {symbol} RSI={rsi:.0f}<=30超卖，禁止追空，标记待回调")
                         state = self._get_state(symbol)
                         state['pending_pullback'] = 'short'
                         state['pending_pullback_time'] = time.time()

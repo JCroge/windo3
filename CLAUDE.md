@@ -54,7 +54,7 @@ crypto-arbitrage/
 │   └── riskguard_state.json # ✅ RiskGuard状态持久化
 ├── agents/                # ✅ 多Agent交易系统（两层架构）
 │   ├── base.py            # Agent基类（生命周期、消息收发、LLM调用）
-│   ├── orchestrator.py    # 编排器（两层：研判12h + 交易持续）
+│   ├── orchestrator.py    # 编排器（两层：研判4h + 交易持续）
 │   ├── message_bus.py     # 消息总线（asyncio Queue，支持topic:symbol路由）
 │   ├── llm_client.py      # Claude API客户端（中转API支持）
 │   ├── research/          # 研判层（6个Agent）
@@ -121,9 +121,9 @@ crypto-arbitrage/
 | ANTHROPIC_API_KEY | Claude API密钥 | 否（使用多Agent系统时必需） |
 | ANTHROPIC_BASE_URL | Claude API地址（支持中转） | 否（默认api.anthropic.com） |
 | ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-sonnet-4-6） |
-| RESEARCH_INTERVAL | 研判层运行周期（秒） | 否（默认43200=12h） |
-| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认3） |
-| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认3） |
+| RESEARCH_INTERVAL | 研判层运行周期（秒） | 否（默认14400=4h） |
+| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认5） |
+| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认5） |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | 否（留空则不启用通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | 否（留空则不启用通知） |
 
@@ -170,7 +170,7 @@ crypto-arbitrage/
 ### ✅ Phase 4: 多Agent系统（2026-05-07完成）
 - 消息总线（asyncio Queue，支持topic:symbol路由）
 - Agent基类（生命周期管理、消息收发、LLM调用）
-- 编排器（两层架构：研判层12h周期 + 交易层持续运行）
+- 编排器（两层架构：研判层4h周期 + 交易层持续运行）
 - Claude API客户端（中转API支持、限流、重试）
 - 研判层6个Agent：MarketScanner、SentimentResearcher、NewsResearcher、Synthesizer、Censor、SymbolRouter
 - 交易层6个Agent：MultiDataCollector、MultiTechAnalyst、MultiJudge、MultiExecutor、PortfolioRiskGuard、ReviewerAgent
@@ -207,7 +207,7 @@ DataCollector →[market_data:symbol]→ TechAnalyst →[tech_analysis:symbol]�
 PositionAnalyst(7因子评分) →[position_review:symbol]→ BehavioralCritic(偏差检测) →[position_verdict:symbol]→ PositionAnalyst(裁决) →[trade_decision:symbol]→ Executor
 
 **Reviewer反馈闭环**：
-execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h） → 衰减检测 → Daily Hard Stop触发（如需）
+execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h） → 衰减检测 → Daily Hard Stop触发（如需）
 
 **已知问题**：
 - Claude中转API（dorocli.cc）偶尔被阻断，系统自动降级为规则引擎
@@ -292,6 +292,16 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每12h�
 - Orchestrator：system_command订阅+_command_listener协程
 - Executor：system_command订阅，halt/resume响应
 - run_agents.py：while循环+.restart_flag检测，支持远程重启
+
+### ✅ Judge LLM-Rule方向冲突修复（2026-05-14完成）
+- **根因**：ZEC-USDT在RSI=29~30时被开20x做空，三层缺陷叠加
+- **Fix 1**：confidence提升需LLM方向与规则方向一致；方向冲突时衰减50%
+- **Fix 2**：RSI禁区阈值统一为>=70禁多、<=30禁空（inclusive，与JUDGE_PROMPT一致）
+- **Fix 3**：rule_signal+LLM反向开仓=强冲突衰减60%（confidence降至30-40，低于Executor的60门槛）
+- **PositionAnalyst规则3b**：浮亏>10%+趋势非顺向(neutral或反转)→强制平仓
+- **llm_client.py**：chat_json()支持temperature参数传递（修复BehavioralCritic调用失败）
+- **验证**：16个Judge场景+11个PositionAnalyst场景全通过；Monte Carlo模拟开仓率12.6%→7.8%，预估胜率58%→75%
+- **设计参考**：Freqtrade confirm_trade_entry模式、Jesse Livermore "When in doubt, stay out"
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

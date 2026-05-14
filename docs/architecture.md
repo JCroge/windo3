@@ -22,6 +22,9 @@
 - 2026-05-11：Symbol sync修复（executor.py）：OKX格式BASE/USDT:USDT自动转换为BASE-USDT-SWAP
 - 2026-05-13：持仓管理防遗憾优化（position_analyst.py）：7因子评分+entry_thesis_intact+2h周期+阈值放宽
 - 2026-05-13：R:R硬性门槛修复（judge.py）：min_rr=1.5不可绕过 + SL距离ATR封顶(2.5×ATR) + TP下限=SL×1.5
+- 2026-05-14：Judge LLM-Rule方向冲突修复（judge.py）：confidence提升需方向一致 + LLM反向衰减50% + rule_signal+LLM反向衰减60% + RSI禁区inclusive(>=70/<=30)
+- 2026-05-14：PositionAnalyst规则3b（position_analyst.py）：浮亏>10%+趋势非顺向→强制平仓
+- 2026-05-14：llm_client.py chat_json支持temperature参数传递
 
 ## 架构图
 
@@ -61,12 +64,12 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                  Orchestrator（编排器）                         │
-│         两层架构：研判层(12h) + 交易层(持续)                     │
+│         两层架构：研判层(4h) + 交易层(持续)                      │
 └──────────┬───────────────────────────────────────────────────┘
            │ asyncio Queue 消息总线（支持 topic:symbol 路由）
            ▼
 ┌──────────────────────────────────────────────────────────────┐
-│              研判层 Tier 1（每12小时运行，6个Agent）              │
+│              研判层 Tier 1（每4小时运行，6个Agent）               │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
 │  │MarketScanner │  │ Sentiment    │  │    News      │       │
@@ -160,6 +163,7 @@ PositionAnalyst 裁决引擎（纯规则矩阵）
 - 浮亏>15% → close
 - 持仓>72h+浮亏>3% → close
 - HTF趋势反转+浮亏>5% → close
+- 浮亏>10%+趋势非顺向(neutral或反转) → close（规则3b，2026-05-14新增）
 - 浮盈>15%+动量反转 → reduce 50%
 - 剩余R:R<0.3 → close
 
@@ -290,7 +294,7 @@ CREATE TABLE klines (
 | `base.py` | 基础 | Agent基类（生命周期、消息收发） | 提供ask_claude接口 |
 | `message_bus.py` | 基础 | asyncio Queue消息总线（支持topic:symbol路由） | 无 |
 | `llm_client.py` | 基础 | Claude API客户端（OpenAI兼容格式） | 核心 |
-| `orchestrator.py` | 基础 | 两层编排器（研判12h周期+交易持续） | 无 |
+| `orchestrator.py` | 基础 | 两层编排器（研判4h周期+交易持续） | 无 |
 | `research/market_scanner.py` | 研判 | OKX永续合约扫描（量/波动/费率/多空比/OI） | 无 |
 | `research/sentiment_researcher.py` | 研判 | 恐贪指数+CoinGecko热度+Binance Taker比 | 无 |
 | `research/news_researcher.py` | 研判 | 6家加密媒体RSS新闻采集+币种提及统计 | 无 |
