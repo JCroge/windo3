@@ -69,23 +69,35 @@ class PositionAnalyst(BaseAgent):
         if status == 'executed':
             action = payload.get('action', '')
             if action in ('open_long', 'open_short'):
-                self._positions[symbol] = {
-                    "symbol": symbol,
-                    "side": 'long' if action == 'open_long' else 'short',
-                    "entry_price": result.get('entry_price', 0),
-                    "amount_usdt": result.get('amount_usdt', 0),
-                    "leverage": result.get('leverage', 1),
-                    "stop_loss": result.get('stop_loss'),
-                    "take_profit": result.get('take_profit'),
-                    "open_time": time.time(),
-                }
+                if payload.get('is_add') and symbol in self._positions:
+                    # 加仓：更新均价和总量，保留open_time
+                    pos = self._positions[symbol]
+                    pos['entry_price'] = result.get('new_entry_price', result.get('entry_price', pos['entry_price']))
+                    pos['amount_usdt'] = result.get('amount_usdt', pos.get('amount_usdt', 0))
+                    if 'add_amount_usdt' in result:
+                        pos['amount_usdt'] = pos.get('amount_usdt', 0) + result['add_amount_usdt']
+                    pos['stop_loss'] = result.get('new_stop_loss') or result.get('stop_loss') or pos.get('stop_loss')
+                    pos['take_profit'] = result.get('new_take_profit') or result.get('take_profit') or pos.get('take_profit')
+                else:
+                    # 新开仓
+                    self._positions[symbol] = {
+                        "symbol": symbol,
+                        "side": 'long' if action == 'open_long' else 'short',
+                        "entry_price": result.get('entry_price', 0),
+                        "amount_usdt": result.get('amount_usdt', 0),
+                        "leverage": result.get('leverage', 1),
+                        "stop_loss": result.get('stop_loss'),
+                        "take_profit": result.get('take_profit'),
+                        "open_time": time.time(),
+                    }
             elif action == 'close':
                 self._positions.pop(symbol, None)
         elif status in ('force_closed',):
             self._positions.pop(symbol, None)
         elif status == 'risk_reduced':
             if symbol in self._positions:
-                self._positions[symbol]['amount_usdt'] *= 0.5
+                reduce_pct = payload.get('reduce_pct', 0.5)
+                self._positions[symbol]['amount_usdt'] *= (1 - reduce_pct)
 
     async def tick(self):
         await asyncio.sleep(10)
@@ -292,8 +304,15 @@ class PositionAnalyst(BaseAgent):
 
         # action映射 — 提高close/reduce门槛
         if position_score >= 50:
-            action = 'add'
-            conviction = min(95, position_score)
+            # 加仓上限检查：总保证金不超过max_trade_amount×2
+            max_margin = self.config.get('max_trade_amount', 10) * 2
+            current_margin = position.get('amount_usdt', 0)
+            if current_margin >= max_margin:
+                action = 'hold'
+                conviction = position_score
+            else:
+                action = 'add'
+                conviction = min(95, position_score)
         elif position_score >= 10:
             action = 'hold'
             conviction = position_score

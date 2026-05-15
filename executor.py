@@ -675,12 +675,34 @@ class ContractExecutor:
         return result
 
     def reduce_position(self, symbol: str, pct: float) -> Optional[Dict]:
-        """减仓指定百分比"""
+        """减仓指定百分比
+
+        参考：Binance/OKX reduceOnly模式 + Freqtrade partial exit
+        减仓后取消旧SL条件单（数量不匹配会导致交易所拒绝）
+        """
         if symbol not in self.positions:
             return None
         try:
             position = self.positions[symbol]
             reduce_amount = position['amount'] * pct
+
+            # 精度处理：用交易所精度格式化
+            try:
+                reduce_amount = float(self.exchange.amount_to_precision(symbol, reduce_amount))
+            except Exception:
+                pass
+
+            if reduce_amount <= 0:
+                return None
+
+            # 减仓前取消旧SL条件单（数量变化后旧单无效）
+            if position.get('sl_order_id'):
+                try:
+                    self.exchange.cancel_order(position['sl_order_id'], symbol)
+                    self.logger.info(f"减仓前取消旧SL单: {position['sl_order_id']}")
+                except Exception:
+                    pass
+                position['sl_order_id'] = None
 
             order_side = 'sell' if position['side'] == 'long' else 'buy'
             order = self.exchange.create_order(
@@ -691,8 +713,11 @@ class ContractExecutor:
             position['amount'] -= reduce_amount
             position['amount_usdt'] *= (1 - pct)
 
-            if position['amount'] < 1e-8:
+            # 浮点精度兜底：剩余量极小时视为全平
+            min_amount = self.exchange.market(symbol).get('limits', {}).get('amount', {}).get('min', 1e-8)
+            if position['amount'] < max(min_amount, 1e-8):
                 del self.positions[symbol]
+                self.logger.info(f"减仓后剩余量过小，视为全平: {symbol}")
             self._save_positions()
 
             self.logger.info(f"减仓: {symbol} 减{pct*100:.0f}%, 剩余{position.get('amount', 0):.6f}")
@@ -700,4 +725,129 @@ class ContractExecutor:
 
         except Exception as e:
             self.logger.error(f"减仓失败: {e}")
+            return None
+
+    def add_to_position(self, symbol: str, side: str, size_pct: float = 0.3) -> Optional[Dict]:
+        """加仓：在已有持仓方向上追加仓位
+
+        Args:
+            symbol: 标的
+            side: 方向（必须与现有持仓一致）
+            size_pct: 加仓比例（相对于max_trade_amount）
+
+        参考：Freqtrade adjust_trade_position + stoploss_on_exchange_update
+        加仓后重新计算SL/TP以反映新均价
+        """
+        symbol = self._normalize_symbol(symbol)
+        if symbol not in self.positions:
+            self.logger.warning(f"加仓失败: {symbol} 无持仓")
+            return None
+
+        position = self.positions[symbol]
+        if position['side'] != side:
+            self.logger.warning(f"加仓方向冲突: 持仓{position['side']} vs 请求{side}")
+            return None
+
+        # 加仓上限：总保证金不超过max_trade_amount的2倍
+        current_margin = position.get('amount_usdt', 0)
+        max_total = self.risk_manager.max_trade_amount * 2
+        if current_margin >= max_total:
+            self.logger.warning(f"加仓拒绝: 已达保证金上限 {current_margin:.2f} >= {max_total:.2f}")
+            return None
+
+        try:
+            balance = self.get_balance()
+            can_trade, msg = self.risk_manager.check_can_trade(balance)
+            if not can_trade:
+                self.logger.warning(f"加仓风控拒绝: {msg}")
+                return None
+
+            add_usdt = self.risk_manager.max_trade_amount * size_pct
+            # 不超过上限
+            add_usdt = min(add_usdt, max_total - current_margin)
+            if add_usdt < 1.0:
+                self.logger.warning(f"加仓金额过小: {add_usdt:.2f} USDT，放弃")
+                return None
+
+            free_balance = self.exchange.fetch_balance()['USDT']['free']
+            if free_balance < add_usdt * 1.1:
+                self.logger.warning(f"加仓余额不足: free={free_balance:.2f} < 需要{add_usdt:.2f}")
+                return None
+
+            leverage = position.get('leverage', self.leverage)
+            try:
+                self.exchange.set_leverage(leverage, symbol)
+            except Exception:
+                pass
+
+            ticker = self.exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+
+            contract_value = add_usdt * leverage
+            market = self.exchange.market(symbol)
+            contract_size = float(market.get('contractSize', 1) or 1)
+            amount = float(self.exchange.amount_to_precision(
+                symbol, contract_value / (current_price * contract_size)
+            ))
+
+            min_amount = market.get('limits', {}).get('amount', {}).get('min', 0)
+            if min_amount and amount < min_amount:
+                self.logger.warning(f"加仓数量{amount:.4f}低于最小值{min_amount}，放弃")
+                return None
+
+            order_side = 'buy' if side == 'long' else 'sell'
+            order = self.exchange.create_order(
+                symbol=symbol, type='market', side=order_side,
+                amount=amount, params={'reduceOnly': False}
+            )
+
+            # 更新持仓记录：加权平均入场价
+            old_amount = position['amount']
+            old_entry = position['entry_price']
+            new_total = old_amount + amount
+            position['entry_price'] = (old_entry * old_amount + current_price * amount) / new_total
+            position['amount'] = new_total
+            position['amount_usdt'] = current_margin + add_usdt
+
+            # 加仓后基于新均价重算SL/TP（Freqtrade stoploss_on_exchange_update模式）
+            new_entry = position['entry_price']
+            old_sl = position.get('stop_loss')
+            if old_sl and old_entry > 0:
+                # 保持原SL距离比例
+                sl_dist_pct = abs(old_sl - old_entry) / old_entry
+                if side == 'long':
+                    position['stop_loss'] = new_entry * (1 - sl_dist_pct)
+                else:
+                    position['stop_loss'] = new_entry * (1 + sl_dist_pct)
+
+            old_tp = position.get('take_profit')
+            if old_tp and old_entry > 0:
+                tp_dist_pct = abs(old_tp - old_entry) / old_entry
+                if side == 'long':
+                    position['take_profit'] = new_entry * (1 + tp_dist_pct)
+                else:
+                    position['take_profit'] = new_entry * (1 - tp_dist_pct)
+
+            self._save_positions()
+
+            self.logger.info(
+                f"加仓成功: {side} {symbol} +{amount:.4f} @ {current_price:.4f}, "
+                f"均价={position['entry_price']:.4f}, 总量={new_total:.4f}, "
+                f"新SL={position.get('stop_loss')}, 新TP={position.get('take_profit')}"
+            )
+            return {
+                'symbol': symbol,
+                'side': side,
+                'add_amount': amount,
+                'add_amount_usdt': add_usdt,
+                'fill_price': current_price,
+                'new_entry_price': position['entry_price'],
+                'new_total_amount': new_total,
+                'new_stop_loss': position.get('stop_loss'),
+                'new_take_profit': position.get('take_profit'),
+                'order': order,
+            }
+
+        except Exception as e:
+            self.logger.error(f"加仓失败: {e}")
             return None

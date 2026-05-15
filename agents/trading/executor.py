@@ -66,6 +66,8 @@ class MultiExecutor(BaseAgent):
         confidence = decision.get('confidence', 0)
         symbol = decision.get('symbol')
         plan = decision.get('plan')
+        source = decision.get('source', '')
+        size_pct = decision.get('size_pct', 1.0)
 
         if self._trading_halted:
             self.logger.warning(f"[熔断] 拒绝执行: {symbol} {action}")
@@ -123,13 +125,42 @@ class MultiExecutor(BaseAgent):
                 }, symbol=symbol)
                 return
 
+        elif action in ('open_long', 'open_short') and position is not None and source == 'position_analyst':
+            # 加仓：已有持仓，PositionAnalyst要求追加
+            side = 'long' if action == 'open_long' else 'short'
+            if position.get('side') != side:
+                self.logger.warning(f"[执行] {symbol} 加仓方向冲突: 持仓{position['side']} vs 请求{side}，跳过")
+                return
+            cooldown_until = self._open_fail_cooldown.get(norm_symbol, 0)
+            if time.time() < cooldown_until:
+                self.logger.info(f"[执行] {symbol} 开仓失败冷却中，跳过加仓")
+                return
+            try:
+                result = await self._execute_add_position(norm_symbol, side, position, size_pct)
+            except Exception as e:
+                self._open_fail_cooldown[norm_symbol] = time.time() + 120
+                self.logger.error(f"[执行] {symbol} 加仓失败(120s冷却): {e}")
+                await self.publish("execution_result", {
+                    "status": "error", "reason": str(e), "action": "add", "symbol": symbol
+                }, symbol=symbol)
+                return
+
         elif action == 'close' and position is not None:
             try:
-                if position.get('sl_order_id'):
-                    self.executor.cancel_order(norm_symbol, position['sl_order_id'])
-                result = self.executor.close_position(norm_symbol)
-                if result:
-                    self.logger.info(f"[执行] {symbol} 平仓 PnL={result.get('pnl', 0):.2f}")
+                if size_pct < 1.0 and source == 'position_analyst':
+                    # 减仓：部分平仓
+                    result = await asyncio.to_thread(
+                        self.executor.reduce_position, norm_symbol, size_pct
+                    )
+                    if result:
+                        self.logger.info(f"[执行] {symbol} 减仓{int(size_pct*100)}%")
+                else:
+                    # 全平
+                    if position.get('sl_order_id'):
+                        self.executor.cancel_order(norm_symbol, position['sl_order_id'])
+                    result = self.executor.close_position(norm_symbol)
+                    if result:
+                        self.logger.info(f"[执行] {symbol} 平仓 PnL={result.get('pnl', 0):.2f}")
             except Exception as e:
                 self.logger.error(f"[执行] {symbol} 平仓失败: {e}")
                 await self.publish("execution_result", {
@@ -137,15 +168,26 @@ class MultiExecutor(BaseAgent):
                 }, symbol=symbol)
                 return
 
+        elif action in ('open_long', 'open_short') and position is not None:
+            # Judge在已有持仓时发信号（非加仓），忽略
+            self.logger.debug(f"[执行] {symbol} 已有持仓，忽略开仓信号(source={source})")
+            return
+
         if result:
-            await self.publish("execution_result", {
+            payload = {
                 "status": "executed",
                 "action": action,
                 "symbol": symbol,
                 "result": result,
                 "confidence": confidence,
                 "used_plan": plan is not None,
-            }, symbol=symbol)
+            }
+            if source == 'position_analyst' and action in ('open_long', 'open_short'):
+                payload["is_add"] = True
+            if source == 'position_analyst' and action == 'close' and size_pct < 1.0:
+                payload["status"] = "risk_reduced"
+                payload["reduce_pct"] = size_pct
+            await self.publish("execution_result", payload, symbol=symbol)
 
     async def _execute_with_plan(self, symbol: str, side: str, plan: dict) -> dict:
         """基于Judge plan智能执行（限价单可能阻塞30s，用线程池避免冻结事件循环）"""
@@ -173,6 +215,18 @@ class MultiExecutor(BaseAgent):
 
         if result:
             self.logger.info(f"[执行] {symbol} 旧模式开{side} {amount:.2f} USDT")
+        return result
+
+    async def _execute_add_position(self, symbol: str, side: str, position: dict, size_pct: float) -> dict:
+        """加仓：在已有持仓方向上追加仓位"""
+        result = await asyncio.to_thread(
+            self.executor.add_to_position, symbol, side, size_pct
+        )
+        if result:
+            self.logger.info(
+                f"[执行] {symbol} 加仓{int(size_pct*100)}%: "
+                f"新增{result.get('add_amount_usdt', 0):.2f} USDT"
+            )
         return result
 
     async def _handle_risk_alert(self, alert: dict):

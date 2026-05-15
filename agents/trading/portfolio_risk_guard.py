@@ -84,20 +84,31 @@ class PortfolioRiskGuard(BaseAgent):
             action = payload.get('action', '')
             if action in ('open_long', 'open_short'):
                 side = 'long' if action == 'open_long' else 'short'
-                entry_price = result.get('entry_price', 0)
-                self._positions[symbol] = {
-                    "symbol": symbol,
-                    "side": side,
-                    "entry_price": entry_price,
-                    "amount_usdt": result.get('amount_usdt', 0),
-                    "leverage": result.get('leverage', 1),
-                    "stop_loss": result.get('stop_loss'),
-                    "take_profit": result.get('take_profit'),
-                    "open_time": time.time(),
-                    "highest_price": entry_price,
-                    "lowest_price": entry_price,
-                }
-                self.logger.info(f"[风控] 记录持仓: {symbol} {side} lev={result.get('leverage')}x")
+                entry_price = result.get('entry_price') or result.get('new_entry_price', 0)
+
+                if payload.get('is_add') and symbol in self._positions:
+                    # 加仓：增量更新（保留open_time/highest/lowest）
+                    pos = self._positions[symbol]
+                    pos['entry_price'] = result.get('new_entry_price', entry_price)
+                    pos['amount_usdt'] = result.get('amount_usdt', pos.get('amount_usdt', 0))
+                    pos['stop_loss'] = result.get('new_stop_loss') or result.get('stop_loss') or pos.get('stop_loss')
+                    pos['take_profit'] = result.get('new_take_profit') or result.get('take_profit') or pos.get('take_profit')
+                    self.logger.info(f"[风控] 加仓更新: {symbol} 新均价={pos['entry_price']:.4f}")
+                else:
+                    # 新开仓：完整记录
+                    self._positions[symbol] = {
+                        "symbol": symbol,
+                        "side": side,
+                        "entry_price": entry_price,
+                        "amount_usdt": result.get('amount_usdt', 0),
+                        "leverage": result.get('leverage', 1),
+                        "stop_loss": result.get('stop_loss'),
+                        "take_profit": result.get('take_profit'),
+                        "open_time": time.time(),
+                        "highest_price": entry_price,
+                        "lowest_price": entry_price,
+                    }
+                    self.logger.info(f"[风控] 记录持仓: {symbol} {side} lev={result.get('leverage')}x")
             elif action == 'close':
                 self._positions.pop(symbol, None)
                 self.logger.info(f"[风控] 移除持仓: {symbol}")
@@ -107,7 +118,8 @@ class PortfolioRiskGuard(BaseAgent):
 
         elif status == 'risk_reduced':
             if symbol in self._positions:
-                self._positions[symbol]['amount_usdt'] *= 0.5
+                reduce_pct = payload.get('reduce_pct', 0.5)
+                self._positions[symbol]['amount_usdt'] *= (1 - reduce_pct)
 
     def _update_price(self, symbol: str, price: float):
         self._prices[symbol] = price

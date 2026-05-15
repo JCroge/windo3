@@ -32,6 +32,7 @@
 - 2026-05-15：HYPE重复做空5层防护（judge.py）：RSI背离HTF降权+入场门槛40+LLM conf cap 55+开仓冷却300s+失败冷却120s
 - 2026-05-15：SL/TP方向校验（executor.py）：下单前验证方向合法性，价格变动导致方向错误时自动修正
 - 2026-05-15：PositionAnalyst评估周期2h→1h（position_analyst.py）
+- 2026-05-15：加仓/减仓功能修复（executor.py+agents/trading/executor.py）：加仓(add_to_position加权均价+SL/TP重算+上限2x)+减仓(reduce_position精度+取消旧SL)+全系统execution_result同步(is_add/risk_reduced)
 
 ## 架构图
 
@@ -175,6 +176,12 @@ PositionAnalyst 裁决引擎（纯规则矩阵）
 - 剩余R:R<0.3 → close
 
 **防遗憾机制**：高时间框架（4h/日线）仍确认入场方向时，裁决引擎保护持仓（批判官close→reduce，reduce→hold）
+
+**加仓/减仓执行**（2026-05-15修复）：
+- 加仓：score≥50 + conviction≥70 + 保证金<上限(max_trade_amount×2) → Executor.add_to_position（加权平均入场价 + SL/TP按原距离比例重算）
+- 减仓：score∈[-60,-30) 或 硬性规则4 → Executor.reduce_position（取消旧SL条件单 + 精度格式化 + 浮点兜底）
+- execution_result区分：新开仓(executed) / 加仓(executed+is_add) / 减仓(risk_reduced+reduce_pct) / 全平(executed+close)
+- 下游同步：RiskGuard/PositionAnalyst/TelegramNotifier均正确处理增量更新
 
 **执行优先级**：RiskGuard强制平仓 > 硬性覆盖 > 裁决矩阵 > 分析官建议
 

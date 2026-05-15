@@ -82,11 +82,23 @@ class TelegramNotifier(BaseAgent):
             side = '🟢 做多' if action == 'open_long' else '🔴 做空'
             leverage = result.get('leverage', '?')
             amount = result.get('amount_usdt', '?')
-            text = (
-                f"{side} {symbol}\n"
-                f"杠杆: {leverage}x | 仓位: {amount} USDT\n"
-                f"置信度: {payload.get('confidence', '?')}%"
-            )
+            if payload.get('is_add'):
+                text = (
+                    f"➕ 加仓 {symbol}\n"
+                    f"方向: {side} | 加仓: {result.get('add_amount_usdt', amount)} USDT\n"
+                    f"新均价: {result.get('new_entry_price', '?')}"
+                )
+            else:
+                text = (
+                    f"{side} {symbol}\n"
+                    f"杠杆: {leverage}x | 仓位: {amount} USDT\n"
+                    f"置信度: {payload.get('confidence', '?')}%"
+                )
+            await self._send_message(text)
+
+        elif status == 'risk_reduced':
+            reduce_pct = payload.get('reduce_pct', 0.5)
+            text = f"✂️ 减仓 {symbol} {int(reduce_pct*100)}%"
             await self._send_message(text)
 
         elif status in ('executed', 'force_closed') and (action == 'close' or status == 'force_closed'):

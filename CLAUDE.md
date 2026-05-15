@@ -347,6 +347,15 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **设计参考**：Al Brooks "With-trend pullbacks are not reversals"、Freqtrade stoploss_on_exchange_update
 - **验证**：HYPE场景score=-25 < 门槛40 → hold（第2层直接拦截），正常rule_signal入场不受影响
 
+### ✅ 加仓/减仓功能修复（2026-05-15完成）
+- **加仓bug**：PositionAnalyst发add(open_long/open_short)，Executor只在position=None时执行 → 已有持仓时静默丢弃
+- **减仓bug**：PositionAnalyst发reduce(action=close, size_pct=0.5)，Executor忽略size_pct直接全平
+- **加仓修复**（executor.py `add_to_position`）：加权平均入场价 + SL/TP按原距离比例重算 + 保证金上限max_trade_amount×2
+- **减仓修复**（executor.py `reduce_position`）：取消旧SL条件单 + 精度格式化 + 浮点兜底(剩余<min_amount视为全平)
+- **全系统同步**：execution_result新增`is_add`标记(加仓增量更新) + `risk_reduced`状态(减仓) + `reduce_pct`参数
+- **下游适配**：RiskGuard/PositionAnalyst/TelegramNotifier均正确处理加仓增量更新和减仓比例更新
+- **设计参考**：Freqtrade adjust_trade_position + stoploss_on_exchange_update + partial exit
+
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
 - 杠杆上限调整为20x：OKX允许值列表[1,2,3,5,10,20]，RiskGuard高杠杆阈值同步更新为20

@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：统一风险预算框架完成（2026-05-14）
+**当前阶段**：加仓/减仓功能修复完成（2026-05-15）
 **下一阶段**：Phase 7（资金费率API修复、Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -391,6 +391,25 @@
 
 3. **PositionAnalyst评估周期**（`agents/trading/position_analyst.py`）
    - 2h→1h，更及时的持仓管理响应
+
+### ✅ Phase 6m: 加仓/减仓功能修复（2026-05-15完成）
+
+1. **加仓功能**（`executor.py` + `agents/trading/executor.py`）
+   - 根因：PositionAnalyst发add信号(open_long/open_short)，Executor只在position=None时执行，已有持仓时静默丢弃
+   - 修复：MultiExecutor新增`position is not None + source=position_analyst`分支 → `add_to_position()`
+   - 加权平均入场价、SL/TP按原距离比例重算（Freqtrade stoploss_on_exchange_update模式）
+   - 保证金上限：max_trade_amount×2，防止无限加仓
+
+2. **减仓功能**（`executor.py` + `agents/trading/executor.py`）
+   - 根因：PositionAnalyst发reduce信号(action=close, size_pct=0.5)，Executor忽略size_pct直接全平
+   - 修复：`size_pct < 1.0 + source=position_analyst` → `reduce_position()`
+   - 减仓前取消旧SL条件单（数量不匹配会被OKX拒绝）
+   - 精度格式化 + 浮点兜底（剩余<min_amount视为全平）
+
+3. **全系统execution_result同步**
+   - 新增`is_add`标记：RiskGuard/PositionAnalyst增量更新而非覆盖
+   - 新增`risk_reduced`状态：区分减仓和全平，下游按实际reduce_pct更新
+   - TelegramNotifier：区分加仓(➕)/减仓(✂️)/全平通知
 
 ## 技术债务
 
