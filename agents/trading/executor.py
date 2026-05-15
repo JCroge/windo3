@@ -1,6 +1,7 @@
 """智能交易执行 Agent - 消费Judge plan，支持动态杠杆/限价单/交易所止损/仓位同步"""
 
 import os
+import time
 import asyncio
 from dotenv import load_dotenv
 from agents.base import BaseAgent
@@ -19,6 +20,7 @@ class MultiExecutor(BaseAgent):
         self.min_confidence = config.get('min_confidence', 60) if config else 60
         self._sync_counter = 0
         self._trading_halted = False
+        self._open_fail_cooldown = {}  # {symbol: expire_timestamp}
 
     async def setup(self):
         exchange_id = self.config.get('exchange', 'okx')
@@ -103,6 +105,10 @@ class MultiExecutor(BaseAgent):
         result = None
 
         if action in ('open_long', 'open_short') and position is None:
+            cooldown_until = self._open_fail_cooldown.get(norm_symbol, 0)
+            if time.time() < cooldown_until:
+                self.logger.info(f"[执行] {symbol} 开仓失败冷却中，跳过")
+                return
             side = 'long' if action == 'open_long' else 'short'
             try:
                 if plan:
@@ -110,7 +116,8 @@ class MultiExecutor(BaseAgent):
                 else:
                     result = await self._execute_legacy(symbol, side, decision)
             except Exception as e:
-                self.logger.error(f"[执行] {symbol} 开仓失败: {e}")
+                self._open_fail_cooldown[norm_symbol] = time.time() + 120
+                self.logger.error(f"[执行] {symbol} 开仓失败(120s冷却): {e}")
                 await self.publish("execution_result", {
                     "status": "error", "reason": str(e), "action": action, "symbol": symbol
                 }, symbol=symbol)

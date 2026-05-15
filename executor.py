@@ -367,6 +367,23 @@ class ContractExecutor:
                 stop_loss = self.risk_manager.calculate_stop_loss(current_price, side)
             tp_first = take_profit[0] if take_profit else self.risk_manager.calculate_take_profit(current_price, side)
 
+            # SL方向校验：价格可能在Judge决策后变动，导致SL落在错误一侧
+            if side == 'short' and stop_loss <= current_price:
+                stop_loss = current_price * 1.015
+                self.logger.warning(f"SL方向修正(short): SL={stop_loss:.4f} > entry={current_price:.4f}")
+            elif side == 'long' and stop_loss >= current_price:
+                stop_loss = current_price * 0.985
+                self.logger.warning(f"SL方向修正(long): SL={stop_loss:.4f} < entry={current_price:.4f}")
+
+            # TP方向校验
+            if tp_first:
+                if side == 'short' and tp_first >= current_price:
+                    tp_first = current_price * 0.97
+                    self.logger.warning(f"TP方向修正(short): TP={tp_first:.4f} < entry={current_price:.4f}")
+                elif side == 'long' and tp_first <= current_price:
+                    tp_first = current_price * 1.03
+                    self.logger.warning(f"TP方向修正(long): TP={tp_first:.4f} > entry={current_price:.4f}")
+
             # 构建附带TP/SL的下单参数
             tp_sl_params = self._build_tp_sl_params(side, stop_loss, tp_first)
 

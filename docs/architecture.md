@@ -29,6 +29,9 @@
 - 2026-05-14：回调入场机制（judge.py）：R:R<1.5分级响应（追价/等回调/放弃），deferred_entry状态机
 - 2026-05-14：Censor分批审查（censor.py）：BATCH_SIZE=4避免Cloudflare超时，LLM timeout=90s+max_retries=2
 - 2026-05-14：Executor required_margin修复（executor.py）：size_usdt即margin，不再除以leverage
+- 2026-05-15：HYPE重复做空5层防护（judge.py）：RSI背离HTF降权+入场门槛40+LLM conf cap 55+开仓冷却300s+失败冷却120s
+- 2026-05-15：SL/TP方向校验（executor.py）：下单前验证方向合法性，价格变动导致方向错误时自动修正
+- 2026-05-15：PositionAnalyst评估周期2h→1h（position_analyst.py）
 
 ## 架构图
 

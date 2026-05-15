@@ -60,6 +60,7 @@ class MultiJudge(BaseAgent):
                 "last_decision_time": 0,
                 "last_tech": None,
                 "last_force_close_time": 0,
+                "last_open_time": 0,
                 "trend_streak": 0,
                 "trend_streak_dir": None,
                 "pending_pullback": None,
@@ -97,12 +98,16 @@ class MultiJudge(BaseAgent):
             return
 
         if msg['type'] == 'execution_result':
-            if msg['payload'].get('status') == 'force_closed':
-                symbol = msg.get('symbol') or msg['payload'].get('symbol')
-                if symbol:
-                    state = self._get_state(symbol)
+            payload = msg.get('payload', msg)
+            symbol = msg.get('symbol') or payload.get('symbol')
+            if symbol:
+                state = self._get_state(symbol)
+                if payload.get('status') == 'force_closed':
                     state["last_force_close_time"] = time.time()
                     self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{self._force_close_cooldown}s内禁止开仓")
+                elif payload.get('status') == 'executed' and payload.get('action') in ('open_long', 'open_short'):
+                    state["last_open_time"] = time.time()
+                    self.logger.info(f"[Judge] {symbol} 开仓成功，300s冷却启动")
             return
 
         if msg['type'] != 'tech_analysis':
@@ -120,6 +125,11 @@ class MultiJudge(BaseAgent):
         if now - state["last_force_close_time"] < self._force_close_cooldown:
             remaining = int(self._force_close_cooldown - (now - state["last_force_close_time"]))
             self.logger.info(f"[Judge] {symbol} 强平冷却中，剩余{remaining}s")
+            return
+
+        if now - state["last_open_time"] < 300:
+            remaining = int(300 - (now - state["last_open_time"]))
+            self.logger.info(f"[Judge] {symbol} 开仓冷却中，剩余{remaining}s")
             return
 
         state["last_tech"] = msg['payload']
@@ -279,7 +289,13 @@ class MultiJudge(BaseAgent):
         if abs(score) >= 30 and self._check_price_in(symbol, action_hint, tech):
             score *= 0.5
 
-        if abs(score) < 25:
+        # 入场门槛：有主驱动(rule_signal/ma_aligned)时25分，无主驱动时40分
+        rule = tech.get('rule_signal', {})
+        has_rule_signal = rule.get('entry_long') or rule.get('entry_short') or \
+                         rule.get('ma_aligned_long') or rule.get('ma_aligned_short')
+        entry_threshold = 25 if has_rule_signal else 40
+
+        if abs(score) < entry_threshold:
             hold_reason = self._hold_reason(tech, score)
             decision = {
                 "symbol": symbol, "timestamp": time.time(),
@@ -297,9 +313,6 @@ class MultiJudge(BaseAgent):
 
             # LLM作为修正因子，不作为否决权
             # rule_signal触发时（score含±35基础分），LLM只能降低仓位，不能阻止入场
-            rule = tech.get('rule_signal', {})
-            has_rule_signal = rule.get('entry_long') or rule.get('entry_short') or \
-                             rule.get('ma_aligned_long') or rule.get('ma_aligned_short')
 
             if llm_result.get('action') == 'hold' and not has_rule_signal and confidence < 55:
                 decision = {
@@ -322,11 +335,17 @@ class MultiJudge(BaseAgent):
 
                 final_conf = llm_result.get('confidence', confidence)
 
+                # 无主驱动时，LLM confidence上限55（需方向确认boost才能到60）
+                if not has_rule_signal:
+                    final_conf = min(55, final_conf)
+
                 # LLM方向确认/冲突处理
                 llm_action = llm_result.get('action', 'hold')
                 if llm_action == final_action and final_conf < 65:
-                    self.logger.info(f"[Judge] {symbol} LLM确认{llm_action}方向，confidence提升至65")
-                    final_conf = 65
+                    # 有rule_signal时boost到65，无rule_signal时boost到60
+                    boost_target = 65 if has_rule_signal else 60
+                    self.logger.info(f"[Judge] {symbol} LLM确认{llm_action}方向，confidence提升至{boost_target}")
+                    final_conf = boost_target
                 elif llm_action in ('open_long', 'open_short') and llm_action != final_action:
                     final_conf = max(30, int(final_conf * 0.5))
                     self.logger.warning(f"[Judge] {symbol} LLM建议{llm_action}与规则方向{final_action}冲突，confidence衰减至{final_conf}")
@@ -541,6 +560,7 @@ class MultiJudge(BaseAgent):
         trend = tech.get('trend', {})
         direction = trend.get('direction', 'neutral')
         strength = trend.get('strength', 50)
+        htf = trend.get('higher_tf_bias', 'neutral')
 
         # 趋势强度衰减：强度>90时打折（趋势末期信号）
         effective_strength = strength
@@ -567,6 +587,9 @@ class MultiJudge(BaseAgent):
                 div_score = 35  # 极度超卖+背离=强烈反转信号
             elif rsi_oversold:
                 div_score = 28
+            # 日线趋势bearish时，1h bullish_div可能是回调而非反转
+            if htf == 'bearish' and not rsi_extreme_bullish:
+                div_score = min(div_score, 15)
             score += div_score
         elif div == 'bearish_div':
             div_score = 20
@@ -574,6 +597,9 @@ class MultiJudge(BaseAgent):
                 div_score = 35
             elif rsi_overbought:
                 div_score = 28
+            # 日线趋势bullish时，1h bearish_div可能是回调而非反转
+            if htf == 'bullish' and not rsi_extreme_bearish:
+                div_score = min(div_score, 15)
             score -= div_score
 
         # ═══ 3. OI背离 ═══
@@ -611,7 +637,6 @@ class MultiJudge(BaseAgent):
             score -= 8
 
         # ═══ 7. 高时间框架偏向 ═══
-        htf = trend.get('higher_tf_bias', 'neutral')
         if htf == 'bullish':
             score += 10
         elif htf == 'bearish':

@@ -375,6 +375,23 @@
 5. **RiskGuard陈旧数据清理**（`data/riskguard_state.json`）
    - 清除13条已被SL/TP平仓但未从state中移除的持仓记录
 
+### ✅ Phase 6l: HYPE重复做空事故修复（2026-05-15完成）
+
+1. **5层防护**（`agents/trading/judge.py`）
+   - 事故：HYPE-USDT在日线强上升趋势中被连续做空15+次
+   - Fix 1：RSI背离在日线强趋势中降权（div_score从35降到15）
+   - Fix 2：无rule_signal时入场门槛25→40
+   - Fix 3：无rule_signal时LLM confidence上限55（方向确认boost到60）
+   - Fix 4：开仓成功后300s冷却（防止止损后立即重开）
+   - Fix 5：Executor开仓失败后120s冷却（防OKX报错刷屏）
+
+2. **SL/TP方向校验**（`executor.py`）
+   - 根因：Judge计算SL用决策时刻价格，Executor下单时价格已变动，导致做空SL<入场价
+   - 修复：下单前校验方向，不合法时基于当前价重新设置默认距离
+
+3. **PositionAnalyst评估周期**（`agents/trading/position_analyst.py`）
+   - 2h→1h，更及时的持仓管理响应
+
 ## 技术债务
 
 1. **R:R计算已修复**（2026-05-13）

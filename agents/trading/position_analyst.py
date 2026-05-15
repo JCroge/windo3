@@ -1,6 +1,6 @@
 """持仓分析官 Agent - 7因子评分 + 裁决引擎（防遗憾优化版）
 
-每2小时对所有持仓进行重新评估：
+每1小时对所有持仓进行重新评估：
 1. 规则评分（7因子，含入场逻辑验证）→ 输出建议
 2. 发送给BehavioralCritic审视
 3. 收到批判意见后执行裁决逻辑（方向正确时保护持仓）
@@ -13,7 +13,7 @@ import os
 import asyncio
 from agents.base import BaseAgent
 
-REVIEW_INTERVAL = 7200  # 2小时
+REVIEW_INTERVAL = 3600  # 1小时
 
 
 class PositionAnalyst(BaseAgent):

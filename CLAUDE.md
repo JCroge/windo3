@@ -335,6 +335,18 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **LLM客户端加固**：llm_client.py新增httpx.Timeout(connect=10, read=90, write=10, pool=10) + max_retries=2
 - **Executor required_margin修复**：`required_margin = size_usdt`（不再除以leverage，因size_usdt在统一风险预算中已是margin语义）
 
+### ✅ HYPE重复做空事故修复：5层防护（2026-05-15完成）
+- **事故**：HYPE-USDT在日线强上升趋势中被连续做空15+次（RSI=85+bearish_div，无rule_signal）
+- **Fix 1**（judge.py `_compute_score`）：RSI背离在日线强趋势中降权（35→15）。htf=bullish时1h bearish_div降权，反之亦然
+- **Fix 2**（judge.py）：无rule_signal/ma_aligned时入场门槛从25提高到40（辅助维度需强共振才允许入场）
+- **Fix 3**（judge.py）：无rule_signal时LLM confidence上限55，方向确认boost到60（非65）
+- **Fix 4**（judge.py）：开仓成功后300s冷却（防止止损后立即重开同方向）
+- **Fix 5**（agents/trading/executor.py）：开仓失败后120s冷却（防OKX报错刷屏）
+- **SL/TP方向校验**（executor.py）：下单前验证SL/TP方向合法性，价格变动导致方向错误时自动修正
+- **PositionAnalyst评估周期**：2h→1h（更及时的持仓管理）
+- **设计参考**：Al Brooks "With-trend pullbacks are not reversals"、Freqtrade stoploss_on_exchange_update
+- **验证**：HYPE场景score=-25 < 门槛40 → hold（第2层直接拦截），正常rule_signal入场不受影响
+
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
 - 杠杆上限调整为20x：OKX允许值列表[1,2,3,5,10,20]，RiskGuard高杠杆阈值同步更新为20
@@ -345,7 +357,6 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - 趋势评分阈值收紧：strength>70才加分（原>60），减少弱趋势主导决策的情况
 
 ### 🔄 Phase 7: 待开发
-- 修复资金费率API（`fetchFundingRate() is only valid for swap markets`）
 - Predictor（趋势预测Agent）
 - 更多数据源（链上大额转账、清算数据）
 - Paper Trading模式
@@ -380,9 +391,9 @@ python3 test_agents_integration.py
 
 ## 已知问题
 
-1. **资金费率API**：`fetchFundingRate() is only valid for swap markets`（持续警告，待修复）
-2. **OKX错误11045**：设置杠杆偶发失败，不影响交易，可忽略
-3. **Claude中转API偶尔被阻断**：系统自动降级为规则引擎，不影响交易
+1. **OKX错误11045**：设置杠杆偶发失败，不影响交易，可忽略
+2. **Claude中转API偶尔被阻断**：系统自动降级为规则引擎，不影响交易
+3. **个别标的资金费率API返回异常**（如UB-USDT）：已被try/except兜住，funding_rate回退None，不影响决策
 
 ## 开发注意事项
 
