@@ -105,6 +105,10 @@ class MultiJudge(BaseAgent):
                 if payload.get('status') == 'force_closed':
                     state["last_force_close_time"] = time.time()
                     self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{self._force_close_cooldown}s内禁止开仓")
+                elif payload.get('status') == 'closed_externally':
+                    state["last_force_close_time"] = time.time()
+                    state["deferred_entry"] = None
+                    self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{self._force_close_cooldown}s")
                 elif payload.get('status') == 'executed' and payload.get('action') in ('open_long', 'open_short'):
                     state["last_open_time"] = time.time()
                     self.logger.info(f"[Judge] {symbol} 开仓成功，300s冷却启动")

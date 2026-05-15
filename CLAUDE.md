@@ -71,7 +71,7 @@ crypto-arbitrage/
 │       ├── executor.py              # 多标的交易执行 + Daily Hard Stop响应
 │       ├── portfolio_risk_guard.py  # 组合级风控盯盘 + 状态持久化
 │       ├── reviewer.py              # 交易复盘 + 策略衰减检测 + Daily Hard Stop触发
-│       ├── position_analyst.py      # 持仓7因子评分 + 裁决引擎（每2h，防遗憾优化）
+│       ├── position_analyst.py      # 持仓7因子评分 + 裁决引擎（每1h，防遗憾优化）
 │       ├── behavioral_critic.py     # 行为金融学偏差检测（7种认知偏差，趋势保护）
 │       └── telegram_notifier.py     # Telegram实时告警 + 每日摘要 + 远程命令控制
 ├── run_agents.py          # ✅ 多Agent系统启动入口（支持远程重启循环）
@@ -203,7 +203,7 @@ MarketScanner+SentimentResearcher+NewsResearcher → Synthesizer(初选) → Cen
 **交易层流水线（per-symbol）**：
 DataCollector →[market_data:symbol]→ TechAnalyst →[tech_analysis:symbol]→ Judge →[trade_decision:symbol]→ Executor →[execution_result:symbol]→ RiskGuard + Reviewer
 
-**持仓管理流水线（每2h）**：
+**持仓管理流水线（每1h）**：
 PositionAnalyst(7因子评分) →[position_review:symbol]→ BehavioralCritic(偏差检测) →[position_verdict:symbol]→ PositionAnalyst(裁决) →[trade_decision:symbol]→ Executor
 
 **Reviewer反馈闭环**：
@@ -355,6 +355,23 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **全系统同步**：execution_result新增`is_add`标记(加仓增量更新) + `risk_reduced`状态(减仓) + `reduce_pct`参数
 - **下游适配**：RiskGuard/PositionAnalyst/TelegramNotifier均正确处理加仓增量更新和减仓比例更新
 - **设计参考**：Freqtrade adjust_trade_position + stoploss_on_exchange_update + partial exit
+
+### ✅ PA动态阈值 + Close冷却 + Telegram去重（2026-05-15完成）
+- **PA Rule 1事故**：ZEC 10x杠杆，原价差1.5%被PA计算为-20.9%（含杠杆），触发固定15%阈值被误平
+- **PA Rule 1修复**（position_analyst.py）：阈值=SL含杠杆距离（第三道防线，只在交易所SL+Executor轮询都失败时触发）
+- **PA Rule 3b修复**（position_analyst.py）：阈值=SL距离×50%（替代固定10%，入场逻辑失效早期信号）
+- **三层止损防线**：交易所SL条件单(实时) → Executor本地5s轮询 → PA规则1(1h周期)
+- **Close冷却60s**（executor.py）：平仓后sync_positions不重新发现该标的（防API延迟导致幽灵持仓循环）
+- **Telegram sync过滤**（telegram_notifier.py）：source=sync的持仓不推送开仓通知
+- **Telegram close去重**（telegram_notifier.py）：同symbol 60s内不重复推送平仓通知
+- **加仓后SL更新**（executor.py add_to_position）：cancel旧SL + place新SL（数量和价格都变了）
+
+### 🔄 UB-USDT事故待修复（Plan已就绪）
+- **事故**：2026-05-15 14:51，UB-USDT被PA幽灵加仓信号开了45 USDT巨仓（无SL）
+- **Bug A**：sync_positions清除持仓时不通知PA → PA发出幽灵加仓信号
+- **Bug B**：旧模式`_open_position`不除contractSize → 仓位放大100倍
+- **Bug C**：旧模式不在交易所设SL/TP → 无保护
+- **修复方案**：见plan文件，3个独立fix（closed_externally通知 + contractSize修复 + SL条件单）
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

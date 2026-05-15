@@ -113,7 +113,9 @@ class PortfolioRiskGuard(BaseAgent):
                 self._positions.pop(symbol, None)
                 self.logger.info(f"[风控] 移除持仓: {symbol}")
 
-        elif status in ('force_closed',):
+        elif status in ('force_closed', 'closed_externally'):
+            if symbol in self._positions:
+                self.logger.info(f"[风控] {symbol} 外部平仓，移除追踪")
             self._positions.pop(symbol, None)
 
         elif status == 'risk_reduced':

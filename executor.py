@@ -110,12 +110,9 @@ class ContractExecutor:
             ticker = self.exchange.fetch_ticker(symbol)
             current_price = ticker['last']
 
-            # 计算仓位
+            # 计算仓位（保证金）
             position_size = self.risk_manager.calculate_position_size(balance)
             position_size = min(position_size, amount_usdt)
-
-            # 计算数量（币数）
-            amount = position_size / current_price
 
             # 设置杠杆
             try:
@@ -124,6 +121,16 @@ class ContractExecutor:
             except Exception as e:
                 self.logger.warning(f"设置杠杆失败（可能已设置）: {e}")
 
+            # 计算数量（合约张数）：名义价值 / (价格 × 合约面值)
+            market = self.exchange.market(symbol)
+            contract_size = market.get('contractSize', 1)
+            notional = position_size * self.leverage
+            amount = notional / (current_price * contract_size)
+            amount = float(self.exchange.amount_to_precision(symbol, amount))
+            if amount < market.get('limits', {}).get('amount', {}).get('min', 1):
+                self.logger.warning(f"下单数量{amount}低于最小限制，放弃")
+                return None
+
             # 创建合约订单
             order_side = 'buy' if side == 'long' else 'sell'
             order = self.exchange.create_order(
@@ -131,12 +138,31 @@ class ContractExecutor:
                 type='market',
                 side=order_side,
                 amount=amount,
-                params={'reduceOnly': False}  # 开仓
+                params={'reduceOnly': False}
             )
 
             # 计算止损止盈
             stop_loss = self.risk_manager.calculate_stop_loss(current_price, side)
             take_profit = self.risk_manager.calculate_take_profit(current_price, side)
+
+            # 在交易所设置SL条件单
+            sl_order_id = None
+            try:
+                sl_side = 'sell' if side == 'long' else 'buy'
+                sl_order = self.exchange.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side=sl_side,
+                    amount=amount,
+                    params={
+                        'reduceOnly': True,
+                        'stopLossPrice': stop_loss,
+                    }
+                )
+                sl_order_id = sl_order['id']
+                self.logger.info(f"SL条件单设置成功: {stop_loss:.6f}")
+            except Exception as e:
+                self.logger.warning(f"设置SL条件单失败（本地兜底）: {e}")
 
             # 记录持仓
             position = {
@@ -148,7 +174,8 @@ class ContractExecutor:
                 'leverage': self.leverage,
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
-                'order_id': order['id']
+                'order_id': order['id'],
+                'sl_order_id': sl_order_id,
             }
             self.positions[symbol] = position
             self._save_positions()
@@ -209,6 +236,10 @@ class ContractExecutor:
             # 删除持仓
             del self.positions[symbol]
             self._save_positions()
+            # 冷却：防止sync在API延迟期间重新发现该持仓
+            if not hasattr(self, '_close_cooldown'):
+                self._close_cooldown = {}
+            self._close_cooldown[symbol] = time.time() + 60
 
             self.logger.info(f"平仓成功: {symbol}, 盈亏: {pnl:.2f} USDT ({result['pnl_pct']:.2f}%)")
             return result
@@ -629,14 +660,29 @@ class ContractExecutor:
                         'unrealized_pnl': float(pos.get('unrealizedPnl', 0)),
                     }
 
+            removed_symbols = []
+            cooldown = getattr(self, '_close_cooldown', {})
+            now_ts = time.time()
             for sym in list(self.positions.keys()):
                 if sym not in active:
+                    # 冷却期内不标记removed（刚平仓的，API延迟可能导致误判）
+                    if sym in cooldown and now_ts < cooldown[sym]:
+                        continue
                     self.logger.info(f"仓位同步: {sym} 已不在交易所，移除本地记录")
+                    removed_symbols.append(sym)
                     del self.positions[sym]
                     self._sl_check_failures.pop(sym, None)
+            if not hasattr(self, '_last_removed_symbols'):
+                self._last_removed_symbols = []
+            self._last_removed_symbols.extend(removed_symbols)
 
             newly_synced = []
+            cooldown = getattr(self, '_close_cooldown', {})
+            now = time.time()
             for sym, ex_pos in active.items():
+                # 刚平仓的symbol在冷却期内不重新补录（防止API延迟导致幽灵持仓）
+                if sym in cooldown and now < cooldown[sym]:
+                    continue
                 if sym in self.positions:
                     local = self.positions[sym]
                     if abs(local['amount'] - ex_pos['amount']) / max(ex_pos['amount'], 1e-8) > 0.01:
@@ -672,6 +718,12 @@ class ContractExecutor:
         """获取上次sync_positions发现的新持仓（供agent层发布通知）"""
         result = getattr(self, '_last_sync_result', [])
         self._last_sync_result = []
+        return result
+
+    def get_removed_symbols(self) -> list:
+        """获取上次sync_positions发现的已被交易所平仓的标的"""
+        result = getattr(self, '_last_removed_symbols', [])
+        self._last_removed_symbols = []
         return result
 
     def reduce_position(self, symbol: str, pct: float) -> Optional[Dict]:
@@ -827,6 +879,22 @@ class ContractExecutor:
                     position['take_profit'] = new_entry * (1 + tp_dist_pct)
                 else:
                     position['take_profit'] = new_entry * (1 - tp_dist_pct)
+
+            # 加仓后更新交易所SL条件单（旧单数量/价格不匹配）
+            if position.get('sl_order_id'):
+                try:
+                    self.exchange.cancel_order(position['sl_order_id'], symbol)
+                    self.logger.info(f"加仓后取消旧SL单: {position['sl_order_id']}")
+                except Exception:
+                    pass
+                position['sl_order_id'] = None
+
+            new_sl = position.get('stop_loss')
+            if new_sl:
+                sl_order_id = self._place_stop_loss_order(
+                    symbol, side, new_total, new_sl
+                )
+                position['sl_order_id'] = sl_order_id
 
             self._save_positions()
 

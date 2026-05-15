@@ -33,6 +33,9 @@
 - 2026-05-15：SL/TP方向校验（executor.py）：下单前验证方向合法性，价格变动导致方向错误时自动修正
 - 2026-05-15：PositionAnalyst评估周期2h→1h（position_analyst.py）
 - 2026-05-15：加仓/减仓功能修复（executor.py+agents/trading/executor.py）：加仓(add_to_position加权均价+SL/TP重算+上限2x)+减仓(reduce_position精度+取消旧SL)+全系统execution_result同步(is_add/risk_reduced)
+- 2026-05-15：PA Rule 1/3b动态阈值（position_analyst.py）：Rule 1=SL含杠杆距离（第三道防线），Rule 3b=SL距离×50%（替代固定15%/10%）
+- 2026-05-15：Executor close冷却60s（executor.py）：平仓后60s内sync_positions不重新发现该标的（防API延迟导致幽灵持仓）
+- 2026-05-15：Telegram去重（telegram_notifier.py）：sync发现的持仓不推送开仓通知 + 同symbol平仓通知60s去重
 
 ## 架构图
 
@@ -150,7 +153,7 @@ Executor（风控审核 → 执行）
 PortfolioRiskGuard（组合级实时监控）
 ```
 
-### 持仓管理决策流水线（每2小时）
+### 持仓管理决策流水线（每1小时）
 
 ```
 PositionAnalyst（7因子规则评分）
@@ -168,12 +171,14 @@ PositionAnalyst 裁决引擎（纯规则矩阵）
 **7因子评分**：趋势对齐(±20) + 动量变化(±20) + 时间衰减(-15~0) + 浮盈状态(±20) + 成交量确认(±10) + 剩余R:R(±15) + 入场逻辑验证(-10~+25)
 
 **硬性覆盖规则**（无视分析官和批判官）：
-- 浮亏>15% → close
-- 持仓>72h+浮亏>3% → close
-- HTF趋势反转+浮亏>5% → close
-- 浮亏>10%+趋势非顺向(neutral或反转) → close（规则3b，2026-05-14新增）
-- 浮盈>15%+动量反转 → reduce 50%
-- 剩余R:R<0.3 → close
+- 规则1：浮亏超过SL含杠杆距离 → close（第三道防线：交易所SL→Executor 5s轮询→PA 1h周期）
+- 规则2：持仓>72h+浮亏>3% → close
+- 规则3：HTF趋势反转+浮亏>5% → close
+- 规则3b：浮亏超过SL距离×50%+趋势非顺向 → close（入场逻辑失效早期信号）
+- 规则4：浮盈>15%+动量反转 → reduce 50%
+- 规则5：剩余R:R<0.3 → close
+
+**三层止损防线**：交易所SL条件单(实时) → Executor本地5s轮询 → PA规则1(1h周期，兜底)
 
 **防遗憾机制**：高时间框架（4h/日线）仍确认入场方向时，裁决引擎保护持仓（批判官close→reduce，reduce→hold）
 
@@ -322,7 +327,7 @@ CREATE TABLE klines (
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
 | `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |
 | `trading/telegram_notifier.py` | 交易 | Telegram实时告警+每日摘要 | 无 |
-| `trading/position_analyst.py` | 交易 | 持仓7因子评分+裁决引擎（每2h） | 无 |
+| `trading/position_analyst.py` | 交易 | 持仓7因子评分+裁决引擎（每1h） | 无 |
 | `trading/behavioral_critic.py` | 交易 | 行为金融学偏差检测（7种认知偏差） | Claude检测偏差 |
 
 **LLM降级机制**：Claude不可用时自动回退到规则引擎，系统不中断。

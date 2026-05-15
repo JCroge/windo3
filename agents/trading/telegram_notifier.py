@@ -79,6 +79,9 @@ class TelegramNotifier(BaseAgent):
         result = payload.get('result', {})
 
         if status == 'executed' and action in ('open_long', 'open_short'):
+            # sync发现的持仓不推送（不是交易决策，避免刷屏）
+            if payload.get('source') == 'sync':
+                return
             side = '🟢 做多' if action == 'open_long' else '🔴 做空'
             leverage = result.get('leverage', '?')
             amount = result.get('amount_usdt', '?')
@@ -101,10 +104,18 @@ class TelegramNotifier(BaseAgent):
             text = f"✂️ 减仓 {symbol} {int(reduce_pct*100)}%"
             await self._send_message(text)
 
-        elif status in ('executed', 'force_closed') and (action == 'close' or status == 'force_closed'):
+        elif status in ('executed', 'force_closed', 'closed_externally') and (action == 'close' or status in ('force_closed', 'closed_externally')):
+            # 去重：同一symbol 60s内不重复推送平仓
+            if not hasattr(self, '_close_notify_cache'):
+                self._close_notify_cache = {}
+            now = time.time()
+            if symbol in self._close_notify_cache and now - self._close_notify_cache[symbol] < 60:
+                return
+            self._close_notify_cache[symbol] = now
+
             pnl = result.get('pnl', 0)
             emoji = '💰' if pnl > 0 else '💸'
-            reason = payload.get('reason', '主动平仓')
+            reason = payload.get('reason', '交易所SL/TP触发' if status == 'closed_externally' else '主动平仓')
             text = f"{emoji} 平仓 {symbol}\nPnL: {pnl:+.2f} USDT | 原因: {reason}"
             await self._send_message(text)
             self._update_daily_summary(pnl)

@@ -107,6 +107,10 @@ class MultiExecutor(BaseAgent):
         result = None
 
         if action in ('open_long', 'open_short') and position is None:
+            # PA的add信号不应在无持仓时执行（持仓已被外部平仓）
+            if source == 'position_analyst':
+                self.logger.warning(f"[执行] {symbol} PA加仓信号但无持仓（已被外部平仓），忽略")
+                return
             cooldown_until = self._open_fail_cooldown.get(norm_symbol, 0)
             if time.time() < cooldown_until:
                 self.logger.info(f"[执行] {symbol} 开仓失败冷却中，跳过")
@@ -321,6 +325,7 @@ class MultiExecutor(BaseAgent):
         if self._sync_counter % 6 == 0:
             await asyncio.to_thread(self.executor.sync_positions)
             await self._notify_synced_positions()
+            await self._notify_removed_positions()
 
         await self._check_all_positions()
 
@@ -338,6 +343,18 @@ class MultiExecutor(BaseAgent):
                 "confidence": 0,
                 "used_plan": False,
                 "source": "sync",
+            }, symbol=symbol)
+
+    async def _notify_removed_positions(self):
+        """通知下游：持仓已被交易所平仓（SL/TP触发）"""
+        removed = self.executor.get_removed_symbols()
+        for symbol in removed:
+            self.logger.info(f"[执行] {symbol} 被交易所平仓，通知下游清除")
+            await self.publish("execution_result", {
+                "status": "closed_externally",
+                "action": "close",
+                "symbol": symbol,
+                "reason": "exchange_sl_tp_triggered",
             }, symbol=symbol)
 
     async def _check_all_positions(self):

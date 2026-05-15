@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：加仓/减仓功能修复完成（2026-05-15）
+**当前阶段**：PA动态阈值+Close冷却+Telegram去重完成（2026-05-15）
 **下一阶段**：Phase 7（资金费率API修复、Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -410,6 +410,25 @@
    - 新增`is_add`标记：RiskGuard/PositionAnalyst增量更新而非覆盖
    - 新增`risk_reduced`状态：区分减仓和全平，下游按实际reduce_pct更新
    - TelegramNotifier：区分加仓(➕)/减仓(✂️)/全平通知
+
+### ✅ Phase 6n: PA动态阈值 + Close冷却 + Telegram去重（2026-05-15完成）
+
+1. **PA Rule 1/3b动态阈值**（`agents/trading/position_analyst.py`）
+   - 事故：ZEC-USDT 10x杠杆，原价差1.5%被PA计算为-20.9%（含杠杆），触发固定15%阈值被误平
+   - Rule 1修复：阈值=SL含杠杆距离（第三道防线，只在交易所SL+Executor轮询都失败时触发）
+   - Rule 3b修复：阈值=SL距离×50%（替代固定10%，入场逻辑失效的早期信号）
+   - 无SL时兜底：Rule 1=-30%，Rule 3b=-20%
+   - 设计原则：PA不抢跑SL，三层防线各司其职
+
+2. **Executor close冷却60s**（`executor.py`）
+   - 根因：close_position后OKX API有延迟，sync_positions在延迟期间重新发现已平仓位→重建本地记录→再次被sync移除→循环
+   - 修复：close_position后写入`_close_cooldown[symbol] = now + 60`
+   - sync_positions中removed检测和newly_synced都检查冷却期
+
+3. **Telegram通知去重**（`agents/trading/telegram_notifier.py`）
+   - 问题1：sync发现的持仓推送"做多 置信度0%"刷屏 → 过滤source=sync
+   - 问题2：closed_externally重复推送3次 → 同symbol 60s内去重
+   - 加仓后SL更新：cancel旧SL + place新SL（数量和价格都变了）
 
 ## 技术债务
 

@@ -60,18 +60,18 @@ class ReviewerAgent(BaseAgent):
         payload = msg['payload']
         status = payload.get('status')
 
-        # 只记录已完成的交易（executed或force_closed）
-        if status not in ('executed', 'force_closed'):
+        # 只记录已完成的交易（executed或force_closed或closed_externally）
+        if status not in ('executed', 'force_closed', 'closed_externally'):
             return
 
         action = payload.get('action', '')
         result = payload.get('result', {})
 
         # 只记录开仓，平仓时计算盈亏
-        if action in ('open_long', 'open_short'):
+        if action in ('open_long', 'open_short') and status == 'executed':
             # 记录开仓信息，等待平仓时补充
             pass
-        elif action == 'close' or status == 'force_closed':
+        elif action == 'close' or status in ('force_closed', 'closed_externally'):
             # 平仓：记录完整交易
             symbol = msg.get('symbol') or payload.get('symbol')
             pnl = result.get('pnl', 0)

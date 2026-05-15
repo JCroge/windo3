@@ -92,7 +92,9 @@ class PositionAnalyst(BaseAgent):
                     }
             elif action == 'close':
                 self._positions.pop(symbol, None)
-        elif status in ('force_closed',):
+        elif status in ('force_closed', 'closed_externally'):
+            if symbol in self._positions:
+                self.logger.info(f"[持仓分析] {symbol} 已被外部平仓，移除记录")
             self._positions.pop(symbol, None)
         elif status == 'risk_reduced':
             if symbol in self._positions:
@@ -362,10 +364,21 @@ class PositionAnalyst(BaseAgent):
         side = pos.get('side', 'long')
         higher_trend = ctx.get('higher_trend', 'neutral')
 
-        # 规则1: 浮亏>15% → close（放宽：原12%，高杠杆下给更多空间）
-        if pnl_pct < -15:
+        # 规则1: 浮亏超过SL预期水平 → close（SL失败时的第三道防线）
+        # 正常触发顺序：交易所SL条件单(实时) → Executor兜底(5s) → PA规则1(1h)
+        # 规则1只在前两道都失败时才有意义，阈值=SL含杠杆距离（不抢跑SL）
+        leverage = pos.get('leverage', 1)
+        stop_loss = pos.get('stop_loss', 0)
+        entry_price = pos.get('entry_price', 0)
+        if stop_loss and entry_price:
+            sl_dist_pct = abs(stop_loss - entry_price) / entry_price * 100 * leverage
+            hard_stop_threshold = -sl_dist_pct
+        else:
+            hard_stop_threshold = -30  # 无SL时兜底30%
+
+        if pnl_pct < hard_stop_threshold:
             return self._make_final("close", 1.0, symbol, verdict['action'],
-                                    None, None, f"硬性规则：浮亏{pnl_pct:.1f}%>15%")
+                                    None, None, f"硬性规则：浮亏{pnl_pct:.1f}%超SL水平({hard_stop_threshold:.1f}%)，SL可能失效")
 
         # 规则2: 持仓>72h + 浮亏>3% → close（放宽：原48h+任何浮亏）
         if hours_held > 72 and pnl_pct < -3:
@@ -379,12 +392,17 @@ class PositionAnalyst(BaseAgent):
             return self._make_final("close", 1.0, symbol, verdict['action'],
                                     None, None, f"硬性规则：高级别趋势反转+浮亏{pnl_pct:.1f}%")
 
-        # 规则3b: 浮亏>10% + 趋势非顺向(neutral或反转) → close（入场逻辑已失效，不值得继续扛）
+        # 规则3b: 浮亏超过SL距离50% + 趋势非顺向 → close
+        # 含义：价格已走过SL一半路程且趋势不再支持，入场逻辑失效的早期信号
         trend_aligned = (side == 'long' and higher_trend == 'bullish') or \
                         (side == 'short' and higher_trend == 'bearish')
-        if pnl_pct < -10 and not trend_aligned:
+        if stop_loss and entry_price:
+            rule3b_threshold = -(sl_dist_pct * 0.5)
+        else:
+            rule3b_threshold = -20
+        if pnl_pct < rule3b_threshold and not trend_aligned:
             return self._make_final("close", 1.0, symbol, verdict['action'],
-                                    None, None, f"硬性规则：浮亏{pnl_pct:.1f}%>10%且趋势非顺向({higher_trend})")
+                                    None, None, f"硬性规则：浮亏{pnl_pct:.1f}%超SL半程({rule3b_threshold:.1f}%)且趋势非顺向({higher_trend})")
 
         # 规则4: 浮盈>15% + 动量反转 → reduce 50%（保持不变）
         momentum_reversed = verdict['factors']['momentum_shift'] <= -10
