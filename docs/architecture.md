@@ -36,6 +36,7 @@
 - 2026-05-15：PA Rule 1/3b动态阈值（position_analyst.py）：Rule 1=SL含杠杆距离（第三道防线），Rule 3b=SL距离×50%（替代固定15%/10%）
 - 2026-05-15：Executor close冷却60s（executor.py）：平仓后60s内sync_positions不重新发现该标的（防API延迟导致幽灵持仓）
 - 2026-05-15：Telegram去重（telegram_notifier.py）：sync发现的持仓不推送开仓通知 + 同symbol平仓通知60s去重
+- 2026-05-15：Symbol格式统一修复（judge.py+position_analyst.py+portfolio_risk_guard.py）：execution_result handler strip `-SWAP`后缀 + deferred_entry触发即时冷却，解决ZEC重复开仓+SL覆盖+PA幽灵持仓三个级联故障
 
 ## 架构图
 
@@ -354,6 +355,12 @@ CREATE TABLE klines (
 - `news_snapshot`：30min新闻快照（DataCollector → Judge，用于price-in检测）
 - `position_review:{symbol}`：持仓评估结果（PositionAnalyst → BehavioralCritic）
 - `position_verdict:{symbol}`：偏差检测结果（BehavioralCritic → PositionAnalyst裁决引擎）
+
+**Symbol格式约定**：
+- 消息总线（DataCollector/TechAnalyst/Judge/PA/RiskGuard）：`ZEC-USDT`（不带-SWAP）
+- ContractExecutor positions dict key：`ZEC-USDT-SWAP`（`_normalize_symbol`自动添加）
+- OKX API返回：`ZEC/USDT:USDT`（sync_positions自动转换为`-SWAP`格式）
+- 规则：Agent层收到execution_result时strip `-SWAP`后缀，确保与tech_analysis key一致
 
 ## 数据流
 

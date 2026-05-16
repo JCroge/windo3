@@ -67,6 +67,9 @@ class PortfolioRiskGuard(BaseAgent):
         symbol = result.get('symbol') or payload.get('symbol')
         if not symbol:
             return
+        # 统一为不带-SWAP的格式（与开仓时一致）
+        if symbol.endswith('-SWAP'):
+            symbol = symbol[:-5]
         status = payload.get('status')
 
         # 从执行结果中更新账户余额基准

@@ -64,6 +64,9 @@ class PositionAnalyst(BaseAgent):
         symbol = result.get('symbol') or payload.get('symbol')
         if not symbol:
             return
+        # 统一为不带-SWAP的格式（与tech_analysis/开仓时一致）
+        if symbol.endswith('-SWAP'):
+            symbol = symbol[:-5]
         status = payload.get('status')
 
         if status == 'executed':

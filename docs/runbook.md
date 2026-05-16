@@ -282,6 +282,16 @@ pip3 install --upgrade ccxt
 
 ---
 
+### 问题：同标的重复开仓
+
+**症状**：同一标的在短时间内（几秒~几分钟）被连续开仓2-3次
+
+**根因**：symbol格式不一致（`ZEC-USDT` vs `ZEC-USDT-SWAP`）导致Judge冷却设在错误key上
+
+**状态**：2026-05-15已修复。Judge/PA/RiskGuard的execution_result handler入口统一strip `-SWAP`后缀，deferred_entry触发后立即设冷却。如仍复现，检查是否有新的消息路径绕过了strip逻辑。
+
+---
+
 ### 问题：OKX下单错误
 
 **错误51008：余额不足**

@@ -101,6 +101,9 @@ class MultiJudge(BaseAgent):
             payload = msg.get('payload', msg)
             symbol = msg.get('symbol') or payload.get('symbol')
             if symbol:
+                # 统一为tech_analysis格式（不带-SWAP），确保state key一致
+                if symbol.endswith('-SWAP'):
+                    symbol = symbol[:-5]
                 state = self._get_state(symbol)
                 if payload.get('status') == 'force_closed':
                     state["last_force_close_time"] = time.time()
@@ -191,6 +194,7 @@ class MultiJudge(BaseAgent):
                     return
                 plan['order_type'] = 'limit'
                 state['deferred_entry'] = None
+                state['last_open_time'] = time.time()
                 decision = {
                     "symbol": symbol, "timestamp": time.time(),
                     "action": def_action, "confidence": 60,
@@ -217,6 +221,7 @@ class MultiJudge(BaseAgent):
                     return
                 plan['order_type'] = 'market'
                 state['deferred_entry'] = None
+                state['last_open_time'] = time.time()
                 self.logger.info(f"[Judge] {symbol} 价格已移动{move_pct:.1%}无回调，追价入场（仓位60%）")
                 decision = {
                     "symbol": symbol, "timestamp": time.time(),
@@ -504,6 +509,8 @@ class MultiJudge(BaseAgent):
                     }
 
         await self.publish("trade_decision", decision, symbol=symbol)
+        if decision['action'] in ('open_long', 'open_short') and decision.get('confidence', 0) >= 60:
+            state['last_open_time'] = time.time()
         self.logger.info(
             f"[决策] {symbol} {decision['action']} "
             f"置信度={decision['confidence']} "

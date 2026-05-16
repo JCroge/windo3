@@ -366,12 +366,18 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **Telegram close去重**（telegram_notifier.py）：同symbol 60s内不重复推送平仓通知
 - **加仓后SL更新**（executor.py add_to_position）：cancel旧SL + place新SL（数量和价格都变了）
 
-### 🔄 UB-USDT事故待修复（Plan已就绪）
-- **事故**：2026-05-15 14:51，UB-USDT被PA幽灵加仓信号开了45 USDT巨仓（无SL）
-- **Bug A**：sync_positions清除持仓时不通知PA → PA发出幽灵加仓信号
+### ✅ Symbol格式统一修复 + UB事故Fix A（2026-05-15完成）
+- **根因**：系统内symbol格式不统一——DataCollector/TechAnalyst/Judge用`ZEC-USDT`，ContractExecutor positions dict用`ZEC-USDT-SWAP`，`closed_externally`通知携带`ZEC-USDT-SWAP`
+- **后果**：Judge/PA/RiskGuard收到`closed_externally`时用错误key查state → 冷却无效、幽灵持仓不清除 → ZEC重复开仓3次、SL被sync覆盖
+- **Fix**（judge.py + position_analyst.py + portfolio_risk_guard.py）：execution_result handler入口strip `-SWAP`后缀，统一为tech_analysis格式
+- **即时冷却**（judge.py）：deferred_entry/追价/正常决策发出open信号后立即设`last_open_time`，不等execution_result回来
+- **验证**：2026-05-16运行19h，ZEC无重复开仓，closed_externally正确清除state（UB-USDT、HYPE-USDT均正确处理）
+- **UB事故Bug A已修复**：closed_externally通知 → PA/RiskGuard正确清除幽灵持仓
+
+### 🔄 UB-USDT事故剩余修复（Bug B + Bug C）
 - **Bug B**：旧模式`_open_position`不除contractSize → 仓位放大100倍
 - **Bug C**：旧模式不在交易所设SL/TP → 无保护
-- **修复方案**：见plan文件，3个独立fix（closed_externally通知 + contractSize修复 + SL条件单）
+- **修复方案**：见plan文件（executor.py根目录，contractSize修复 + SL条件单）
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）
