@@ -346,16 +346,52 @@ class MultiExecutor(BaseAgent):
             }, symbol=symbol)
 
     async def _notify_removed_positions(self):
-        """通知下游：持仓已被交易所平仓（SL/TP触发）"""
+        """通知下游：持仓已被交易所平仓（SL/TP触发），含PnL估算"""
         removed = self.executor.get_removed_symbols()
+        removed_data = self.executor.get_removed_positions_data()
+        data_map = {d['symbol']: d for d in removed_data}
+
         for symbol in removed:
-            self.logger.info(f"[执行] {symbol} 被交易所平仓，通知下游清除")
+            pos_data = data_map.get(symbol, {})
+            pnl = self._estimate_close_pnl(pos_data)
+            self.logger.info(f"[执行] {symbol} 被交易所平仓，估算PnL={pnl:+.3f} USDT")
             await self.publish("execution_result", {
                 "status": "closed_externally",
                 "action": "close",
                 "symbol": symbol,
                 "reason": "exchange_sl_tp_triggered",
+                "result": {"pnl": pnl, "symbol": symbol},
             }, symbol=symbol)
+
+    def _estimate_close_pnl(self, pos_data: dict) -> float:
+        """从本地持仓数据估算平仓PnL
+        优先用最后一次sync的unrealized_pnl（最接近真实值，~30s误差）
+        降级用stop_loss作为exit price计算
+        """
+        if not pos_data:
+            return 0.0
+
+        # 优先：最后一次sync记录的浮动盈亏（最准确，因为sync周期30s）
+        unrealized = pos_data.get('unrealized_pnl')
+        if unrealized is not None and unrealized != 0:
+            return round(unrealized, 4)
+
+        # 降级：用stop_loss估算（假设SL触发）
+        entry = pos_data.get('entry_price', 0)
+        sl = pos_data.get('stop_loss', 0)
+        side = pos_data.get('side', '')
+        amount_usdt = pos_data.get('amount_usdt', 0)
+
+        if not entry or not sl or not amount_usdt:
+            return 0.0
+
+        if side == 'long':
+            pnl_pct = (sl - entry) / entry
+        else:
+            pnl_pct = (entry - sl) / entry
+
+        pnl = amount_usdt * pnl_pct
+        return round(pnl, 4)
 
     async def _check_all_positions(self):
         """兜底止损检查（交易所条件单失败时的安全网）"""

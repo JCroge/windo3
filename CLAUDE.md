@@ -374,10 +374,16 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **验证**：2026-05-16运行19h，ZEC无重复开仓，closed_externally正确清除state（UB-USDT、HYPE-USDT均正确处理）
 - **UB事故Bug A已修复**：closed_externally通知 → PA/RiskGuard正确清除幽灵持仓
 
-### 🔄 UB-USDT事故剩余修复（Bug B + Bug C）
-- **Bug B**：旧模式`_open_position`不除contractSize → 仓位放大100倍
-- **Bug C**：旧模式不在交易所设SL/TP → 无保护
-- **修复方案**：见plan文件（executor.py根目录，contractSize修复 + SL条件单）
+### ✅ UB-USDT事故修复（Bug A/B/C全部完成）
+- **Bug A**（2026-05-15）：closed_externally通知 → PA/RiskGuard正确清除幽灵持仓（Symbol格式统一修复）
+- **Bug B**（已在代码中修复）：`_open_position`已正确除以contractSize + amount_to_precision
+- **Bug C**（已在代码中修复）：`_open_position`已在OKX设置SL条件单
+
+### ✅ Phase 6p: PnL追踪 + 递增冷却 + 上线时间过滤（2026-05-17完成）
+- **closed_externally PnL追踪**：sync_positions保存被移除持仓数据 → `_estimate_close_pnl`优先用unrealized_pnl，降级用SL价格。Daily Hard Stop现在能检测交易所SL触发的真实亏损
+- **递增冷却StoplossGuard**：4h窗口内连续SL次数递增冷却（300→600→1200→3600s），参考Freqtrade StoplossGuard
+- **研判层上线时间过滤**：OKX月K线<12根的标的不进入初选（上线不足1年）
+- **初选固定12标的**：SYNTHESIS_PROMPT从"5-12个"改为"12个"
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

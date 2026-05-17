@@ -98,6 +98,18 @@ class MarketScanner(BaseAgent):
 
             import asyncio
 
+            # 上线时间过滤：排除OKX上线不足1年的标的（月K线<12根）
+            async def _check_age(c):
+                inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
+                c['_monthly_klines'] = await self._fetch_monthly_kline_count(inst_id)
+
+            await asyncio.gather(*[_check_age(c) for c in top_candidates])
+            before_filter = len(top_candidates)
+            top_candidates = [c for c in top_candidates if c.pop('_monthly_klines', 0) >= 12]
+            filtered_by_age = before_filter - len(top_candidates)
+            if filtered_by_age > 0:
+                self.logger.info(f"[扫描] 上线时间过滤: 移除{filtered_by_age}个不足1年的标的")
+
             async def _enrich(c):
                 c['funding_rate'] = await self._fetch_funding(c['raw_symbol'])
                 inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
@@ -164,6 +176,21 @@ class MarketScanner(BaseAgent):
             return None
         except Exception:
             return None
+
+    async def _fetch_monthly_kline_count(self, inst_id: str) -> int:
+        """获取月K线数量，用于判断上线时间是否满1年（>=12根）"""
+        try:
+            url = "https://www.okx.com/api/v5/market/candles"
+            params = {"instId": inst_id, "bar": "1M", "limit": "12"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(url, params=params) as resp:
+                    if resp.status != 200:
+                        return 12  # API失败不过滤
+                    data = await resp.json()
+            rows = data.get('data', [])
+            return len(rows)
+        except Exception:
+            return 12  # 异常不过滤
 
     async def _fetch_sl_structure(self, inst_id: str, price: float) -> dict:
         """预计算止损结构可行性：近20根1h K线的支撑/阻力距离和ATR"""

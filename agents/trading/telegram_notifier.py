@@ -248,7 +248,10 @@ class TelegramNotifier(BaseAgent):
 
         handler = handlers.get(cmd)
         if handler:
+            self.logger.info(f"[Telegram] 收到命令: {cmd}")
             await handler()
+        elif text.startswith('/'):
+            self.logger.info(f"[Telegram] 未知命令: {text}")
 
     async def _cmd_status(self):
         uptime = time.time() - self._start_time
@@ -305,6 +308,7 @@ class TelegramNotifier(BaseAgent):
 
     async def _cmd_stop(self):
         await self._send_message("⏹ 正在优雅退出...")
+        self.logger.info("[Telegram] /stop命令执行")
         await asyncio.sleep(1)
         await self.publish("system_command", {"command": "shutdown"})
 
@@ -313,6 +317,7 @@ class TelegramNotifier(BaseAgent):
         os.makedirs('data', exist_ok=True)
         with open('data/.restart_flag', 'w') as f:
             f.write(str(time.time()))
+        self.logger.info("[Telegram] /restart命令执行，已写入restart_flag")
         await asyncio.sleep(1)
         await self.publish("system_command", {"command": "shutdown"})
 

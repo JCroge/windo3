@@ -661,13 +661,17 @@ class ContractExecutor:
                     }
 
             removed_symbols = []
+            if not hasattr(self, '_removed_positions_data'):
+                self._removed_positions_data = []
             cooldown = getattr(self, '_close_cooldown', {})
             now_ts = time.time()
             for sym in list(self.positions.keys()):
                 if sym not in active:
-                    # 冷却期内不标记removed（刚平仓的，API延迟可能导致误判）
                     if sym in cooldown and now_ts < cooldown[sym]:
                         continue
+                    pos_data = self.positions[sym].copy()
+                    pos_data['symbol'] = sym
+                    self._removed_positions_data.append(pos_data)
                     self.logger.info(f"仓位同步: {sym} 已不在交易所，移除本地记录")
                     removed_symbols.append(sym)
                     del self.positions[sym]
@@ -724,6 +728,12 @@ class ContractExecutor:
         """获取上次sync_positions发现的已被交易所平仓的标的"""
         result = getattr(self, '_last_removed_symbols', [])
         self._last_removed_symbols = []
+        return result
+
+    def get_removed_positions_data(self) -> list:
+        """获取被移除持仓的完整数据（含entry_price/side/stop_loss，用于计算PnL）"""
+        result = getattr(self, '_removed_positions_data', [])
+        self._removed_positions_data = []
         return result
 
     def reduce_position(self, symbol: str, pct: float) -> Optional[Dict]:

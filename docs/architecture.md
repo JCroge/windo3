@@ -37,6 +37,10 @@
 - 2026-05-15：Executor close冷却60s（executor.py）：平仓后60s内sync_positions不重新发现该标的（防API延迟导致幽灵持仓）
 - 2026-05-15：Telegram去重（telegram_notifier.py）：sync发现的持仓不推送开仓通知 + 同symbol平仓通知60s去重
 - 2026-05-15：Symbol格式统一修复（judge.py+position_analyst.py+portfolio_risk_guard.py）：execution_result handler strip `-SWAP`后缀 + deferred_entry触发即时冷却，解决ZEC重复开仓+SL覆盖+PA幽灵持仓三个级联故障
+- 2026-05-17：closed_externally PnL追踪（executor.py）：sync_positions保存被移除持仓数据，_estimate_close_pnl优先用unrealized_pnl（~30s误差），降级用SL价格计算。Daily Hard Stop现在能检测交易所SL触发的真实亏损
+- 2026-05-17：递增冷却StoplossGuard（judge.py）：4h窗口内连续SL次数递增冷却（300→600→1200→3600s），窗口过期自动重置。参考Freqtrade StoplossGuard protection
+- 2026-05-17：研判层上线时间过滤（market_scanner.py）：OKX月K线<12根的标的不进入初选（上线不足1年），enrich前并行检查节省API调用
+- 2026-05-17：初选固定12标的（synthesizer.py）：LLM固定选12个标的（原5-12个浮动）
 
 ## 架构图
 

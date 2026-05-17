@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：PA动态阈值+Close冷却+Telegram去重完成（2026-05-15）
-**下一阶段**：Phase 7（资金费率API修复、Predictor、Paper Trading、更多数据源）
+**当前阶段**：PnL追踪+递增冷却+上线时间过滤完成（2026-05-17）
+**下一阶段**：Phase 7（AI-USDT策略级优化、Predictor、Paper Trading、更多数据源）
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -429,6 +429,32 @@
    - 问题1：sync发现的持仓推送"做多 置信度0%"刷屏 → 过滤source=sync
    - 问题2：closed_externally重复推送3次 → 同symbol 60s内去重
    - 加仓后SL更新：cancel旧SL + place新SL（数量和价格都变了）
+
+### ✅ Phase 6o: Symbol格式统一修复（2026-05-15完成）
+
+1. **根因**：系统内symbol格式不统一——DataCollector/TechAnalyst/Judge用`ZEC-USDT`，ContractExecutor positions dict用`ZEC-USDT-SWAP`
+2. **后果**：`closed_externally`通知携带`-SWAP`格式 → Judge/PA/RiskGuard用错误key查state → 冷却无效、幽灵持仓不清除 → ZEC重复开仓3次
+3. **修复**：execution_result handler入口strip `-SWAP`后缀 + deferred_entry触发即时冷却
+
+### ✅ Phase 6p: PnL追踪 + 递增冷却 + 上线时间过滤（2026-05-17完成）
+
+1. **closed_externally PnL追踪**（`executor.py` + `agents/trading/executor.py`）
+   - 问题：交易所SL/TP触发时PnL记录为0，Daily Hard Stop无法检测真实亏损（14/28笔交易失明）
+   - 修复：sync_positions保存被移除持仓完整数据 → `_estimate_close_pnl`优先用`unrealized_pnl`（~30s误差），降级用SL价格计算
+   - 对标：Freqtrade `update_trade_stoploss_order_status` 始终计算close_profit
+
+2. **递增冷却StoplossGuard**（`agents/trading/judge.py`）
+   - 问题：AI-USDT 2h内7次连续SL，固定300s冷却不够（rule_signal持续触发）
+   - 修复：4h滑动窗口计数，冷却递增 300→600→1200→3600s，窗口过期自动重置
+   - 对标：Freqtrade `StoplossGuard` protection（trade_limit + timeframe）
+
+3. **研判层上线时间过滤**（`agents/research/market_scanner.py`）
+   - 问题：新币历史数据不足，技术分析不可靠
+   - 修复：enrich前并行获取月K线数量，<12根（上线不足1年）的标的排除
+   - 效率：在enrich之前过滤，节省4个API调用/标的
+
+4. **初选固定12标的**（`agents/research/synthesizer.py`）
+   - 修改：SYNTHESIS_PROMPT从"5-12个"改为"12个"，确保机会面充足
 
 ## 技术债务
 

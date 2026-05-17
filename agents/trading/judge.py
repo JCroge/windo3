@@ -67,6 +67,7 @@ class MultiJudge(BaseAgent):
                 "pending_pullback_time": 0,
                 "pullback_bonus": 0,
                 "deferred_entry": None,
+                "sl_timestamps": [],
             }
         return self._symbol_state[symbol]
 
@@ -105,14 +106,19 @@ class MultiJudge(BaseAgent):
                 if symbol.endswith('-SWAP'):
                     symbol = symbol[:-5]
                 state = self._get_state(symbol)
-                if payload.get('status') == 'force_closed':
+                status = payload.get('status')
+                if status == 'force_closed':
                     state["last_force_close_time"] = time.time()
-                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{self._force_close_cooldown}s内禁止开仓")
-                elif payload.get('status') == 'closed_externally':
+                    self._record_sl_hit(state)
+                    cooldown = self._get_escalating_cooldown(state)
+                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{cooldown}s内禁止开仓")
+                elif status == 'closed_externally':
                     state["last_force_close_time"] = time.time()
                     state["deferred_entry"] = None
-                    self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{self._force_close_cooldown}s")
-                elif payload.get('status') == 'executed' and payload.get('action') in ('open_long', 'open_short'):
+                    self._record_sl_hit(state)
+                    cooldown = self._get_escalating_cooldown(state)
+                    self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{cooldown}s")
+                elif status == 'executed' and payload.get('action') in ('open_long', 'open_short'):
                     state["last_open_time"] = time.time()
                     self.logger.info(f"[Judge] {symbol} 开仓成功，300s冷却启动")
             return
@@ -129,9 +135,9 @@ class MultiJudge(BaseAgent):
         if now - state["last_decision_time"] < self._decision_cooldown:
             return
 
-        if now - state["last_force_close_time"] < self._force_close_cooldown:
-            remaining = int(self._force_close_cooldown - (now - state["last_force_close_time"]))
-            self.logger.info(f"[Judge] {symbol} 强平冷却中，剩余{remaining}s")
+        if now - state["last_force_close_time"] < self._get_escalating_cooldown(state):
+            remaining = int(self._get_escalating_cooldown(state) - (now - state["last_force_close_time"]))
+            self.logger.info(f"[Judge] {symbol} 强平冷却中，剩余{remaining}s (连续SL:{len(state.get('sl_timestamps',[]))}次)")
             return
 
         if now - state["last_open_time"] < 300:
@@ -534,6 +540,33 @@ class MultiJudge(BaseAgent):
         if abs(score) < 10:
             return "多空信号对冲，净得分接近零，观望"
         return "信号强度不足，观望"
+
+    def _record_sl_hit(self, state: dict):
+        """记录一次SL触发，用于escalating cooldown（参考Freqtrade StoplossGuard）"""
+        now = time.time()
+        if 'sl_timestamps' not in state:
+            state['sl_timestamps'] = []
+        state['sl_timestamps'].append(now)
+        # 只保留4h内的记录
+        cutoff = now - 4 * 3600
+        state['sl_timestamps'] = [t for t in state['sl_timestamps'] if t > cutoff]
+
+    def _get_escalating_cooldown(self, state: dict) -> int:
+        """根据4h内连续SL次数返回递增冷却时间
+        1次=300s, 2次=600s, 3次=1200s, 4次+=3600s
+        """
+        now = time.time()
+        cutoff = now - 4 * 3600
+        recent_sl = [t for t in state.get('sl_timestamps', []) if t > cutoff]
+        n = len(recent_sl)
+        if n <= 1:
+            return 300
+        elif n == 2:
+            return 600
+        elif n == 3:
+            return 1200
+        else:
+            return 3600
 
     def _compute_score(self, tech: dict) -> float:
         """多空评分: +100=极度看多, -100=极度看空, 0=中性
