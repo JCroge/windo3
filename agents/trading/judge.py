@@ -13,22 +13,27 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-JUDGE_PROMPT = """你是加密货币合约交易的最终裁判。基于技术分析师提供的多维度市场信号，做出交易决策。
+JUDGE_PROMPT = """你是加密货币合约交易的裁判。基于技术分析师提供的多维度市场信号，做出交易决策。
 
 决策原则：
-1. 多维度共振才开仓——至少3个维度方向一致
-2. 风控优先：止损必须在关键支撑/阻力位外侧
-3. 反人性：散户极度贪婪时谨慎，极度恐惧时寻找机会
-4. 杠杆风险高时降低仓位和杠杆
-5. 没有明确信号时果断hold——不交易也是决策
+1. 信号明确就果断入场——趋势+多维度确认=高置信度开仓
+2. 只在信号矛盾时观望——不是"有疑虑就不做"，而是"信号冲突才不做"
+3. 风控优先：止损必须在关键支撑/阻力位外侧
+4. 反人性：散户极度贪婪时谨慎，极度恐惧时寻找机会
+5. 趋势是朋友：多周期(1h+4h+1d)方向一致时，给予高置信度
 
 【关键禁令——违反即亏损】
-- RSI < 30 时禁止做空：这是超卖区域，反弹概率极高。即使趋势看空，也不追空
-- RSI > 70 时禁止做多：这是超买区域，回调概率极高。即使趋势看多，也不追多
-- RSI < 25 + bullish divergence = 强烈做多信号，不是做空信号
-- RSI > 75 + bearish divergence = 强烈做空信号，不是做多信号
-- 趋势强度 > 90 往往是趋势末期，此时顺势开仓风险极高
-- 散户反指在RSI极端区域失效：超卖时散户做多可能是正确的抄底
+- RSI < 30 时禁止做空：超卖区域反弹概率极高
+- RSI > 70 时禁止做多：超买区域回调概率极高
+- RSI < 25 + bullish divergence = 强烈做多信号
+- RSI > 75 + bearish divergence = 强烈做空信号
+- 趋势强度 > 90 往往是趋势末期，顺势开仓风险高
+- 散户反指在RSI极端区域失效
+
+【高置信度入场条件】
+- 多周期趋势一致(1h+4h+1d同方向) + 任意2个辅助维度确认 → confidence≥70
+- MA交叉/对齐 + 趋势方向一致 + 量价配合 → confidence≥65
+- OI背离 + 鲸鱼方向 + Taker压力 三者共振 → confidence≥60
 
 以JSON格式回复：
 {
@@ -49,7 +54,7 @@ class MultiJudge(BaseAgent):
         self._symbol_state = {}
         self._decision_cooldown = 55
         self._force_close_cooldown = 300  # 强平后5分钟禁止同标的开仓
-        self._max_trade_amount = config.get('max_trade_amount', 10) if config else 10
+        self._max_trade_amount = config.get('max_trade_amount', 500) if config else 500
         self.exchange = None
         self._available_balance = 0.0
         self._news_snapshot = {}  # {base: [headlines]} 最新新闻快照
@@ -109,13 +114,17 @@ class MultiJudge(BaseAgent):
                 status = payload.get('status')
                 if status == 'force_closed':
                     state["last_force_close_time"] = time.time()
-                    self._record_sl_hit(state)
+                    closed_dir = payload.get('direction', payload.get('action', ''))
+                    sl_dir = 'long' if 'long' in closed_dir else ('short' if 'short' in closed_dir else None)
+                    self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
-                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{cooldown}s内禁止开仓")
+                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{cooldown}s内禁止同方向开仓")
                 elif status == 'closed_externally':
                     state["last_force_close_time"] = time.time()
                     state["deferred_entry"] = None
-                    self._record_sl_hit(state)
+                    closed_dir = payload.get('direction', payload.get('action', ''))
+                    sl_dir = 'long' if 'long' in closed_dir else ('short' if 'short' in closed_dir else None)
+                    self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
                     self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{cooldown}s")
                 elif status == 'executed' and payload.get('action') in ('open_long', 'open_short'):
@@ -135,9 +144,12 @@ class MultiJudge(BaseAgent):
         if now - state["last_decision_time"] < self._decision_cooldown:
             return
 
-        if now - state["last_force_close_time"] < self._get_escalating_cooldown(state):
-            remaining = int(self._get_escalating_cooldown(state) - (now - state["last_force_close_time"]))
-            self.logger.info(f"[Judge] {symbol} 强平冷却中，剩余{remaining}s (连续SL:{len(state.get('sl_timestamps',[]))}次)")
+        full_cooldown = self._get_escalating_cooldown(state)
+        elapsed_since_sl = now - state["last_force_close_time"]
+        # 反方向入场只需50%冷却时间（V型反转场景）
+        if elapsed_since_sl < full_cooldown // 2:
+            remaining = int(full_cooldown // 2 - elapsed_since_sl)
+            self.logger.info(f"[Judge] {symbol} 强平冷却中(最小)，剩余{remaining}s (连续SL:{len(state.get('sl_timestamps',[]))}次)")
             return
 
         if now - state["last_open_time"] < 300:
@@ -240,8 +252,10 @@ class MultiJudge(BaseAgent):
                 await self.publish("trade_decision", decision, symbol=symbol)
                 return
 
-            if age_seconds > 3 * 3600:
-                self.logger.info(f"[Judge] {symbol} 延迟入场过期（{age_seconds/3600:.1f}h），放弃")
+            # 动态超时：ma_aligned持续时间长的信号允许更长等待
+            timeout_hours = deferred.get('timeout_hours', 3)
+            if age_seconds > timeout_hours * 3600:
+                self.logger.info(f"[Judge] {symbol} 延迟入场过期（{age_seconds/3600:.1f}h/{timeout_hours}h），放弃")
                 state['deferred_entry'] = None
                 return
 
@@ -290,25 +304,67 @@ class MultiJudge(BaseAgent):
                 score += streak_bonus
             self.logger.info(f"[Judge] {symbol} 趋势持续{state['trend_streak']}轮({cur_dir}/{cur_strength})，加分±{streak_bonus}")
 
-        # 日线阻力区反欺骗：价格接近日线高点时禁止追多（假突破陷阱）
+        # 日线阻力区反欺骗：分级衰减（放量突破不衰减，缩量接近强衰减）
+        vol_ratio = tech.get('momentum', {}).get('volume_ratio', 1.0)
         if score > 0 and trend.get('daily_near_resistance'):
-            score *= 0.3
-            self.logger.info(f"[Judge] {symbol} 接近日线阻力区，做多信号衰减70%（防假突破）")
-        # 日线支撑区：价格接近日线低点时禁止追空（反弹陷阱）
+            if vol_ratio >= 2.0:
+                pass  # 放量突破确认，不衰减
+                self.logger.info(f"[Judge] {symbol} 接近日线阻力但放量(vol={vol_ratio:.1f}x)，视为突破确认")
+            elif vol_ratio >= 1.2:
+                score *= 0.5  # 正常量接近，中等衰减
+                self.logger.info(f"[Judge] {symbol} 接近日线阻力区，做多信号衰减50%")
+            else:
+                score *= 0.3  # 缩量接近，强衰减（假突破概率高）
+                self.logger.info(f"[Judge] {symbol} 缩量接近日线阻力区，做多信号衰减70%（假突破）")
+        # 日线支撑区：同理分级
         if score < 0 and trend.get('daily_near_support'):
-            score *= 0.3
-            self.logger.info(f"[Judge] {symbol} 接近日线支撑区，做空信号衰减70%（防反弹陷阱）")
+            if vol_ratio >= 2.0:
+                pass
+                self.logger.info(f"[Judge] {symbol} 接近日线支撑但放量(vol={vol_ratio:.1f}x)，视为突破确认")
+            elif vol_ratio >= 1.2:
+                score *= 0.5
+                self.logger.info(f"[Judge] {symbol} 接近日线支撑区，做空信号衰减50%")
+            else:
+                score *= 0.3
+                self.logger.info(f"[Judge] {symbol} 缩量接近日线支撑区，做空信号衰减70%（反弹陷阱）")
 
         # price-in衰减：催化剂已被价格消化，信号可靠性下降
         action_hint = "open_long" if score > 0 else "open_short"
         if abs(score) >= 30 and self._check_price_in(symbol, action_hint, tech):
             score *= 0.5
 
-        # 入场门槛：有主驱动(rule_signal/ma_aligned)时25分，无主驱动时40分
+        # 方向级冷却：同方向需完整冷却，反方向已在早期gate放行（50%冷却）
+        state = self._get_state(symbol)
+        now = time.time()
+        full_cooldown = self._get_escalating_cooldown(state)
+        elapsed_since_sl = now - state.get("last_force_close_time", 0)
+        if elapsed_since_sl < full_cooldown:
+            signal_dir = 'long' if score > 0 else 'short'
+            last_sl_dir = state.get('last_sl_direction')
+            if last_sl_dir and signal_dir == last_sl_dir:
+                remaining = int(full_cooldown - elapsed_since_sl)
+                self.logger.info(f"[Judge] {symbol} 同方向({signal_dir})冷却中，剩余{remaining}s")
+                decision = {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": "hold", "confidence": 0,
+                    "plan": None, "size_pct": 0,
+                    "reasoning": f"同方向SL冷却中({remaining}s)",
+                    "key_factors": [], "risk_warnings": [],
+                }
+                await self.publish("trade_decision", decision, symbol=symbol)
+                return
+
+        # 入场门槛：有主驱动(rule_signal/ma_aligned)时25分，HTF一致时35分，完全无驱动时40分
         rule = tech.get('rule_signal', {})
         has_rule_signal = rule.get('entry_long') or rule.get('entry_short') or \
                          rule.get('ma_aligned_long') or rule.get('ma_aligned_short')
-        entry_threshold = 25 if has_rule_signal else 40
+        htf_bias = tech.get('trend', {}).get('higher_tf_bias', 'neutral')
+        if has_rule_signal:
+            entry_threshold = 25
+        elif htf_bias in ('bullish', 'bearish'):
+            entry_threshold = 35
+        else:
+            entry_threshold = 40
 
         if abs(score) < entry_threshold:
             hold_reason = self._hold_reason(tech, score)
@@ -350,15 +406,15 @@ class MultiJudge(BaseAgent):
 
                 final_conf = llm_result.get('confidence', confidence)
 
-                # 无主驱动时，LLM confidence上限55（需方向确认boost才能到60）
+                # 无主驱动时，LLM confidence上限65（多维度共振时允许更高置信度）
                 if not has_rule_signal:
-                    final_conf = min(55, final_conf)
+                    final_conf = min(65, final_conf)
 
                 # LLM方向确认/冲突处理
                 llm_action = llm_result.get('action', 'hold')
-                if llm_action == final_action and final_conf < 65:
-                    # 有rule_signal时boost到65，无rule_signal时boost到60
-                    boost_target = 65 if has_rule_signal else 60
+                if llm_action == final_action and final_conf < 70:
+                    # 有rule_signal时boost到70，无rule_signal时boost到65
+                    boost_target = 70 if has_rule_signal else 65
                     self.logger.info(f"[Judge] {symbol} LLM确认{llm_action}方向，confidence提升至{boost_target}")
                     final_conf = boost_target
                 elif llm_action in ('open_long', 'open_short') and llm_action != final_action:
@@ -448,6 +504,7 @@ class MultiJudge(BaseAgent):
                             is_long = (final_action == 'open_long')
                             target_price = price * (1 - needed_improve) if is_long else price * (1 + needed_improve)
                             state = self._get_state(symbol)
+                            timeout_h = 6 if has_rule_signal else 4
                             state['deferred_entry'] = {
                                 'action': final_action,
                                 'signal_price': price,
@@ -458,6 +515,7 @@ class MultiJudge(BaseAgent):
                                 'chase_eligible': False,
                                 'highest_since': price,
                                 'lowest_since': price,
+                                'timeout_hours': timeout_h,
                             }
                             state['pullback_bonus'] = 0
                             self.logger.info(
@@ -541,13 +599,14 @@ class MultiJudge(BaseAgent):
             return "多空信号对冲，净得分接近零，观望"
         return "信号强度不足，观望"
 
-    def _record_sl_hit(self, state: dict):
+    def _record_sl_hit(self, state: dict, direction: str = None):
         """记录一次SL触发，用于escalating cooldown（参考Freqtrade StoplossGuard）"""
         now = time.time()
         if 'sl_timestamps' not in state:
             state['sl_timestamps'] = []
         state['sl_timestamps'].append(now)
-        # 只保留4h内的记录
+        if direction:
+            state['last_sl_direction'] = direction
         cutoff = now - 4 * 3600
         state['sl_timestamps'] = [t for t in state['sl_timestamps'] if t > cutoff]
 
@@ -687,18 +746,33 @@ class MultiJudge(BaseAgent):
             score -= 10
 
         # ═══ 极端值硬性保护 ═══
-        # RSI极度超卖时，无论其他信号如何，不允许做空（score不能低于-15）
+        # RSI极度超卖时，不允许做空。HTF趋势一致时放宽cap（趋势延续区）
         if rsi_extreme_bullish:
-            if score < -15:
-                score = -15
-            # 如果有背离，直接给正分
+            # RSI < 20: 真正超卖，硬cap -15
+            # RSI 20-25: HTF bearish时允许到-25（趋势延续），否则-15
+            if rsi < 20:
+                cap = -15
+            elif htf == 'bearish':
+                cap = -25
+            else:
+                cap = -15
+            if score < cap:
+                score = cap
             if div == 'bullish_div':
                 score = max(score, 25)
 
-        # RSI极度超买时，无论其他信号如何，不允许做多
+        # RSI极度超买时，不允许做多。HTF趋势一致时放宽cap
         if rsi_extreme_bearish:
-            if score > 15:
-                score = 15
+            # RSI > 80: 真正超买，硬cap 15
+            # RSI 75-80: HTF bullish时允许到25（趋势延续），否则15
+            if rsi > 80:
+                cap = 15
+            elif htf == 'bullish':
+                cap = 25
+            else:
+                cap = 15
+            if score > cap:
+                score = cap
             if div == 'bearish_div':
                 score = min(score, -25)
 
@@ -937,11 +1011,11 @@ class MultiJudge(BaseAgent):
 
         atr_pct = tech.get('momentum', {}).get('atr_pct', 0.02)
         if atr_pct >= 0.03:
-            est_hours = 16
+            est_hours = 4
         elif atr_pct >= 0.015:
-            est_hours = 32
+            est_hours = 8
         else:
-            est_hours = 48
+            est_hours = 16
 
         is_long = (action == 'open_long')
         if is_long:

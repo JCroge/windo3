@@ -18,9 +18,9 @@ arbitrage:
 
 # 风控
 risk:
-  max_trade_amount: 10  # 单次最大交易额（USDT）
+  max_trade_amount: 500  # 单次最大交易额（USDT）
   max_drawdown: 0.20  # 最大回撤20%
-  max_daily_loss: 50  # 每日最大亏损（USDT）
+  max_daily_loss: 300  # 每日最大亏损（USDT）
 
 # 手续费（Maker/Taker）
 fees:

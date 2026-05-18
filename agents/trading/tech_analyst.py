@@ -86,9 +86,9 @@ class MultiTechAnalyst(BaseAgent):
         risk = self._analyze_risk(payload)
 
         latest = df.iloc[-2]
-        # MA alignment持续信号：MA fast/slow已对齐≥3根K线（趋势已建立，非仅crossover那一根）
-        ma_aligned_long = (df['ma_fast'] > df['ma_slow']).iloc[-4:-1].all() if len(df) >= 4 else False
-        ma_aligned_short = (df['ma_fast'] < df['ma_slow']).iloc[-4:-1].all() if len(df) >= 4 else False
+        # MA alignment持续信号：MA fast/slow已对齐≥2根K线（含follow-through bar）
+        ma_aligned_long = (df['ma_fast'] > df['ma_slow']).iloc[-3:-1].all() if len(df) >= 3 else False
+        ma_aligned_short = (df['ma_fast'] < df['ma_slow']).iloc[-3:-1].all() if len(df) >= 3 else False
         rule_signal = {
             "entry_long": int(latest.get('entry_long', 0)),
             "entry_short": int(latest.get('entry_short', 0)),

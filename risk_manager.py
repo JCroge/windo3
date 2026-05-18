@@ -11,9 +11,9 @@ class RiskManager:
     """风控管理器"""
 
     def __init__(self,
-                 max_trade_amount: float = 10.0,
+                 max_trade_amount: float = 500.0,
                  max_drawdown_pct: float = 20.0,
-                 max_daily_loss: float = 50.0,
+                 max_daily_loss: float = 300.0,
                  stop_loss_pct: float = 2.0,
                  take_profit_pct: float = 5.0,
                  state_file: str = 'data/risk_state.json'):

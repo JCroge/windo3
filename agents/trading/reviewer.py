@@ -25,7 +25,7 @@ class ReviewerAgent(BaseAgent):
         self.decay_threshold_profit_factor = config.get('decay_threshold_profit_factor', 1.5) if config else 1.5
 
         # Daily hard stop阈值
-        self.daily_pnl_hard_stop = config.get('daily_pnl_hard_stop', -50.0) if config else -50.0
+        self.daily_pnl_hard_stop = config.get('daily_pnl_hard_stop', -300.0) if config else -300.0
         self.consecutive_loss_limit = config.get('consecutive_loss_limit', 3) if config else 3
 
     async def setup(self):

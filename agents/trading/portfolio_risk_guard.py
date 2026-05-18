@@ -22,12 +22,12 @@ class PortfolioRiskGuard(BaseAgent):
 
         self._max_portfolio_exposure = 25.0
         self._max_single_loss_pct = 15.0
-        self._max_portfolio_drawdown_pct = 10.0
+        self._max_portfolio_drawdown_pct = 15.0
         self._flash_move_threshold = 3.0
         self._flash_move_window = 60
         self._high_leverage_threshold = 20
         self._high_leverage_loss_pct = 5.0
-        self._correlation_exposure_limit = 20.0
+        self._correlation_exposure_limit = 2400.0
         self._stale_position_hours = 24
 
     async def setup(self):
@@ -76,10 +76,8 @@ class PortfolioRiskGuard(BaseAgent):
         if 'balance' in result:
             self._account_balance = float(result['balance'])
         elif status == 'executed' and payload.get('action') in ('open_long', 'open_short'):
-            # 开仓后余额 = 开仓前余额 - 保证金
-            size_usdt = result.get('amount_usdt', 0)
-            leverage = result.get('leverage', 1)
-            margin = size_usdt / leverage if leverage else size_usdt
+            # 开仓后余额 = 开仓前余额 - 保证金（size_usdt在统一风险预算中已是margin语义）
+            margin = result.get('amount_usdt', 0)
             if self._account_balance > 0:
                 self._account_balance = max(0, self._account_balance - margin)
 
@@ -223,8 +221,22 @@ class PortfolioRiskGuard(BaseAgent):
                     "action": "close_all"
                 })
 
+    def _get_dynamic_flash_threshold(self, symbol: str) -> float:
+        """基于近期波动率动态计算闪崩阈值：max(3%, 近1h波动率×0.5)"""
+        history = self._price_history.get(symbol, [])
+        if len(history) < 10:
+            return self._flash_move_threshold
+        now = time.time()
+        recent = [p for t, p in history if t > now - 3600]
+        if len(recent) < 5:
+            return self._flash_move_threshold
+        high = max(recent)
+        low = min(recent)
+        vol_1h = (high - low) / low * 100 if low > 0 else 0
+        return max(self._flash_move_threshold, vol_1h * 0.5)
+
     async def _check_flash_move(self, symbol: str):
-        """维度3: 闪崩检测（60秒窗口）"""
+        """维度3: 闪崩检测（60秒窗口，动态阈值）"""
         history = self._price_history.get(symbol, [])
         if len(history) < 2:
             return
@@ -240,9 +252,22 @@ class PortfolioRiskGuard(BaseAgent):
         last_price = prices_in_window[-1]
         change_pct = abs(last_price - first_price) / first_price * 100
 
-        if change_pct > self._flash_move_threshold:
+        threshold = self._get_dynamic_flash_threshold(symbol)
+        if change_pct > threshold:
+            price_up = last_price > first_price
+            pos = self._positions.get(symbol)
+            if pos:
+                # 价格暴涨且持仓做多 = 盈利方向，不平仓；暴跌且做空同理
+                pos_side = pos.get('side')
+                if (price_up and pos_side == 'long') or (not price_up and pos_side == 'short'):
+                    if self._can_alert(f"flash_move_favorable:{symbol}"):
+                        self.logger.info(
+                            f"[风控] {symbol} 闪动{change_pct:.1f}%但方向有利于持仓({pos_side})，不平仓"
+                        )
+                    return
+
             if self._can_alert(f"flash_move:{symbol}"):
-                direction = "暴跌" if last_price < first_price else "暴涨"
+                direction = "暴跌" if not price_up else "暴涨"
                 self.logger.warning(
                     f"[风控] {symbol} {self._flash_move_window}s内{direction} {change_pct:.1f}%!"
                 )
@@ -278,11 +303,12 @@ class PortfolioRiskGuard(BaseAgent):
                 }, symbol=symbol)
 
     async def _check_correlation_risk(self):
-        """维度5: 关联性风险（同方向敞口叠加）"""
+        """维度5: 关联性风险（同方向保证金敞口叠加）"""
         long_exposure = 0.0
         short_exposure = 0.0
         for pos in self._positions.values():
-            margin = pos['amount_usdt'] / pos.get('leverage', 1)
+            # amount_usdt在统一风险预算中已是margin语义，不再除以leverage
+            margin = pos['amount_usdt']
             if pos['side'] == 'long':
                 long_exposure += margin
             else:

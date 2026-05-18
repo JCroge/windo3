@@ -650,13 +650,15 @@ class ContractExecutor:
                     else:
                         sym = raw_sym
                     side = 'long' if pos['side'] == 'long' else 'short'
+                    lev = int(pos.get('leverage', 1)) or 1
+                    notional = float(pos.get('notional', 0))
                     active[sym] = {
                         'symbol': sym,
                         'side': side,
                         'entry_price': float(pos.get('entryPrice', 0)),
                         'amount': float(pos['contracts']),
-                        'amount_usdt': float(pos.get('notional', 0)),
-                        'leverage': int(pos.get('leverage', 1)),
+                        'amount_usdt': notional / lev,
+                        'leverage': lev,
                         'unrealized_pnl': float(pos.get('unrealizedPnl', 0)),
                     }
 
@@ -901,8 +903,8 @@ class ContractExecutor:
 
             new_sl = position.get('stop_loss')
             if new_sl:
-                sl_order_id = self._place_stop_loss_order(
-                    symbol, side, new_total, new_sl
+                sl_order_id = self.place_stop_loss_order(
+                    symbol, side, new_sl, new_total
                 )
                 position['sl_order_id'] = sl_order_id
 

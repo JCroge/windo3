@@ -31,9 +31,12 @@ class PositionAnalyst(BaseAgent):
 
     async def setup(self):
         self._load_positions()
-        self._last_review_time = time.time()
+        if self._positions:
+            # 有持仓时60秒后触发首次评估（等DataCollector/TechAnalyst先发一轮数据）
+            self._last_review_time = time.time() - REVIEW_INTERVAL + 60
+        else:
+            self._last_review_time = time.time()
         self.logger.info(f"持仓分析官就绪 (评估周期={REVIEW_INTERVAL//3600}h, 持仓={len(self._positions)}个, 7因子防遗憾版)")
-        # 备选：事件触发评估（价格单小时移动>3%时插入额外评估），当前未启用
 
     def _load_positions(self):
         positions_file = 'data/positions.json'
@@ -105,16 +108,27 @@ class PositionAnalyst(BaseAgent):
                 self._positions[symbol]['amount_usdt'] *= (1 - reduce_pct)
 
     async def tick(self):
-        await asyncio.sleep(10)
+        # 排空队列中所有待处理消息，防止高频price_tick淹没execution_result
+        while True:
+            msg = await self.bus.receive(self.name, timeout=0.1)
+            if msg is None:
+                break
+            await self.on_message(msg)
+
+        await asyncio.sleep(1)
         self._tick_counter += 1
 
         now = time.time()
         if now - self._last_review_time >= REVIEW_INTERVAL and self._positions:
-            self._last_review_time = now
-            await self._evaluate_all_positions()
+            evaluated = await self._evaluate_all_positions()
+            if evaluated:
+                self._last_review_time = now
+            else:
+                # tech数据未就绪，30秒后重试（不消耗1h计时器）
+                self._last_review_time = now - REVIEW_INTERVAL + 30
 
-    async def _evaluate_all_positions(self):
-        # 从文件补充，但不覆盖内存中通过execution_result积累的数据
+    async def _evaluate_all_positions(self) -> bool:
+        """返回True表示至少评估了一个持仓，False表示全部因缺数据跳过"""
         positions_file = 'data/positions.json'
         if os.path.exists(positions_file):
             try:
@@ -128,14 +142,16 @@ class PositionAnalyst(BaseAgent):
                 pass
 
         if not self._positions:
-            return
+            return False
 
         self.logger.info(f"[持仓分析] 开始评估 {len(self._positions)} 个持仓")
+        evaluated_any = False
 
         for symbol, pos in list(self._positions.items()):
             verdict = self._compute_position_score(symbol, pos)
             if verdict is None:
                 continue
+            evaluated_any = True
 
             override = self._check_hard_override(symbol, pos, verdict)
             if override:
@@ -150,14 +166,20 @@ class PositionAnalyst(BaseAgent):
                 f"action={verdict['action']} conviction={verdict['conviction']:.0f}"
             )
 
-        await asyncio.sleep(30)
+        deadline = time.time() + 30
+        while self._pending_reviews and time.time() < deadline:
+            msg = await self.bus.receive(self.name, timeout=0.5)
+            if msg:
+                await self.on_message(msg)
+
         for symbol, verdict in list(self._pending_reviews.items()):
-            if symbol in self._pending_reviews:
-                self.logger.info(f"[持仓分析] {symbol} 批判官超时，直接采纳分析建议")
-                final = self._arbitrate_no_critic(verdict)
-                if final['final_action'] != 'hold':
-                    await self._execute_final_decision(final)
-                del self._pending_reviews[symbol]
+            self.logger.info(f"[持仓分析] {symbol} 批判官超时，直接采纳分析建议")
+            final = self._arbitrate_no_critic(verdict)
+            if final['final_action'] != 'hold':
+                await self._execute_final_decision(final)
+            del self._pending_reviews[symbol]
+
+        return evaluated_any
 
     def _compute_position_score(self, symbol: str, pos: dict) -> dict:
         """7因子持仓评分（防遗憾优化版）"""
