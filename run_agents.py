@@ -4,6 +4,7 @@
 import os
 import sys
 import time
+import asyncio
 import logging
 from agents.orchestrator import Orchestrator
 
@@ -16,10 +17,17 @@ def main():
 
     while True:
         try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             orchestrator = Orchestrator()
             orchestrator.start()
         except Exception as e:
             logger.error(f"Orchestrator异常退出: {e}")
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
 
         if os.path.exists(flag_file):
             os.remove(flag_file)

@@ -42,6 +42,7 @@ class TelegramNotifier(BaseAgent):
             self.logger.warning("Telegram通知未启用（缺少BOT_TOKEN或CHAT_ID）")
             return
         self._reset_daily_summary()
+        await self._flush_old_updates()
         ok = await self._send_message("🟢 交易系统启动")
         if ok:
             self.logger.info("Telegram通知Agent就绪（含远程命令）")
@@ -211,6 +212,22 @@ class TelegramNotifier(BaseAgent):
         await self._send_message(text)
 
     # ==================== 远程命令系统 ====================
+
+    async def _flush_old_updates(self):
+        """启动时跳过所有旧消息，防止重新处理历史命令（如旧的/stop /restart）"""
+        try:
+            url = f"https://api.telegram.org/bot{self._bot_token}/getUpdates"
+            params = {"offset": self._update_offset, "timeout": 0, "limit": 100}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        updates = data.get('result', [])
+                        if updates:
+                            self._update_offset = updates[-1]['update_id'] + 1
+                            self.logger.info(f"[Telegram] 启动时跳过{len(updates)}条旧消息")
+        except Exception:
+            pass
 
     async def _poll_commands(self):
         url = f"https://api.telegram.org/bot{self._bot_token}/getUpdates"

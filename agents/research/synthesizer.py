@@ -51,11 +51,15 @@ SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是�
 FINAL_DECISION_PROMPT = """你是一个加密货币研究分析师的主管。你之前选出了一批候选标的，现在"言官"（Devil's Advocate）对你的选择提出了质疑和风险警告。
 
 你需要认真考虑言官的每一条谏言，然后做出最终决策：
-- 如果言官的质疑有道理 → 移除该标的或降低置信度
-- 如果言官的质疑站不住脚 → 保留该标的并说明为什么
-- 如果言官发现了你忽略的系统性风险 → 可能需要全部重新评估
+- 言官建议"reject"的标的 → 移除（除非你有非常充分的数据支撑保留）
+- 言官建议"reduce_size"或"warning"的标的 → 保留，但降低置信度（这些标的有机会，只是需要谨慎）
+- 言官未提及或建议"accept"的标的 → 保留原始置信度
+- 系统性风险 → 整体降低置信度，但不因此大幅删减标的数量
 
-原则：宁可错过机会，不可忽视风险。言官说"reject"的标的，除非你有非常充分的理由，否则应该移除。
+重要原则：
+1. 只移除言官明确"reject"的标的，警告≠驳回
+2. 最终保留数量应≥5个（交易层需要足够的候选池来发现机会）
+3. 如果移除reject后剩余不足5个，从被警告的标的中按置信度保留
 
 以JSON格式回复：
 {
@@ -179,6 +183,24 @@ class ResearchSynthesizer(BaseAgent):
             final_selected = self._salvage_from_preliminary(preliminary['selected'], challenges)
             if final_selected:
                 self.logger.info(f"[研判·终选] 言官全部驳回，保底保留: {[s['symbol'] for s in final_selected]}")
+
+        # 保底：只在LLM明显异常时触发（终选<非reject数量的一半）
+        rejected_symbols = {c['symbol'] for c in challenges if c.get('recommendation') == 'reject'}
+        non_rejected_count = len([s for s in preliminary['selected'] if s['symbol'] not in rejected_symbols])
+        min_symbols = max(3, non_rejected_count // 2)
+        if len(final_selected) < min_symbols:
+            final_symbols_set = {s['symbol'] for s in final_selected}
+            added = 0
+            for s in preliminary['selected']:
+                if len(final_selected) >= min_symbols:
+                    break
+                if s['symbol'] not in final_symbols_set and s['symbol'] not in rejected_symbols:
+                    s['confidence'] = int(s.get('confidence', 50) * 0.8)
+                    final_selected.append(s)
+                    final_symbols_set.add(s['symbol'])
+                    added += 1
+            if added > 0:
+                self.logger.info(f"[研判·终选] LLM过度收窄，保底补充{added}个(非reject)标的，共{len(final_selected)}个")
 
         symbols = [s['symbol'] for s in final_selected]
         self.logger.info(f"[研判·终选] 最终标的: {symbols} (言官回应: {censor_response[:50]})")

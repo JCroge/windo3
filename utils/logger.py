@@ -3,7 +3,10 @@ from datetime import datetime
 
 def setup_logger(name):
     logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
     logger.setLevel(logging.INFO)
+    logger.propagate = False
 
     handler = logging.FileHandler(f'logs/{name}_{datetime.now().strftime("%Y%m%d")}.log')
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))

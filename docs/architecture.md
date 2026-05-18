@@ -41,6 +41,9 @@
 - 2026-05-17：递增冷却StoplossGuard（judge.py）：4h窗口内连续SL次数递增冷却（300→600→1200→3600s），窗口过期自动重置。参考Freqtrade StoplossGuard protection
 - 2026-05-17：研判层上线时间过滤（market_scanner.py）：OKX月K线<12根的标的不进入初选（上线不足1年），enrich前并行检查节省API调用
 - 2026-05-17：初选固定12标的（synthesizer.py）：LLM固定选12个标的（原5-12个浮动）
+- 2026-05-17：Telegram启动flush旧消息（telegram_notifier.py）：_flush_old_updates()跳过所有pending消息，防止历史/stop命令杀掉新启动的进程
+- 2026-05-17：终选prompt优化（synthesizer.py）：明确区分reject（移除）和warning（保留降置信度），代码保底防LLM过度收窄
+- 2026-05-17：Logger防重复（utils/logger.py）：propagate=False + handler去重，解决每条日志打印7次的问题
 
 ## 架构图
 

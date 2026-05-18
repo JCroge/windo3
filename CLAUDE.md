@@ -384,6 +384,9 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **递增冷却StoplossGuard**：4h窗口内连续SL次数递增冷却（300→600→1200→3600s），参考Freqtrade StoplossGuard
 - **研判层上线时间过滤**：OKX月K线<12根的标的不进入初选（上线不足1年）
 - **初选固定12标的**：SYNTHESIS_PROMPT从"5-12个"改为"12个"
+- **Telegram启动flush旧消息**：_flush_old_updates()跳过所有pending消息，防止历史/stop命令杀进程
+- **终选prompt优化+代码保底**：区分reject/warning，终选<非reject数一半时自动补充非reject标的
+- **Logger防重复**：propagate=False + handler去重，解决日志打印7次的问题
 
 ### ✅ Phase 6c: 系统逻辑校验修复（2026-05-08完成）
 - 资金费率API修复：调用前检查`market.get('swap')`，非swap市场直接返回None（3处：data_collector/market_scanner/coin_selector_v2）

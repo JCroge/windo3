@@ -456,6 +456,21 @@
 4. **初选固定12标的**（`agents/research/synthesizer.py`）
    - 修改：SYNTHESIS_PROMPT从"5-12个"改为"12个"，确保机会面充足
 
+5. **Telegram启动flush旧消息**（`agents/trading/telegram_notifier.py`）
+   - 问题：每次启动getUpdates从offset=0开始，重新处理历史/stop命令导致系统立即被杀
+   - 修复：setup()中调用`_flush_old_updates()`跳过所有pending消息后再开始轮询
+   - 验证：日志显示"启动时跳过5条旧消息"，系统不再被误杀
+
+6. **终选prompt优化 + 代码保底**（`agents/research/synthesizer.py`）
+   - 问题：12个初选 - 4个reject = 8个候选，但终选只出3个（LLM把warning也当reject处理）
+   - Prompt修复：明确区分reject（移除）和warning/reduce_size（保留降置信度），要求≥5个
+   - 代码保底：终选数量<非reject数量一半时，从初选中补充非reject标的（置信度×0.8）
+   - 设计原则：对标Freqtrade max_open_trades——如果市场只有3个好标的就只交易3个，不强行凑数
+
+7. **Logger防重复**（`utils/logger.py`）
+   - 问题：每条日志打印7次（多次启动/停止累积handler + propagate到root logger）
+   - 修复：`if logger.handlers: return logger` + `logger.propagate = False`
+
 ## 技术债务
 
 1. **R:R计算已修复**（2026-05-13）
