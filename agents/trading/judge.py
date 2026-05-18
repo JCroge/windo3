@@ -200,7 +200,7 @@ class MultiJudge(BaseAgent):
                            (not is_long and current_price >= target)
             if pullback_hit:
                 self.logger.info(f"[Judge] {symbol} 回调到位 price={current_price:.4f} target={target:.4f}，重新构建plan")
-                plan = self._build_plan(tech, def_action, current_price, 60)
+                plan = self._build_plan(tech, def_action, current_price, 60, deferred.get('signal_score', 50))
                 if plan['size_usdt'] < 1.0:
                     self.logger.info(f"[Judge] {symbol} 回调入场时余额不足，放弃")
                     state['deferred_entry'] = None
@@ -231,7 +231,7 @@ class MultiJudge(BaseAgent):
                 move_pct = (signal_price - current_price) / signal_price
 
             if move_pct > 0.015 and deferred.get('chase_eligible'):
-                plan = self._build_plan(tech, def_action, current_price, 60)
+                plan = self._build_plan(tech, def_action, current_price, 60, deferred.get('signal_score', 50))
                 plan['size_usdt'] = round(plan['size_usdt'] * 0.6, 2)
                 if plan['size_usdt'] < 1.0:
                     self.logger.info(f"[Judge] {symbol} 追价入场时余额不足，放弃")
@@ -378,7 +378,7 @@ class MultiJudge(BaseAgent):
         else:
             action = "open_long" if score > 0 else "open_short"
             confidence = min(95, abs(score))
-            plan = self._build_plan(tech, action, price, confidence)
+            plan = self._build_plan(tech, action, price, confidence, score)
 
             llm_result = await self._ask_llm(symbol, tech, score)
 
@@ -402,7 +402,7 @@ class MultiJudge(BaseAgent):
                         final_action = action
 
                 if final_action != action and final_action in ('open_long', 'open_short'):
-                    plan = self._build_plan(tech, final_action, price, confidence)
+                    plan = self._build_plan(tech, final_action, price, confidence, score)
 
                 final_conf = llm_result.get('confidence', confidence)
 
@@ -489,6 +489,10 @@ class MultiJudge(BaseAgent):
                         else:
                             sl_dist = abs(price - plan['stop_loss']) / price if price > 0 else 0.02
                             needed_improve = (min_rr - rr) * sl_dist / (1 + min_rr)
+                            # 回调下限：至少0.3%或ATR的15%，防止噪声触发假回调
+                            atr_pct = tech.get('momentum', {}).get('atr_pct', 0.02)
+                            min_pullback = max(0.003, atr_pct * 0.15)
+                            needed_improve = max(needed_improve, min_pullback)
                             if needed_improve > 0.03:
                                 self.logger.info(f"[Judge] {symbol} 需回调{needed_improve:.1%}>3%，不现实，放弃")
                                 decision = {
@@ -810,7 +814,7 @@ class MultiJudge(BaseAgent):
 
     # ═══ 交易计划构建 ═══
 
-    def _build_plan(self, tech: dict, action: str, price: float, confidence: int) -> dict:
+    def _build_plan(self, tech: dict, action: str, price: float, confidence: int, score: float = 50) -> dict:
         levels = tech.get('levels', {})
         risk = tech.get('risk', {})
         micro = tech.get('microstructure', {})
@@ -822,7 +826,7 @@ class MultiJudge(BaseAgent):
         stop_loss = self._calc_stop_loss(levels, price, is_long, trend, momentum)
         sl_dist = abs(price - stop_loss) / price
 
-        budget = self._calc_risk_budget(tech, action, sl_dist)
+        budget = self._calc_risk_budget(tech, action, sl_dist, score)
         leverage = budget['leverage']
         size_usdt = budget['size_usdt']
 
@@ -970,7 +974,7 @@ class MultiJudge(BaseAgent):
                 tps = [price * (1 - min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
 
-    def _calc_risk_budget(self, tech: dict, action: str, sl_dist: float) -> dict:
+    def _calc_risk_budget(self, tech: dict, action: str, sl_dist: float, score: float = 50) -> dict:
         """统一风险预算：从风险约束推导杠杆和仓位
 
         核心公式：leverage = max_loss / (margin × sl_dist) = 0.5 / sl_dist
@@ -989,6 +993,10 @@ class MultiJudge(BaseAgent):
 
         raw_leverage = max_loss_usdt / (margin_usdt * sl_dist)
         leverage = max(1, min(20, int(raw_leverage)))
+
+        # 弱信号杠杆上限：score<35时cap 10x（信号弱不该用高杠杆放大风险）
+        if abs(score) < 35:
+            leverage = min(leverage, 10)
 
         # 向下圆整到OKX允许值（保证max_loss不超预算）
         allowed = [1, 2, 3, 5, 10, 20]
