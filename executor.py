@@ -402,6 +402,7 @@ class ContractExecutor:
             if new_order_id:
                 position['sl_order_id'] = new_order_id
             self._last_sl_update[symbol] = now
+            self._save_positions()  # 持久化移动后的SL，防止重启丢失
 
     def _fetch_price_robust(self, symbol: str) -> Optional[float]:
         """多源价格获取：ticker → orderbook mid → 短暂重试"""
@@ -997,8 +998,7 @@ class ContractExecutor:
                     position['stop_loss'] = new_entry * (1 - sl_dist_pct)
                 else:
                     position['stop_loss'] = new_entry * (1 + sl_dist_pct)
-
-            old_tp = position.get('take_profit')
+                position['original_sl'] = position['stop_loss']  # 重置1R基准
             if old_tp and old_entry > 0:
                 tp_dist_pct = abs(old_tp - old_entry) / old_entry
                 if side == 'long':
