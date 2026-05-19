@@ -16,6 +16,7 @@ import aiohttp
 import feedparser
 from dotenv import load_dotenv
 from agents.base import BaseAgent
+from utils.symbol import to_internal
 
 load_dotenv()
 
@@ -61,9 +62,10 @@ class MultiDataCollector(BaseAgent):
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'symbol_update':
-            new_symbols = msg['payload'].get('active_symbols', [])
-            added = msg['payload'].get('added', [])
-            removed = msg['payload'].get('removed', [])
+            # 入口归一化：上游可能传入任意 symbol 形态，统一为内部规范 BASE-USDT
+            new_symbols = [to_internal(s) for s in msg['payload'].get('active_symbols', [])]
+            added = [to_internal(s) for s in msg['payload'].get('added', [])]
+            removed = [to_internal(s) for s in msg['payload'].get('removed', [])]
 
             # 读取持仓标的，确保持仓标的始终被监控
             position_symbols = self._get_position_symbols()
@@ -108,7 +110,7 @@ class MultiDataCollector(BaseAgent):
                 await asyncio.sleep(0.3)
 
     def _get_position_symbols(self) -> list:
-        """读取持仓标的列表"""
+        """读取持仓标的列表（统一为内部规范 BASE-USDT）"""
         import json
         import os
         positions_file = 'data/positions.json'
@@ -117,8 +119,7 @@ class MultiDataCollector(BaseAgent):
         try:
             with open(positions_file, 'r') as f:
                 positions = json.load(f)
-            # 转换格式: "XXX-USDT-SWAP" → "XXX-USDT"
-            return [s.replace('-SWAP', '').replace('/USDT:USDT', '-USDT') for s in positions.keys()]
+            return [to_internal(s) for s in positions.keys()]
         except Exception as e:
             self.logger.warning(f"读取持仓失败: {e}")
             return []
@@ -329,6 +330,16 @@ class MultiDataCollector(BaseAgent):
         klines_4h = health.get('klines_4h', [])
         klines_1d = health.get('klines_1d', [])
 
+        # 数据质量门槛：核心维度（K线 + 最新价）缺失则不发布，避免下游做出高置信度错误判断
+        latest_price = klines[-1][4] if klines else None
+        if not klines or not latest_price:
+            self.logger.warning(f"[采集] {symbol} 核心数据缺失（klines/price），跳过发布")
+            self._record_failure(symbol, "missing core data (klines/latest_price)")
+            return
+
+        # 软降级：低于 6/9 维度时标记 degraded，下游 Judge 在 degraded 时只输出 hold
+        degraded = dimensions_ok < 6
+
         payload = {
             "symbol": symbol,
             "interval": self.interval,
@@ -337,7 +348,7 @@ class MultiDataCollector(BaseAgent):
             "klines_1d": klines_1d,
             "funding_rate": funding_rate,
             "funding_history": funding_history or [],
-            "latest_price": klines[-1][4] if klines else None,
+            "latest_price": latest_price,
             "orderbook": orderbook or {},
             "oi_data": oi_data or {},
             "liquidations": liquidations or {},
@@ -350,8 +361,14 @@ class MultiDataCollector(BaseAgent):
                 "consecutive_failures": 0,
                 "dimensions_ok": dimensions_ok,
                 "dimensions_total": dimensions_total,
+                "degraded": degraded,
             }
         }
+
+        if degraded:
+            self.logger.warning(
+                f"[采集] {symbol} 数据降级 {dimensions_ok}/{dimensions_total}，下游应只输出 hold"
+            )
 
         await self.publish("market_data", payload, symbol=symbol)
         self._record_success(symbol)

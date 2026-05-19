@@ -25,6 +25,9 @@ def load_klines(symbol='BTCUSDT', interval='1m', limit=100):
     return df
 
 
+import pytest
+
+@pytest.mark.network
 def test_strategy():
     """测试策略信号生成"""
     print("加载K线数据...")

@@ -26,6 +26,9 @@ def load_klines(symbol='BTCUSDT', interval='1m', limit=100):
     return df
 
 
+import pytest
+
+@pytest.mark.network
 def test_backtest():
     """测试回测引擎"""
     print("=== 回测测试 ===\n")

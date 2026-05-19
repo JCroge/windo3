@@ -3,6 +3,7 @@
 import asyncio
 import time
 from agents.base import BaseAgent
+from utils.symbol import to_internal
 
 
 class PortfolioRiskGuard(BaseAgent):
@@ -39,8 +40,8 @@ class PortfolioRiskGuard(BaseAgent):
             await self._handle_daily_hard_stop(msg['payload'])
             return
 
-        if self._trading_halted:
-            return
+        # 熔断后仍需更新本地持仓 state——否则 emergency_close 后 execution_result 被丢弃，
+        # _positions 残留幽灵持仓，下次重启从 state 加载继续误判。tick() 内部根据 halted 跳过新告警。
 
         if msg['type'] == 'symbol_update':
             return
@@ -49,14 +50,14 @@ class PortfolioRiskGuard(BaseAgent):
             symbol = msg.get('symbol') or msg['payload'].get('symbol')
             price = msg['payload'].get('price')
             if symbol and price:
-                self._update_price(self._to_ccxt_key(symbol), price)
+                self._update_price(to_internal(symbol), price)
             return
 
         if msg['type'] == 'market_data':
             symbol = msg.get('symbol') or msg['payload'].get('symbol')
             price = msg['payload'].get('latest_price')
             if symbol and price:
-                self._update_price(self._to_ccxt_key(symbol), price)
+                self._update_price(to_internal(symbol), price)
 
         elif msg['type'] == 'execution_result':
             self._handle_execution_result(msg['payload'])
@@ -67,9 +68,8 @@ class PortfolioRiskGuard(BaseAgent):
         symbol = result.get('symbol') or payload.get('symbol')
         if not symbol:
             return
-        # 统一为不带-SWAP的格式（与开仓时一致）
-        if symbol.endswith('-SWAP'):
-            symbol = symbol[:-5]
+        # 统一为系统内部规范 BASE-USDT（state dict 的唯一 key 形式）
+        symbol = to_internal(symbol)
         status = payload.get('status')
 
         # 从执行结果中更新账户余额基准
@@ -91,10 +91,15 @@ class PortfolioRiskGuard(BaseAgent):
                     # 加仓：增量更新（保留open_time/highest/lowest）
                     pos = self._positions[symbol]
                     pos['entry_price'] = result.get('new_entry_price', entry_price)
-                    pos['amount_usdt'] = result.get('amount_usdt', pos.get('amount_usdt', 0))
+                    # amount_usdt 语义=新总保证金。ContractExecutor.add_to_position 返回新总值；
+                    # 兼容老返回（只有 add_amount_usdt 增量）：用累加。绝不允许用增量覆盖总值。
+                    if 'amount_usdt' in result:
+                        pos['amount_usdt'] = result['amount_usdt']
+                    elif 'add_amount_usdt' in result:
+                        pos['amount_usdt'] = pos.get('amount_usdt', 0) + result['add_amount_usdt']
                     pos['stop_loss'] = result.get('new_stop_loss') or result.get('stop_loss') or pos.get('stop_loss')
                     pos['take_profit'] = result.get('new_take_profit') or result.get('take_profit') or pos.get('take_profit')
-                    self.logger.info(f"[风控] 加仓更新: {symbol} 新均价={pos['entry_price']:.4f}")
+                    self.logger.info(f"[风控] 加仓更新: {symbol} 新均价={pos['entry_price']:.4f} 新保证金={pos['amount_usdt']:.2f}")
                 else:
                     # 新开仓：完整记录
                     self._positions[symbol] = {
@@ -147,6 +152,12 @@ class PortfolioRiskGuard(BaseAgent):
     async def tick(self):
         await asyncio.sleep(10)
 
+        # 熔断期间不再发新告警，但持仓 state 仍由 on_message 跟随 execution_result 维护
+        if self._trading_halted:
+            if int(time.time()) % 60 == 0:
+                self._save_state()
+            return
+
         for symbol in list(self._positions.keys()):
             price = self._prices.get(symbol)
             if not price:
@@ -188,25 +199,32 @@ class PortfolioRiskGuard(BaseAgent):
                 )
                 await self.publish("risk_alert", {
                     "type": "position_danger",
+                    "scope": "symbol",
                     "symbol": symbol,
                     "pnl_pct": pnl_pct,
                     "action": "close_position"
                 }, symbol=symbol)
 
     async def _check_portfolio_drawdown(self):
-        """维度2: 组合回撤保护"""
+        """维度2: 组合回撤保护
+
+        字段语义（统一风险预算下）：
+        - pos['amount_usdt'] = 保证金 (margin)
+        - _calc_pnl_pct 已乘 leverage，返回保证金收益率(%)
+        - 总盈亏 = sum(margin × pnl_pct / 100)
+        """
         total_pnl_usdt = 0.0
         for symbol, pos in self._positions.items():
             price = self._prices.get(symbol)
             if not price:
                 continue
             pnl_pct = self._calc_pnl_pct(pos, price)
-            margin = pos['amount_usdt'] / pos.get('leverage', 1)
+            margin = pos['amount_usdt']
             total_pnl_usdt += margin * pnl_pct / 100
 
-        # 余额未初始化时用持仓保证金兜底
+        # 余额未初始化时用持仓保证金总和兜底
         balance = self._account_balance if self._account_balance > 0 else (
-            sum(pos['amount_usdt'] / pos.get('leverage', 1) for pos in self._positions.values()) or 20.0
+            sum(pos['amount_usdt'] for pos in self._positions.values()) or 20.0
         )
         drawdown_pct = abs(total_pnl_usdt) / balance * 100
         if total_pnl_usdt < 0 and drawdown_pct > self._max_portfolio_drawdown_pct:
@@ -216,6 +234,7 @@ class PortfolioRiskGuard(BaseAgent):
                 )
                 await self.publish("risk_alert", {
                     "type": "max_drawdown",
+                    "scope": "market",
                     "drawdown_pct": drawdown_pct,
                     "total_pnl_usdt": total_pnl_usdt,
                     "action": "close_all"
@@ -273,6 +292,7 @@ class PortfolioRiskGuard(BaseAgent):
                 )
                 await self.publish("risk_alert", {
                     "type": "flash_move",
+                    "scope": "symbol",
                     "symbol": symbol,
                     "direction": direction,
                     "magnitude_pct": change_pct,
@@ -296,6 +316,7 @@ class PortfolioRiskGuard(BaseAgent):
                 )
                 await self.publish("risk_alert", {
                     "type": "high_leverage_danger",
+                    "scope": "symbol",
                     "symbol": symbol,
                     "leverage": leverage,
                     "pnl_pct": pnl_pct,
@@ -325,6 +346,7 @@ class PortfolioRiskGuard(BaseAgent):
                 )
                 await self.publish("risk_alert", {
                     "type": "correlation_risk",
+                    "scope": "market",
                     "direction": direction,
                     "exposure_usdt": max_dir_exposure,
                     "action": "reduce_exposure"
@@ -353,6 +375,7 @@ class PortfolioRiskGuard(BaseAgent):
                     )
                     await self.publish("risk_alert", {
                         "type": "stale_position",
+                        "scope": "symbol",
                         "symbol": symbol,
                         "hours_held": hours,
                         "pnl_pct": pnl_pct,
@@ -397,6 +420,7 @@ class PortfolioRiskGuard(BaseAgent):
                 )
                 await self.publish("risk_alert", {
                     "type": "trailing_stop",
+                    "scope": "symbol",
                     "symbol": symbol,
                     "profit_pct": profit_pct,
                     "retrace_pct": retrace_from_peak,
@@ -423,6 +447,7 @@ class PortfolioRiskGuard(BaseAgent):
         for symbol in list(self._positions.keys()):
             await self.publish("risk_alert", {
                 "type": "emergency_close",
+                "scope": "market",
                 "symbol": symbol,
                 "reason": f"daily_hard_stop_{reason}",
                 "action": "close_position"
@@ -443,10 +468,9 @@ class PortfolioRiskGuard(BaseAgent):
             'last_alert_times': self._last_alert_times,
         }
 
-        os.makedirs('data', exist_ok=True)
         try:
-            with open(self._state_file, 'w') as f:
-                json.dump(state, f, indent=2)
+            from utils.atomic_io import atomic_write_json
+            atomic_write_json(self._state_file, state)
             self.logger.info(f"RiskGuard状态已保存: {len(self._positions)}个持仓")
         except Exception as e:
             self.logger.error(f"保存状态失败: {e}")
@@ -461,8 +485,11 @@ class PortfolioRiskGuard(BaseAgent):
                 with open(self._state_file, 'r') as f:
                     state = json.load(f)
 
-                self._positions = state.get('positions', {})
-                self._prices = state.get('prices', {})
+                # 迁移：旧 state 可能用 ccxt 或 -SWAP 格式 key，统一为 BASE-USDT
+                raw_positions = state.get('positions', {})
+                raw_prices = state.get('prices', {})
+                self._positions = {to_internal(k): v for k, v in raw_positions.items()}
+                self._prices = {to_internal(k): v for k, v in raw_prices.items()}
                 self._trading_halted = state.get('trading_halted', False)
                 self._last_alert_times = state.get('last_alert_times', {})
 
@@ -471,22 +498,18 @@ class PortfolioRiskGuard(BaseAgent):
             except Exception as e:
                 self.logger.error(f"加载状态失败: {e}")
 
-        # 交叉验证：从positions.json补录RiskGuard不知道的持仓
+        # 交叉验证：从positions.json补录RiskGuard不知道的持仓（统一为 internal 格式）
         positions_file = 'data/positions.json'
         if os.path.exists(positions_file):
             try:
                 with open(positions_file, 'r') as f:
                     executor_positions = json.load(f)
-                # 构建已有持仓的base symbol集合（去掉格式差异）
-                existing_bases = set()
-                for k in self._positions:
-                    existing_bases.add(self._normalize_key(k))
                 for sym, pos in executor_positions.items():
-                    base = self._normalize_key(sym)
-                    if base not in existing_bases and 'stop_loss' in pos:
+                    internal = to_internal(sym)
+                    if internal not in self._positions and 'stop_loss' in pos:
                         entry = pos.get('entry_price', 0)
-                        self._positions[sym] = {
-                            "symbol": sym,
+                        self._positions[internal] = {
+                            "symbol": internal,
                             "side": pos['side'],
                             "entry_price": entry,
                             "amount_usdt": pos.get('amount_usdt', 0),
@@ -496,15 +519,7 @@ class PortfolioRiskGuard(BaseAgent):
                             "highest_price": entry if pos['side'] == 'long' else entry,
                             "lowest_price": entry if pos['side'] == 'short' else entry,
                         }
-                        existing_bases.add(base)
-                        self.logger.info(f"RiskGuard补录持仓: {sym} ({pos['side']} {pos.get('leverage',1)}x)")
-                # 清理旧格式key（保留ccxt统一格式）
-                keys_to_remove = [k for k in self._positions if '/' not in k and self._normalize_key(k) in existing_bases and any(
-                    '/' in k2 and self._normalize_key(k2) == self._normalize_key(k) for k2 in self._positions if k2 != k
-                )]
-                for k in keys_to_remove:
-                    del self._positions[k]
-                    self.logger.info(f"RiskGuard清理旧格式key: {k}")
+                        self.logger.info(f"RiskGuard补录持仓: {internal} ({pos['side']} {pos.get('leverage',1)}x)")
             except Exception as e:
                 self.logger.warning(f"交叉验证positions.json失败: {e}")
 
@@ -512,21 +527,11 @@ class PortfolioRiskGuard(BaseAgent):
 
     @staticmethod
     def _normalize_key(key: str) -> str:
-        """将不同格式的symbol统一为base（如ETH-USDT）用于比较"""
-        # "ETH/USDT:USDT" → "ETH-USDT"
-        # "ETH-USDT" → "ETH-USDT"
-        key = key.split(':')[0]  # 去掉 :USDT
-        key = key.replace('/', '-')  # / → -
-        return key.upper()
+        """[已废弃] 保留用于向后兼容，建议直接用 utils.symbol.to_internal"""
+        return to_internal(key)
 
     @staticmethod
     def _to_ccxt_key(symbol: str) -> str:
-        """将任意格式转为ccxt统一格式（与positions.json一致）"""
-        # "ETH-USDT" → "ETH/USDT:USDT"
-        # "ETH/USDT:USDT" → "ETH/USDT:USDT" (不变)
-        if '/' in symbol:
-            return symbol
-        parts = symbol.split('-')
-        if len(parts) == 2:
-            return f"{parts[0]}/{parts[1]}:{parts[1]}"
-        return symbol
+        """[已废弃] 保留用于向后兼容，state 不再用 ccxt 格式 key"""
+        from utils.symbol import to_ccxt
+        return to_ccxt(symbol)

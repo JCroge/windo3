@@ -69,6 +69,7 @@ crypto-arbitrage/
 │       ├── tech_analyst.py          # 9维度信号解读（多周期共振1h+4h+1d/日线价位/动量/资金流/微观结构/散户/风险）
 │       ├── judge.py                 # 精确交易计划（rule_signal主驱动±35分/LLM修正/日线反欺骗/动态杠杆1-20x）
 │       ├── executor.py              # 多标的交易执行 + Daily Hard Stop响应
+│       ├── paper_executor.py        # 影子账户（并行实盘，订阅同样信号但不下真单，独立持久化data/paper_*）
 │       ├── portfolio_risk_guard.py  # 组合级风控盯盘 + 状态持久化
 │       ├── reviewer.py              # 交易复盘 + 策略衰减检测 + Daily Hard Stop触发
 │       ├── position_analyst.py      # 持仓7因子评分 + 裁决引擎（每1h，防遗憾优化）
@@ -118,9 +119,10 @@ crypto-arbitrage/
 | LEVERAGE | 杠杆倍数 | 否（默认1） |
 | MAX_TRADE_AMOUNT | 单次最大交易额 | 否（默认10） |
 | MAX_DRAWDOWN | 最大回撤 | 否（默认0.20） |
+| EFFECTIVE_BALANCE_CAP | 逻辑账户拆分：风控按此上限算余额（不影响真实余额查询）。范围[10, 1_000_000]。留空=用真实余额 | 否 |
 | ANTHROPIC_API_KEY | Claude API密钥 | 否（使用多Agent系统时必需） |
 | ANTHROPIC_BASE_URL | Claude API地址（支持中转） | 否（默认api.anthropic.com） |
-| ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-sonnet-4-6） |
+| ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-opus-4-7） |
 | RESEARCH_INTERVAL | 研判层运行周期（秒） | 否（默认14400=4h） |
 | MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认5） |
 | MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认5） |
@@ -397,10 +399,51 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - 止盈orderbook墙逻辑修复：`r >= wall`时插入wall止盈（原`r > wall`导致wall恰好等于阻力位时漏加）
 - 趋势评分阈值收紧：strength>70才加分（原>60），减少弱趋势主导决策的情况
 
-### 🔄 Phase 7: 待开发
+### ✅ PA NameError修复（2026-05-19）
+- **Bug**：`position_analyst.py:336` — `position.get('amount_usdt', 0)` 中 `position` 未定义
+- **修复**：改为 `pos.get('amount_usdt', 0)`（方法参数名是 `pos`）
+- **影响**：PA每次评估持仓时崩溃，三角决策完全失效
+
+### ✅ Phase 7: Trailing Stop + 分批止盈（2026-05-19完成）
+- **问题**：止盈位到不了，趋势回落把盈利变亏损（ZEC两笔交易PnL -134.53）
+- **三阶段利润保护**：
+  - 阶段1 Break-Even：浮盈≥1R → SL移到入场价+手续费（消除亏损风险）
+  - 阶段2 分批止盈：TP1触发(tp_levels[0])平50%+SL移+0.5R；TP2触发(tp_levels[1])再平25%+SL移+1.5R
+  - 阶段3 Trailing Stop：tp_filled≥1后激活，跟踪距离`max(atr_pct, R×0.5)`，棘轮机制只向有利方向移动
+- **持仓数据扩展**（executor.py `open_position_with_plan`）：新增`original_sl`/`highest_price`/`lowest_price`/`tp_filled`/`atr_pct`/`original_amount`
+- **新方法**：`_update_trailing()`检测TP/BE/Trailing触发，`_move_sl()`节流更新（变动>0.3%且间隔>30s）+ 持久化
+- **加仓后基准重置**（executor.py `add_to_position`）：`original_sl = position['stop_loss']`（按新加权SL重新计算R）
+- **MultiExecutor适配**（agents/trading/executor.py）：`_check_all_positions`处理`partial_tp_1`/`partial_tp_2`触发器，发布`risk_reduced`状态
+- **Judge plan输出**（judge.py `_build_plan`）：新增`atr_pct`字段传递给Executor用于trailing距离计算
+- **向后兼容**：旧持仓无新字段时走原逻辑（单TP+固定SL）
+
+### 🔄 Phase 8: 待开发
+- 大摸底Phase A-D：入场门槛优化（开仓率7.8%→15-20%）
 - Predictor（趋势预测Agent）
 - 更多数据源（链上大额转账、清算数据）
-- Paper Trading模式
+- 参数 grid search（基于 event_backtest）
+- P3-R 验收测试体系
+
+### ✅ Phase 7+: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
+- **4h RSI 二级保护**：`judge.py _compute_score` 末尾——1h RSI 未触发硬cap但 4h RSI ≥70/≤30 时 score×0.5。根因 ZEC 事故（1h=64 但 4h=73.9 仍开多 20x→-135）
+- **逻辑账户拆分**：新增 `EFFECTIVE_BALANCE_CAP` 环境变量，真实余额 6020 但风控按 1000 算，单笔 max_loss 250→50 与 Daily Hard Stop -50 对齐。cap=None 时等价旧逻辑
+- **Paper Trading 全并行**：`agents/trading/paper_executor.py` 新建，与 MultiExecutor 并行收同样信号，独立 in-memory 余额持久化到 `data/paper_*`，发布独立 topic `paper_execution_result`
+- 交易层 Agent 数：9→10（新增 PaperExecutor）
+
+### ✅ 第五轮审计修复（2026-05-19完成）
+- **订单预检全覆盖**（`executor.py` `_execute_limit_order`）：limit 路径（line 753-761）+ fallback 市价路径（line 807-815）补 `precheck_order()`，5 个 `create_order` 落点全部覆盖（市价/limit/fallback/加仓/旧路径）；所有点都传 `size_usdt`=margin，内部 `notional = size_usdt × leverage`
+- **默认 pytest 干净 CI**：`conftest.py` `collect_ignore = ["test_kline.py"]`（websockets 非测试文件），`pytest.ini addopts = -m "not network"`（默认排除外部数据测试），`test_backtest/indicators/strategy.py` 加 `@pytest.mark.network`。默认 `python3 -m pytest -q` → 184 passed / 3 deselected / ~170s
+
+### ✅ 第六轮审计修复（2026-05-19完成）
+- **test_kline.py 网络标记**：加 `@pytest.mark.network`，`conftest.py` 删除 `collect_ignore`（marker 已足够），默认 CI 变为 4 deselected
+- **`_get_balance()` 实数校验**（`agents/trading/executor.py`）：`numbers.Real` + `math.isfinite()` 双重校验，非实数/非有限值返回 `-1.0`；测试 mock 中 `balance_adapter = None` 强制走 `fetch_balance` 路径
+
+### ✅ 第七轮审计修复（2026-05-19完成）
+- **event_backtest 权益曲线污染**（`event_backtest.py`）：开仓信号触发时先 append 权益（position=None），再 `_open_position()`，再 `continue`，消除前视偏差导致的 max_dd/Sharpe 高估
+- **PaperExecutor 原子写入**（`agents/trading/paper_executor.py`）：`_persist_state()` 改用 `atomic_write_json()`（write-to-temp + rename），防崩溃时写出半截 JSON
+- **live_trading.py DEPRECATED**：docstring 首行标注绕过多 Agent 系统，生产环境用 `run_agents.py`
+- **test_p2p3_grid_search.py**：删除三处测试函数的 `return dict`，消除 `PytestReturnNotNoneWarning`
+- **最终 CI**：`python3 -m pytest -q` → 184 passed / 4 deselected / 264 warnings / 229s
 
 ## 技术栈
 
@@ -425,6 +468,9 @@ python3 run_agents.py
 
 # Agent系统集成测试
 python3 test_agents_integration.py
+
+# 完整 CI 回归（默认排除 network 标记，184 passed / 3 deselected）
+python3 -m pytest -q
 
 # 或使用启动脚本
 ./start.sh

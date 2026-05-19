@@ -27,6 +27,7 @@ def make_mock_executor():
     mock.cancel_order.return_value = True
     mock.exchange = MagicMock()
     mock.exchange.fetch_balance.return_value = {'total': {'USDT': 100.0}}
+    mock.balance_adapter = None  # 走 fetch_balance 路径，避免 MagicMock 触发 _get_balance 实数校验
     return mock
 
 
@@ -114,33 +115,44 @@ async def test_legacy_fallback():
 
 
 async def test_risk_alert_flash_move():
-    """测试3: risk_alert flash_move触发全平"""
+    """测试3: risk_alert flash_move scope=symbol 只平对应标的，scope=market 全平"""
     print("=" * 60)
-    print("测试3: risk_alert flash_move → 全部平仓")
+    print("测试3: risk_alert flash_move scope 行为")
     print("=" * 60)
 
+    # 3a: scope=symbol 只平单标的
     MessageBus.reset()
-
     from agents.trading.executor import MultiExecutor
     config = {"exchange": "okx", "leverage": 3, "max_trade_amount": 10}
     executor_agent = MultiExecutor(config)
-
     mock_exec = make_mock_executor()
-    mock_exec.get_all_positions.return_value = {
+    mock_exec._normalize_symbol.side_effect = lambda s: s.replace('-SWAP', '')
+    mock_exec.get_position.return_value = {"side": "long", "amount": 0.05, "sl_order_id": "sl_123"}
+    mock_exec.positions = {"SOL-USDT": {"sl_order_id": "sl_123"}}
+    executor_agent.executor = mock_exec
+
+    alert_symbol = {"type": "flash_move", "scope": "symbol", "symbol": "SOL-USDT"}
+    await executor_agent._handle_risk_alert(alert_symbol)
+    assert mock_exec.close_position.call_count == 1
+    mock_exec.cancel_order.assert_called_once_with("SOL-USDT", "sl_123")
+    print("  ✓ scope=symbol: 只平 SOL-USDT，止损单已撤")
+
+    # 3b: scope=market 全平所有持仓
+    MessageBus.reset()
+    executor_agent2 = MultiExecutor(config)
+    mock_exec2 = make_mock_executor()
+    mock_exec2.get_all_positions.return_value = {
         "SOL-USDT": {"symbol": "SOL-USDT", "side": "long", "amount": 0.05, "sl_order_id": "sl_123"},
         "WIF-USDT": {"symbol": "WIF-USDT", "side": "short", "amount": 3.0, "sl_order_id": None},
     }
-    executor_agent.executor = mock_exec
+    executor_agent2.executor = mock_exec2
 
-    alert = {"type": "flash_move", "details": "BTC -5% in 5min"}
-    await executor_agent._handle_risk_alert(alert)
+    alert_market = {"type": "flash_move", "scope": "market", "details": "BTC -5% in 5min"}
+    await executor_agent2._handle_risk_alert(alert_market)
+    assert mock_exec2.close_position.call_count == 2
+    print("  ✓ scope=market: 2个持仓全部平仓")
 
-    assert mock_exec.close_position.call_count == 2
-    mock_exec.cancel_order.assert_called_once_with("SOL-USDT", "sl_123")
-    print("  ✓ 2个持仓全部平仓")
-    print("  ✓ SOL的止损条件单被撤销")
-
-    print("\n✅ 测试3通过: flash_move全平\n")
+    print("\n✅ 测试3通过: flash_move scope 行为正确\n")
     return True
 
 

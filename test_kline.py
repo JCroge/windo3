@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""测试K线采集器"""
+"""测试K线采集器（手动脚本/network 集成测试，依赖 Binance WebSocket）"""
 
 import asyncio
 import sys
+import pytest
 sys.path.append('.')
 
 from kline_collector import KlineCollector
 
+
+@pytest.mark.network
 async def test():
     # 测试采集BTC和ETH的1分钟K线
     collector = KlineCollector(
@@ -16,6 +19,7 @@ async def test():
 
     print("开始采集K线数据（按Ctrl+C停止）...")
     await collector.stream()
+
 
 if __name__ == '__main__':
     try:

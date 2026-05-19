@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""实时交易系统 - 整合策略+执行+风控"""
+"""实时交易系统 - 整合策略+执行+风控
+
+DEPRECATED: 此入口绕过多 Agent 系统（PortfolioRiskGuard/Reviewer/PaperExecutor 等）。
+生产环境请使用 run_agents.py。此文件仅保留作为单策略调试参考。
+"""
 
 import time
 import sqlite3

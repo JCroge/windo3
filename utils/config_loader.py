@@ -1,0 +1,205 @@
+"""统一配置加载器 — 单一真相源
+
+优先级：env > config.yaml > 内置默认值
+
+设计原则：
+- 所有 agent / executor / risk_manager 通过 load_config() 拿配置
+- 字段名统一为 python snake_case
+- 数值范围校验：硬限制不允许超过安全边界
+- live 模式（USE_TESTNET=false）下，关键凭证缺失则拒绝启动
+"""
+
+import os
+from typing import Optional
+from dotenv import load_dotenv
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+
+# 关键硬限制安全上限（防止误配置导致超额风险）
+HARD_LIMITS = {
+    "max_trade_amount": (0.1, 10000.0),          # 单笔最大保证金 USDT
+    "max_drawdown_pct": (5.0, 50.0),             # 最大回撤百分比
+    "daily_pnl_hard_stop": (-10000.0, -1.0),     # 每日硬熔断（必须为负）
+    "consecutive_loss_limit": (1, 20),           # 连续亏损次数熔断
+    "leverage": (1, 100),                        # 杠杆倍数
+    "effective_balance_cap": (10.0, 1_000_000.0),  # 逻辑账户拆分上限 USDT
+}
+
+
+# 内置默认值（与 .env.example 保持一致，作为最后兜底）
+DEFAULTS = {
+    "exchange": "okx",
+    "use_testnet": False,
+    "leverage": 3,
+    "max_trade_amount": 10.0,
+    "max_drawdown_pct": 20.0,
+    "daily_pnl_hard_stop": -50.0,
+    "consecutive_loss_limit": 3,
+    "research_interval": 4 * 3600,
+    "max_active_symbols": 5,
+    "rolling_window_size": 20,
+    "decay_threshold_win_rate": 0.50,
+    "decay_threshold_profit_factor": 1.5,
+    "interval": "1h",
+    # 逻辑账户拆分：None=用真实余额；设值则 risk_budget 用 min(real, cap)
+    # 设计意图：6020 USDT 总余额中只让 1000 USDT 参与风控计算，相当于OKX逻辑拆分
+    "effective_balance_cap": None,
+}
+
+
+class ConfigError(RuntimeError):
+    """配置错误：值越界、live模式凭证缺失等"""
+    pass
+
+
+def _to_bool(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "on")
+    return bool(v)
+
+
+def _load_yaml(path: str) -> dict:
+    """加载 config.yaml 的 risk 子节点（兼容旧格式）"""
+    if yaml is None or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r') as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+    risk = data.get('risk', {}) or {}
+    out = {}
+    if 'max_trade_amount' in risk:
+        out['max_trade_amount'] = float(risk['max_trade_amount'])
+    # yaml 用 max_drawdown（0.20格式），统一为 max_drawdown_pct（20.0格式）
+    if 'max_drawdown' in risk:
+        v = float(risk['max_drawdown'])
+        out['max_drawdown_pct'] = v * 100 if v <= 1.0 else v
+    if 'max_drawdown_pct' in risk:
+        out['max_drawdown_pct'] = float(risk['max_drawdown_pct'])
+    if 'max_daily_loss' in risk:
+        # yaml 的 max_daily_loss 是正数，转为负的 daily_pnl_hard_stop
+        out['daily_pnl_hard_stop'] = -abs(float(risk['max_daily_loss']))
+    return out
+
+
+def _read_env_overrides() -> dict:
+    """从环境变量读取（覆盖 yaml）"""
+    out = {}
+    env_map = {
+        "EXCHANGE": ("exchange", str),
+        "USE_TESTNET": ("use_testnet", _to_bool),
+        "LEVERAGE": ("leverage", int),
+        "MAX_TRADE_AMOUNT": ("max_trade_amount", float),
+        "MAX_DRAWDOWN_PCT": ("max_drawdown_pct", float),
+        "MAX_DAILY_LOSS": ("daily_pnl_hard_stop", lambda v: -abs(float(v))),
+        "DAILY_PNL_HARD_STOP": ("daily_pnl_hard_stop", float),
+        "CONSECUTIVE_LOSS_LIMIT": ("consecutive_loss_limit", int),
+        "RESEARCH_INTERVAL": ("research_interval", int),
+        "MAX_ACTIVE_SYMBOLS": ("max_active_symbols", int),
+        "EFFECTIVE_BALANCE_CAP": ("effective_balance_cap", float),
+    }
+    for env_key, (cfg_key, caster) in env_map.items():
+        raw = os.getenv(env_key)
+        if raw is None or raw == "":
+            continue
+        try:
+            out[cfg_key] = caster(raw)
+        except Exception as e:
+            raise ConfigError(f"环境变量 {env_key}={raw!r} 解析失败: {e}")
+    # 透传字段（不参与硬限制校验）
+    for env_key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        v = os.getenv(env_key, "")
+        out[env_key.lower()] = v
+    return out
+
+
+def _validate_hard_limits(cfg: dict):
+    """硬限制范围校验"""
+    for key, (lo, hi) in HARD_LIMITS.items():
+        if key not in cfg:
+            continue
+        val = cfg[key]
+        if val is None:  # 允许显式 None（如 effective_balance_cap）
+            continue
+        if not (lo <= val <= hi):
+            raise ConfigError(
+                f"配置项 {key}={val} 超出安全范围 [{lo}, {hi}]，拒绝启动"
+            )
+
+
+def _validate_live_mode(cfg: dict):
+    """live 模式凭证校验：USE_TESTNET=false 时关键凭证不能为空"""
+    if cfg.get("use_testnet"):
+        return  # testnet 模式跳过
+
+    exchange = cfg.get("exchange", "okx")
+    missing = []
+    if exchange == "okx":
+        for k in ("OKX_API_KEY", "OKX_SECRET", "OKX_PASSWORD"):
+            if not os.getenv(k):
+                missing.append(k)
+    elif exchange == "binance":
+        for k in ("BINANCE_API_KEY", "BINANCE_SECRET"):
+            if not os.getenv(k):
+                missing.append(k)
+    if missing:
+        raise ConfigError(
+            f"Live 模式（USE_TESTNET=false）下缺少凭证: {missing}，拒绝启动。"
+            f"如确认要在 testnet 运行，请设置 USE_TESTNET=true"
+        )
+
+
+def load_config(yaml_path: str = "config.yaml",
+                env_file: Optional[str] = ".env",
+                strict_live_check: bool = True) -> dict:
+    """加载并校验配置
+
+    Args:
+        yaml_path: config.yaml 路径
+        env_file: .env 文件路径（None 则不加载）
+        strict_live_check: 是否对 live 模式做凭证校验（测试场景可关闭）
+
+    Returns:
+        统一格式的 config 字典
+    """
+    if env_file:
+        load_dotenv(env_file, override=False)
+
+    cfg = dict(DEFAULTS)
+    cfg.update(_load_yaml(yaml_path))
+    cfg.update(_read_env_overrides())
+
+    _validate_hard_limits(cfg)
+    if strict_live_check:
+        _validate_live_mode(cfg)
+
+    return cfg
+
+
+def format_banner(cfg: dict) -> str:
+    """生成启动 banner（硬限制摘要）"""
+    mode = "TESTNET" if cfg.get("use_testnet") else "LIVE 实盘"
+    lines = [
+        "=" * 60,
+        f"配置摘要（{mode}）",
+        "-" * 60,
+        f"  交易所:                {cfg.get('exchange')}",
+        f"  杠杆:                  {cfg.get('leverage')}x",
+        f"  单笔最大保证金:        {cfg.get('max_trade_amount')} USDT",
+        f"  最大回撤:              {cfg.get('max_drawdown_pct')}%",
+        f"  每日硬熔断:            {cfg.get('daily_pnl_hard_stop')} USDT",
+        f"  连续亏损熔断:          {cfg.get('consecutive_loss_limit')} 次",
+        f"  研判周期:              {cfg.get('research_interval') // 3600}h",
+        f"  最大活跃标的:          {cfg.get('max_active_symbols')}",
+        f"  逻辑账户拆分:          {cfg.get('effective_balance_cap') or '未启用（用真实余额）'}",
+        "=" * 60,
+    ]
+    return "\n".join(lines)

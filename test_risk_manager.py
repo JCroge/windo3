@@ -25,7 +25,7 @@ def test_risk_manager():
     print(f"   消息: {msg}\n")
 
     print("2. 测试仓位计算")
-    position_size = rm.calculate_position_size(balance, 50000)
+    position_size = rm.calculate_position_size(balance)
     print(f"   计算仓位: {position_size} USDT\n")
 
     print("3. 测试止损止盈计算")

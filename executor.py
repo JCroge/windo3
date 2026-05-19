@@ -55,10 +55,22 @@ class ContractExecutor:
             self.exchange.set_sandbox_mode(True)
             self.logger.info(f"使用 {exchange_id} 测试网")
 
-        # 风控管理器
-        max_amount = float(os.getenv('MAX_TRADE_AMOUNT', 10))
+        # 风控管理器（统一从 config_loader 读，避免硬编码默认值）
+        try:
+            from utils.config_loader import load_config
+            _cfg = load_config(strict_live_check=False)
+            max_amount = _cfg.get('max_trade_amount', 10.0)
+            max_dd = _cfg.get('max_drawdown_pct', 20.0)
+            max_daily = abs(_cfg.get('daily_pnl_hard_stop', -50.0))
+        except Exception as e:
+            self.logger.warning(f"config_loader 加载失败，使用 env 兜底: {e}")
+            max_amount = float(os.getenv('MAX_TRADE_AMOUNT', 10))
+            max_dd = float(os.getenv('MAX_DRAWDOWN_PCT', 20))
+            max_daily = abs(float(os.getenv('MAX_DAILY_LOSS', 50)))
         self.risk_manager = RiskManager(
             max_trade_amount=max_amount,
+            max_drawdown_pct=max_dd,
+            max_daily_loss=max_daily,
             state_file='data/risk_state.json'
         )
 
@@ -71,10 +83,31 @@ class ContractExecutor:
         self._sl_max_failures = 3  # 连续失败N次后强制平仓
         self._last_sl_update = {}  # {symbol: timestamp} SL更新节流
 
+        # P1-M: 订单能力缓存 + 幂等防护
+        try:
+            from utils.order_capabilities import OrderCapabilities, IdempotencyGuard
+            self.caps = OrderCapabilities(self.exchange, self.logger)
+            self.caps.warmup()
+            self.idempotency = IdempotencyGuard(window_sec=10)
+        except Exception as e:
+            self.logger.warning(f"OrderCapabilities/IdempotencyGuard 初始化失败（降级）: {e}")
+            self.caps = None
+            self.idempotency = None
+
+        # P1-3: 统一余额读取
+        try:
+            from utils.balance_adapter import BalanceAdapter
+            self.balance_adapter = BalanceAdapter(self.exchange, ttl=10.0, logger=self.logger)
+        except Exception as e:
+            self.logger.warning(f"BalanceAdapter 初始化失败（降级）: {e}")
+            self.balance_adapter = None
+
         self.logger.info(f"杠杆设置: {leverage}x")
 
     def get_balance(self) -> float:
         """获取USDT余额（total，含持仓保证金，用于回撤计算）"""
+        if self.balance_adapter:
+            return self.balance_adapter.get_total()
         try:
             balance = self.exchange.fetch_balance()
             return balance['USDT']['total']
@@ -99,6 +132,12 @@ class ContractExecutor:
     def _open_position(self, symbol: str, side: str, amount_usdt: float) -> Optional[Dict]:
         """开仓"""
         symbol = self._normalize_symbol(symbol)
+        # P1-M: 幂等防护——10s 内同 (symbol, side) 重复请求直接拒
+        if self.idempotency:
+            is_dup, prior = self.idempotency.is_duplicate(symbol, side)
+            if is_dup:
+                self.logger.warning(f"幂等拒绝: {symbol} {side} 10s 内已有开单请求 (prior={prior})")
+                return None
         try:
             # 风控检查
             balance = self.get_balance()
@@ -122,6 +161,16 @@ class ContractExecutor:
             except Exception as e:
                 self.logger.warning(f"设置杠杆失败（可能已设置）: {e}")
 
+            # P1-2: 订单参数预检
+            if self.caps:
+                ok, reason, _ = self.caps.precheck_order(
+                    symbol=symbol, side='buy' if side == 'long' else 'sell',
+                    size_usdt=position_size, price=current_price, leverage=self.leverage
+                )
+                if not ok:
+                    self.logger.warning(f"[precheck] {symbol} 开仓拒绝: {reason}")
+                    return None
+
             # 计算数量（合约张数）：名义价值 / (价格 × 合约面值)
             market = self.exchange.market(symbol)
             contract_size = market.get('contractSize', 1)
@@ -134,13 +183,21 @@ class ContractExecutor:
 
             # 创建合约订单
             order_side = 'buy' if side == 'long' else 'sell'
+            order_params = {'reduceOnly': False}
+            # P1-M: 为 OKX 附加 clOrdId 实现交易所端幂等
+            clord_id = None
+            if self.idempotency and self.exchange_id == 'okx':
+                clord_id = self.idempotency.gen_client_order_id(symbol, side)
+                order_params['clOrdId'] = clord_id
             order = self.exchange.create_order(
                 symbol=symbol,
                 type='market',
                 side=order_side,
                 amount=amount,
-                params={'reduceOnly': False}
+                params=order_params
             )
+            if self.idempotency and clord_id:
+                self.idempotency.mark(symbol, side, clord_id)
 
             # 计算止损止盈
             stop_loss = self.risk_manager.calculate_stop_loss(current_price, side)
@@ -208,18 +265,39 @@ class ContractExecutor:
                 type='market',
                 side=order_side,
                 amount=position['amount'],
-                params={'reduceOnly': True}  # 平仓
+                params={'reduceOnly': True}
             )
 
-            # 计算盈亏（考虑杠杆）
-            leverage = position.get('leverage', 1)
-            if position['side'] == 'long':
-                pnl = (exit_price - position['entry_price']) / position['entry_price'] * position['amount_usdt'] * leverage
-            else:
-                pnl = (position['entry_price'] - exit_price) / position['entry_price'] * position['amount_usdt'] * leverage
+            # 取消独立 SL 条件单（_open_position 路径会设置；attachAlgoOrds 路径由 OKX 自动取消）
+            if position.get('sl_order_id'):
+                try:
+                    self.exchange.cancel_order(position['sl_order_id'], symbol)
+                    self.logger.info(f"取消孤立SL单: {position['sl_order_id']}")
+                except Exception as e:
+                    self.logger.warning(f"取消SL单失败（可能已触发）: {e}")
 
-            # 扣除手续费（开仓+平仓，各0.1%）
-            pnl -= position['amount_usdt'] * leverage * 0.002
+            # P1-J: 通过 CostModel 计算 PnL（与 Judge EV 估算口径一致）
+            leverage = position.get('leverage', 1)
+            try:
+                from utils.cost_model import get_default_cost_model
+                cm = get_default_cost_model()
+                pnl_breakdown = cm.realized_pnl(
+                    side=position['side'],
+                    entry_price=position['entry_price'],
+                    exit_price=exit_price,
+                    amount_usdt=position['amount_usdt'],
+                    leverage=leverage,
+                    funding_rate=0,  # 平仓时不知道历史 funding 累计，按 0 简化
+                    hold_hours=0,
+                )
+                pnl = pnl_breakdown['net_pnl']
+            except Exception:
+                # 降级：旧公式
+                if position['side'] == 'long':
+                    pnl = (exit_price - position['entry_price']) / position['entry_price'] * position['amount_usdt'] * leverage
+                else:
+                    pnl = (position['entry_price'] - exit_price) / position['entry_price'] * position['amount_usdt'] * leverage
+                pnl -= position['amount_usdt'] * leverage * 0.002
 
             # 记录盈亏
             self.risk_manager.record_trade(pnl)
@@ -241,6 +319,9 @@ class ContractExecutor:
             if not hasattr(self, '_close_cooldown'):
                 self._close_cooldown = {}
             self._close_cooldown[symbol] = time.time() + 60
+            # P1-M: 清理幂等窗口，允许立即反向开仓
+            if self.idempotency:
+                self.idempotency.clear(symbol, position['side'])
 
             self.logger.info(f"平仓成功: {symbol}, 盈亏: {pnl:.2f} USDT ({result['pnl_pct']:.2f}%)")
             return result
@@ -454,11 +535,10 @@ class ContractExecutor:
                 self.logger.warning(f"加载持仓失败: {e}")
 
     def _save_positions(self):
-        """保存持仓记录"""
+        """保存持仓记录（原子写入，进程崩溃不会损坏文件）"""
         try:
-            os.makedirs(os.path.dirname(self.positions_file), exist_ok=True)
-            with open(self.positions_file, 'w') as f:
-                json.dump(self.positions, f, indent=2)
+            from utils.atomic_io import atomic_write_json
+            atomic_write_json(self.positions_file, self.positions)
         except Exception as e:
             self.logger.error(f"保存持仓失败: {e}")
 
@@ -473,6 +553,12 @@ class ContractExecutor:
     def open_position_with_plan(self, symbol: str, side: str, plan: dict) -> Optional[Dict]:
         """基于Judge plan的智能开仓"""
         symbol = self._normalize_symbol(symbol)
+        # P1-M: 幂等防护——10s 内同 (symbol, side) 重复请求直接拒
+        if self.idempotency:
+            is_dup, prior = self.idempotency.is_duplicate(symbol, side)
+            if is_dup:
+                self.logger.warning(f"幂等拒绝(plan): {symbol} {side} 10s 内已有开单请求 (prior={prior})")
+                return None
         try:
             balance = self.get_balance()
             can_trade, msg = self.risk_manager.check_can_trade(balance)
@@ -484,10 +570,15 @@ class ContractExecutor:
             size_usdt = plan.get('size_usdt', self.risk_manager.max_trade_amount)
             size_usdt = min(size_usdt, self.risk_manager.max_trade_amount)
             required_margin = size_usdt
-            free_balance = self.exchange.fetch_balance()['USDT']['free']
+            free_balance = self.balance_adapter.get_free() if self.balance_adapter else self.exchange.fetch_balance()['USDT']['free']
             if free_balance < required_margin * 1.1:
                 self.logger.warning(f"可用余额不足: free={free_balance:.2f} < 需要{required_margin:.2f}")
                 return None
+
+            # P1-M: 通过风控检查后立即 mark 幂等窗口（即使后续下单失败，10s 内也不重试）
+            if self.idempotency:
+                clord_id = self.idempotency.gen_client_order_id(symbol, side)
+                self.idempotency.mark(symbol, side, clord_id)
 
             order_type = plan.get('order_type', 'market')
             entry_zone = plan.get('entry_zone', {})
@@ -528,7 +619,7 @@ class ContractExecutor:
             tp_sl_params = self._build_tp_sl_params(side, stop_loss, tp_first)
 
             if order_type == 'limit' and entry_zone:
-                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params)
+                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id)
                 if filled is None:
                     return None
                 amount, fill_price = filled
@@ -536,13 +627,23 @@ class ContractExecutor:
                 if not self._check_slippage(symbol, size_usdt, current_price):
                     self.logger.info(f"滑点过大，降级为限价单")
                     if entry_zone:
-                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params)
+                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id)
                         if filled is None:
                             return None
                         amount, fill_price = filled
                     else:
                         return None
                 else:
+                    # P1-2: 订单参数预检
+                    if self.caps:
+                        ok, reason, _ = self.caps.precheck_order(
+                            symbol=symbol, side='buy' if side == 'long' else 'sell',
+                            size_usdt=size_usdt, price=current_price, leverage=leverage
+                        )
+                        if not ok:
+                            self.logger.warning(f"[precheck] {symbol} plan开仓拒绝: {reason}")
+                            return None
+
                     contract_value = size_usdt * leverage
                     market = self.exchange.market(symbol)
                     contract_size = float(market.get('contractSize', 1) or 1)
@@ -558,6 +659,8 @@ class ContractExecutor:
                     order_side = 'buy' if side == 'long' else 'sell'
                     params = {'reduceOnly': False}
                     params.update(tp_sl_params)
+                    if self.idempotency and 'clord_id' in dir():
+                        params['clOrdId'] = clord_id
                     self.exchange.create_order(
                         symbol=symbol, type='market', side=order_side,
                         amount=amount, params=params
@@ -616,7 +719,8 @@ class ContractExecutor:
 
     def _execute_limit_order(self, symbol: str, side: str, size_usdt: float,
                              current_price: float, entry_zone: dict,
-                             leverage: int = 1, tp_sl_params: dict = None) -> Optional[tuple]:
+                             leverage: int = 1, tp_sl_params: dict = None,
+                             clord_id: str = None) -> Optional[tuple]:
         """限价单执行，30秒超时，附带TP/SL"""
         import time
 
@@ -646,9 +750,21 @@ class ContractExecutor:
         ))
         order_side = 'buy' if side == 'long' else 'sell'
 
+        if self.caps:
+            ok, reason, norm = self.caps.precheck_order(
+                symbol=symbol, side=order_side, size_usdt=size_usdt,
+                price=limit_price, leverage=leverage
+            )
+            if not ok:
+                self.logger.warning(f"限价单预检失败: {reason}")
+                return None
+            amount = norm.get('amount', amount)
+
         params = {'reduceOnly': False}
         if tp_sl_params:
             params.update(tp_sl_params)
+        if clord_id:
+            params['clOrdId'] = clord_id
 
         order = self.exchange.create_order(
             symbol=symbol, type='limit', side=order_side,
@@ -688,9 +804,20 @@ class ContractExecutor:
         amount = float(self.exchange.amount_to_precision(
             symbol, (size_usdt * leverage) / (new_price * contract_size)
         ))
+        if self.caps:
+            ok, reason, norm = self.caps.precheck_order(
+                symbol=symbol, side=order_side, size_usdt=size_usdt,
+                price=new_price, leverage=leverage
+            )
+            if not ok:
+                self.logger.warning(f"限价单fallback预检失败: {reason}")
+                return None
+            amount = norm.get('amount', amount)
         fallback_params = {'reduceOnly': False}
         if tp_sl_params:
             fallback_params.update(tp_sl_params)
+        if clord_id:
+            fallback_params['clOrdId'] = clord_id
         order = self.exchange.create_order(
             symbol=symbol, type='market', side=order_side,
             amount=amount, params=fallback_params
@@ -948,7 +1075,7 @@ class ContractExecutor:
                 self.logger.warning(f"加仓金额过小: {add_usdt:.2f} USDT，放弃")
                 return None
 
-            free_balance = self.exchange.fetch_balance()['USDT']['free']
+            free_balance = self.balance_adapter.get_free() if self.balance_adapter else self.exchange.fetch_balance()['USDT']['free']
             if free_balance < add_usdt * 1.1:
                 self.logger.warning(f"加仓余额不足: free={free_balance:.2f} < 需要{add_usdt:.2f}")
                 return None
@@ -961,6 +1088,16 @@ class ContractExecutor:
 
             ticker = self.exchange.fetch_ticker(symbol)
             current_price = ticker['last']
+
+            # P1-2: 订单参数预检
+            if self.caps:
+                ok, reason, _ = self.caps.precheck_order(
+                    symbol=symbol, side='buy' if side == 'long' else 'sell',
+                    size_usdt=add_usdt, price=current_price, leverage=leverage
+                )
+                if not ok:
+                    self.logger.warning(f"[precheck] {symbol} 加仓拒绝: {reason}")
+                    return None
 
             contract_value = add_usdt * leverage
             market = self.exchange.market(symbol)
@@ -975,9 +1112,13 @@ class ContractExecutor:
                 return None
 
             order_side = 'buy' if side == 'long' else 'sell'
+            add_params = {'reduceOnly': False}
+            if self.idempotency and self.exchange_id == 'okx':
+                add_clord = self.idempotency.gen_client_order_id(symbol, f'add_{side}')
+                add_params['clOrdId'] = add_clord
             order = self.exchange.create_order(
                 symbol=symbol, type='market', side=order_side,
-                amount=amount, params={'reduceOnly': False}
+                amount=amount, params=add_params
             )
 
             # 更新持仓记录：加权平均入场价
@@ -991,6 +1132,7 @@ class ContractExecutor:
             # 加仓后基于新均价重算SL/TP（Freqtrade stoploss_on_exchange_update模式）
             new_entry = position['entry_price']
             old_sl = position.get('stop_loss')
+            old_tp = position.get('take_profit')
             if old_sl and old_entry > 0:
                 # 保持原SL距离比例
                 sl_dist_pct = abs(old_sl - old_entry) / old_entry
@@ -1034,6 +1176,7 @@ class ContractExecutor:
                 'side': side,
                 'add_amount': amount,
                 'add_amount_usdt': add_usdt,
+                'amount_usdt': position['amount_usdt'],  # 累加后的新总保证金（统一风险预算语义）
                 'fill_price': current_price,
                 'new_entry_price': position['entry_price'],
                 'new_total_amount': new_total,

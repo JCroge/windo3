@@ -12,6 +12,7 @@ import json
 import os
 import asyncio
 from agents.base import BaseAgent
+from utils.symbol import to_internal
 
 REVIEW_INTERVAL = 3600  # 1小时
 
@@ -43,7 +44,8 @@ class PositionAnalyst(BaseAgent):
         if os.path.exists(positions_file):
             try:
                 with open(positions_file, 'r') as f:
-                    self._positions = json.load(f)
+                    raw = json.load(f)
+                self._positions = {to_internal(k): v for k, v in raw.items()}
             except Exception as e:
                 self.logger.error(f"加载持仓失败: {e}")
 
@@ -53,12 +55,12 @@ class PositionAnalyst(BaseAgent):
         elif msg['type'] == 'tech_analysis':
             symbol = msg.get('symbol') or msg['payload'].get('symbol')
             if symbol:
-                self._tech_cache[symbol] = msg['payload']
+                self._tech_cache[to_internal(symbol)] = msg['payload']
         elif msg['type'] == 'price_tick':
             symbol = msg.get('symbol') or msg['payload'].get('symbol')
             price = msg['payload'].get('price')
             if symbol and price:
-                self._prices[symbol] = price
+                self._prices[to_internal(symbol)] = price
         elif msg['type'] == 'position_verdict':
             await self._handle_critic_verdict(msg['payload'])
 
@@ -67,9 +69,8 @@ class PositionAnalyst(BaseAgent):
         symbol = result.get('symbol') or payload.get('symbol')
         if not symbol:
             return
-        # 统一为不带-SWAP的格式（与tech_analysis/开仓时一致）
-        if symbol.endswith('-SWAP'):
-            symbol = symbol[:-5]
+        # 统一为系统内部规范 BASE-USDT
+        symbol = to_internal(symbol)
         status = payload.get('status')
 
         if status == 'executed':
@@ -79,8 +80,9 @@ class PositionAnalyst(BaseAgent):
                     # 加仓：更新均价和总量，保留open_time
                     pos = self._positions[symbol]
                     pos['entry_price'] = result.get('new_entry_price', result.get('entry_price', pos['entry_price']))
-                    pos['amount_usdt'] = result.get('amount_usdt', pos.get('amount_usdt', 0))
-                    if 'add_amount_usdt' in result:
+                    if 'amount_usdt' in result:
+                        pos['amount_usdt'] = result['amount_usdt']
+                    elif 'add_amount_usdt' in result:
                         pos['amount_usdt'] = pos.get('amount_usdt', 0) + result['add_amount_usdt']
                     pos['stop_loss'] = result.get('new_stop_loss') or result.get('stop_loss') or pos.get('stop_loss')
                     pos['take_profit'] = result.get('new_take_profit') or result.get('take_profit') or pos.get('take_profit')
@@ -135,9 +137,11 @@ class PositionAnalyst(BaseAgent):
                 with open(positions_file, 'r') as f:
                     file_positions = json.load(f)
                 if file_positions:
+                    # 统一为内部规范 BASE-USDT，避免 SWAP/ccxt 格式混入 state
                     for k, v in file_positions.items():
-                        if k not in self._positions:
-                            self._positions[k] = v
+                        internal = to_internal(k)
+                        if internal not in self._positions:
+                            self._positions[internal] = v
             except Exception:
                 pass
 
@@ -183,12 +187,15 @@ class PositionAnalyst(BaseAgent):
 
     def _compute_position_score(self, symbol: str, pos: dict) -> dict:
         """7因子持仓评分（防遗憾优化版）"""
-        lookup_key = symbol.replace('-SWAP', '').replace('/', '-').replace(':USDT', '')
-        tech = None
-        for k, v in self._tech_cache.items():
-            if lookup_key in k or k in lookup_key:
-                tech = v
-                break
+        # symbol 已统一为 internal 格式（to_internal 处理过），直接查 _tech_cache
+        lookup_key = to_internal(symbol)
+        tech = self._tech_cache.get(lookup_key)
+        if not tech:
+            # 兼容旧 cache key（如 _tech_cache 中残留 SWAP 格式）
+            for k, v in self._tech_cache.items():
+                if to_internal(k) == lookup_key:
+                    tech = v
+                    break
 
         if not tech:
             return None
@@ -333,7 +340,7 @@ class PositionAnalyst(BaseAgent):
         if position_score >= 50:
             # 加仓上限检查：总保证金不超过max_trade_amount×2
             max_margin = self.config.get('max_trade_amount', 10) * 2
-            current_margin = position.get('amount_usdt', 0)
+            current_margin = pos.get('amount_usdt', 0)
             if current_margin >= max_margin:
                 action = 'hold'
                 conviction = position_score

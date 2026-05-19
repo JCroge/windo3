@@ -8,6 +8,7 @@ import os
 import time
 import ccxt
 from agents.base import BaseAgent
+from utils.symbol import to_internal
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -47,17 +48,43 @@ JUDGE_PROMPT = """你是加密货币合约交易的裁判。基于技术分析�
 
 class MultiJudge(BaseAgent):
     name = "judge"
-    subscriptions = ["tech_analysis:*", "symbol_update", "execution_result:*", "news_snapshot"]
+    subscriptions = ["tech_analysis:*", "symbol_update", "execution_result:*", "news_snapshot", "strategy_review"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
         self._symbol_state = {}
         self._decision_cooldown = 55
         self._force_close_cooldown = 300  # 强平后5分钟禁止同标的开仓
-        self._max_trade_amount = config.get('max_trade_amount', 500) if config else 500
+        # 与 utils/config_loader.py 的 DEFAULTS['max_trade_amount'] 保持一致
+        self._max_trade_amount = config.get('max_trade_amount', 10) if config else 10
         self.exchange = None
         self._available_balance = 0.0
         self._news_snapshot = {}  # {base: [headlines]} 最新新闻快照
+
+        # ═══ P2-N: 期望值（EV）门 ═══
+        # 从 Reviewer 接收滚动窗口胜率，用于计算 EV = p_win × profit - (1-p_win) × loss
+        self._recent_win_rate = None
+        self._recent_profit_factor = None
+        self._total_completed_trades = 0
+        # 历史交易不足时不应用 EV 门（让系统先积累样本）
+        self._min_trades_for_ev_gate = config.get('min_trades_for_ev_gate', 10) if config else 10
+        # 降级胜率：P2-O 调稳 0.55 → 0.52，让启动期 EV 门更严
+        self._fallback_win_rate = config.get('fallback_win_rate', 0.52) if config else 0.52
+        # EV 阈值：P2-O 调稳 0 → 0.05，要求 EV 至少 +0.05 USDT 才入场
+        self._ev_min_threshold = config.get('ev_min_threshold', 0.05) if config else 0.05
+
+        # ═══ P2-O: 最大并发持仓上限 ═══
+        # 启动期保守：余额 ~100 USDT 时最多 3 个并发持仓，单仓 ~10 USDT margin
+        # 后续胜率验证后可在 config 中放宽
+        self._max_concurrent_positions = config.get('max_concurrent_positions', 3) if config else 3
+        self._open_positions = set()  # 当前已知开仓的 symbol 集合
+
+        # ═══ 逻辑账户拆分（2026-05-19）═══
+        # None=用真实余额；设值则风险预算用 min(real_balance, cap)
+        # 设计：总余额 6020 USDT 中只让 1000 USDT 参与风控计算
+        # 等价于：max_loss 从 6020×5%=301 USDT 降到 1000×5%=50 USDT（与 Daily Hard Stop -50 对齐）
+        self._effective_balance_cap = config.get('effective_balance_cap') if config else None
+        self._balance_adapter = None
 
     def _get_state(self, symbol: str) -> dict:
         if symbol not in self._symbol_state:
@@ -90,6 +117,12 @@ class MultiJudge(BaseAgent):
             ex_config['secret'] = os.getenv('BINANCE_SECRET')
             self.exchange = ccxt.binance(ex_config)
         self.logger.info("精确决策裁判Agent就绪")
+        try:
+            from utils.balance_adapter import BalanceAdapter
+            self._balance_adapter = BalanceAdapter(self.exchange, ttl=10.0, logger=self.logger)
+        except Exception as e:
+            self.logger.warning(f"BalanceAdapter 初始化失败（降级）: {e}")
+            self._balance_adapter = None
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'symbol_update':
@@ -103,22 +136,37 @@ class MultiJudge(BaseAgent):
             self._news_snapshot = msg['payload'].get('symbol_news', {})
             return
 
+        if msg['type'] == 'strategy_review':
+            payload = msg.get('payload', {})
+            recent = payload.get('recent_metrics', {})
+            self._recent_win_rate = recent.get('win_rate')
+            self._recent_profit_factor = recent.get('profit_factor')
+            self._total_completed_trades = payload.get('total_trades', 0)
+            if self._recent_win_rate is not None:
+                self.logger.info(
+                    f"[Judge] 接收策略复盘: win_rate={self._recent_win_rate:.1%} "
+                    f"profit_factor={self._recent_profit_factor:.2f} "
+                    f"total_trades={self._total_completed_trades}"
+                )
+            return
+
         if msg['type'] == 'execution_result':
             payload = msg.get('payload', msg)
             symbol = msg.get('symbol') or payload.get('symbol')
             if symbol:
-                # 统一为tech_analysis格式（不带-SWAP），确保state key一致
-                if symbol.endswith('-SWAP'):
-                    symbol = symbol[:-5]
+                # 统一为系统内部规范 BASE-USDT
+                symbol = to_internal(symbol)
                 state = self._get_state(symbol)
                 status = payload.get('status')
+                action = payload.get('action', '')
                 if status == 'force_closed':
                     state["last_force_close_time"] = time.time()
                     closed_dir = payload.get('direction', payload.get('action', ''))
                     sl_dir = 'long' if 'long' in closed_dir else ('short' if 'short' in closed_dir else None)
                     self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
-                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{cooldown}s内禁止同方向开仓")
+                    self._open_positions.discard(symbol)
+                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{cooldown}s内禁止同方向开仓 (active={len(self._open_positions)})")
                 elif status == 'closed_externally':
                     state["last_force_close_time"] = time.time()
                     state["deferred_entry"] = None
@@ -126,10 +174,15 @@ class MultiJudge(BaseAgent):
                     sl_dir = 'long' if 'long' in closed_dir else ('short' if 'short' in closed_dir else None)
                     self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
-                    self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{cooldown}s")
-                elif status == 'executed' and payload.get('action') in ('open_long', 'open_short'):
+                    self._open_positions.discard(symbol)
+                    self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{cooldown}s (active={len(self._open_positions)})")
+                elif status == 'executed' and action in ('open_long', 'open_short'):
                     state["last_open_time"] = time.time()
-                    self.logger.info(f"[Judge] {symbol} 开仓成功，300s冷却启动")
+                    self._open_positions.add(symbol)
+                    self.logger.info(f"[Judge] {symbol} 开仓成功 (active={len(self._open_positions)}/{self._max_concurrent_positions})")
+                elif status == 'executed' and action == 'close':
+                    self._open_positions.discard(symbol)
+                    self.logger.info(f"[Judge] {symbol} 主动平仓 (active={len(self._open_positions)})")
             return
 
         if msg['type'] != 'tech_analysis':
@@ -164,6 +217,41 @@ class MultiJudge(BaseAgent):
 
     async def _make_decision(self, symbol: str, tech: dict):
         await self._update_balance()
+
+        # 数据质量门槛：降级数据下不开仓（dimensions_ok < 6/9）
+        data_quality = tech.get('data_quality', {})
+        if data_quality.get('degraded'):
+            self.logger.warning(
+                f"[Judge] {symbol} 数据降级 "
+                f"{data_quality.get('dimensions_ok', '?')}/{data_quality.get('dimensions_total', 9)}，"
+                f"强制 hold"
+            )
+            await self.publish("trade_decision", {
+                "symbol": symbol,
+                "decision": "hold",
+                "confidence": 0,
+                "reason": "data_degraded",
+                "data_quality": data_quality,
+            }, symbol=symbol)
+            return
+
+        # ═══ P2-O: 并发持仓上限保护 ═══
+        # 当前 symbol 不在已开仓集合 + 已开仓数达上限 → 强制 hold
+        if (symbol not in self._open_positions and
+            len(self._open_positions) >= self._max_concurrent_positions):
+            self.logger.info(
+                f"[Judge] {symbol} 并发持仓已达上限 "
+                f"{len(self._open_positions)}/{self._max_concurrent_positions}，跳过新开仓"
+            )
+            await self.publish("trade_decision", {
+                "symbol": symbol, "timestamp": time.time(),
+                "action": "hold", "confidence": 0,
+                "plan": None, "size_pct": 0,
+                "reasoning": f"并发持仓已达上限{self._max_concurrent_positions}",
+                "key_factors": [f"active_positions={sorted(self._open_positions)}"],
+                "risk_warnings": ["concurrent_limit_reached"],
+            }, symbol=symbol)
+            return
 
         # 回调入场检查：之前因RSI超买/超卖被拒，现在RSI回落到合理区间
         state = self._get_state(symbol)
@@ -210,6 +298,11 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} 回调入场重算R:R={new_rr:.2f}<1.2，放弃")
                     state['deferred_entry'] = None
                     return
+                # EV 门（回调触发同样适用）
+                if not self._check_expected_value(symbol, plan, deferred.get('signal_score', 50)):
+                    self.logger.info(f"[Judge] {symbol} 回调入场 EV<0，放弃")
+                    state['deferred_entry'] = None
+                    return
                 plan['order_type'] = 'limit'
                 state['deferred_entry'] = None
                 state['last_open_time'] = time.time()
@@ -235,6 +328,11 @@ class MultiJudge(BaseAgent):
                 plan['size_usdt'] = round(plan['size_usdt'] * 0.6, 2)
                 if plan['size_usdt'] < 1.0:
                     self.logger.info(f"[Judge] {symbol} 追价入场时余额不足，放弃")
+                    state['deferred_entry'] = None
+                    return
+                # EV 门（追价同样适用——价格已移动 R:R 通常更差）
+                if not self._check_expected_value(symbol, plan, deferred.get('signal_score', 50)):
+                    self.logger.info(f"[Judge] {symbol} 追价入场 EV<0，放弃")
                     state['deferred_entry'] = None
                     return
                 plan['order_type'] = 'market'
@@ -508,7 +606,20 @@ class MultiJudge(BaseAgent):
                             is_long = (final_action == 'open_long')
                             target_price = price * (1 - needed_improve) if is_long else price * (1 + needed_improve)
                             state = self._get_state(symbol)
-                            timeout_h = 6 if has_rule_signal else 4
+                            # 动态超时：信号源越"高时间框架/越持久" → 等待越久
+                            ma_crossover = rule.get('entry_long') or rule.get('entry_short')
+                            ma_aligned = rule.get('ma_aligned_long') or rule.get('ma_aligned_short')
+                            htf_aligned = htf_bias in ('bullish', 'bearish')
+                            if htf_aligned and ma_aligned:
+                                timeout_h = 12  # HTF共振+1h趋势持续=最强信号
+                            elif ma_crossover:
+                                timeout_h = 8   # 1h MA交叉=新鲜信号
+                            elif ma_aligned:
+                                timeout_h = 6   # 1h趋势对齐
+                            elif htf_aligned:
+                                timeout_h = 5   # HTF共振但1h未确认
+                            else:
+                                timeout_h = 3   # 弱信号短窗口
                             state['deferred_entry'] = {
                                 'action': final_action,
                                 'signal_price': price,
@@ -553,6 +664,26 @@ class MultiJudge(BaseAgent):
                             await self.publish("trade_decision", decision, symbol=symbol)
                             return
                         self.logger.info(f"[{symbol}] 调整仓位: {plan['size_usdt']} USDT (余额{self._available_balance:.2f})")
+
+                    # ═══ P2-N: 期望值门（在所有开仓决策前的最后闸门）═══
+                    # 历史交易不足时使用降级胜率（不会过严）；rolling 胜率生效时严格执行
+                    if not self._check_expected_value(symbol, plan, score):
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": (
+                                f"EV={plan['expected_value']:.3f}<{self._ev_min_threshold} "
+                                f"(p_win={plan['p_win_used']:.0%}/{plan['p_win_source']})"
+                            ),
+                            "key_factors": [
+                                f"net_profit={plan['net_profit_usdt']:.2f}",
+                                f"net_loss={plan['net_loss_usdt']:.2f}",
+                            ],
+                            "risk_warnings": [f"negative_ev:{plan['expected_value']:.3f}"],
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
 
                     decision = {
                         "symbol": symbol, "timestamp": time.time(),
@@ -780,6 +911,17 @@ class MultiJudge(BaseAgent):
             if div == 'bearish_div':
                 score = min(score, -25)
 
+        # ═══ 4h RSI 二级保护（2026-05-19）═══
+        # 根因：ZEC事故 1h RSI=64（未触发1h硬cap）但 4h RSI=73.9 超买区，仍开多→亏-135
+        # 修复：1h RSI正常但4h RSI极端时，对score做50%衰减（软保护，保留强趋势入场）
+        # 与1h硬cap的区别：1h是禁区，4h是减仓；硬+软双层防护
+        rsi_4h = trend.get('tf_4h_rsi')
+        if rsi_4h is not None:
+            if rsi_4h >= 70 and score > 0:
+                score *= 0.5  # 4h超买区禁多衰减
+            elif rsi_4h <= 30 and score < 0:
+                score *= 0.5  # 4h超卖区禁空衰减
+
         return score
 
     def _check_price_in(self, symbol: str, action: str, tech: dict) -> bool:
@@ -832,7 +974,7 @@ class MultiJudge(BaseAgent):
 
         take_profit = self._calc_take_profit(levels, price, is_long, trend, momentum, stop_loss)
         entry_zone = self._calc_entry_zone(price, micro, momentum, is_long)
-        order_type = self._calc_order_type(momentum, micro)
+        order_type = self._calc_order_type(momentum, micro, score)
 
         tp_dist = abs(take_profit[0] - price) / price if take_profit else sl_dist
         gross_rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 1.0
@@ -843,11 +985,20 @@ class MultiJudge(BaseAgent):
         total_cost = budget['total_cost_usdt']
         effective_rr = round((gross_profit - total_cost) / (gross_loss + total_cost), 2) if (gross_loss + total_cost) > 0 else 1.0
 
+        # ═══ P2-N: 期望值（EV）计算 ═══
+        # EV = p_win × net_profit − (1 − p_win) × net_loss
+        # 用历史滚动胜率（不足时降级）
+        p_win, p_win_source = self._get_p_win()
+        net_profit = max(0.0, gross_profit - total_cost)
+        net_loss = gross_loss + total_cost
+        expected_value = p_win * net_profit - (1 - p_win) * net_loss
+
         self.logger.info(
             f"[Plan] price={price:.4f} sl={stop_loss:.4f}({sl_dist:.3f}) "
             f"tp={take_profit[0]:.4f}({tp_dist:.3f}) atr={momentum.get('atr_pct',0):.4f} "
             f"R:R={effective_rr}(gross={gross_rr}) lev={leverage}x size={size_usdt:.2f} "
-            f"funding_cost={budget['funding_cost_usdt']:.3f} fee={budget['fee_cost_usdt']:.3f}"
+            f"funding_cost={budget['funding_cost_usdt']:.3f} fee={budget['fee_cost_usdt']:.3f} "
+            f"EV={expected_value:+.3f} p_win={p_win:.1%}({p_win_source})"
         )
 
         def price_round(x):
@@ -870,7 +1021,62 @@ class MultiJudge(BaseAgent):
             "est_hold_hours": budget['est_hold_hours'],
             "max_holding_hours": 24,
             "atr_pct": momentum.get('atr_pct', 0.02),
+            "expected_value": round(expected_value, 4),
+            "p_win_used": round(p_win, 3),
+            "p_win_source": p_win_source,
+            "net_profit_usdt": round(net_profit, 3),
+            "net_loss_usdt": round(net_loss, 3),
         }
+
+    def _get_p_win(self) -> tuple:
+        """获取应用 EV 公式的胜率，返回 (p_win, source)。
+
+        历史交易 ≥ min_trades_for_ev_gate 时用 Reviewer 滚动胜率；
+        否则用降级值（默认 0.55，接近 break-even）。
+        """
+        if (self._recent_win_rate is not None and
+            self._total_completed_trades >= self._min_trades_for_ev_gate):
+            return float(self._recent_win_rate), "rolling"
+        return float(self._fallback_win_rate), "fallback"
+
+    def _check_expected_value(self, symbol: str, plan: dict, score: float) -> bool:
+        """期望值门：EV < 阈值则拒绝开仓。
+
+        返回 True 通过 / False 拦截。
+
+        设计：
+        - rolling 胜率 < 0.4 且 score 强度普通 → 直接拒（系统已显著衰减）
+        - 普通情况：EV < threshold（默认 0） → 拒
+        - 边界豁免：score 极强 (|score|>=60) 且 EV 微负 (>=-0.3 USDT) → 通过
+        """
+        ev = plan.get('expected_value', 0.0)
+        p_win = plan.get('p_win_used', 0.5)
+        p_win_source = plan.get('p_win_source', 'fallback')
+
+        # 系统衰减严重时（rolling 胜率<0.4）只允许极强信号通过
+        if (p_win_source == 'rolling' and
+            self._recent_win_rate is not None and
+            self._recent_win_rate < 0.4 and
+            abs(score) < 70):
+            self.logger.warning(
+                f"[Judge] {symbol} 滚动胜率{self._recent_win_rate:.1%}<40% 且 score={score:.0f}<70，EV门强拒"
+            )
+            return False
+
+        if ev < self._ev_min_threshold:
+            # 强信号豁免：score 极强 + EV 微负 (>=-0.3 USDT) 允许通过
+            if abs(score) >= 60 and ev >= -0.3:
+                self.logger.warning(
+                    f"[Judge] {symbol} EV={ev:.3f}<0 但 score={score:.0f}>=60 强信号，豁免通过"
+                )
+                return True
+            self.logger.info(
+                f"[Judge] {symbol} EV={ev:.3f}<{self._ev_min_threshold} "
+                f"(p_win={p_win:.1%}/{p_win_source}, score={score:.0f})，拦截"
+            )
+            return False
+
+        return True
 
     def _calc_stop_loss(self, levels: dict, price: float, is_long: bool, trend: dict = None, momentum: dict = None) -> float:
         min_sl_pct = 0.015
@@ -980,8 +1186,17 @@ class MultiJudge(BaseAgent):
 
         核心公式：leverage = max_loss / (margin × sl_dist) = 0.5 / sl_dist
         固定保证金(余额10%) + 固定最大亏损(余额5%) → 杠杆由止损距离决定
+
+        逻辑账户拆分：effective_balance_cap 设置时，% 计算用 min(real, cap)。
+        实盘真实下单仍用真实账户，但风险预算被 cap 约束在小额，便于早期实测。
         """
-        balance = self._available_balance if self._available_balance > 0 else self._max_trade_amount * 3
+        real_balance = self._available_balance if self._available_balance > 0 else self._max_trade_amount * 3
+
+        # 逻辑账户拆分：仅在 cap 设置时生效
+        if self._effective_balance_cap and self._effective_balance_cap > 0:
+            balance = min(real_balance, self._effective_balance_cap)
+        else:
+            balance = real_balance
 
         MARGIN_PCT = 0.10
         MAX_LOSS_PCT = 0.05
@@ -1016,7 +1231,6 @@ class MultiJudge(BaseAgent):
 
         money_flow = tech.get('money_flow', {})
         current_funding = money_flow.get('funding_rate', 0)
-        funding_rate = abs(current_funding)
 
         atr_pct = tech.get('momentum', {}).get('atr_pct', 0.02)
         if atr_pct >= 0.03:
@@ -1027,15 +1241,26 @@ class MultiJudge(BaseAgent):
             est_hours = 16
 
         is_long = (action == 'open_long')
-        if is_long:
-            funding_direction_mult = 1.0 if current_funding > 0 else -0.5
-        else:
-            funding_direction_mult = -0.5 if current_funding > 0 else 1.0
-
-        funding_periods = est_hours / 8
-        funding_cost_pct = funding_rate * funding_periods * funding_direction_mult
-        funding_cost_usdt = notional * funding_cost_pct
-        fee_cost_usdt = notional * 0.001
+        # P1-J: 通过 CostModel 统一计算 funding 成本和手续费（与 executor 平仓 PnL 口径一致）
+        side = 'long' if is_long else 'short'
+        try:
+            from utils.cost_model import get_default_cost_model
+            cm = get_default_cost_model()
+            funding_cost_usdt = cm.funding_cost(
+                notional=notional, funding_rate=current_funding,
+                hold_hours=est_hours, side=side
+            )
+            fee_cost_usdt = cm.round_trip_fee(notional)
+        except Exception:
+            # 降级：使用旧公式
+            funding_rate_abs = abs(current_funding)
+            if is_long:
+                funding_direction_mult = 1.0 if current_funding > 0 else 0
+            else:
+                funding_direction_mult = 0 if current_funding > 0 else 1.0
+            funding_periods = est_hours / 8
+            funding_cost_usdt = notional * funding_rate_abs * funding_periods * funding_direction_mult
+            fee_cost_usdt = notional * 0.002  # round-trip taker
         total_cost_usdt = max(0, funding_cost_usdt) + fee_cost_usdt
 
         return {
@@ -1058,7 +1283,10 @@ class MultiJudge(BaseAgent):
         else:
             return [price + offset * 0.5, price + offset * 2]
 
-    def _calc_order_type(self, momentum: dict, micro: dict) -> str:
+    def _calc_order_type(self, momentum: dict, micro: dict, score: float = 0) -> str:
+        # 高置信度(|score|>=80) 改用市价单：接受滑点换确定性，防止限价单挂单期间趋势走掉
+        if abs(score) >= 80:
+            return "market"
         if momentum.get('volume_anomaly') or micro.get('liquidation_intensity') == 'high':
             return "market"
         return "limit"
@@ -1090,7 +1318,8 @@ class MultiJudge(BaseAgent):
 最大交易额: {self._max_trade_amount} USDT。请做出最终决策。"""
 
         try:
-            result = await self.ask_claude_json(JUDGE_PROMPT, user_msg)
+            from agents.llm_client import JUDGE_DECISION_SCHEMA
+            result = await self.ask_claude_json(JUDGE_PROMPT, user_msg, schema=JUDGE_DECISION_SCHEMA)
             if 'action' not in result:
                 result['action'] = 'hold'
             if 'confidence' not in result:
@@ -1121,6 +1350,10 @@ class MultiJudge(BaseAgent):
 
     async def _update_balance(self):
         """查询可用USDT余额"""
+        if self._balance_adapter:
+            self._available_balance = await self._balance_adapter.get_free_async()
+            self.logger.info(f"余额查询成功: {self._available_balance:.2f} USDT")
+            return
         try:
             import asyncio
             balance = await asyncio.to_thread(self.exchange.fetch_balance)

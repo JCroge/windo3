@@ -179,9 +179,9 @@ async def test_5_research_full_chain():
     # 模拟 Synthesizer 发出 research_preliminary
     preliminary_payload = {
         "selected": [
-            {"symbol": "SOL-USDT", "score": 85, "direction": "long",
+            {"symbol": "SOL-USDT", "score": 85, "confidence": 75, "direction": "long",
              "risk_factor": "中等波动"},
-            {"symbol": "ETH-USDT", "score": 70, "direction": "short",
+            {"symbol": "ETH-USDT", "score": 70, "confidence": 65, "direction": "short",
              "risk_factor": "高杠杆风险"},
         ],
         "market_regime": "trending",
@@ -345,6 +345,8 @@ async def test_7_execution_and_notification():
 
     # Mock executor's exchange interface
     mock_exec = MagicMock()
+    mock_exec.balance_adapter = None
+    mock_exec.exchange.fetch_balance.return_value = {'free': {'USDT': 100.0}, 'total': {'USDT': 100.0}}
     mock_exec.get_position.return_value = None
     mock_exec.open_position.return_value = {
         "entry_price": 170.0, "amount": 0.05, "side": "long"
@@ -484,9 +486,18 @@ async def test_9_daily_hard_stop_flow():
     if os.path.exists('data/trade_history.json'):
         os.remove('data/trade_history.json')
 
+    from unittest.mock import MagicMock
     reviewer = ReviewerAgent(config)
     executor = MultiExecutor(config)
     rg = PortfolioRiskGuard(config)
+
+    mock_exec = MagicMock()
+    mock_exec.balance_adapter = None
+    mock_exec.exchange.fetch_balance.return_value = {'free': {'USDT': 100.0}, 'total': {'USDT': 100.0}}
+    mock_exec.get_all_positions.return_value = {}
+    mock_exec.risk_manager = MagicMock()
+    mock_exec.risk_manager.check_can_trade.return_value = (True, "")
+    executor.executor = mock_exec
 
     # 模拟连续3笔亏损
     for i in range(3):
@@ -755,6 +766,8 @@ async def test_14_exchange_error_handling():
 
     # Mock 交易所抛异常
     mock_exec = MagicMock()
+    mock_exec.balance_adapter = None
+    mock_exec.exchange.fetch_balance.return_value = {'free': {'USDT': 100.0}, 'total': {'USDT': 100.0}}
     mock_exec.get_position.side_effect = Exception("Connection timeout")
     mock_exec.risk_manager = MagicMock()
     mock_exec.risk_manager.check_can_trade.return_value = (True, "")
@@ -838,7 +851,7 @@ async def test_15_live_smoke_test():
         orch = Orchestrator()
         orch._register_agents()
         total = len(orch._research_agents) + len(orch._trading_agents)
-        assert total == 13, f"Expected 13 agents, got {total}"
+        assert total == 16, f"Expected 16 agents, got {total}"
         print(f"  ✓ 系统实例化成功: {total} 个Agent")
         results.append(True)
     except Exception as e:

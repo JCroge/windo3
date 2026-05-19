@@ -25,6 +25,9 @@ def load_klines(symbol='BTCUSDT', interval='1m', limit=100):
 
     return df
 
+import pytest
+
+@pytest.mark.network
 def test_indicators():
     """测试所有技术指标"""
     print("加载K线数据...")

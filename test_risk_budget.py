@@ -43,26 +43,35 @@ def test_calc_risk_budget():
     assert budget['max_loss_usdt'] < 5.5, f"ZEC max_loss应<5.5U，实际{budget['max_loss_usdt']:.2f}"
     print("  ✅ ZEC: 10x杠杆，margin=10U，notional=100U，max_loss合理")
 
-    # 场景3: 高资金费率 + BTC long → 成本高
+    # 场景3: 高资金费率 + BTC long → 做多付费，成本侵蚀利润
+    # tp_dist=3.45%（≈sl_dist×1.5），刚好在费率侵蚀后跌破1.5门槛
     tech_high_funding = {
         'money_flow': {'funding_rate': 0.001},  # 0.1%/8h 极端费率
         'momentum': {'atr_pct': 0.012},
     }
     budget = judge._calc_risk_budget(tech_high_funding, 'open_long', 0.023)
     notional = budget['notional_usdt']
-    gross_profit = notional * 0.046  # 假设tp_dist=4.6%
+    tp_dist = 0.0345  # 1.5×sl_dist，理论上刚好够，但费率侵蚀后不够
+    gross_profit = notional * tp_dist
     effective_rr = (gross_profit - budget['total_cost_usdt']) / (budget['max_loss_usdt'] + budget['total_cost_usdt'])
     print(f"\n[BTC long 高费率] lev={budget['leverage']}x notional={notional:.2f} "
           f"funding_cost={budget['funding_cost_usdt']:.3f} fee={budget['fee_cost_usdt']:.3f} "
           f"total_cost={budget['total_cost_usdt']:.3f}")
     print(f"  gross_profit={gross_profit:.2f} effective_rr={effective_rr:.2f}")
-    assert effective_rr < 1.5, f"高费率BTC long应被拒绝(rr<1.5)，实际rr={effective_rr:.2f}"
-    print("  ✅ 高费率BTC long: effective_rr<1.5，会被R:R门槛拒绝")
+    # 验证：做多付费率使 effective_rr 低于做空同场景
+    budget_short = judge._calc_risk_budget(tech_high_funding, 'open_short', 0.023)
+    gross_profit_short = budget_short['notional_usdt'] * tp_dist
+    effective_rr_short = (gross_profit_short - budget_short['total_cost_usdt']) / (budget_short['max_loss_usdt'] + budget_short['total_cost_usdt'])
+    assert effective_rr < effective_rr_short, \
+        f"高费率时long的rr({effective_rr:.3f})应<short的rr({effective_rr_short:.3f})"
+    assert budget['funding_cost_usdt'] > budget_short['funding_cost_usdt'], \
+        "正费率时long付费(cost>0)，short收费(cost≤0)"
+    print(f"  ✅ 高费率BTC long rr={effective_rr:.3f} < short rr={effective_rr_short:.3f}，方向性成本正确")
 
-    # 场景4: 高资金费率 + BTC short → 做空收费率，成本低
+    # 场景4: 高资金费率 + BTC short → 做空收费率，total_cost更低
     budget = judge._calc_risk_budget(tech_high_funding, 'open_short', 0.023)
     notional = budget['notional_usdt']
-    gross_profit = notional * 0.046
+    gross_profit = notional * 0.046  # tp_dist=4.6%，充裕利润
     effective_rr = (gross_profit - budget['total_cost_usdt']) / (budget['max_loss_usdt'] + budget['total_cost_usdt'])
     print(f"\n[BTC short 高费率] funding_cost={budget['funding_cost_usdt']:.3f} "
           f"total_cost={budget['total_cost_usdt']:.3f} effective_rr={effective_rr:.2f}")

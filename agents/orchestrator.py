@@ -7,11 +7,10 @@ Tier 2 (交易层): 持续运行，对活跃标的并行分析+交易
 import asyncio
 import signal
 import os
-from dotenv import load_dotenv
+import time
 from utils.logger import setup_logger
+from utils.config_loader import load_config, format_banner, ConfigError
 from agents.message_bus import MessageBus
-
-load_dotenv()
 
 
 class Orchestrator:
@@ -24,21 +23,19 @@ class Orchestrator:
         self._trading_agents = []
         self._tasks = []
         self._research_interval = self.config.get('research_interval', 12 * 3600)
+        self._idle_trigger_seconds = self.config.get('idle_trigger_seconds', 2 * 3600)  # 连续2h全hold→提前触发
+        self._idle_cooldown_seconds = self.config.get('idle_cooldown_seconds', 30 * 60)  # 提前触发后30min冷却
+        self._last_active_time = time.time()  # 最近一次有 action != 'hold' 的时间
+        self._last_research_time = 0.0
         self._shutdown_event = None
         self.bus = None
 
     def _default_config(self) -> dict:
-        return {
-            "exchange": os.getenv("EXCHANGE", "okx"),
-            "interval": "1h",
-            "leverage": int(os.getenv("LEVERAGE", "3")),
-            "max_trade_amount": float(os.getenv("MAX_TRADE_AMOUNT", "10")),
-            "use_testnet": os.getenv("USE_TESTNET", "false").lower() == "true",
-            "research_interval": int(os.getenv("RESEARCH_INTERVAL", str(4 * 3600))),
-            "max_active_symbols": int(os.getenv("MAX_ACTIVE_SYMBOLS", "5")),
-            "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
-            "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
-        }
+        try:
+            return load_config()
+        except ConfigError as e:
+            self.logger.critical(f"[配置错误] {e}")
+            raise
 
     def _register_agents(self):
         from agents.research.market_scanner import MarketScanner
@@ -56,6 +53,7 @@ class Orchestrator:
         from agents.trading.telegram_notifier import TelegramNotifier
         from agents.trading.position_analyst import PositionAnalyst
         from agents.trading.behavioral_critic import BehavioralCritic
+        from agents.trading.paper_executor import PaperExecutor
 
         MessageBus.reset()
 
@@ -73,6 +71,7 @@ class Orchestrator:
             MultiTechAnalyst(self.config),
             MultiJudge(self.config),
             MultiExecutor(self.config),
+            PaperExecutor(self.config),
             ReviewerAgent(self.config),
             PortfolioRiskGuard(self.config),
             PositionAnalyst(self.config),
@@ -84,11 +83,9 @@ class Orchestrator:
         self._register_agents()
         all_agents = self._research_agents + self._trading_agents
 
-        self.logger.info("=" * 60)
-        self.logger.info("多Agent交易系统启动（两层架构）")
-        self.logger.info(f"交易所: {self.config['exchange']} | "
-                        f"杠杆: {self.config['leverage']}x | "
-                        f"研判周期: {self._research_interval//3600}h")
+        # 打印硬限制 banner（让用户在启动时一眼看到风险参数）
+        for line in format_banner(self.config).split("\n"):
+            self.logger.info(line)
         self.logger.info(f"研判层: {len(self._research_agents)} agents | "
                         f"交易层: {len(self._trading_agents)} agents")
         self.logger.info("=" * 60)
@@ -106,7 +103,7 @@ class Orchestrator:
         loop.add_signal_handler(signal.SIGTERM, lambda: self._shutdown_event.set())
         loop.add_signal_handler(signal.SIGINT, lambda: self._shutdown_event.set())
 
-        self.bus.register("orchestrator", ["system_command"])
+        self.bus.register("orchestrator", ["system_command", "trade_decision:*"])
 
         self._tasks = [asyncio.create_task(agent.run()) for agent in all_agents]
         research_task = asyncio.create_task(self._research_loop())
@@ -124,27 +121,56 @@ class Orchestrator:
             await self._graceful_shutdown(all_agents)
 
     async def _research_loop(self):
-        """定期触发研判层运行"""
+        """定期触发研判层运行（含空闲提前触发：连续 idle_trigger_seconds 全 hold → 提前换标的）"""
         bus = MessageBus.get_instance()
 
         await asyncio.sleep(5)
         self.logger.info("[编排] 首次研判触发...")
         await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+        self._last_research_time = time.time()
 
+        check_interval = 300  # 每 5 min 检查一次状态
         while True:
-            await asyncio.sleep(self._research_interval)
-            self.logger.info(f"[编排] 定时研判触发（每{self._research_interval//3600}h）")
-            await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+            await asyncio.sleep(check_interval)
+            now = time.time()
+            elapsed_since_research = now - self._last_research_time
+            elapsed_since_active = now - self._last_active_time
+
+            # 触发条件1：定时周期到了
+            if elapsed_since_research >= self._research_interval:
+                self.logger.info(f"[编排] 定时研判触发（每{self._research_interval//3600}h）")
+                await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+                self._last_research_time = now
+                continue
+
+            # 触发条件2：连续 idle 太久 + 距上次研判已超冷却（防止刚换完又被空闲触发）
+            if (elapsed_since_active >= self._idle_trigger_seconds
+                    and elapsed_since_research >= self._idle_cooldown_seconds):
+                self.logger.info(
+                    f"[编排] 空闲提前触发研判（连续{elapsed_since_active//60:.0f}min无开/平仓决策）"
+                )
+                await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+                self._last_research_time = now
+                # 重置 idle 计时，避免立即重复触发
+                self._last_active_time = now
 
     async def _command_listener(self):
-        """监听system_command消息"""
+        """监听system_command + 跟踪交易活跃度（trade_decision != hold）"""
         while not self._shutdown_event.is_set():
             msg = await self.bus.receive("orchestrator", timeout=2.0)
-            if msg and msg.get('type') == 'system_command':
+            if not msg:
+                continue
+            mtype = msg.get('type')
+            if mtype == 'system_command':
                 cmd = msg.get('payload', {}).get('command', '')
                 if cmd == 'shutdown':
                     self.logger.info("[编排] 收到远程shutdown命令")
                     self._shutdown_event.set()
+            elif mtype == 'trade_decision':
+                # 任何非 hold 决策（含 deferred entry/追价/正常入场）都视为活跃
+                action = msg.get('payload', {}).get('action', 'hold')
+                if action and action != 'hold':
+                    self._last_active_time = time.time()
 
     async def _graceful_shutdown(self, all_agents):
         """优雅停机流程"""

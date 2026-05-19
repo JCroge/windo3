@@ -4,7 +4,7 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from agents.message_bus import MessageBus
-from agents.llm_client import LLMClient
+from agents.llm_client import LLMClient, LLMUnavailableError
 from utils.logger import setup_logger
 
 
@@ -26,7 +26,16 @@ class BaseAgent(ABC):
 
     def init_llm(self):
         if self.llm is None:
-            self.llm = LLMClient()
+            try:
+                self.llm = LLMClient()
+            except Exception as e:
+                self.logger.warning(f"LLM 客户端创建失败，将走规则降级: {e}")
+                self.llm = None
+
+    @property
+    def llm_available(self) -> bool:
+        """LLM 是否可用。Agent 的 _ask_llm/_llm_xxx 应先检查此属性。"""
+        return self.llm is not None and getattr(self.llm, 'available', False)
 
     @abstractmethod
     async def on_message(self, msg: dict):
@@ -67,11 +76,17 @@ class BaseAgent(ABC):
     async def ask_claude(self, system_prompt: str, user_message: str, **kwargs) -> str:
         if self.llm is None:
             self.init_llm()
+        if not self.llm_available:
+            raise LLMUnavailableError("LLM 不可用")
         return await self.llm.chat(system_prompt, user_message, **kwargs)
 
     async def ask_claude_json(self, system_prompt: str, user_message: str, **kwargs) -> dict:
         if self.llm is None:
             self.init_llm()
+        if not self.llm_available:
+            raise LLMUnavailableError("LLM 不可用")
+        # 自动注入 caller 用于审计追踪
+        kwargs.setdefault('caller', self.name)
         return await self.llm.chat_json(system_prompt, user_message, **kwargs)
 
     def stop(self):

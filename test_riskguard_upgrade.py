@@ -47,9 +47,13 @@ async def test_position_danger():
 
 
 async def test_portfolio_drawdown():
-    """测试2: 组合回撤 > 10% → max_drawdown"""
+    """测试2: 组合回撤 > 15% → max_drawdown
+
+    字段语义校验：amount_usdt = 保证金（margin），_calc_pnl_pct 已含 leverage。
+    总盈亏 = sum(margin × pnl_pct_with_leverage / 100)
+    """
     print("=" * 60)
-    print("测试2: 组合回撤 > 10% → max_drawdown")
+    print("测试2: 组合回撤 > 15% → max_drawdown")
     print("=" * 60)
 
     MessageBus.reset()
@@ -75,25 +79,11 @@ async def test_portfolio_drawdown():
             "open_time": time.time(), "highest_price": 2.5, "lowest_price": 2.5,
         }
     }
-    # SOL: 3x, -3% → -9% of 10 = -0.9 USDT
-    # WIF: 5x, -5% → -25% of 10 = -2.5 USDT
-    # Total: -3.4 USDT, drawdown = 3.4/100 = 3.4% (not enough)
-    # Need bigger loss: WIF -4% with 5x = -20% → -2.0; SOL -10% with 3x = -30% → -3.0
-    # Total = -5.0, drawdown = 5% (still not enough for 10%)
-    # Let's make it bigger: both -5% raw with high leverage
-    rg._prices = {"SOL-USDT": 158.1, "WIF-USDT": 2.25}
-    # SOL: (158.1-170)/170 * 3 * 100 = -21% of 10 = -2.1
-    # WIF: (2.25-2.5)/2.5 * 5 * 100 = -50% of 10 = -5.0
-    # Total: -7.1 USDT, drawdown = 7.1% (still not 10%)
-    # Need: total_pnl < -10 USDT for 10% of 100
-    rg._prices = {"SOL-USDT": 155.0, "WIF-USDT": 2.15}
-    # SOL: (155-170)/170 * 3 = -26.5% → -2.65
-    # WIF: (2.15-2.5)/2.5 * 5 = -70% → -7.0
-    # Total: -9.65 → 9.65% (close but not over)
-    rg._prices = {"SOL-USDT": 153.0, "WIF-USDT": 2.1}
-    # SOL: (153-170)/170 * 3 = -30% → -3.0
-    # WIF: (2.1-2.5)/2.5 * 5 = -80% → -8.0
-    # Total: -11.0 → 11% > 10% ✓
+    # 期望：total_pnl < -15 USDT → drawdown > 15% → 触发熔断
+    # SOL @ 140: (140-170)/170 × 3 × 100 = -52.9% → 10 × -0.529 = -5.29
+    # WIF @ 1.9: (1.9-2.5)/2.5 × 5 × 100 = -120% → 10 × -1.20 = -12.0
+    # Total ≈ -17.29 → drawdown = 17.29% > 15% ✓
+    rg._prices = {"SOL-USDT": 140.0, "WIF-USDT": 1.9}
 
     await rg._check_portfolio_drawdown()
 
@@ -153,6 +143,8 @@ async def test_high_leverage_danger():
 
     config = {"exchange": "okx", "max_trade_amount": 10}
     rg = PortfolioRiskGuard(config)
+    # 生产阈值 20x（OKX 上限），测试用 10x 验证检查逻辑
+    rg._high_leverage_threshold = 10
 
     bus.register("test_listener", ["risk_alert"])
 
@@ -253,6 +245,8 @@ async def test_correlation_risk():
 
     config = {"exchange": "okx", "max_trade_amount": 10}
     rg = PortfolioRiskGuard(config)
+    # 生产阈值 2400 USDT（适合中等规模账户），测试用 20 验证检查逻辑
+    rg._correlation_exposure_limit = 20.0
 
     bus.register("test_listener", ["risk_alert"])
 
@@ -346,12 +340,13 @@ async def test_e2e_riskguard_to_executor():
     executor_agent = MultiExecutor(config)
 
     mock_exec = MagicMock()
-    mock_exec.get_position.return_value = {"symbol": "ETH-USDT", "side": "long"}
+    mock_exec._normalize_symbol = lambda s: s if s.endswith('-SWAP') else f"{s}-SWAP"
+    mock_exec.get_position.return_value = {"symbol": "ETH-USDT-SWAP", "side": "long"}
     mock_exec.get_all_positions.return_value = {
-        "ETH-USDT": {"symbol": "ETH-USDT", "side": "long", "amount_usdt": 10, "sl_order_id": "sl_1"}
+        "ETH-USDT-SWAP": {"symbol": "ETH-USDT-SWAP", "side": "long", "amount_usdt": 10, "sl_order_id": "sl_1"}
     }
-    mock_exec.positions = {"ETH-USDT": {"sl_order_id": "sl_1"}}
-    mock_exec.close_position.return_value = {"symbol": "ETH-USDT", "pnl": 3.5}
+    mock_exec.positions = {"ETH-USDT-SWAP": {"sl_order_id": "sl_1"}}
+    mock_exec.close_position.return_value = {"symbol": "ETH-USDT-SWAP", "pnl": 3.5}
     mock_exec.cancel_order.return_value = True
     mock_exec.exchange = MagicMock()
     mock_exec.exchange.fetch_balance.return_value = {"total": {"USDT": 100}}
@@ -395,8 +390,8 @@ async def test_e2e_riskguard_to_executor():
 
     await executor_agent.on_message(msg)
 
-    mock_exec.close_position.assert_called_once_with("ETH-USDT")
-    mock_exec.cancel_order.assert_called_once_with("ETH-USDT", "sl_1")
+    mock_exec.close_position.assert_called_once_with("ETH-USDT-SWAP")
+    mock_exec.cancel_order.assert_called_once_with("ETH-USDT-SWAP", "sl_1")
     print("  ✓ RiskGuard trailing_stop → Executor 平仓 ETH-USDT")
     print("  ✓ 止损条件单被撤销")
 

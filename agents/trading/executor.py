@@ -1,6 +1,8 @@
 """智能交易执行 Agent - 消费Judge plan，支持动态杠杆/限价单/交易所止损/仓位同步"""
 
 import os
+import math
+import numbers
 import time
 import asyncio
 from dotenv import load_dotenv
@@ -39,7 +41,10 @@ class MultiExecutor(BaseAgent):
     async def on_message(self, msg: dict):
         if msg['type'] == 'daily_hard_stop_triggered':
             self._trading_halted = True
-            self.logger.critical("[熔断] 停止接收新交易决策")
+            reason = msg.get('payload', {}).get('reason', 'unknown')
+            self.logger.critical(f"[熔断] Daily Hard Stop 触发: {reason} — 停止新交易并全平持仓")
+            # 直接全平，不依赖 RiskGuard 转发（双保险）
+            await self._close_all_positions(f"daily_hard_stop_{reason}")
             return
 
         if msg['type'] == 'system_command':
@@ -236,10 +241,40 @@ class MultiExecutor(BaseAgent):
     async def _handle_risk_alert(self, alert: dict):
         """处理RiskGuard风险警报"""
         alert_type = alert.get('type', '')
-        self.logger.warning(f"[风控警报] 收到: {alert_type}")
+        scope = alert.get('scope', 'symbol')  # 'symbol' 或 'market'
+        self.logger.warning(f"[风控警报] 收到: {alert_type} scope={scope}")
+
+        if alert_type == 'emergency_close':
+            # RiskGuard 兜底：daily_hard_stop 等场景的强平
+            # 注：Executor 收到 daily_hard_stop_triggered 时已自行全平，此处为双保险
+            symbol = alert.get('symbol')
+            reason = alert.get('reason', 'emergency_close')
+            norm_sym = self.executor._normalize_symbol(symbol) if symbol else None
+            if not norm_sym:
+                return
+            position = self.executor.get_position(norm_sym)
+            if position is None:
+                self.logger.debug(f"[风控] {norm_sym} emergency_close 时持仓已不存在（主路径已平），忽略")
+                return
+            self.logger.critical(f"[风控兜底平仓] {norm_sym} 因 {reason}")
+            pos = self.executor.positions.get(norm_sym)
+            if pos and pos.get('sl_order_id'):
+                self.executor.cancel_order(norm_sym, pos['sl_order_id'])
+            result = self.executor.close_position(norm_sym)
+            if result:
+                await self.publish("execution_result", {
+                    "status": "force_closed",
+                    "symbol": symbol,
+                    "reason": reason,
+                    "result": result,
+                }, symbol=symbol)
+            return
 
         if alert_type == 'flash_move':
             symbol = alert.get('symbol')
+            if scope == 'market':
+                await self._close_all_positions("flash_move_market")
+                return
             norm_sym = self.executor._normalize_symbol(symbol) if symbol else None
             if norm_sym and self.executor.get_position(norm_sym):
                 self.logger.warning(f"[风控平仓] {norm_sym} 因闪崩警报")
@@ -295,25 +330,66 @@ class MultiExecutor(BaseAgent):
             self.logger.info(f"[风控] 持仓超时告警: {symbol} (仅日志，不自动执行)")
 
     async def _close_all_positions(self, reason: str):
-        """全部平仓"""
+        """全部平仓 — 并发执行，失败收集后告警
+
+        设计说明：
+        - 串行平仓 10-15s 内系统持续亏损，故改并发
+        - 单个标的平仓失败不影响其他
+        - 失败的标的写入日志告警（RiskGuard 兜底 emergency_close 会再次尝试）
+        """
         positions = self.executor.get_all_positions()
-        for symbol, pos in positions.items():
-            if pos.get('sl_order_id'):
-                self.executor.cancel_order(symbol, pos['sl_order_id'])
-            result = self.executor.close_position(symbol)
-            if result:
-                self.logger.warning(f"[风控平仓] {symbol} 因{reason}, PnL={result.get('pnl', 0):.2f}")
-                await self.publish("execution_result", {
-                    "status": "force_closed",
-                    "symbol": symbol,
-                    "reason": reason,
-                    "result": result,
-                }, symbol=symbol)
+        if not positions:
+            self.logger.info(f"[全平] 无持仓需平仓 ({reason})")
+            return
+
+        self.logger.critical(f"[全平] 开始并发平仓 {len(positions)} 个持仓 ({reason})")
+
+        async def close_one(symbol: str, pos: dict):
+            try:
+                if pos.get('sl_order_id'):
+                    await asyncio.to_thread(self.executor.cancel_order, symbol, pos['sl_order_id'])
+                result = await asyncio.to_thread(self.executor.close_position, symbol)
+                if result:
+                    self.logger.warning(f"[全平] {symbol} 已平仓, PnL={result.get('pnl', 0):.2f}")
+                    await self.publish("execution_result", {
+                        "status": "force_closed",
+                        "symbol": symbol,
+                        "reason": reason,
+                        "result": result,
+                    }, symbol=symbol)
+                    return True, symbol, None
+                else:
+                    return False, symbol, "close_position returned None"
+            except Exception as e:
+                return False, symbol, str(e)
+
+        tasks = [close_one(sym, pos) for sym, pos in positions.items()]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        failed = [(sym, err) for ok, sym, err in results if not ok]
+        if failed:
+            self.logger.error(f"[全平] {len(failed)} 个标的平仓失败，等待 RiskGuard 兜底: {failed}")
+        else:
+            self.logger.critical(f"[全平] 完成 ({reason}) — 全部 {len(positions)} 个持仓已平")
 
     def _get_balance(self) -> float:
         try:
-            balance = self.executor.exchange.fetch_balance()
-            return float(balance.get('USDT', {}).get('total', 0))
+            if self.executor and self.executor.balance_adapter:
+                val = self.executor.balance_adapter.get_total()
+            else:
+                balance = self.executor.exchange.fetch_balance()
+                from utils.balance_adapter import BalanceAdapter
+                val = BalanceAdapter._parse(balance)[1]
+
+            # 第六轮 P1-2：余额是下单前硬闸，必须是有限实数；拒绝 MagicMock/bool/NaN/Inf
+            if isinstance(val, bool) or not isinstance(val, numbers.Real):
+                self.logger.error(f"余额非实数类型: {type(val).__name__}")
+                return -1.0
+            result = float(val)
+            if not math.isfinite(result):
+                self.logger.error(f"余额非有限值: {result}")
+                return -1.0
+            return result
         except Exception as e:
             self.logger.error(f"获取余额失败: {e}")
             return -1.0
@@ -380,7 +456,8 @@ class MultiExecutor(BaseAgent):
         entry = pos_data.get('entry_price', 0)
         sl = pos_data.get('stop_loss', 0)
         side = pos_data.get('side', '')
-        amount_usdt = pos_data.get('amount_usdt', 0)
+        amount_usdt = pos_data.get('amount_usdt', 0)  # 保证金 (margin)
+        leverage = pos_data.get('leverage', 1) or 1
 
         if not entry or not sl or not amount_usdt:
             return 0.0
@@ -390,7 +467,8 @@ class MultiExecutor(BaseAgent):
         else:
             pnl_pct = (entry - sl) / entry
 
-        pnl = amount_usdt * pnl_pct
+        # 保证金 × 价格变化率 × 杠杆 = 实际 PnL（与 ContractExecutor 内部平仓口径一致）
+        pnl = amount_usdt * pnl_pct * leverage
         return round(pnl, 4)
 
     async def _check_all_positions(self):

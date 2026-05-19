@@ -24,9 +24,11 @@ class ReviewerAgent(BaseAgent):
         self.decay_threshold_win_rate = config.get('decay_threshold_win_rate', 0.50) if config else 0.50
         self.decay_threshold_profit_factor = config.get('decay_threshold_profit_factor', 1.5) if config else 1.5
 
-        # Daily hard stop阈值
-        self.daily_pnl_hard_stop = config.get('daily_pnl_hard_stop', -300.0) if config else -300.0
+        # Daily hard stop阈值（与 utils/config_loader.py 默认值保持一致）
+        self.daily_pnl_hard_stop = config.get('daily_pnl_hard_stop', -50.0) if config else -50.0
         self.consecutive_loss_limit = config.get('consecutive_loss_limit', 3) if config else 3
+        # latch：当日已触发则不重复发，UTC 日切时重置
+        self._hard_stop_triggered_date: str = ''
 
     async def setup(self):
         self._load_trade_history()
@@ -41,16 +43,19 @@ class ReviewerAgent(BaseAgent):
         elif msg['type'] == 'risk_alert':
             # 组合回撤超限时，将浮亏计入当日PnL触发熔断
             if msg['payload'].get('type') == 'max_drawdown':
-                unrealized = msg['payload'].get('total_pnl_usdt', 0)
-                daily_pnl = self._calculate_daily_pnl() + unrealized
-                if daily_pnl <= self.daily_pnl_hard_stop:
-                    self.logger.critical(f"[熔断] 含浮亏当日亏损{daily_pnl:.2f} USDT 超过限制")
-                    await self.publish("daily_hard_stop_triggered", {
-                        "reason": "daily_loss_limit_with_unrealized",
-                        "daily_pnl": daily_pnl,
-                        "limit": self.daily_pnl_hard_stop,
-                        "timestamp": time.time()
-                    })
+                today_str = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+                if self._hard_stop_triggered_date != today_str:
+                    unrealized = msg['payload'].get('total_pnl_usdt', 0)
+                    daily_pnl = self._calculate_daily_pnl() + unrealized
+                    if daily_pnl <= self.daily_pnl_hard_stop:
+                        self._hard_stop_triggered_date = today_str
+                        self.logger.critical(f"[熔断] 含浮亏当日亏损{daily_pnl:.2f} USDT 超过限制")
+                        await self.publish("daily_hard_stop_triggered", {
+                            "reason": "daily_loss_limit_with_unrealized",
+                            "daily_pnl": daily_pnl,
+                            "limit": self.daily_pnl_hard_stop,
+                            "timestamp": time.time()
+                        })
 
     async def tick(self):
         await asyncio.sleep(60)
@@ -91,31 +96,30 @@ class ReviewerAgent(BaseAgent):
 
     async def _check_daily_hard_stop(self):
         """检查daily hard stop触发条件"""
+        today_str = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+        # latch：当日已触发则不重复发；UTC 日切时自动重置
+        if self._hard_stop_triggered_date == today_str:
+            return
+
         daily_pnl = self._calculate_daily_pnl()
         consecutive_losses = self._track_consecutive_losses()
 
-        # 条件1: 单日亏损超限
+        reason = None
+        payload = {}
         if daily_pnl <= self.daily_pnl_hard_stop:
-            self.logger.critical(
-                f"[熔断] 单日亏损{daily_pnl:.2f} USDT 超过限制{self.daily_pnl_hard_stop} USDT"
-            )
-            await self.publish("daily_hard_stop_triggered", {
-                "reason": "daily_loss_limit",
-                "daily_pnl": daily_pnl,
-                "limit": self.daily_pnl_hard_stop,
-                "timestamp": time.time()
-            })
-
-        # 条件2: 连续亏损超限
+            reason = "daily_loss_limit"
+            payload = {"daily_pnl": daily_pnl, "limit": self.daily_pnl_hard_stop}
         elif consecutive_losses >= self.consecutive_loss_limit:
-            self.logger.critical(
-                f"[熔断] 连续{consecutive_losses}次亏损 超过限制{self.consecutive_loss_limit}次"
-            )
+            reason = "consecutive_losses"
+            payload = {"count": consecutive_losses, "limit": self.consecutive_loss_limit}
+
+        if reason:
+            self._hard_stop_triggered_date = today_str
+            self.logger.critical(f"[熔断] Daily hard stop触发: {reason} {payload}")
             await self.publish("daily_hard_stop_triggered", {
-                "reason": "consecutive_losses",
-                "count": consecutive_losses,
-                "limit": self.consecutive_loss_limit,
-                "timestamp": time.time()
+                "reason": reason,
+                "timestamp": time.time(),
+                **payload,
             })
 
     def _calculate_daily_pnl(self) -> float:
@@ -285,10 +289,9 @@ class ReviewerAgent(BaseAgent):
             self.logger.error(f"加载交易历史失败: {e}")
 
     def _save_trade_history(self):
-        """保存交易历史"""
-        os.makedirs('data', exist_ok=True)
+        """保存交易历史（原子写入）"""
         try:
-            with open(self.history_file, 'w') as f:
-                json.dump(self.trade_history, f, indent=2)
+            from utils.atomic_io import atomic_write_json
+            atomic_write_json(self.history_file, self.trade_history)
         except Exception as e:
             self.logger.error(f"保存交易历史失败: {e}")

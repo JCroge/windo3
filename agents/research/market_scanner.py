@@ -47,6 +47,8 @@ class MarketScanner(BaseAgent):
             tickers = await loop.run_in_executor(None, self.exchange.fetch_tickers)
 
             candidates = []
+            # 非加密资产黑名单：与 multi_data_collector.py 保持一致，避免研判选了交易层会过滤
+            NON_CRYPTO_BLACKLIST = {'CL', 'XAU', 'XAG', 'OIL', 'GAS', 'SPX', 'NDX'}
             for symbol, ticker in tickers.items():
                 if not symbol.endswith('/USDT:USDT') and not symbol.endswith('-USDT-SWAP'):
                     continue
@@ -54,6 +56,10 @@ class MarketScanner(BaseAgent):
                     clean_symbol = symbol.split(':')[0].replace('/', '-')
                 else:
                     clean_symbol = symbol
+
+                base = clean_symbol.split('-')[0].upper()
+                if base in NON_CRYPTO_BLACKLIST:
+                    continue
 
                 volume_24h = float(ticker.get('quoteVolume', 0) or 0)
                 if volume_24h == 0:

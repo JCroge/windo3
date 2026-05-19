@@ -333,6 +333,7 @@ async def test_full_trading_cycle():
     rg = PortfolioRiskGuard(config)
 
     mock_exec = MagicMock()
+    mock_exec._normalize_symbol = lambda s: s if s.endswith('-SWAP') else f"{s}-SWAP"
     mock_exec.get_position.return_value = None
     mock_exec.get_all_positions.return_value = {}
     mock_exec.open_position_with_plan.return_value = {
@@ -345,6 +346,7 @@ async def test_full_trading_cycle():
     mock_exec.positions = {}
     mock_exec.exchange = MagicMock()
     mock_exec.exchange.fetch_balance.return_value = {'total': {'USDT': 100.0}}
+    mock_exec.balance_adapter = None  # 走 fetch_balance 路径，满足 _get_balance 实数校验
     mock_exec.risk_manager = MagicMock()
     mock_exec.risk_manager.check_can_trade.return_value = (True, "ok")
     executor.executor = mock_exec
@@ -393,12 +395,13 @@ async def test_full_trading_cycle():
 
     # Step 4: Executor执行风控平仓
     print("  [Step 4] Executor 风控平仓")
-    mock_exec.get_position.return_value = {"symbol": "SOL-USDT", "side": "long"}
-    mock_exec.positions = {"SOL-USDT": {"sl_order_id": "sl_abc"}}
+    # 实际生产中 _normalize_symbol 会把 SOL-USDT → SOL-USDT-SWAP，positions 用 SWAP 格式
+    mock_exec.get_position.return_value = {"symbol": "SOL-USDT-SWAP", "side": "long"}
+    mock_exec.positions = {"SOL-USDT-SWAP": {"sl_order_id": "sl_abc"}}
     await executor._handle_risk_alert(risk_msg['payload'])
-    mock_exec.close_position.assert_called_once_with("SOL-USDT")
-    mock_exec.cancel_order.assert_called_once_with("SOL-USDT", "sl_abc")
-    print("    ✓ Executor 平仓 SOL-USDT + 撤销止损单")
+    mock_exec.close_position.assert_called_once_with("SOL-USDT-SWAP")
+    mock_exec.cancel_order.assert_called_once_with("SOL-USDT-SWAP", "sl_abc")
+    print("    ✓ Executor 平仓 SOL-USDT-SWAP + 撤销止损单")
 
     # Step 5: RiskGuard收到force_closed，移除持仓
     print("  [Step 5] force_closed → RiskGuard 移除持仓")
@@ -544,6 +547,7 @@ async def test_concurrent_symbols_full_flow():
     ]
     mock_exec.exchange = MagicMock()
     mock_exec.exchange.fetch_balance.return_value = {'total': {'USDT': 100.0}}
+    mock_exec.balance_adapter = None  # 走 fetch_balance 路径，满足 _get_balance 实数校验
     mock_exec.risk_manager = MagicMock()
     mock_exec.risk_manager.check_can_trade.return_value = (True, "ok")
     executor.executor = mock_exec

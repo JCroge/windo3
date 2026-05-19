@@ -16,6 +16,7 @@ class TelegramNotifier(BaseAgent):
         "daily_hard_stop_triggered",
         "risk_alert",
         "strategy_review",
+        "telegram_alert",
     ]
 
     def __init__(self, config: dict = None):
@@ -62,6 +63,11 @@ class TelegramNotifier(BaseAgent):
             await self._handle_risk_alert(msg)
         elif msg['type'] == 'strategy_review':
             await self._handle_strategy_review(msg)
+        elif msg['type'] == 'telegram_alert':
+            level = msg['payload'].get('level', 'info')
+            text = msg['payload'].get('message', '')
+            prefix = '⚠️' if level == 'warning' else 'ℹ️'
+            await self._send_message(f"{prefix} {text}")
 
     async def tick(self):
         if not self._enabled:
@@ -283,9 +289,8 @@ class TelegramNotifier(BaseAgent):
 
         halted = False
         try:
-            with open('data/trade_history.json', 'r') as f:
-                history = json.load(f)
-                halted = history.get('trading_halted', False)
+            with open('data/riskguard_state.json', 'r') as f:
+                halted = json.load(f).get('trading_halted', False)
         except Exception:
             pass
 
@@ -348,10 +353,21 @@ class TelegramNotifier(BaseAgent):
 
     async def _cmd_log(self):
         import subprocess
+        import glob
+        from datetime import datetime
         try:
+            # logger 写 logs/{name}_YYYYMMDD.log，扫今日所有 agent 日志
+            today = datetime.now().strftime("%Y%m%d")
+            log_files = glob.glob(f'logs/*_{today}.log')
+            if not log_files:
+                # 兜底：取最近修改的日志文件
+                all_logs = sorted(glob.glob('logs/*.log'), key=lambda p: os.path.getmtime(p), reverse=True)
+                log_files = all_logs[:5]
+            if not log_files:
+                await self._send_message("📋 暂无日志文件")
+                return
             result = subprocess.run(
-                ['grep', '-E', '决策|执行|平仓|熔断|硬性规则|持仓分析|开仓',
-                 'logs/system.log'],
+                ['grep', '-h', '-E', '决策|执行|平仓|熔断|硬性规则|持仓分析|开仓', *log_files],
                 capture_output=True, text=True, timeout=5
             )
             lines = result.stdout.strip().split('\n')[-10:]
@@ -361,8 +377,8 @@ class TelegramNotifier(BaseAgent):
                     text += line[-80:] + "\n"
             else:
                 text = "📋 暂无关键日志"
-        except Exception:
-            text = "📋 日志读取失败"
+        except Exception as e:
+            text = f"📋 日志读取失败: {e}"
         await self._send_message(text)
 
     # ==================== 消息发送 ====================

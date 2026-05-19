@@ -471,6 +471,83 @@
    - 问题：每条日志打印7次（多次启动/停止累积handler + propagate到root logger）
    - 修复：`if logger.handlers: return logger` + `logger.propagate = False`
 
+### ✅ Phase 7: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
+
+1. **4h RSI 二级保护**（`agents/trading/judge.py` `_compute_score` 末尾）
+   - 根因：ZEC 事故——1h RSI=64（未触发硬cap），但 4h RSI=73.9 超买区，仍开多 20x → 单笔亏 -135 USDT
+   - 修复：1h RSI 未触发硬cap但 4h RSI ≥70 且 score>0 时 score×0.5（4h ≤30 且 score<0 同样衰减）
+   - 设计取舍：软衰减而非硬阻断，强趋势叠加 4h 超买仍可入场但 confidence 被压低（仓位自动减）
+   - 测试：`test_4h_rsi_decay.py` 7/7 通过
+
+2. **逻辑账户拆分**（`utils/config_loader.py` + `agents/trading/judge.py _calc_risk_budget`）
+   - 目的：真实余额 6020 USDT 但风控按 1000 USDT 算，单笔 max_loss 从 250→50 与 Daily Hard Stop -50 对齐
+   - 实现：新增 `EFFECTIVE_BALANCE_CAP` 环境变量，`_calc_risk_budget` 用 `min(real_balance, cap)`
+   - 边界：cap=None 等价旧逻辑（向后兼容），cap<10 USDT 被 HARD_LIMITS 拒绝
+   - 测试：`test_logical_account_split.py` 7/7 通过
+
+3. **Paper Trading 全并行**（`agents/trading/paper_executor.py` 新建 ~340 行）
+   - 设计：与 MultiExecutor 平行运行，订阅同样 `trade_decision:*` 和 `price_tick:*`
+   - 隔离：不下任何真实订单，不查交易所，不订阅 `risk_alert` 和 `daily_hard_stop_triggered`
+   - 独立 topic：发布 `paper_execution_result`（实盘是 `execution_result`），不污染下游
+   - 持久化：`data/paper_positions.json` / `data/paper_equity.json` / `data/paper_trades.jsonl`
+   - 初始 equity：`EFFECTIVE_BALANCE_CAP` 或 1000 USDT
+   - 功能：open/close/add/reduce/SL/TP 自动触发/halt 阻塞/CostModel 一致手续费
+   - PnL 公式与实盘对齐：`gross = margin × pnl_pct × leverage`，扣 entry+exit fee
+   - 测试：`test_paper_executor.py` 9/9 通过（含 PnL 公式一致性 + topic 隔离）
+   - 交易层 Agent 数：9→10
+
+### ✅ 第五轮审计修复（2026-05-19完成）
+
+1. **订单预检全覆盖**（`executor.py` `_execute_limit_order`）
+   - 问题：限价单和限价超时 fallback 市价单未走 `precheck_order()`，OKX 侧才暴露最小张数/精度错误
+   - 修复：limit 路径（line 753-761）与 fallback 路径（line 807-815）下单前都调用 `precheck_order(symbol, side, size_usdt, price, leverage)`
+   - 5 个 `create_order` 落点全部覆盖：`_open_position`(166) / `open_position_with_plan` market(639) / limit(754) / fallback(808) / `add_to_position`(1094)
+   - 参数语义一致：所有点都传 `size_usdt`（统一风险预算下=margin），内部 `notional = size_usdt × leverage`
+
+2. **默认 pytest 干净 CI 口径**
+   - `conftest.py:5` `collect_ignore = ["test_kline.py"]`：collect 阶段跳过依赖 websockets 且只含 `async def test()` 的非测试文件
+   - `pytest.ini:5` `addopts = -m "not network"`：默认排除 network 标记的测试
+   - `test_backtest.py` / `test_indicators.py` / `test_strategy.py`：加 `@pytest.mark.network`（依赖 `data/klines.db`，被 conftest tmp_path 隔离）
+   - 默认 `python3 -m pytest -q` → 184 passed / 3 deselected / 169s
+
+3. **留尾（非阻塞）**
+   - `_get_balance()` 对 MagicMock 经 `float()` 得 1.0：仅测试替身松散，生产路径走 `BalanceAdapter.get_total()` 返回真实 float
+   - `test_event_backtest_real_data.py` 真实回测 PF=0.33：策略层瓶颈，下一阶段重点是把网格搜索推荐参数（`entry_threshold=25, rr_floor=1.8, cooldown=3, partial_tp=True`）放进 event_backtest 复验
+
+### ✅ 第六轮审计修复（2026-05-19完成）
+
+1. **test_kline.py 网络标记**（`test_kline.py`）
+   - 问题：`async def test()` 依赖 `data/klines.db`，被 `conftest.py` 的 `monkeypatch.chdir(tmp_path)` 隔离后找不到文件
+   - 修复：加 `@pytest.mark.network`，`conftest.py` 删除 `collect_ignore`（marker 已足够），默认 CI 变为 4 deselected
+
+2. **`_get_balance()` 实数校验**（`agents/trading/executor.py`）
+   - 问题：`BalanceAdapter.get_total()` 在极端情况下可能返回非实数（bool/None/inf）
+   - 修复：`import math, numbers`；`isinstance(val, bool)` 或 `not isinstance(val, numbers.Real)` 或 `not math.isfinite(result)` 时返回 `-1.0` 并记录 error 日志
+   - 测试修复：`test_executor_upgrade.py` + `test_full_pipeline.py` 中 `mock_exec.balance_adapter = None`（强制走 `fetch_balance` 路径，避免 MagicMock 触发实数校验）
+
+3. **留尾（非阻塞）**
+   - 真实回测 PF=0.33 仍待优化（策略层，非本轮范围）
+
+### ✅ 第七轮审计修复（2026-05-19完成）
+
+1. **event_backtest 权益曲线污染修复**（`event_backtest.py`）
+   - 问题：开仓信号触发时，`equity_curve.append()` 在 `_open_position()` 之后执行，导致当前 K 线的权益快照已包含下一根才入场的仓位（前视偏差）
+   - 修复：检测到入场信号后，先 `equity_curve.append()`（此时 position 仍为 None），再 `_open_position()`，最后 `continue` 跳过末尾的重复 append
+   - 影响：max_drawdown 和 Sharpe 计算结果更准确，消除权益曲线的系统性高估
+
+2. **PaperExecutor 原子写入**（`agents/trading/paper_executor.py`）
+   - 问题：`_persist_state()` 用 `open(..., 'w')` 直接覆盖，进程崩溃时可能写出半截 JSON
+   - 修复：改用 `from utils.atomic_io import atomic_write_json`（write-to-temp + rename，原子操作）
+
+3. **live_trading.py DEPRECATED 标注**（`live_trading.py`）
+   - 问题：旧入口绕过多 Agent 系统（PortfolioRiskGuard/Reviewer/PaperExecutor 等），误用风险高
+   - 修复：docstring 首行加 `DEPRECATED: 此入口绕过多 Agent 系统。生产环境请使用 run_agents.py。`
+
+4. **test_p2p3_grid_search.py 消除 PytestReturnNotNoneWarning**（`test_p2p3_grid_search.py`）
+   - 问题：`test_grid_search_trending` / `test_grid_search_choppy` / `test_grid_search_robustness` 三个测试函数返回 dict，pytest 报 `PytestReturnNotNoneWarning`
+   - 修复：删除三处 `return` 语句（assert 已足够，返回值无意义）
+   - 结果：`python3 -m pytest -q` → 184 passed / 4 deselected / 264 warnings / 229s
+
 ## 技术债务
 
 1. **R:R计算已修复**（2026-05-13）

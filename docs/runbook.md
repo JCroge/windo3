@@ -86,7 +86,30 @@ python3 test_agents_integration.py  # 多Agent集成测试
 python3 test_phase_c.py           # 研判层→交易层流水线测试
 python3 test_data_sources.py      # 研判层数据源验证（实时API）
 python3 test_p0_features.py       # P0功能测试（Reviewer/Hard Stop/Graceful Shutdown）
+python3 test_4h_rsi_decay.py      # 4h RSI 二级保护衰减
+python3 test_logical_account_split.py  # effective_balance_cap 逻辑账户拆分
+python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/TP/halt/persist/PnL）
+
+# 完整 CI 回归（默认排除 network 标记的外部数据测试）
+python3 -m pytest -q              # 184 passed / 3 deselected / ~170s
+python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
 ```
+
+> conftest.py 通过 `monkeypatch.chdir(tmp_path)` 把 `data/` 和 `logs/` 隔离到临时目录，每个测试独立。
+> `test_kline.py` 被 `collect_ignore` 跳过（连接 Binance WebSocket，DNS 不可用时会卡）。
+
+## 数据持久化文件
+
+| 文件 | 写入者 | 用途 | 备注 |
+|------|--------|------|------|
+| `data/positions.json` | ContractExecutor | 实盘持仓快照 | 重启恢复 |
+| `data/risk_state.json` | RiskManager | 峰值余额/回撤状态 | 重启不丢 |
+| `data/trade_history.json` | ReviewerAgent | 已平仓历史+策略衰减 | 缺失时空起 |
+| `data/riskguard_state.json` | PortfolioRiskGuard | 持仓追踪/价格缓存/熔断状态 | 缺失时空起 |
+| `data/paper_positions.json` | PaperExecutor | 影子持仓快照 | 缺失=从初始 equity 起 |
+| `data/paper_equity.json` | PaperExecutor | 影子账户余额 | 首次启动=EFFECTIVE_BALANCE_CAP 或 1000 |
+| `data/paper_trades.jsonl` | PaperExecutor | 影子已平仓 append-only 流水 | 与实盘 trade_history 互不影响 |
+| `data/.restart_flag` | TelegramNotifier | 远程 /restart 标记 | run_agents.py 检测后重启 |
 
 ## 环境变量
 
@@ -102,9 +125,10 @@ python3 test_p0_features.py       # P0功能测试（Reviewer/Hard Stop/Graceful
 | LEVERAGE | 杠杆倍数 | 1 | 否 |
 | MAX_TRADE_AMOUNT | 单次最大交易额(USDT) | 10 | 否 |
 | MAX_DRAWDOWN | 最大回撤比例 | 0.20 | 否 |
+| EFFECTIVE_BALANCE_CAP | 逻辑账户拆分：风控按此上限计算余额（真实余额不变）。留空=用真实余额。范围 [10, 1_000_000] | （未启用） | 否 |
 | ANTHROPIC_API_KEY | Claude API密钥 | - | 否（多Agent系统） |
 | ANTHROPIC_BASE_URL | Claude API地址（中转） | https://api.anthropic.com | 否 |
-| ANTHROPIC_MODEL | Claude模型名 | claude-sonnet-4-6 | 否 |
+| ANTHROPIC_MODEL | Claude模型名 | claude-opus-4-7 | 否 |
 | RESEARCH_INTERVAL | 研判层运行周期（秒） | 14400 (4h) | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
@@ -331,7 +355,7 @@ OKX允许的杠杆值：[1, 2, 3, 5, 10, 20]
 curl -s https://www.dorocli.cc/v1/chat/completions \
   -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
   -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"claude-opus-4-7","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ### 问题：数据库锁定

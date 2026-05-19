@@ -91,6 +91,7 @@ class RiskManager:
         """记录交易盈亏"""
         self._update_daily_reset()
         self.daily_pnl += pnl
+        self._save_state()  # 持久化，防止崩溃后绕过当日熔断
 
     def _update_daily_reset(self):
         """每日重置"""
@@ -98,23 +99,42 @@ class RiskManager:
         if today > self.last_reset_date:
             self.daily_pnl = 0.0
             self.last_reset_date = today
+            self._save_state()
 
     def _load_state(self):
-        """加载持久化状态"""
+        """加载持久化状态（peak_balance + daily_pnl + last_reset_date）"""
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
                     self.peak_balance = state.get('peak_balance', 0.0)
+                    # 加载 daily_pnl，但只有日期匹配才用（跨天则重置）
+                    saved_date_str = state.get('last_reset_date')
+                    today = datetime.now().date()
+                    if saved_date_str:
+                        try:
+                            saved_date = datetime.strptime(saved_date_str, '%Y-%m-%d').date()
+                            if saved_date == today:
+                                self.daily_pnl = state.get('daily_pnl', 0.0)
+                                self.last_reset_date = saved_date
+                            else:
+                                # 跨天，daily_pnl 自动归零
+                                self.daily_pnl = 0.0
+                                self.last_reset_date = today
+                        except ValueError:
+                            pass
             except Exception:
                 pass  # 文件损坏时使用默认值
 
     def _save_state(self):
-        """保存持久化状态"""
+        """保存持久化状态（peak_balance + daily_pnl + last_reset_date），原子写入"""
         try:
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            with open(self.state_file, 'w') as f:
-                json.dump({'peak_balance': self.peak_balance}, f)
+            from utils.atomic_io import atomic_write_json
+            atomic_write_json(self.state_file, {
+                'peak_balance': self.peak_balance,
+                'daily_pnl': self.daily_pnl,
+                'last_reset_date': self.last_reset_date.strftime('%Y-%m-%d'),
+            })
         except Exception:
             pass  # 保存失败不影响交易
 

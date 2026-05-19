@@ -26,7 +26,21 @@ class SymbolRouter(BaseAgent):
     async def _handle_research_result(self, payload: dict):
         selected = payload.get('selected', [])
         if not selected:
-            self.logger.warning("[路由] 研判未选出任何标的")
+            self.logger.warning(
+                f"[路由] 研判未选出任何标的，保留当前活跃标的: {self._active_symbols}"
+            )
+            # 通知运营者，避免无声失败
+            await self.publish("telegram_alert", {
+                "level": "warning",
+                "message": f"研判层全拒：本轮未选出任何标的，继续监控旧标的 {self._active_symbols}",
+            })
+            await self.publish("symbol_update", {
+                "active_symbols": self._active_symbols,
+                "added": [],
+                "removed": [],
+                "unchanged": True,
+                "reason": "no_selected_symbols",
+            })
             return
 
         now = time.time()

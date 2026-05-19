@@ -332,6 +332,7 @@ CREATE TABLE klines (
 | `trading/tech_analyst.py` | 交易 | 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险） | Claude综合研判 |
 | `trading/judge.py` | 交易 | 精确交易计划（统一风险预算/入场区间/止盈止损/动态杠杆1-20x/仓位/RSI极端值保护/回调入场） | Claude最终裁决 |
 | `trading/executor.py` | 交易 | 多标的交易执行 | 无 |
+| `trading/paper_executor.py` | 交易 | 影子账户（与实盘并行，订阅同样 trade_decision/price_tick，独立余额持久化到 data/paper_*） | 无 |
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
 | `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |
 | `trading/telegram_notifier.py` | 交易 | Telegram实时告警+每日摘要 | 无 |
@@ -356,6 +357,7 @@ CREATE TABLE klines (
 - `tech_analysis:{symbol}`：9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险）（TechAnalyst → Judge）
 - `trade_decision:{symbol}`：精确交易计划（入场区间/止盈止损/杠杆/仓位）（Judge → Executor）
 - `execution_result:{symbol}`：执行结果（Executor → RiskGuard, Reviewer, TelegramNotifier）
+- `paper_execution_result:{symbol}`：影子账户执行结果（PaperExecutor → 仅记账，不触发风控）
 - `risk_alert`：风控警报（RiskGuard → broadcast，Executor + TelegramNotifier响应）
 - `daily_hard_stop_triggered`：熔断信号（Reviewer → broadcast，Executor + RiskGuard + TelegramNotifier响应）
 - `strategy_review`：策略复盘报告（Reviewer → TelegramNotifier）
@@ -534,11 +536,17 @@ CREATE TABLE klines (
 - 持仓监控补充：DataCollector自动将持仓标的纳入监控（即使不在SymbolRouter活跃列表）
 - 交易层Agent数量：7→9（新增PositionAnalyst + BehavioralCritic）
 
-### Phase 7: 待开发
-- 资金费率API修复（`fetchFundingRate() is only valid for swap markets`）
+### ✅ Phase 7: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
+- **4h RSI 二级保护**（`judge.py _compute_score` 末尾）：1h RSI 未触发硬cap但 4h RSI ≥70/≤30 时 score×0.5。根因 ZEC 事故（1h RSI=64 但 4h=73.9 仍开多 20x→-135 USDT）
+- **逻辑账户拆分**（`utils/config_loader.py` + `judge.py _calc_risk_budget`）：新增 `EFFECTIVE_BALANCE_CAP` 环境变量，真实余额 6020 USDT 但风控按 1000 USDT 计算，单笔 max_loss 250→50 与 Daily Hard Stop -50 对齐。cap=None 时等价旧逻辑
+- **Paper Trading 全并行**（`agents/trading/paper_executor.py` 新建 ~340 行）：与 MultiExecutor 并行运行，订阅同 `trade_decision:*` 和 `price_tick:*`，独立 in-memory 余额持久化到 `data/paper_*`，发布独立 topic `paper_execution_result` 不污染实盘
+- **交易层Agent数量**：9→10（新增 PaperExecutor）
+
+### Phase 8: 待开发
 - Predictor（趋势预测Agent）
-- Paper Trading模式
 - 更多数据源接入（链上大额转账、清算数据）
+- 参数 grid search（基于 event_backtest）
+- P3-R 验收测试体系
 
 ## 性能考虑
 

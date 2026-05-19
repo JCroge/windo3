@@ -17,6 +17,7 @@ data/*.json
 
 # Logs
 logs/*.log
+logs/*.jsonl
 
 # IDE
 .vscode/

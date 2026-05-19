@@ -121,6 +121,8 @@ class MultiTechAnalyst(BaseAgent):
                 "ma_slow": float(latest.get('ma_slow', 0)),
             },
             "llm_analysis": llm_analysis,
+            # 透传数据质量信息给下游 Judge 做降级判断
+            "data_quality": payload.get('data_quality', {}),
         }
 
         await self.publish("tech_analysis", result, symbol=symbol)
