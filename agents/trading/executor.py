@@ -398,20 +398,40 @@ class MultiExecutor(BaseAgent):
         positions = self.executor.get_all_positions()
         for symbol in list(positions.keys()):
             trigger = await asyncio.to_thread(self.executor.check_stop_loss_take_profit, symbol)
-            if trigger:
-                if trigger == 'price_fetch_failed':
-                    self.logger.error(f"[兜底] {symbol} 价格获取连续失败，强制平仓保护资金!")
-                else:
-                    self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
+            if not trigger:
+                continue
+
+            if trigger == 'price_fetch_failed':
+                self.logger.error(f"[兜底] {symbol} 价格获取连续失败，强制平仓保护资金!")
                 pos = self.executor.positions.get(symbol)
                 if pos and pos.get('sl_order_id'):
                     self.executor.cancel_order(symbol, pos['sl_order_id'])
                 result = self.executor.close_position(symbol)
                 if result:
                     await self.publish("execution_result", {
-                        "status": "force_closed",
-                        "action": "close",
-                        "symbol": symbol,
-                        "reason": trigger,
-                        "result": result,
+                        "status": "force_closed", "action": "close",
+                        "symbol": symbol, "reason": trigger, "result": result,
+                    }, symbol=symbol)
+
+            elif trigger in ('partial_tp_1', 'partial_tp_2'):
+                pct = 0.5 if trigger == 'partial_tp_1' else 0.25
+                self.logger.info(f"[Trailing] {symbol} {trigger}，减仓{int(pct*100)}%")
+                result = await asyncio.to_thread(self.executor.reduce_position, symbol, pct)
+                if result:
+                    await self.publish("execution_result", {
+                        "status": "risk_reduced", "action": "close",
+                        "symbol": symbol, "reason": trigger,
+                        "result": result, "reduce_pct": pct,
+                    }, symbol=symbol)
+
+            else:
+                self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
+                pos = self.executor.positions.get(symbol)
+                if pos and pos.get('sl_order_id'):
+                    self.executor.cancel_order(symbol, pos['sl_order_id'])
+                result = self.executor.close_position(symbol)
+                if result:
+                    await self.publish("execution_result", {
+                        "status": "force_closed", "action": "close",
+                        "symbol": symbol, "reason": trigger, "result": result,
                     }, symbol=symbol)

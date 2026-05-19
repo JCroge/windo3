@@ -869,6 +869,7 @@ class MultiJudge(BaseAgent):
             "funding_cost": round(budget['funding_cost_usdt'], 3),
             "est_hold_hours": budget['est_hold_hours'],
             "max_holding_hours": 24,
+            "atr_pct": momentum.get('atr_pct', 0.02),
         }
 
     def _calc_stop_loss(self, levels: dict, price: float, is_long: bool, trend: dict = None, momentum: dict = None) -> float:

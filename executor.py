@@ -69,6 +69,7 @@ class ContractExecutor:
         # 止损检查连续失败计数器（key=symbol）
         self._sl_check_failures = {}
         self._sl_max_failures = 3  # 连续失败N次后强制平仓
+        self._last_sl_update = {}  # {symbol: timestamp} SL更新节流
 
         self.logger.info(f"杠杆设置: {leverage}x")
 
@@ -283,6 +284,18 @@ class ContractExecutor:
 
         self._sl_check_failures[symbol] = 0
 
+        # 更新最高/最低价（用于trailing计算）
+        if position['side'] == 'long':
+            position['highest_price'] = max(position.get('highest_price', current_price), current_price)
+        else:
+            position['lowest_price'] = min(position.get('lowest_price', current_price), current_price)
+
+        # 分批止盈 + 移动止损逻辑
+        trailing_result = self._update_trailing(symbol, position, current_price)
+        if trailing_result:
+            return trailing_result
+
+        # 常规SL/TP检查
         if position['side'] == 'long' and current_price <= position['stop_loss']:
             return 'stop_loss'
         if position['side'] == 'short' and current_price >= position['stop_loss']:
@@ -294,6 +307,101 @@ class ContractExecutor:
             return 'take_profit'
 
         return None
+
+    def _update_trailing(self, symbol: str, position: dict, price: float) -> Optional[str]:
+        """分批止盈 + 移动止损（Break-Even + Trailing）
+
+        返回 'partial_tp_1'/'partial_tp_2' 触发分批平仓，None 表示无动作
+        SL更新直接修改position dict（棘轮，只向有利方向移动）
+        """
+        side = position['side']
+        entry = position['entry_price']
+        original_sl = position.get('original_sl', position['stop_loss'])
+        R = abs(entry - original_sl) / entry  # 1R = 止损距离
+        if R <= 0:
+            return None
+
+        tp_levels = position.get('take_profit_levels', [])
+        tp_filled = position.get('tp_filled', 0)
+        atr_pct = position.get('atr_pct', 0.02)
+        is_long = (side == 'long')
+
+        # 当前浮盈（以R为单位）
+        if is_long:
+            profit_r = (price - entry) / entry / R
+        else:
+            profit_r = (entry - price) / entry / R
+
+        # --- 分批止盈 ---
+        # TP1：浮盈≥1.5R（或价格到达tp_levels[0]）→ 平50%
+        if tp_filled == 0 and tp_levels:
+            tp1 = tp_levels[0]
+            if (is_long and price >= tp1) or (not is_long and price <= tp1):
+                position['tp_filled'] = 1
+                # SL移到 entry + 0.5R（锁定部分利润）
+                new_sl = entry * (1 + R * 0.5) if is_long else entry * (1 - R * 0.5)
+                self._move_sl(symbol, position, new_sl)
+                self._save_positions()
+                self.logger.info(f"[Trailing] {symbol} TP1触发，平50%，SL移至{new_sl:.4f}")
+                return 'partial_tp_1'
+
+        # TP2：价格到达tp_levels[1] → 再平25%
+        if tp_filled == 1 and len(tp_levels) >= 2:
+            tp2 = tp_levels[1]
+            if (is_long and price >= tp2) or (not is_long and price <= tp2):
+                position['tp_filled'] = 2
+                # SL移到 entry + 1.5R
+                new_sl = entry * (1 + R * 1.5) if is_long else entry * (1 - R * 1.5)
+                self._move_sl(symbol, position, new_sl)
+                self._save_positions()
+                self.logger.info(f"[Trailing] {symbol} TP2触发，再平25%，SL移至{new_sl:.4f}")
+                return 'partial_tp_2'
+
+        # --- Break-Even：浮盈≥1R → SL移到保本 ---
+        fee_pct = 0.002  # 开平各0.1%
+        if profit_r >= 1.0 and tp_filled == 0:
+            be_sl = entry * (1 + fee_pct) if is_long else entry * (1 - fee_pct)
+            current_sl = position['stop_loss']
+            if (is_long and be_sl > current_sl) or (not is_long and be_sl < current_sl):
+                self._move_sl(symbol, position, be_sl)
+                self.logger.info(f"[Trailing] {symbol} 保本线激活，SL移至{be_sl:.4f}")
+
+        # --- Trailing Stop（TP1触发后激活）---
+        if tp_filled >= 1:
+            trailing_dist = max(atr_pct, R * 0.5)
+            if atr_pct > 0.03:  # 高波动标的放宽
+                trailing_dist = max(atr_pct * 1.2, R * 0.7)
+
+            if is_long:
+                new_sl = position['highest_price'] * (1 - trailing_dist)
+                if new_sl > position['stop_loss']:
+                    self._move_sl(symbol, position, new_sl)
+            else:
+                new_sl = position['lowest_price'] * (1 + trailing_dist)
+                if new_sl < position['stop_loss']:
+                    self._move_sl(symbol, position, new_sl)
+
+        return None
+
+    def _move_sl(self, symbol: str, position: dict, new_sl: float):
+        """更新SL：修改本地dict + 节流更新交易所条件单（变动>0.3%且间隔>30s）"""
+        old_sl = position['stop_loss']
+        change_pct = abs(new_sl - old_sl) / old_sl if old_sl > 0 else 1.0
+        position['stop_loss'] = new_sl
+
+        now = time.time()
+        last_update = self._last_sl_update.get(symbol, 0)
+        if change_pct >= 0.003 and (now - last_update) >= 30:
+            # 取消旧SL条件单，挂新的
+            if position.get('sl_order_id'):
+                self.cancel_order(symbol, position['sl_order_id'])
+                position['sl_order_id'] = None
+            new_order_id = self.place_stop_loss_order(
+                symbol, position['side'], new_sl, position['amount']
+            )
+            if new_order_id:
+                position['sl_order_id'] = new_order_id
+            self._last_sl_update[symbol] = now
 
     def _fetch_price_robust(self, symbol: str) -> Optional[float]:
         """多源价格获取：ticker → orderbook mid → 短暂重试"""
@@ -472,6 +580,12 @@ class ContractExecutor:
                 'take_profit_levels': take_profit,
                 'sl_order_id': None,
                 'order_type': order_type,
+                'original_sl': stop_loss,
+                'highest_price': fill_price,
+                'lowest_price': fill_price,
+                'tp_filled': 0,
+                'atr_pct': plan.get('atr_pct', 0.02),
+                'original_amount': size_usdt,
             }
             self.positions[symbol] = position
             self._save_positions()
