@@ -9,6 +9,8 @@ import time
 import ccxt
 from agents.base import BaseAgent
 from utils.symbol import to_internal
+from utils.archetype_cooldown import ArchetypeCooldown
+from utils.candidate_ranker import CandidateRanker
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -66,18 +68,30 @@ class MultiJudge(BaseAgent):
         self._recent_win_rate = None
         self._recent_profit_factor = None
         self._total_completed_trades = 0
+        self._recent_wins = 0  # Reviewer 报告的近期胜场数
         # 历史交易不足时不应用 EV 门（让系统先积累样本）
         self._min_trades_for_ev_gate = config.get('min_trades_for_ev_gate', 10) if config else 10
         # 降级胜率：P2-O 调稳 0.55 → 0.52，让启动期 EV 门更严
         self._fallback_win_rate = config.get('fallback_win_rate', 0.52) if config else 0.52
         # EV 阈值：P2-O 调稳 0 → 0.05，要求 EV 至少 +0.05 USDT 才入场
         self._ev_min_threshold = config.get('ev_min_threshold', 0.05) if config else 0.05
+        # ═══ RQ-01: 小样本 EV 保守化（Bayesian prior）═══
+        self._ev_prior_wins = config.get('ev_prior_wins', 2) if config else 2
+        self._ev_prior_total = config.get('ev_prior_total', 5) if config else 5
+        # 强信号豁免阈值：score >= 此值时 EV 门放宽
+        self._ev_strong_signal_threshold = config.get('ev_strong_signal_threshold', 70) if config else 70
 
         # ═══ P2-O: 最大并发持仓上限 ═══
         # 启动期保守：余额 ~100 USDT 时最多 3 个并发持仓，单仓 ~10 USDT margin
         # 后续胜率验证后可在 config 中放宽
         self._max_concurrent_positions = config.get('max_concurrent_positions', 3) if config else 3
         self._open_positions = set()  # 当前已知开仓的 symbol 集合
+        # 与 Executor/PaperExecutor 保持同一实盘开仓门槛，避免 Judge 发布下游必然拒绝的开仓。
+        self._min_confidence = config.get('min_confidence', 60) if config else 60
+        # 弱信号只允许进入观察/回调队列，不允许回调命中后自动抬到 60 分实盘开仓。
+        self._min_deferred_signal_score = config.get('min_deferred_signal_score', 45) if config else 45
+        # 流动性评分为 0 时，只允许极强信号继续；否则容易被薄盘口噪音和滑点吞掉。
+        self._min_liquidity_score_for_weak_signal = config.get('min_liquidity_score_for_weak_signal', 1) if config else 1
 
         # ═══ 逻辑账户拆分（2026-05-19）═══
         # None=用真实余额；设值则风险预算用 min(real_balance, cap)
@@ -85,6 +99,26 @@ class MultiJudge(BaseAgent):
         # 等价于：max_loss 从 6020×5%=301 USDT 降到 1000×5%=50 USDT（与 Daily Hard Stop -50 对齐）
         self._effective_balance_cap = config.get('effective_balance_cap') if config else None
         self._balance_adapter = None
+
+        # ═══ RQ-06: 信号原型级 cooldown ═══
+        cooldown_enabled = config.get('archetype_cooldown_enabled', True) if config else True
+        self._archetype_cooldown = ArchetypeCooldown(enabled=cooldown_enabled, logger=self.logger)
+
+        # ═══ RQ-03: 候选排序 ═══
+        ranking_enabled = config.get('ranking_enabled', True) if config else True
+        self._candidate_ranker = CandidateRanker(
+            max_slots=self._max_concurrent_positions,
+            enabled=ranking_enabled,
+            logger=self.logger,
+        )
+
+        # ═══ RQ-15M: 15m 入场时机确认 ═══
+        self._15m_enabled = config.get('entry_timing_15m_enabled', True) if config else True
+        self._15m_required = config.get('entry_timing_15m_required', True) if config else True
+        self._15m_neutral_allows_strong = config.get('entry_timing_15m_neutral_allows_strong_signal', True) if config else True
+        self._15m_strong_score_threshold = config.get('entry_timing_15m_strong_score_threshold', 70) if config else 70
+        self._15m_defer_on_block = config.get('entry_timing_15m_defer_on_block', True) if config else True
+        self._15m_timeout_hours = config.get('entry_timing_15m_timeout_hours', 4) if config else 4
 
     def _get_state(self, symbol: str) -> dict:
         if symbol not in self._symbol_state:
@@ -103,6 +137,65 @@ class MultiJudge(BaseAgent):
             }
         return self._symbol_state[symbol]
 
+    # ── P1-6: State Persistence ────────────────────────────────────────────
+
+    _STATE_PATH = "data/judge_state.json"
+    _state_dirty = False
+
+    def _persist_state(self):
+        """原子持久化关键风险状态（deferred_entry, cooldown timestamps, sl_timestamps）"""
+        if not self._state_dirty:
+            return
+        try:
+            from utils.atomic_io import atomic_write_json
+            persist = {}
+            for sym, st in self._symbol_state.items():
+                persist[sym] = {
+                    "last_force_close_time": st.get("last_force_close_time", 0),
+                    "last_open_time": st.get("last_open_time", 0),
+                    "sl_timestamps": st.get("sl_timestamps", []),
+                    "deferred_entry": st.get("deferred_entry"),
+                }
+            atomic_write_json(self._STATE_PATH, persist)
+            self._state_dirty = False
+        except Exception as e:
+            self.logger.warning(f"[Judge] state持久化失败: {e}")
+
+    def _load_persisted_state(self):
+        """启动时恢复关键风险状态，清理过期条目"""
+        import json
+        try:
+            with open(self._STATE_PATH, 'r') as f:
+                saved = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        except Exception as e:
+            self.logger.warning(f"[Judge] state加载失败: {e}")
+            return
+
+        now = time.time()
+        restored = 0
+        for sym, data in saved.items():
+            state = self._get_state(sym)
+            lfc = data.get("last_force_close_time", 0)
+            if lfc and now - lfc < 7200:
+                state["last_force_close_time"] = lfc
+            lot = data.get("last_open_time", 0)
+            if lot and now - lot < 600:
+                state["last_open_time"] = lot
+            sl_ts = data.get("sl_timestamps", [])
+            cutoff = now - 4 * 3600
+            state["sl_timestamps"] = [t for t in sl_ts if t > cutoff]
+            deferred = data.get("deferred_entry")
+            if deferred:
+                created = deferred.get("created_at", 0)
+                timeout_h = deferred.get("timeout_hours", 4)
+                if now - created < timeout_h * 3600:
+                    state["deferred_entry"] = deferred
+                    restored += 1
+        if restored:
+            self.logger.info(f"[Judge] 恢复 {restored} 个 deferred_entry")
+
     async def setup(self):
         self.init_llm()
         exchange_id = self.config.get('exchange', 'okx')
@@ -116,7 +209,38 @@ class MultiJudge(BaseAgent):
             ex_config['apiKey'] = os.getenv('BINANCE_API_KEY')
             ex_config['secret'] = os.getenv('BINANCE_SECRET')
             self.exchange = ccxt.binance(ex_config)
+
+        # 从 positions.json 恢复 _open_positions，防止重启后突破并发上限
+        try:
+            import json
+            with open('data/positions.json', 'r') as f:
+                saved_positions = json.load(f)
+            if saved_positions:
+                for sym in saved_positions:
+                    norm = sym.replace('-SWAP', '')
+                    self._open_positions.add(norm)
+                self.logger.info(
+                    f"[Judge] 从 positions.json 恢复 {len(self._open_positions)} 个持仓: "
+                    f"{sorted(self._open_positions)}"
+                )
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        except Exception as e:
+            self.logger.warning(f"[Judge] positions.json 恢复失败: {e}")
+
+        self._load_persisted_state()
+
         self.logger.info("精确决策裁判Agent就绪")
+        # RQ-09: 启动日志打印关键阈值
+        self.logger.info(
+            f"[Judge Config] min_confidence={self._min_confidence} "
+            f"ev_prior={self._ev_prior_wins}/{self._ev_prior_total} "
+            f"ev_threshold={self._ev_min_threshold} "
+            f"strong_signal={self._ev_strong_signal_threshold} "
+            f"cooldown={self._archetype_cooldown.enabled} "
+            f"ranking={self._candidate_ranker.enabled} "
+            f"max_positions={self._max_concurrent_positions}"
+        )
         try:
             from utils.balance_adapter import BalanceAdapter
             self._balance_adapter = BalanceAdapter(self.exchange, ttl=10.0, logger=self.logger)
@@ -142,11 +266,13 @@ class MultiJudge(BaseAgent):
             self._recent_win_rate = recent.get('win_rate')
             self._recent_profit_factor = recent.get('profit_factor')
             self._total_completed_trades = payload.get('total_trades', 0)
+            self._recent_wins = recent.get('winning_trades', 0)
             if self._recent_win_rate is not None:
                 self.logger.info(
                     f"[Judge] 接收策略复盘: win_rate={self._recent_win_rate:.1%} "
                     f"profit_factor={self._recent_profit_factor:.2f} "
-                    f"total_trades={self._total_completed_trades}"
+                    f"total_trades={self._total_completed_trades} "
+                    f"wins={self._recent_wins}"
                 )
             return
 
@@ -183,6 +309,16 @@ class MultiJudge(BaseAgent):
                 elif status == 'executed' and action == 'close':
                     self._open_positions.discard(symbol)
                     self.logger.info(f"[Judge] {symbol} 主动平仓 (active={len(self._open_positions)})")
+
+                # RQ-06: 记录交易结果到原型 cooldown
+                result = payload.get('result', {})
+                attribution = result.get('attribution') or payload.get('attribution', {})
+                pnl = result.get('pnl', 0)
+                if pnl != 0 and attribution and status in ('executed', 'force_closed', 'closed_externally'):
+                    archetype = self._archetype_cooldown.classify(attribution)
+                    self._archetype_cooldown.record_result(archetype, pnl)
+                self._state_dirty = True
+                self._persist_state()
             return
 
         if msg['type'] != 'tech_analysis':
@@ -214,6 +350,8 @@ class MultiJudge(BaseAgent):
         state["last_decision_time"] = now
 
         await self._make_decision(symbol, msg['payload'])
+        self._state_dirty = True
+        self._persist_state()
 
     async def _make_decision(self, symbol: str, tech: dict):
         await self._update_balance()
@@ -284,10 +422,108 @@ class MultiJudge(BaseAgent):
             else:
                 deferred['highest_since'] = max(deferred['highest_since'], current_price)
 
+            # RQ-15M-04: deferred_15m_confirmation 类型 — 等待 15m 转向而非价格回调
+            if deferred.get('entry_type') == 'deferred_15m_confirmation':
+                timeout_hours = deferred.get('timeout_hours', self._15m_timeout_hours)
+                if age_seconds > timeout_hours * 3600:
+                    self.logger.info(f"[Judge] {symbol} 15m确认等待超时({age_seconds/3600:.1f}h/{timeout_hours}h)，放弃")
+                    state['deferred_entry'] = None
+                    return
+                # 检查 15m 是否已转为顺向/中性
+                timing_15m_fail = self._check_15m_deferred_reconfirm(tech, def_action)
+                if timing_15m_fail:
+                    return  # 静默等待，不发布 hold（避免刷屏）
+                # 15m 已顺向，重新走 plan → 风控 → 发布
+                self.logger.info(f"[Judge] {symbol} 15m已转向确认，重新构建plan")
+                reconfirm_fail = self._reconfirm_deferred(
+                    symbol, tech, def_action, deferred.get('signal_score', 50),
+                    context='deferred_15m_confirmation'
+                )
+                if reconfirm_fail:
+                    self.logger.info(f"[Judge] {symbol} 15m确认后HTF二次确认失败: {reconfirm_fail}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, reconfirm_fail, [reconfirm_fail])
+                    return
+                plan = self._build_plan(tech, def_action, current_price, 60, deferred.get('signal_score', 50))
+                if plan['size_usdt'] < 1.0:
+                    self.logger.info(f"[Judge] {symbol} 15m确认入场余额不足，放弃")
+                    state['deferred_entry'] = None
+                    return
+                new_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
+                if new_rr < 1.2:
+                    self.logger.info(f"[Judge] {symbol} 15m确认入场R:R={new_rr:.2f}<1.2，放弃")
+                    state['deferred_entry'] = None
+                    return
+                if not self._check_expected_value(symbol, plan, deferred.get('signal_score', 50)):
+                    self.logger.info(f"[Judge] {symbol} 15m确认入场EV<0，放弃")
+                    state['deferred_entry'] = None
+                    return
+                # P1-2: 统一走 open quality gate
+                reject_reason = self._open_quality_rejection(
+                    symbol, tech, def_action, deferred.get('signal_score', 50),
+                    confidence=60, context='deferred_15m_confirmation'
+                )
+                if reject_reason:
+                    self.logger.info(f"[Judge] {symbol} 15m确认入场被质量门拦截: {reject_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, reject_reason, [reject_reason])
+                    return
+                plan['order_type'] = 'market'
+                plan['entry_type'] = 'deferred_15m_confirmation'
+                # P1-2: 统一构建 attribution
+                attribution = self._build_attribution(
+                    tech, def_action, deferred.get('signal_score', 50),
+                    plan, None, 'deferred_15m_confirmation'
+                )
+                attribution['tf_15m_wait_seconds'] = int(age_seconds)
+                plan['attribution'] = attribution
+                state['deferred_entry'] = None
+                state['last_open_time'] = time.time()
+                decision = {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": def_action, "confidence": 60,
+                    "plan": plan, "size_pct": 1.0,
+                    "reasoning": f"15m确认入场：等待{age_seconds/60:.0f}min后15m转向确认",
+                    "key_factors": ["deferred_15m_confirmed"],
+                    "risk_warnings": [],
+                    "entry_type": "deferred_15m_confirmation",
+                    "attribution": attribution,
+                }
+                await self.publish("trade_decision", decision, symbol=symbol)
+                return
+
             pullback_hit = (is_long and current_price <= target) or \
                            (not is_long and current_price >= target)
             if pullback_hit:
                 self.logger.info(f"[Judge] {symbol} 回调到位 price={current_price:.4f} target={target:.4f}，重新构建plan")
+                # RQ-02: 二次确认 — HTF/趋势/流动性
+                reconfirm_fail = self._reconfirm_deferred(
+                    symbol, tech, def_action, deferred.get('signal_score', 50),
+                    context='deferred_pullback'
+                )
+                if reconfirm_fail:
+                    self.logger.info(f"[Judge] {symbol} 回调入场二次确认失败: {reconfirm_fail}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, reconfirm_fail, [reconfirm_fail])
+                    return
+                # RQ-15M-05: deferred 触发时 15m 二次确认
+                timing_15m_fail = self._check_15m_deferred_reconfirm(tech, def_action)
+                if timing_15m_fail:
+                    self.logger.info(f"[Judge] {symbol} 回调入场15m确认失败: {timing_15m_fail}")
+                    # 不清除 deferred，保留等待 15m 转向
+                    await self._publish_hold(symbol, timing_15m_fail, [timing_15m_fail])
+                    return
+                # RSI入场禁令：deferred路径同样适用
+                if def_action == 'open_short' and rsi <= 30:
+                    self.logger.info(f"[Judge] {symbol} 回调入场时RSI={rsi:.0f}<=30超卖，禁止做空")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, f"RSI={rsi:.0f}超卖禁止做空", [f"RSI={rsi:.0f}超卖"])
+                    return
+                if def_action == 'open_long' and rsi >= 70:
+                    self.logger.info(f"[Judge] {symbol} 回调入场时RSI={rsi:.0f}>=70超买，禁止做多")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, f"RSI={rsi:.0f}超买禁止做多", [f"RSI={rsi:.0f}超买"])
+                    return
                 plan = self._build_plan(tech, def_action, current_price, 60, deferred.get('signal_score', 50))
                 if plan['size_usdt'] < 1.0:
                     self.logger.info(f"[Judge] {symbol} 回调入场时余额不足，放弃")
@@ -298,12 +534,22 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} 回调入场重算R:R={new_rr:.2f}<1.2，放弃")
                     state['deferred_entry'] = None
                     return
+                reject_reason = self._open_quality_rejection(
+                    symbol, tech, def_action, deferred.get('signal_score', 50),
+                    confidence=60, context='deferred_pullback'
+                )
+                if reject_reason:
+                    self.logger.info(f"[Judge] {symbol} 回调入场被质量门拦截: {reject_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, reject_reason, [reject_reason])
+                    return
                 # EV 门（回调触发同样适用）
                 if not self._check_expected_value(symbol, plan, deferred.get('signal_score', 50)):
                     self.logger.info(f"[Judge] {symbol} 回调入场 EV<0，放弃")
                     state['deferred_entry'] = None
                     return
                 plan['order_type'] = 'limit'
+                plan['entry_type'] = 'deferred_pullback'
                 state['deferred_entry'] = None
                 state['last_open_time'] = time.time()
                 decision = {
@@ -313,6 +559,7 @@ class MultiJudge(BaseAgent):
                     "reasoning": f"回调入场触发：目标价{target:.4f}达到，R:R={new_rr:.2f}",
                     "key_factors": ["deferred_pullback_filled"],
                     "risk_warnings": [],
+                    "entry_type": "deferred_pullback",
                 }
                 await self.publish("trade_decision", decision, symbol=symbol)
                 return
@@ -324,18 +571,61 @@ class MultiJudge(BaseAgent):
                 move_pct = (signal_price - current_price) / signal_price
 
             if move_pct > 0.015 and deferred.get('chase_eligible'):
+                # RQ-02: 追价入场二次确认
+                reconfirm_fail = self._reconfirm_deferred(
+                    symbol, tech, def_action, deferred.get('signal_score', 50),
+                    context='deferred_chase'
+                )
+                if reconfirm_fail:
+                    self.logger.info(f"[Judge] {symbol} 追价入场二次确认失败: {reconfirm_fail}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, reconfirm_fail, [reconfirm_fail])
+                    return
+                # RQ-15M-05: 追价入场 15m 确认
+                timing_15m_fail = self._check_15m_deferred_reconfirm(tech, def_action)
+                if timing_15m_fail:
+                    self.logger.info(f"[Judge] {symbol} 追价入场15m确认失败: {timing_15m_fail}")
+                    await self._publish_hold(symbol, timing_15m_fail, [timing_15m_fail])
+                    return
+                # RSI入场禁令：chase路径同样适用
+                if def_action == 'open_short' and rsi <= 30:
+                    self.logger.info(f"[Judge] {symbol} 追价入场时RSI={rsi:.0f}<=30超卖，禁止做空")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, f"RSI={rsi:.0f}超卖禁止做空", [f"RSI={rsi:.0f}超卖"])
+                    return
+                if def_action == 'open_long' and rsi >= 70:
+                    self.logger.info(f"[Judge] {symbol} 追价入场时RSI={rsi:.0f}>=70超买，禁止做多")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, f"RSI={rsi:.0f}超买禁止做多", [f"RSI={rsi:.0f}超买"])
+                    return
                 plan = self._build_plan(tech, def_action, current_price, 60, deferred.get('signal_score', 50))
                 plan['size_usdt'] = round(plan['size_usdt'] * 0.6, 2)
                 if plan['size_usdt'] < 1.0:
                     self.logger.info(f"[Judge] {symbol} 追价入场时余额不足，放弃")
                     state['deferred_entry'] = None
                     return
+                reject_reason = self._open_quality_rejection(
+                    symbol, tech, def_action, deferred.get('signal_score', 50),
+                    confidence=60, context='deferred_chase'
+                )
+                if reject_reason:
+                    self.logger.info(f"[Judge] {symbol} 追价入场被质量门拦截: {reject_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, reject_reason, [reject_reason])
+                    return
                 # EV 门（追价同样适用——价格已移动 R:R 通常更差）
                 if not self._check_expected_value(symbol, plan, deferred.get('signal_score', 50)):
                     self.logger.info(f"[Judge] {symbol} 追价入场 EV<0，放弃")
                     state['deferred_entry'] = None
                     return
+                # RQ-02: chase 有效 RR 约束
+                chase_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
+                if chase_rr < 1.5:
+                    self.logger.info(f"[Judge] {symbol} 追价入场 R:R={chase_rr:.2f}<1.5，放弃")
+                    state['deferred_entry'] = None
+                    return
                 plan['order_type'] = 'market'
+                plan['entry_type'] = 'deferred_chase'
                 state['deferred_entry'] = None
                 state['last_open_time'] = time.time()
                 self.logger.info(f"[Judge] {symbol} 价格已移动{move_pct:.1%}无回调，追价入场（仓位60%）")
@@ -343,9 +633,10 @@ class MultiJudge(BaseAgent):
                     "symbol": symbol, "timestamp": time.time(),
                     "action": def_action, "confidence": 60,
                     "plan": plan, "size_pct": 0.6,
-                    "reasoning": f"追价入场：价格移动{move_pct:.1%}无回调，缩仓60%补偿",
+                    "reasoning": f"追价入场：价格移动{move_pct:.1%}无回调，R:R={chase_rr:.2f}，缩仓60%补偿",
                     "key_factors": ["chase_entry_no_pullback"],
-                    "risk_warnings": ["R:R<1.5, 仓位已缩小"],
+                    "risk_warnings": [f"chase R:R={chase_rr:.2f}"],
+                    "entry_type": "deferred_chase",
                 }
                 await self.publish("trade_decision", decision, symbol=symbol)
                 return
@@ -529,6 +820,23 @@ class MultiJudge(BaseAgent):
                     self.logger.warning(f"[Judge] {symbol} rule_signal={action}但LLM建议反向{llm_action}，强冲突衰减60%，confidence={final_conf}")
 
                 if final_action in ('open_long', 'open_short'):
+                    reject_reason = self._open_quality_rejection(
+                        symbol, tech, final_action, score, final_conf,
+                        context='live_open'
+                    )
+                    if reject_reason:
+                        self.logger.info(f"[Judge] {symbol} 实盘开仓质量门拦截: {reject_reason}")
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": reject_reason,
+                            "key_factors": llm_result.get('key_factors', []),
+                            "risk_warnings": [reject_reason],
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
                     # RSI超买/超卖硬性入场禁令：不追高不追低，标记待回调
                     rsi = tech.get('momentum', {}).get('rsi', 50)
                     if final_action == 'open_long' and rsi >= 70:
@@ -685,6 +993,82 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
+                    # RQ-07: 确定 entry_type
+                    if rule.get('entry_long') or rule.get('entry_short'):
+                        entry_type = 'rule_signal'
+                    elif rule.get('ma_aligned_long') or rule.get('ma_aligned_short'):
+                        entry_type = 'ma_aligned'
+                    else:
+                        entry_type = 'llm_driven'
+                    plan['entry_type'] = entry_type
+
+                    # ═══ RQ-15M-03/04: 15m 入场时机过滤（在确定开仓意图后、发布前）═══
+                    timing_allowed, timing_reason, timing_defer = self._check_15m_entry_timing(
+                        tech, final_action, score
+                    )
+                    if not timing_allowed:
+                        entry_timing = tech.get('entry_timing', {})
+                        self.logger.info(
+                            f"[Judge] {symbol} 15m入场过滤拦截: action={final_action} "
+                            f"score={score:.0f} 15m_bias={entry_timing.get('tf_15m_bias')} "
+                            f"15m_rsi={entry_timing.get('tf_15m_rsi')} "
+                            f"15m_closes={entry_timing.get('tf_15m_recent_closes')} "
+                            f"reason={timing_reason} defer={timing_defer}"
+                        )
+                        if timing_defer:
+                            # 动态超时：信号类型决定等待时长
+                            if entry_type == 'rule_signal' and self._has_directional_confirmation(tech, final_action):
+                                defer_timeout = 6
+                            elif entry_type == 'ma_aligned' and self._has_directional_confirmation(tech, final_action):
+                                defer_timeout = 4
+                            else:
+                                defer_timeout = self._15m_timeout_hours
+                            state['deferred_entry'] = {
+                                'action': final_action,
+                                'signal_price': price,
+                                'signal_score': score,
+                                'target_price': price,
+                                'created_at': time.time(),
+                                'entry_type': 'deferred_15m_confirmation',
+                                'timeout_hours': defer_timeout,
+                                'expiry_bars': 999,
+                                'chase_eligible': False,
+                                'highest_since': price,
+                                'lowest_since': price,
+                            }
+                        against_label = f"15m_{'bearish' if final_action == 'open_long' else 'bullish'}_against_{final_action.split('_')[1]}"
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"15m入场时机不符: {timing_reason}",
+                            "key_factors": [f"deferred_15m={timing_defer}"],
+                            "risk_warnings": [against_label],
+                            "attribution": {
+                                "tf_15m_bias": entry_timing.get('tf_15m_bias', 'unavailable'),
+                                "tf_15m_rsi": entry_timing.get('tf_15m_rsi'),
+                                "tf_15m_entry_status": "blocked",
+                                "tf_15m_block_reason": timing_reason,
+                            },
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
+                    # RQ-07: 归因字段
+                    attribution = self._build_attribution(
+                        tech, final_action, score, plan, llm_result, entry_type
+                    )
+
+                    # RQ-03: 计算排名分数（用于归因和 paper 对比）
+                    rank_candidate = {
+                        'symbol': symbol, 'score': score, 'plan': plan,
+                        'tech': tech, 'attribution': attribution,
+                        'entry_type': entry_type,
+                    }
+                    rank_score = self._candidate_ranker._compute_rank_score(rank_candidate)
+                    attribution['rank_score'] = rank_score
+                    plan['attribution'] = attribution
+
                     decision = {
                         "symbol": symbol, "timestamp": time.time(),
                         "action": final_action,
@@ -694,6 +1078,8 @@ class MultiJudge(BaseAgent):
                         "reasoning": llm_result.get('reasoning', ''),
                         "key_factors": llm_result.get('key_factors', []),
                         "risk_warnings": llm_result.get('risk_warnings', []),
+                        "entry_type": entry_type,
+                        "attribution": attribution,
                     }
                 else:
                     decision = {
@@ -718,6 +1104,275 @@ class MultiJudge(BaseAgent):
         )
 
     # ═══ 信号聚合评分 ═══
+
+    async def _publish_hold(self, symbol: str, reason: str, warnings: list = None):
+        await self.publish("trade_decision", {
+            "symbol": symbol, "timestamp": time.time(),
+            "action": "hold", "confidence": 0,
+            "plan": None, "size_pct": 0,
+            "reasoning": reason,
+            "key_factors": [],
+            "risk_warnings": warnings or [],
+        }, symbol=symbol)
+
+    def _open_quality_rejection(self, symbol: str, tech: dict, action: str,
+                                score: float, confidence: float,
+                                context: str = 'live_open') -> str:
+        """实盘开仓质量门。
+
+        这层只拦截低质量开仓，不改变评分体系本身。目标是让 Judge 与 Executor
+        对“什么能进入实盘”保持同一口径，并防止弱信号在回调命中后被自动抬分。
+        """
+        if confidence < self._min_confidence:
+            return f"confidence={confidence:.0f}<min_confidence={self._min_confidence}"
+
+        risk = tech.get('risk', {})
+        liquidity_score = risk.get('liquidity_score')
+        if (liquidity_score is not None and
+            liquidity_score < self._min_liquidity_score_for_weak_signal and
+            abs(score) < 60):
+            return f"liquidity_score={liquidity_score}<min_liquidity_for_weak_signal"
+
+        if context.startswith('deferred'):
+            directional_ok = self._has_directional_confirmation(tech, action)
+            if abs(score) < self._min_deferred_signal_score and not directional_ok:
+                return (
+                    f"deferred_signal_score={abs(score):.0f}<"
+                    f"{self._min_deferred_signal_score} without HTF confirmation"
+                )
+
+        # RQ-06: 原型级 cooldown 检查
+        if self._archetype_cooldown.enabled:
+            # 预判原型（用当前可用信息）
+            trend = tech.get('trend', {})
+            expected = 'bullish' if action == 'open_long' else 'bearish'
+            htf_dirs = [
+                trend.get('direction', 'neutral'),
+                trend.get('higher_tf_bias', 'neutral'),
+                trend.get('daily_bias', 'neutral'),
+            ]
+            htf_votes = htf_dirs.count(expected)
+            pre_attribution = {
+                'entry_type': context if context.startswith('deferred') else 'standard',
+                'htf_votes': htf_votes,
+                'liquidity_bucket': 'low' if (risk.get('liquidity_score', 50) < 30) else 'medium',
+            }
+            archetype = self._archetype_cooldown.classify(pre_attribution)
+            is_cooled, remaining = self._archetype_cooldown.is_cooled(archetype)
+            if is_cooled and abs(score) < self._ev_strong_signal_threshold:
+                return f"archetype_cooldown: {archetype} ({remaining}s remaining)"
+
+        return ""
+
+    def _reconfirm_deferred(self, symbol: str, tech: dict, action: str,
+                            signal_score: float, context: str) -> str:
+        """RQ-02: deferred/chase 触发时二次确认。
+
+        返回空字符串表示通过，非空为拒绝原因。
+        检查项：
+        1. HTF 至少不反向（优先同向）
+        2. LLM 最近结果不为 hold/reverse（通过 tech 中的 llm_relation 判断）
+        3. 有效 RR >= 1.5（强信号可放宽到 1.2）
+        4. 低流动性弱信号不得从 deferred 转 live
+        """
+        trend = tech.get('trend', {})
+        expected_dir = 'bullish' if action == 'open_long' else 'bearish'
+        opposite_dir = 'bearish' if action == 'open_long' else 'bullish'
+
+        # 1. HTF 不得反向
+        htf_bias = trend.get('higher_tf_bias', 'neutral')
+        if htf_bias == opposite_dir:
+            return f"htf_mismatch: HTF={htf_bias} vs signal={expected_dir}"
+
+        # 2. 1h 趋势方向不得反向
+        trend_dir = trend.get('direction', 'neutral')
+        if trend_dir == opposite_dir and trend.get('strength', 0) >= 60:
+            return f"trend_reversed: 1h={trend_dir}(strength={trend.get('strength',0)}) vs signal={expected_dir}"
+
+        # 3. 流动性检查（弱信号 + 低流动性 → 拒绝）
+        risk = tech.get('risk', {})
+        liquidity = risk.get('liquidity_score', 50)
+        if liquidity < self._min_liquidity_score_for_weak_signal and abs(signal_score) < 60:
+            return f"low_liquidity_deferred: liquidity={liquidity}, score={signal_score:.0f}"
+
+        return ""
+
+    def _has_directional_confirmation(self, tech: dict, action: str) -> bool:
+        trend = tech.get('trend', {})
+        expected = 'bullish' if action == 'open_long' else 'bearish'
+        votes = [
+            trend.get('direction', 'neutral'),
+            trend.get('higher_tf_bias', 'neutral'),
+            trend.get('daily_bias', 'neutral'),
+        ]
+        return votes.count(expected) >= 2 and trend.get('strength', 0) >= 50
+
+    def _check_15m_entry_timing(self, tech: dict, action: str, score: float) -> tuple:
+        """RQ-15M-03: 15m 入场时机过滤。
+
+        返回 (allowed: bool, reason: str, should_defer: bool)
+        """
+        if not self._15m_enabled:
+            return (True, "", False)
+
+        entry_timing = tech.get('entry_timing', {})
+        available = entry_timing.get('tf_15m_available', False)
+
+        if not available:
+            if self._15m_required:
+                return (False, "15m_unavailable", False)
+            return (True, "15m_unavailable_not_required", False)
+
+        is_long = (action == 'open_long')
+        block_key = 'tf_15m_block_long' if is_long else 'tf_15m_block_short'
+        confirm_key = 'tf_15m_confirm_long' if is_long else 'tf_15m_confirm_short'
+
+        if entry_timing.get(block_key, False):
+            reason = entry_timing.get('tf_15m_reason', '15m_blocked')
+            return (False, reason, self._15m_defer_on_block)
+
+        if entry_timing.get(confirm_key, False):
+            return (True, "15m_confirmed", False)
+
+        # Neutral: 强信号 + HTF 同向可通过，否则等待
+        bias = entry_timing.get('tf_15m_bias', 'neutral')
+        if bias == 'neutral':
+            if self._15m_neutral_allows_strong and abs(score) >= self._15m_strong_score_threshold:
+                # P2-2: 需求要求 neutral 放行需 4h/1d 同向
+                if self._has_directional_confirmation(tech, action):
+                    return (True, "15m_neutral_strong_allowed", False)
+                return (False, f"15m_neutral_no_htf_confirmation(score={score:.0f})", self._15m_defer_on_block)
+            return (False, f"15m_neutral_weak_signal(score={score:.0f})", self._15m_defer_on_block)
+
+        return (True, "", False)
+
+    def _check_15m_deferred_reconfirm(self, tech: dict, action: str) -> str:
+        """RQ-15M-05: deferred 触发时 15m 二次确认。返回空字符串表示通过。"""
+        if not self._15m_enabled:
+            return ""
+
+        entry_timing = tech.get('entry_timing', {})
+        if not entry_timing.get('tf_15m_available', False):
+            if self._15m_required:
+                return "15m_unavailable_for_deferred"
+            return ""
+
+        rsi = entry_timing.get('tf_15m_rsi', 50) or 50
+        recent_closes = entry_timing.get('tf_15m_recent_closes', 'mixed')
+        bias = entry_timing.get('tf_15m_bias', 'neutral')
+
+        if action == 'open_long':
+            if bias == 'bearish':
+                return f"15m_bearish_against_deferred_long(RSI={rsi:.1f})"
+            if rsi < 45:
+                return f"15m_rsi_too_low_for_long({rsi:.1f}<45)"
+            if recent_closes == 'down':
+                return f"15m_closes_down_against_long"
+        else:
+            if bias == 'bullish':
+                return f"15m_bullish_against_deferred_short(RSI={rsi:.1f})"
+            if rsi > 55:
+                return f"15m_rsi_too_high_for_short({rsi:.1f}>55)"
+            if recent_closes == 'up':
+                return f"15m_closes_up_against_short"
+
+        return ""
+
+    def _build_attribution(self, tech: dict, action: str, score: float,
+                           plan: dict, llm_result: dict = None,
+                           entry_type: str = 'unknown') -> dict:
+        """RQ-07: 构建完整归因字段，附加到 trade_decision。"""
+        trend = tech.get('trend', {})
+        momentum = tech.get('momentum', {})
+        risk = tech.get('risk', {})
+        rule = tech.get('rule_signal', {})
+
+        # HTF votes: 统计多周期同向票数
+        expected = 'bullish' if action == 'open_long' else 'bearish'
+        htf_dirs = [
+            trend.get('direction', 'neutral'),
+            trend.get('higher_tf_bias', 'neutral'),
+            trend.get('daily_bias', 'neutral'),
+        ]
+        htf_votes = htf_dirs.count(expected)
+
+        # LLM relation
+        llm_action = (llm_result or {}).get('action', 'hold')
+        if llm_action == action:
+            llm_relation = 'agree'
+        elif llm_action == 'hold':
+            llm_relation = 'hold'
+        elif llm_action in ('open_long', 'open_short') and llm_action != action:
+            llm_relation = 'reverse'
+        else:
+            llm_relation = 'neutral'
+
+        # Liquidity bucket
+        liq = risk.get('liquidity_score', 50)
+        if liq >= 70:
+            liquidity_bucket = 'high'
+        elif liq >= 30:
+            liquidity_bucket = 'medium'
+        else:
+            liquidity_bucket = 'low'
+
+        # RR bucket
+        rr = plan.get('effective_risk_reward_ratio', 0) if plan else 0
+        if rr >= 2.5:
+            rr_bucket = 'excellent'
+        elif rr >= 1.8:
+            rr_bucket = 'good'
+        elif rr >= 1.5:
+            rr_bucket = 'acceptable'
+        else:
+            rr_bucket = 'poor'
+
+        # Rule signal type
+        if rule.get('entry_long'):
+            rule_signal_type = 'ma_crossover_long'
+        elif rule.get('entry_short'):
+            rule_signal_type = 'ma_crossover_short'
+        elif rule.get('ma_aligned_long'):
+            rule_signal_type = 'ma_aligned_long'
+        elif rule.get('ma_aligned_short'):
+            rule_signal_type = 'ma_aligned_short'
+        else:
+            rule_signal_type = 'none'
+
+        # 15m entry timing attribution
+        entry_timing = tech.get('entry_timing', {})
+        tf_15m_available = entry_timing.get('tf_15m_available', False)
+        if tf_15m_available:
+            is_long = (action == 'open_long')
+            confirm_key = 'tf_15m_confirm_long' if is_long else 'tf_15m_confirm_short'
+            block_key = 'tf_15m_block_long' if is_long else 'tf_15m_block_short'
+            if entry_timing.get(confirm_key):
+                tf_15m_entry_status = 'confirmed'
+            elif entry_timing.get(block_key):
+                tf_15m_entry_status = 'blocked'
+            else:
+                tf_15m_entry_status = 'neutral'
+        else:
+            tf_15m_entry_status = 'unavailable'
+
+        return {
+            'entry_type': entry_type,
+            'rule_signal_type': rule_signal_type,
+            'signal_score': round(score, 1),
+            'llm_relation': llm_relation,
+            'htf_votes': htf_votes,
+            'liquidity_bucket': liquidity_bucket,
+            'rr_bucket': rr_bucket,
+            'ev_at_entry': plan.get('expected_value', 0) if plan else 0,
+            'p_win_used': plan.get('p_win_used', 0) if plan else 0,
+            'p_win_source': plan.get('p_win_source', 'unknown') if plan else 'unknown',
+            'tf_15m_bias': entry_timing.get('tf_15m_bias', 'unavailable'),
+            'tf_15m_rsi': entry_timing.get('tf_15m_rsi'),
+            'tf_15m_ma_alignment': entry_timing.get('tf_15m_ma_alignment', 'unavailable'),
+            'tf_15m_recent_closes': entry_timing.get('tf_15m_recent_closes', 'unavailable'),
+            'tf_15m_entry_status': tf_15m_entry_status,
+            'tf_15m_block_reason': entry_timing.get('tf_15m_reason', '') if tf_15m_entry_status == 'blocked' else '',
+        }
 
     def _hold_reason(self, tech: dict, score: float) -> str:
         trend = tech.get('trend', {})
@@ -787,10 +1442,10 @@ class MultiJudge(BaseAgent):
         div = momentum.get('rsi_divergence')
 
         # ═══ 极端值保护：RSI超买超卖区域的硬性约束 ═══
-        # RSI < 25: 极度超卖，禁止做空，给予强烈看多偏置
-        # RSI > 75: 极度超买，禁止做多，给予强烈看空偏置
-        rsi_extreme_bullish = rsi < 25
-        rsi_extreme_bearish = rsi > 75
+        # RSI <= 30: 超卖区，禁止做空（与入场禁令阈值统一）
+        # RSI >= 70: 超买区，禁止做多（与入场禁令阈值统一）
+        rsi_extreme_bullish = rsi <= 30
+        rsi_extreme_bearish = rsi >= 70
         rsi_oversold = rsi < 35
         rsi_overbought = rsi > 65
 
@@ -881,31 +1536,27 @@ class MultiJudge(BaseAgent):
             score -= 10
 
         # ═══ 极端值硬性保护 ═══
-        # RSI极度超卖时，不允许做空。HTF趋势一致时放宽cap（趋势延续区）
+        # RSI<=30 超卖区禁止做空。分级cap：越深越严
         if rsi_extreme_bullish:
-            # RSI < 20: 真正超卖，硬cap -15
-            # RSI 20-25: HTF bearish时允许到-25（趋势延续），否则-15
             if rsi < 20:
                 cap = -15
-            elif htf == 'bearish':
-                cap = -25
+            elif rsi < 25:
+                cap = -20 if htf == 'bearish' else -15
             else:
-                cap = -15
+                cap = -25 if htf == 'bearish' else -20
             if score < cap:
                 score = cap
             if div == 'bullish_div':
                 score = max(score, 25)
 
-        # RSI极度超买时，不允许做多。HTF趋势一致时放宽cap
+        # RSI>=70 超买区禁止做多。分级cap：越高越严
         if rsi_extreme_bearish:
-            # RSI > 80: 真正超买，硬cap 15
-            # RSI 75-80: HTF bullish时允许到25（趋势延续），否则15
             if rsi > 80:
                 cap = 15
-            elif htf == 'bullish':
-                cap = 25
+            elif rsi > 75:
+                cap = 20 if htf == 'bullish' else 15
             else:
-                cap = 15
+                cap = 25 if htf == 'bullish' else 20
             if score > cap:
                 score = cap
             if div == 'bearish_div':
@@ -1031,43 +1682,54 @@ class MultiJudge(BaseAgent):
     def _get_p_win(self) -> tuple:
         """获取应用 EV 公式的胜率，返回 (p_win, source)。
 
-        历史交易 ≥ min_trades_for_ev_gate 时用 Reviewer 滚动胜率；
-        否则用降级值（默认 0.55，接近 break-even）。
+        RQ-01 保守化：使用 Bayesian 后验胜率替代固定 fallback。
+        p_win = min(fallback, (wins + prior_wins) / (trades + prior_total))
+        当样本不足时，prior 拉向保守方向（prior_wins=2, prior_total=5 → 先验40%）。
         """
         if (self._recent_win_rate is not None and
             self._total_completed_trades >= self._min_trades_for_ev_gate):
             return float(self._recent_win_rate), "rolling"
-        return float(self._fallback_win_rate), "fallback"
+
+        # 小样本阶段：Bayesian 后验保守化
+        wins = self._recent_wins
+        trades = self._total_completed_trades
+        posterior = (wins + self._ev_prior_wins) / (trades + self._ev_prior_total)
+        p_win = min(float(self._fallback_win_rate), posterior)
+        return p_win, "bayesian_prior"
 
     def _check_expected_value(self, symbol: str, plan: dict, score: float) -> bool:
         """期望值门：EV < 阈值则拒绝开仓。
 
         返回 True 通过 / False 拦截。
 
-        设计：
-        - rolling 胜率 < 0.4 且 score 强度普通 → 直接拒（系统已显著衰减）
-        - 普通情况：EV < threshold（默认 0） → 拒
-        - 边界豁免：score 极强 (|score|>=60) 且 EV 微负 (>=-0.3 USDT) → 通过
+        RQ-01 保守化设计：
+        - rolling 胜率 < 0.4 且 score 非极强 → 直接拒（系统已显著衰减）
+        - bayesian_prior 阶段胜率 < 0.4 且 score 非极强 → 同样强拒
+        - 普通情况：EV < threshold（默认 0.05） → 拒
+        - 边界豁免：score 极强 (>=ev_strong_signal_threshold) 且 EV 微负 (>=-0.3 USDT) → 通过
         """
         ev = plan.get('expected_value', 0.0)
         p_win = plan.get('p_win_used', 0.5)
         p_win_source = plan.get('p_win_source', 'fallback')
 
-        # 系统衰减严重时（rolling 胜率<0.4）只允许极强信号通过
-        if (p_win_source == 'rolling' and
-            self._recent_win_rate is not None and
-            self._recent_win_rate < 0.4 and
-            abs(score) < 70):
+        # 系统衰减严重时（胜率<0.4）只允许极强信号通过
+        effective_win_rate = p_win if p_win_source == 'rolling' else (
+            self._recent_win_rate if self._recent_win_rate is not None else p_win
+        )
+        if (effective_win_rate < 0.4 and abs(score) < self._ev_strong_signal_threshold):
             self.logger.warning(
-                f"[Judge] {symbol} 滚动胜率{self._recent_win_rate:.1%}<40% 且 score={score:.0f}<70，EV门强拒"
+                f"[Judge] {symbol} 胜率{effective_win_rate:.1%}<40% 且 "
+                f"score={score:.0f}<{self._ev_strong_signal_threshold}，EV门强拒 "
+                f"(source={p_win_source})"
             )
             return False
 
         if ev < self._ev_min_threshold:
             # 强信号豁免：score 极强 + EV 微负 (>=-0.3 USDT) 允许通过
-            if abs(score) >= 60 and ev >= -0.3:
+            if abs(score) >= self._ev_strong_signal_threshold and ev >= -0.3:
                 self.logger.warning(
-                    f"[Judge] {symbol} EV={ev:.3f}<0 但 score={score:.0f}>=60 强信号，豁免通过"
+                    f"[Judge] {symbol} EV={ev:.3f}<0 但 score={score:.0f}>="
+                    f"{self._ev_strong_signal_threshold} 强信号，豁免通过"
                 )
                 return True
             self.logger.info(
@@ -1327,6 +1989,19 @@ class MultiJudge(BaseAgent):
             return result
         except Exception as e:
             self.logger.warning(f"LLM决策失败({symbol})，规则降级: {e}")
+            # P1-7: LLM degraded 一次性 Telegram 告警
+            if not hasattr(self, '_llm_consecutive_failures'):
+                self._llm_consecutive_failures = 0
+                self._llm_degraded_alerted = False
+            self._llm_consecutive_failures += 1
+            if self._llm_consecutive_failures >= 3 and not self._llm_degraded_alerted:
+                self._llm_degraded_alerted = True
+                await self.publish("risk_alert", {
+                    "symbol": "SYSTEM",
+                    "alert_type": "llm_degraded",
+                    "severity": "warning",
+                    "message": f"Judge LLM连续{self._llm_consecutive_failures}次失败，已降级为规则引擎",
+                })
             return self._rule_fallback(tech, rule_score)
 
     def _rule_fallback(self, tech: dict, score: float) -> dict:

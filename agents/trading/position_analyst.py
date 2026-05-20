@@ -104,30 +104,35 @@ class PositionAnalyst(BaseAgent):
             if symbol in self._positions:
                 self.logger.info(f"[持仓分析] {symbol} 已被外部平仓，移除记录")
             self._positions.pop(symbol, None)
+            self._pending_reviews.pop(symbol, None)
         elif status == 'risk_reduced':
             if symbol in self._positions:
                 reduce_pct = payload.get('reduce_pct', 0.5)
                 self._positions[symbol]['amount_usdt'] *= (1 - reduce_pct)
 
     async def tick(self):
-        # 排空队列中所有待处理消息，防止高频price_tick淹没execution_result
-        while True:
-            msg = await self.bus.receive(self.name, timeout=0.1)
-            if msg is None:
-                break
-            await self.on_message(msg)
-
         await asyncio.sleep(1)
         self._tick_counter += 1
 
         now = time.time()
+
+        # 检查超时的 pending reviews（批判官未在 30s 内回复）
+        for symbol in list(self._pending_reviews.keys()):
+            deadline = self._pending_reviews[symbol].get('_deadline', 0)
+            if now >= deadline:
+                verdict = self._pending_reviews.pop(symbol)
+                self.logger.info(f"[持仓分析] {symbol} 批判官超时，直接采纳分析建议")
+                final = self._arbitrate_no_critic(verdict)
+                if final['final_action'] != 'hold':
+                    await self._execute_final_decision(final)
+
         if now - self._last_review_time >= REVIEW_INTERVAL and self._positions:
-            evaluated = await self._evaluate_all_positions()
-            if evaluated:
-                self._last_review_time = now
-            else:
-                # tech数据未就绪，30秒后重试（不消耗1h计时器）
-                self._last_review_time = now - REVIEW_INTERVAL + 30
+            if not self._pending_reviews:
+                evaluated = await self._evaluate_all_positions()
+                if evaluated:
+                    self._last_review_time = now
+                else:
+                    self._last_review_time = now - REVIEW_INTERVAL + 30
 
     async def _evaluate_all_positions(self) -> bool:
         """返回True表示至少评估了一个持仓，False表示全部因缺数据跳过"""
@@ -163,25 +168,13 @@ class PositionAnalyst(BaseAgent):
                 await self._execute_final_decision(override)
                 continue
 
+            verdict['_deadline'] = time.time() + 30
             self._pending_reviews[symbol] = verdict
             await self.publish("position_review", verdict, symbol=symbol)
             self.logger.info(
                 f"[持仓分析] {symbol} score={verdict['position_score']:.0f} "
                 f"action={verdict['action']} conviction={verdict['conviction']:.0f}"
             )
-
-        deadline = time.time() + 30
-        while self._pending_reviews and time.time() < deadline:
-            msg = await self.bus.receive(self.name, timeout=0.5)
-            if msg:
-                await self.on_message(msg)
-
-        for symbol, verdict in list(self._pending_reviews.items()):
-            self.logger.info(f"[持仓分析] {symbol} 批判官超时，直接采纳分析建议")
-            final = self._arbitrate_no_critic(verdict)
-            if final['final_action'] != 'hold':
-                await self._execute_final_decision(final)
-            del self._pending_reviews[symbol]
 
         return evaluated_any
 

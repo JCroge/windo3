@@ -172,6 +172,7 @@ class MultiDataCollector(BaseAgent):
 
     async def _tick_low(self):
         for symbol in self._active_symbols:
+            await self._collect_15m(symbol)
             await self._full_collect(symbol)
             await asyncio.sleep(0.5)
 
@@ -262,10 +263,10 @@ class MultiDataCollector(BaseAgent):
         klines = []
         ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
         try:
-            klines = self.exchange.fetch_ohlcv(ccxt_symbol, self.interval, limit=100)
+            klines = await asyncio.to_thread(self.exchange.fetch_ohlcv, ccxt_symbol, self.interval, limit=100)
             gaps = self._check_gaps(symbol, klines)
             if gaps > 0:
-                klines = self._fill_gaps(symbol, klines)
+                klines = await self._fill_gaps(symbol, klines)
             if klines:
                 self._last_kline_time[symbol] = klines[-1][0]
             dimensions_ok += 1
@@ -327,8 +328,17 @@ class MultiDataCollector(BaseAgent):
             dimensions_ok += 1
 
         health = self._symbol_health.get(symbol, {})
+        klines_15m = health.get('klines_15m', [])
         klines_4h = health.get('klines_4h', [])
         klines_1d = health.get('klines_1d', [])
+
+        # 15m 新鲜度判断：最新已闭合 K 线距当前超过 2 个 15m 周期(30min)视为 stale
+        tf_15m_stale = False
+        klines_15m_last_ts = health.get('klines_15m_last_ts', 0)
+        if klines_15m and klines_15m_last_ts:
+            age_ms = int(time.time() * 1000) - klines_15m_last_ts
+            tf_15m_stale = age_ms > 2 * 900_000  # 30 min
+        tf_15m_ok = len(klines_15m) >= 50 and not tf_15m_stale
 
         # 数据质量门槛：核心维度（K线 + 最新价）缺失则不发布，避免下游做出高置信度错误判断
         latest_price = klines[-1][4] if klines else None
@@ -344,6 +354,7 @@ class MultiDataCollector(BaseAgent):
             "symbol": symbol,
             "interval": self.interval,
             "klines": klines,
+            "klines_15m": klines_15m,
             "klines_4h": klines_4h,
             "klines_1d": klines_1d,
             "funding_rate": funding_rate,
@@ -362,6 +373,8 @@ class MultiDataCollector(BaseAgent):
                 "dimensions_ok": dimensions_ok,
                 "dimensions_total": dimensions_total,
                 "degraded": degraded,
+                "tf_15m_ok": tf_15m_ok,
+                "tf_15m_stale": tf_15m_stale,
             }
         }
 
@@ -382,7 +395,7 @@ class MultiDataCollector(BaseAgent):
 
     async def _fetch_price_tick(self, symbol: str):
         try:
-            ticker = self.exchange.fetch_ticker(symbol.replace('-USDT', '/USDT:USDT'))
+            ticker = await asyncio.to_thread(self.exchange.fetch_ticker, symbol.replace('-USDT', '/USDT:USDT'))
             payload = {
                 "symbol": symbol,
                 "price": float(ticker.get('last', 0)),
@@ -614,7 +627,7 @@ class MultiDataCollector(BaseAgent):
     async def _collect_4h(self, symbol: str):
         try:
             ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
-            klines_4h = self.exchange.fetch_ohlcv(ccxt_symbol, '4h', limit=50)
+            klines_4h = await asyncio.to_thread(self.exchange.fetch_ohlcv, ccxt_symbol, '4h', limit=50)
             health = self._symbol_health.get(symbol, {})
             health['klines_4h'] = klines_4h
             self._symbol_health[symbol] = health
@@ -624,12 +637,28 @@ class MultiDataCollector(BaseAgent):
     async def _collect_1d(self, symbol: str):
         try:
             ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
-            klines_1d = self.exchange.fetch_ohlcv(ccxt_symbol, '1d', limit=30)
+            klines_1d = await asyncio.to_thread(self.exchange.fetch_ohlcv, ccxt_symbol, '1d', limit=30)
             health = self._symbol_health.get(symbol, {})
             health['klines_1d'] = klines_1d
             self._symbol_health[symbol] = health
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} 1d K线失败: {e}")
+
+    async def _collect_15m(self, symbol: str):
+        try:
+            ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
+            klines_15m = await asyncio.to_thread(self.exchange.fetch_ohlcv, ccxt_symbol, '15m', limit=100)
+            health = self._symbol_health.get(symbol, {})
+            health['klines_15m'] = klines_15m
+            health['klines_15m_updated_at'] = time.time()
+            if klines_15m:
+                health['klines_15m_last_ts'] = klines_15m[-1][0]
+            self._symbol_health[symbol] = health
+        except Exception as e:
+            self.logger.warning(f"[采集] {symbol} 15m K线失败: {e}")
+            health = self._symbol_health.get(symbol, {})
+            health['klines_15m_error'] = str(e)
+            self._symbol_health[symbol] = health
 
     # ═══ K线连续性 ═══
 
@@ -643,13 +672,14 @@ class MultiDataCollector(BaseAgent):
                 gaps += 1
         return gaps
 
-    def _fill_gaps(self, symbol: str, klines: list) -> list:
+    async def _fill_gaps(self, symbol: str, klines: list) -> list:
         last_time = self._last_kline_time.get(symbol)
         if not last_time:
             return klines
         try:
             ccxt_symbol = symbol.replace('-USDT', '/USDT:USDT')
-            filled = self.exchange.fetch_ohlcv(
+            filled = await asyncio.to_thread(
+                self.exchange.fetch_ohlcv,
                 ccxt_symbol, self.interval, since=last_time, limit=200
             )
             return filled if filled else klines
@@ -663,6 +693,7 @@ class MultiDataCollector(BaseAgent):
             "successes": 0, "failures": 0,
             "consecutive_failures": 0,
             "last_success": None, "last_error": None,
+            "klines_15m": [],
             "klines_4h": [],
             "klines_1d": [],
         }
@@ -689,6 +720,10 @@ class MultiDataCollector(BaseAgent):
             "consecutive_failures": count,
             "last_error": str(error),
             "action": "check_connectivity",
+        })
+        await self.publish("telegram_alert", {
+            "level": "warning",
+            "message": f"行情源异常: {symbol} 连续{count}次采集失败\n错误: {str(error)[:80]}",
         })
 
     # ═══ Symbol格式转换 ═══

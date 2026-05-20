@@ -7,6 +7,7 @@ import time
 import datetime
 import aiohttp
 from agents.base import BaseAgent
+from utils.halt_state import get_halt_state
 
 
 class TelegramNotifier(BaseAgent):
@@ -36,6 +37,7 @@ class TelegramNotifier(BaseAgent):
         self._poll_interval = 5
         self._start_time = time.time()
         self._last_balance = 0.0
+        self._halt_state = get_halt_state()
         self._active_symbols = []
 
     async def setup(self):
@@ -266,6 +268,8 @@ class TelegramNotifier(BaseAgent):
             '/restart': self._cmd_restart,
             '/halt': self._cmd_halt,
             '/resume': self._cmd_resume,
+            '/force_resume': self._cmd_force_resume,
+            '/reconcile': self._cmd_reconcile,
             '/log': self._cmd_log,
         }
 
@@ -288,16 +292,33 @@ class TelegramNotifier(BaseAgent):
             pass
 
         halted = False
+        halt_reason = ""
+        reconciliation = ""
         try:
-            with open('data/riskguard_state.json', 'r') as f:
-                halted = json.load(f).get('trading_halted', False)
+            from utils.halt_state import get_halt_state
+            hs = get_halt_state()
+            halted = hs.halted
+            halt_reason = hs.halt_reason or ""
+            if hs.reconciliation_pending:
+                reconciliation = "对账中..."
+            elif hs.reconciliation_result:
+                reconciliation = f"对账: {hs.reconciliation_result}"
         except Exception:
-            pass
+            try:
+                with open('data/riskguard_state.json', 'r') as f:
+                    halted = json.load(f).get('trading_halted', False)
+            except Exception:
+                pass
 
         text = f"📊 系统状态\n"
         text += f"运行: {hours:.1f}h\n"
         text += f"持仓: {len(positions)}个\n"
-        text += f"熔断: {'是' if halted else '否'}\n"
+        if halted:
+            text += f"熔断: 是 ({halt_reason})\n"
+        else:
+            text += f"熔断: 否\n"
+        if reconciliation:
+            text += f"{reconciliation}\n"
         text += f"今日交易: {self._daily_summary['trades']}笔\n"
         text += f"今日PnL: {self._daily_summary['pnl']:+.2f} USDT"
         await self._send_message(text)
@@ -344,12 +365,110 @@ class TelegramNotifier(BaseAgent):
         await self.publish("system_command", {"command": "shutdown"})
 
     async def _cmd_halt(self):
+        self._halt_state.halt(reason="manual_telegram", triggered_by="telegram")
         await self.publish("system_command", {"command": "halt"})
         await self._send_message("🛑 已手动熔断，停止新交易")
 
     async def _cmd_resume(self):
+        if not self._halt_state.halted:
+            await self._send_message("ℹ️ 当前未处于熔断状态")
+            return
+
+        await self._send_message("🔄 正在执行对账...")
+        self._halt_state.request_resume(resume_by="telegram")
+
+        reconcile_ok = await self._run_reconciliation()
+
+        if reconcile_ok:
+            self._halt_state.confirm_resume(resume_by="telegram", reconcile_ok=True)
+            await self.publish("system_command", {"command": "resume"})
+            await self._send_message("✅ 对账通过，已解除熔断，恢复交易")
+        else:
+            self._halt_state.confirm_resume(resume_by="telegram", reconcile_ok=False)
+            await self._send_message(
+                "❌ 对账不通过，维持熔断\n"
+                "使用 /force_resume 强制解除（跳过对账）"
+            )
+
+    async def _cmd_force_resume(self):
+        if not self._halt_state.halted:
+            await self._send_message("ℹ️ 当前未处于熔断状态")
+            return
+        self._halt_state.force_resume(resume_by="telegram")
         await self.publish("system_command", {"command": "resume"})
-        await self._send_message("✅ 已解除熔断，恢复交易")
+        await self._send_message("⚠️ 已强制解除熔断（跳过对账）")
+
+    async def _cmd_reconcile(self):
+        await self._send_message("🔍 正在执行四方对账...")
+        reconcile_ok = await self._run_reconciliation()
+        if reconcile_ok:
+            await self._send_message("✅ 四方持仓一致")
+        else:
+            pass  # _run_reconciliation already sends detail message
+
+    async def _run_reconciliation(self) -> bool:
+        try:
+            from utils.position_reconciler import PositionReconciler
+            import ccxt
+
+            exchange = None
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+                exchange = ccxt.okx({
+                    'apiKey': os.environ.get('OKX_API_KEY', ''),
+                    'secret': os.environ.get('OKX_SECRET', ''),
+                    'password': os.environ.get('OKX_PASSWORD', os.environ.get('OKX_PASSPHRASE', '')),
+                    'options': {'defaultType': 'swap'},
+                })
+            except Exception:
+                pass
+
+            executor_positions = {}
+            try:
+                with open('data/positions.json', 'r') as f:
+                    executor_positions = json.load(f)
+            except Exception:
+                pass
+
+            paper_positions = {}
+            try:
+                with open('data/paper_positions.json', 'r') as f:
+                    paper_positions = json.load(f)
+            except Exception:
+                pass
+
+            class _FakeExecutor:
+                def __init__(self, pos):
+                    self._pos = pos
+                def get_all_positions(self):
+                    return self._pos
+
+            reconciler = PositionReconciler(
+                executor=_FakeExecutor(executor_positions),
+                exchange=exchange,
+                logger=self.logger,
+            )
+            result = reconciler.reconcile(paper_positions=paper_positions)
+
+            if result['status'] == 'matched' and result.get('exchange_query_ok', False):
+                return True
+            else:
+                issues = result.get('issues', [])
+                if not result.get('exchange_query_ok', True):
+                    text = "❌ 对账失败：交易所持仓查询不可用，无法确认安全恢复\n"
+                else:
+                    text = f"⚠️ 对账发现 {len(issues)} 个问题:\n"
+                for issue in issues[:5]:
+                    text += f"• {issue['symbol']}: {issue['detail']}\n"
+                if len(issues) > 5:
+                    text += f"...还有 {len(issues)-5} 个"
+                await self._send_message(text)
+                return False
+        except Exception as e:
+            self.logger.error(f"[Telegram] 对账执行失败: {e}")
+            await self._send_message(f"⚠️ 对账执行失败: {e}")
+            return False
 
     async def _cmd_log(self):
         import subprocess

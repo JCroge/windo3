@@ -352,9 +352,9 @@ CREATE TABLE klines (
 - `symbol_update`：活跃标的更新（SymbolRouter → 交易层全体）
 
 **交易层消息类型**：
-- `market_data:{symbol}`：9维度数据（K线+orderbook+OI+爆仓+费率历史+Taker比+大单+多空比）（DataCollector → TechAnalyst, RiskGuard）
+- `market_data:{symbol}`：9维度数据（K线1h/4h/1d/15m+orderbook+OI+爆仓+费率历史+Taker比+大单+多空比）（DataCollector → TechAnalyst, RiskGuard）
 - `price_tick:{symbol}`：10秒价格流（DataCollector → RiskGuard）
-- `tech_analysis:{symbol}`：9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险）（TechAnalyst → Judge）
+- `tech_analysis:{symbol}`：9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险）+ 15m入场时机（TechAnalyst → Judge）
 - `trade_decision:{symbol}`：精确交易计划（入场区间/止盈止损/杠杆/仓位）（Judge → Executor）
 - `execution_result:{symbol}`：执行结果（Executor → RiskGuard, Reviewer, TelegramNotifier）
 - `paper_execution_result:{symbol}`：影子账户执行结果（PaperExecutor → 仅记账，不触发风控）
@@ -397,9 +397,10 @@ CREATE TABLE klines (
 
 **多Agent模式（run_agents.py）**：
 ```
-1. DataCollector 9维度采集（10s价格/30s深度+爆仓/60s全量/5min 4h K线）
-2. TechAnalyst 收到数据后：规则引擎解读9维度 + Claude综合研判
+1. DataCollector 9维度采集（10s价格/30s深度+爆仓/60s全量/5min 4h K线/60s 15m K线）
+2. TechAnalyst 收到数据后：规则引擎解读9维度 + 15m入场时机分析(MA7/25+RSI14) + Claude综合研判
 3. Judge 收到分析后：信号聚合评分 + Claude裁决 → 精确交易计划（入场/止盈止损/杠杆/仓位）
+   - 15m 入场确认：block→deferred等待转向 / confirm→通过 / neutral+强信号+HTF同向→通过
    - R:R≥1.5 → 正常入场
    - 1.2≤R:R<1.5 + 强信号(|score|≥50) → 追价入场（缩仓）
    - 1.2≤R:R<1.5 + 弱信号 → deferred_entry等回调（3h有效）

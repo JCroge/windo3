@@ -106,6 +106,9 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 | `data/risk_state.json` | RiskManager | 峰值余额/回撤状态 | 重启不丢 |
 | `data/trade_history.json` | ReviewerAgent | 已平仓历史+策略衰减 | 缺失时空起 |
 | `data/riskguard_state.json` | PortfolioRiskGuard | 持仓追踪/价格缓存/熔断状态 | 缺失时空起 |
+| `data/judge_state.json` | MultiJudge | deferred_entry/sl_timestamps/cooldown | 缺失时空起，启动时清理过期条目 |
+| `data/live_order_events.jsonl` | LiveLedger | 订单事件流（open/reduce/close） | append-only |
+| `data/live_position_lifecycle.json` | LiveLedger | 持仓生命周期聚合 | 原子写入 |
 | `data/paper_positions.json` | PaperExecutor | 影子持仓快照 | 缺失=从初始 equity 起 |
 | `data/paper_equity.json` | PaperExecutor | 影子账户余额 | 首次启动=EFFECTIVE_BALANCE_CAP 或 1000 |
 | `data/paper_trades.jsonl` | PaperExecutor | 影子已平仓 append-only 流水 | 与实盘 trade_history 互不影响 |

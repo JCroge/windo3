@@ -102,6 +102,16 @@ class ContractExecutor:
             self.logger.warning(f"BalanceAdapter 初始化失败（降级）: {e}")
             self.balance_adapter = None
 
+        # 实盘账本：真实成交 PnL 记录
+        try:
+            from utils.live_ledger import LiveLedger
+            self.ledger = LiveLedger(self.exchange, logger=self.logger)
+            # 启动时从 ledger 同步当日 PnL 到 risk_manager
+            self.risk_manager.sync_from_ledger(self.ledger)
+        except Exception as e:
+            self.logger.warning(f"LiveLedger 初始化失败（降级）: {e}")
+            self.ledger = None
+
         self.logger.info(f"杠杆设置: {leverage}x")
 
     def get_balance(self) -> float:
@@ -199,9 +209,22 @@ class ContractExecutor:
             if self.idempotency and clord_id:
                 self.idempotency.mark(symbol, side, clord_id)
 
+            # 真实成交价：通过 ledger 查询 fetch_order 获取
+            fill_price = current_price
+            if self.ledger:
+                try:
+                    ledger_event = self.ledger.record_open(
+                        order_id=order['id'], symbol=symbol, side=side,
+                        amount_usdt=position_size, leverage=self.leverage,
+                        estimated_price=current_price
+                    )
+                    fill_price = ledger_event['fill_price']
+                except Exception as e:
+                    self.logger.warning(f"[Ledger] 开仓记录失败（降级用ticker）: {e}")
+
             # 计算止损止盈
-            stop_loss = self.risk_manager.calculate_stop_loss(current_price, side)
-            take_profit = self.risk_manager.calculate_take_profit(current_price, side)
+            stop_loss = self.risk_manager.calculate_stop_loss(fill_price, side)
+            take_profit = self.risk_manager.calculate_take_profit(fill_price, side)
 
             # 在交易所设置SL条件单
             sl_order_id = None
@@ -226,7 +249,7 @@ class ContractExecutor:
             position = {
                 'symbol': symbol,
                 'side': side,
-                'entry_price': current_price,
+                'entry_price': fill_price,
                 'amount': amount,
                 'amount_usdt': position_size,
                 'leverage': self.leverage,
@@ -234,11 +257,12 @@ class ContractExecutor:
                 'take_profit': take_profit,
                 'order_id': order['id'],
                 'sl_order_id': sl_order_id,
+                'open_time': time.time(),
             }
             self.positions[symbol] = position
             self._save_positions()
 
-            self.logger.info(f"开仓成功: {side} {symbol}, 价格: {current_price}, 数量: {amount}, 杠杆: {self.leverage}x")
+            self.logger.info(f"开仓成功: {side} {symbol}, 价格: {fill_price}, 数量: {amount}, 杠杆: {self.leverage}x")
             return position
 
         except Exception as e:
@@ -254,7 +278,7 @@ class ContractExecutor:
         try:
             position = self.positions[symbol]
 
-            # 获取当前价格
+            # 获取当前价格（作为估算兜底）
             ticker = self.exchange.fetch_ticker(symbol)
             exit_price = ticker['last']
 
@@ -276,28 +300,23 @@ class ContractExecutor:
                 except Exception as e:
                     self.logger.warning(f"取消SL单失败（可能已触发）: {e}")
 
-            # P1-J: 通过 CostModel 计算 PnL（与 Judge EV 估算口径一致）
+            # 真实成交 PnL：通过 ledger 查询 fetch_order 获取
             leverage = position.get('leverage', 1)
-            try:
-                from utils.cost_model import get_default_cost_model
-                cm = get_default_cost_model()
-                pnl_breakdown = cm.realized_pnl(
-                    side=position['side'],
-                    entry_price=position['entry_price'],
-                    exit_price=exit_price,
-                    amount_usdt=position['amount_usdt'],
-                    leverage=leverage,
-                    funding_rate=0,  # 平仓时不知道历史 funding 累计，按 0 简化
-                    hold_hours=0,
-                )
-                pnl = pnl_breakdown['net_pnl']
-            except Exception:
-                # 降级：旧公式
-                if position['side'] == 'long':
-                    pnl = (exit_price - position['entry_price']) / position['entry_price'] * position['amount_usdt'] * leverage
-                else:
-                    pnl = (position['entry_price'] - exit_price) / position['entry_price'] * position['amount_usdt'] * leverage
-                pnl -= position['amount_usdt'] * leverage * 0.002
+            if self.ledger:
+                try:
+                    ledger_event = self.ledger.record_close(
+                        order_id=order['id'], symbol=symbol, side=position['side'],
+                        entry_price=position['entry_price'],
+                        amount_usdt=position['amount_usdt'], leverage=leverage,
+                        estimated_price=exit_price, close_type="close"
+                    )
+                    pnl = ledger_event['realized_pnl']
+                    exit_price = ledger_event['fill_price']
+                except Exception as e:
+                    self.logger.warning(f"[Ledger] 平仓记录失败（降级用CostModel）: {e}")
+                    pnl = self._estimate_close_pnl_local(position, exit_price, leverage)
+            else:
+                pnl = self._estimate_close_pnl_local(position, exit_price, leverage)
 
             # 记录盈亏
             self.risk_manager.record_trade(pnl)
@@ -309,7 +328,9 @@ class ContractExecutor:
                 'exit_price': exit_price,
                 'leverage': leverage,
                 'pnl': pnl,
-                'pnl_pct': pnl / position['amount_usdt'] * 100
+                'pnl_pct': pnl / position['amount_usdt'] * 100,
+                'attribution': position.get('attribution', {}),
+                'entry_type': position.get('entry_type', 'unknown'),
             }
 
             # 删除持仓
@@ -337,6 +358,29 @@ class ContractExecutor:
                 return None
             self.logger.error(f"平仓失败: {e}")
             return None
+
+    def _estimate_close_pnl_local(self, position: dict, exit_price: float, leverage: int) -> float:
+        """CostModel 估算 PnL（ledger 不可用时的降级路径）"""
+        try:
+            from utils.cost_model import get_default_cost_model
+            cm = get_default_cost_model()
+            pnl_breakdown = cm.realized_pnl(
+                side=position['side'],
+                entry_price=position['entry_price'],
+                exit_price=exit_price,
+                amount_usdt=position['amount_usdt'],
+                leverage=leverage,
+                funding_rate=0,
+                hold_hours=0,
+            )
+            return pnl_breakdown['net_pnl']
+        except Exception:
+            if position['side'] == 'long':
+                pnl = (exit_price - position['entry_price']) / position['entry_price'] * position['amount_usdt'] * leverage
+            else:
+                pnl = (position['entry_price'] - exit_price) / position['entry_price'] * position['amount_usdt'] * leverage
+            pnl -= position['amount_usdt'] * leverage * 0.002
+            return pnl
 
     def check_stop_loss_take_profit(self, symbol: str) -> Optional[str]:
         """检查止损止盈 — 多源价格获取 + 连续失败强制平仓"""
@@ -438,14 +482,24 @@ class ContractExecutor:
                 self.logger.info(f"[Trailing] {symbol} TP2触发，再平25%，SL移至{new_sl:.4f}")
                 return 'partial_tp_2'
 
-        # --- Break-Even：浮盈≥1R → SL移到保本 ---
+        # --- RQ-05: 盈利保护梯度 ---
         fee_pct = 0.002  # 开平各0.1%
-        if profit_r >= 1.0 and tp_filled == 0:
+
+        # +0.8R: SL移到入场价+手续费缓冲（保本）
+        if profit_r >= 0.8 and tp_filled == 0:
             be_sl = entry * (1 + fee_pct) if is_long else entry * (1 - fee_pct)
             current_sl = position['stop_loss']
             if (is_long and be_sl > current_sl) or (not is_long and be_sl < current_sl):
                 self._move_sl(symbol, position, be_sl)
-                self.logger.info(f"[Trailing] {symbol} 保本线激活，SL移至{be_sl:.4f}")
+                self.logger.info(f"[ProfitProtect] {symbol} +0.8R 保本线激活，SL→{be_sl:.4f}")
+
+        # +1.0R: SL移到 entry + 0.3R（锁定部分利润）
+        if profit_r >= 1.0 and tp_filled == 0:
+            lock_sl = entry * (1 + R * 0.3) if is_long else entry * (1 - R * 0.3)
+            current_sl = position['stop_loss']
+            if (is_long and lock_sl > current_sl) or (not is_long and lock_sl < current_sl):
+                self._move_sl(symbol, position, lock_sl)
+                self.logger.info(f"[ProfitProtect] {symbol} +1.0R 锁利，SL→{lock_sl:.4f}")
 
         # --- Trailing Stop（TP1触发后激活）---
         if tp_filled >= 1:
@@ -576,6 +630,7 @@ class ContractExecutor:
                 return None
 
             # P1-M: 通过风控检查后立即 mark 幂等窗口（即使后续下单失败，10s 内也不重试）
+            clord_id = None
             if self.idempotency:
                 clord_id = self.idempotency.gen_client_order_id(symbol, side)
                 self.idempotency.mark(symbol, side, clord_id)
@@ -622,7 +677,17 @@ class ContractExecutor:
                 filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id)
                 if filled is None:
                     return None
-                amount, fill_price = filled
+                amount, fill_price, limit_order_id = filled
+                if self.ledger:
+                    try:
+                        ledger_event = self.ledger.record_open(
+                            order_id=limit_order_id, symbol=symbol, side=side,
+                            amount_usdt=size_usdt, leverage=leverage,
+                            estimated_price=fill_price
+                        )
+                        fill_price = ledger_event['fill_price']
+                    except Exception as e:
+                        self.logger.warning(f"[Ledger] limit开仓记录失败: {e}")
             else:
                 if not self._check_slippage(symbol, size_usdt, current_price):
                     self.logger.info(f"滑点过大，降级为限价单")
@@ -630,7 +695,17 @@ class ContractExecutor:
                         filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id)
                         if filled is None:
                             return None
-                        amount, fill_price = filled
+                        amount, fill_price, limit_order_id = filled
+                        if self.ledger:
+                            try:
+                                ledger_event = self.ledger.record_open(
+                                    order_id=limit_order_id, symbol=symbol, side=side,
+                                    amount_usdt=size_usdt, leverage=leverage,
+                                    estimated_price=fill_price
+                                )
+                                fill_price = ledger_event['fill_price']
+                            except Exception as e:
+                                self.logger.warning(f"[Ledger] limit降级开仓记录失败: {e}")
                     else:
                         return None
                 else:
@@ -661,11 +736,23 @@ class ContractExecutor:
                     params.update(tp_sl_params)
                     if self.idempotency and 'clord_id' in dir():
                         params['clOrdId'] = clord_id
-                    self.exchange.create_order(
+                    plan_order = self.exchange.create_order(
                         symbol=symbol, type='market', side=order_side,
                         amount=amount, params=params
                     )
                     fill_price = current_price
+
+                    # 真实成交价：通过 ledger 查询
+                    if self.ledger and plan_order:
+                        try:
+                            ledger_event = self.ledger.record_open(
+                                order_id=plan_order['id'], symbol=symbol, side=side,
+                                amount_usdt=size_usdt, leverage=leverage,
+                                estimated_price=current_price
+                            )
+                            fill_price = ledger_event['fill_price']
+                        except Exception as e:
+                            self.logger.warning(f"[Ledger] plan开仓记录失败（降级用ticker）: {e}")
 
             # 成交后用实际成交价修正止盈止损（如果偏差较大）
             if abs(fill_price - current_price) / current_price > 0.002:
@@ -690,6 +777,9 @@ class ContractExecutor:
                 'tp_filled': 0,
                 'atr_pct': plan.get('atr_pct', 0.02),
                 'original_amount': size_usdt,
+                'entry_type': plan.get('entry_type', 'unknown'),
+                'attribution': plan.get('attribution', {}),
+                'open_time': time.time(),
             }
             self.positions[symbol] = position
             self._save_positions()
@@ -783,7 +873,7 @@ class ContractExecutor:
                     fill_price = status.get('average', limit_price)
                     filled_amount = status.get('filled', amount)
                     self.logger.info(f"限价单成交: {filled_amount:.6f} @ {fill_price:.2f}")
-                    return (filled_amount, fill_price)
+                    return (filled_amount, fill_price, order_id)
                 elif status['status'] == 'canceled':
                     return None
             except Exception:
@@ -818,12 +908,12 @@ class ContractExecutor:
             fallback_params.update(tp_sl_params)
         if clord_id:
             fallback_params['clOrdId'] = clord_id
-        order = self.exchange.create_order(
+        fallback_order = self.exchange.create_order(
             symbol=symbol, type='market', side=order_side,
             amount=amount, params=fallback_params
         )
         self.logger.info(f"限价单超时，市价成交: {amount:.6f} @ ~{new_price:.2f}")
-        return (amount, new_price)
+        return (amount, new_price, fallback_order['id'])
 
     def _check_slippage(self, symbol: str, size_usdt: float, current_price: float) -> bool:
         """检查滑点：spread > 0.1% 或深度不足则返回False"""
@@ -902,6 +992,7 @@ class ContractExecutor:
                         'amount_usdt': notional / lev,
                         'leverage': lev,
                         'unrealized_pnl': float(pos.get('unrealizedPnl', 0)),
+                        'open_time': time.time(),
                     }
 
             removed_symbols = []
@@ -1016,6 +1107,26 @@ class ContractExecutor:
                 amount=reduce_amount, params={'reduceOnly': True}
             )
 
+            # 真实成交 PnL：通过 ledger 记录减仓
+            reduce_usdt = position['amount_usdt'] * pct
+            realized_pnl = 0.0
+            if self.ledger:
+                try:
+                    ledger_event = self.ledger.record_reduce(
+                        order_id=order['id'], symbol=symbol, side=position['side'],
+                        entry_price=position['entry_price'],
+                        reduce_usdt=reduce_usdt,
+                        leverage=position.get('leverage', self.leverage),
+                        estimated_price=self.exchange.fetch_ticker(symbol)['last']
+                    )
+                    realized_pnl = ledger_event['realized_pnl']
+                except Exception as e:
+                    self.logger.warning(f"[Ledger] 减仓记录失败: {e}")
+
+            # 减仓 PnL 立即计入风控
+            if realized_pnl != 0:
+                self.risk_manager.record_trade(realized_pnl)
+
             position['amount'] -= reduce_amount
             position['amount_usdt'] *= (1 - pct)
 
@@ -1026,8 +1137,8 @@ class ContractExecutor:
                 self.logger.info(f"减仓后剩余量过小，视为全平: {symbol}")
             self._save_positions()
 
-            self.logger.info(f"减仓: {symbol} 减{pct*100:.0f}%, 剩余{position.get('amount', 0):.6f}")
-            return {'symbol': symbol, 'reduced_pct': pct, 'order': order}
+            self.logger.info(f"减仓: {symbol} 减{pct*100:.0f}%, 剩余{position.get('amount', 0):.6f}, PnL={realized_pnl:+.4f}")
+            return {'symbol': symbol, 'reduced_pct': pct, 'order': order, 'realized_pnl': realized_pnl}
 
         except Exception as e:
             self.logger.error(f"减仓失败: {e}")
@@ -1120,6 +1231,17 @@ class ContractExecutor:
                 symbol=symbol, type='market', side=order_side,
                 amount=amount, params=add_params
             )
+
+            # P1-4: 加仓 ledger 记录
+            if self.ledger and order:
+                try:
+                    self.ledger.record_open(
+                        order_id=order['id'], symbol=symbol, side=side,
+                        amount_usdt=add_usdt, leverage=leverage,
+                        estimated_price=current_price
+                    )
+                except Exception as e:
+                    self.logger.warning(f"[Ledger] 加仓记录失败: {e}")
 
             # 更新持仓记录：加权平均入场价
             old_amount = position['amount']

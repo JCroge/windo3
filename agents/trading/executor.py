@@ -8,6 +8,7 @@ import asyncio
 from dotenv import load_dotenv
 from agents.base import BaseAgent
 from executor import ContractExecutor
+from utils.halt_state import get_halt_state
 
 load_dotenv()
 
@@ -23,6 +24,7 @@ class MultiExecutor(BaseAgent):
         self._sync_counter = 0
         self._trading_halted = False
         self._open_fail_cooldown = {}  # {symbol: expire_timestamp}
+        self._halt_state = get_halt_state()
 
     async def setup(self):
         exchange_id = self.config.get('exchange', 'okx')
@@ -42,19 +44,21 @@ class MultiExecutor(BaseAgent):
         if msg['type'] == 'daily_hard_stop_triggered':
             self._trading_halted = True
             reason = msg.get('payload', {}).get('reason', 'unknown')
+            self._halt_state.halt(reason=reason, triggered_by="reviewer")
             self.logger.critical(f"[熔断] Daily Hard Stop 触发: {reason} — 停止新交易并全平持仓")
-            # 直接全平，不依赖 RiskGuard 转发（双保险）
             await self._close_all_positions(f"daily_hard_stop_{reason}")
             return
 
         if msg['type'] == 'system_command':
             cmd = msg.get('payload', {}).get('command', '')
+            source = msg.get('payload', {}).get('source', 'telegram')
             if cmd == 'halt':
                 self._trading_halted = True
-                self.logger.warning("[手动熔断] 通过Telegram触发")
+                self._halt_state.halt(reason="manual", triggered_by=source)
+                self.logger.warning(f"[手动熔断] 通过{source}触发")
             elif cmd == 'resume':
                 self._trading_halted = False
-                self.logger.info("[解除熔断] 通过Telegram触发")
+                self.logger.info(f"[解除熔断] 通过{source}触发")
             return
 
         if msg['type'] == 'trade_decision':
@@ -74,9 +78,12 @@ class MultiExecutor(BaseAgent):
         source = decision.get('source', '')
         size_pct = decision.get('size_pct', 1.0)
 
-        if self._trading_halted:
-            self.logger.warning(f"[熔断] 拒绝执行: {symbol} {action}")
-            return
+        if self._trading_halted or not self._halt_state.can_open_new:
+            if action in ('open_long', 'open_short'):
+                reason = "halted" if self._trading_halted else "reconciliation_pending"
+                self.logger.warning(f"[熔断] 拒绝执行: {symbol} {action} ({reason})")
+                return
+            # close 允许通过（保护性平仓）
 
         if action == 'hold' or not symbol:
             return
@@ -191,6 +198,11 @@ class MultiExecutor(BaseAgent):
                 "confidence": confidence,
                 "used_plan": plan is not None,
             }
+            # RQ-07: 传递归因字段
+            attribution = decision.get('attribution')
+            if attribution:
+                payload['attribution'] = attribution
+                result['attribution'] = attribution
             if source == 'position_analyst' and action in ('open_long', 'open_short'):
                 payload["is_add"] = True
             if source == 'position_analyst' and action == 'close' and size_pct < 1.0:
@@ -323,6 +335,7 @@ class MultiExecutor(BaseAgent):
                     "symbol": largest_sym,
                     "action": "reduce_50pct",
                     "trigger": alert_type,
+                    "result": {"pnl": result.get('realized_pnl', 0), "symbol": largest_sym},
                 }, symbol=largest_sym)
 
         elif alert_type == 'stale_position':
@@ -422,22 +435,47 @@ class MultiExecutor(BaseAgent):
             }, symbol=symbol)
 
     async def _notify_removed_positions(self):
-        """通知下游：持仓已被交易所平仓（SL/TP触发），含PnL估算"""
+        """通知下游：持仓已被交易所平仓（SL/TP触发），含真实PnL"""
         removed = self.executor.get_removed_symbols()
         removed_data = self.executor.get_removed_positions_data()
         data_map = {d['symbol']: d for d in removed_data}
 
         for symbol in removed:
             pos_data = data_map.get(symbol, {})
-            pnl = self._estimate_close_pnl(pos_data)
-            self.logger.info(f"[执行] {symbol} 被交易所平仓，估算PnL={pnl:+.3f} USDT")
+            pnl = self._get_external_close_pnl(symbol, pos_data)
+            self.logger.info(f"[执行] {symbol} 被交易所平仓，PnL={pnl:+.3f} USDT")
             await self.publish("execution_result", {
                 "status": "closed_externally",
                 "action": "close",
                 "symbol": symbol,
                 "reason": "exchange_sl_tp_triggered",
-                "result": {"pnl": pnl, "symbol": symbol},
+                "result": {"pnl": pnl, "symbol": symbol,
+                           "side": pos_data.get('side', ''),
+                           "entry_price": pos_data.get('entry_price', 0),
+                           "amount_usdt": pos_data.get('amount_usdt', 0)},
             }, symbol=symbol)
+
+    def _get_external_close_pnl(self, symbol: str, pos_data: dict) -> float:
+        """外部平仓 PnL：优先通过 ledger 查询交易所真实数据"""
+        if not pos_data:
+            return 0.0
+
+        ledger = getattr(self.executor, 'ledger', None)
+        if ledger:
+            try:
+                event = ledger.record_external_close(
+                    symbol=symbol,
+                    side=pos_data.get('side', 'long'),
+                    entry_price=pos_data.get('entry_price', 0),
+                    amount_usdt=pos_data.get('amount_usdt', 0),
+                    leverage=pos_data.get('leverage', 1) or 1,
+                )
+                if event.get('source') != 'estimated':
+                    return event['realized_pnl']
+            except Exception:
+                pass
+
+        return self._estimate_close_pnl(pos_data)
 
     def _estimate_close_pnl(self, pos_data: dict) -> float:
         """从本地持仓数据估算平仓PnL
@@ -472,9 +510,20 @@ class MultiExecutor(BaseAgent):
         return round(pnl, 4)
 
     async def _check_all_positions(self):
-        """兜底止损检查（交易所条件单失败时的安全网）"""
+        """兜底止损检查（交易所条件单失败时的安全网）+ RQ-04 早期复核"""
         positions = self.executor.get_all_positions()
         for symbol in list(positions.keys()):
+            # RQ-04: 早期持仓复核（前30分钟内）
+            pos = positions[symbol]
+            early_review_enabled = self.config.get('early_review_enabled', True)
+            if early_review_enabled:
+                open_time = pos.get('open_time', 0)
+                minutes_held = (time.time() - open_time) / 60 if open_time else 999
+                if 0 < minutes_held <= 30:
+                    early_action = await self._early_review(symbol, pos, minutes_held)
+                    if early_action:
+                        continue
+
             trigger = await asyncio.to_thread(self.executor.check_stop_loss_take_profit, symbol)
             if not trigger:
                 continue
@@ -513,3 +562,63 @@ class MultiExecutor(BaseAgent):
                         "status": "force_closed", "action": "close",
                         "symbol": symbol, "reason": trigger, "result": result,
                     }, symbol=symbol)
+
+    async def _early_review(self, symbol: str, pos: dict, minutes_held: float) -> bool:
+        """RQ-04: 早期持仓复核（入场后30分钟内）。
+
+        返回 True 表示已执行平仓动作，False 表示无动作。
+        """
+        if not hasattr(self, '_early_review_times'):
+            self._early_review_times = {}
+        review_key = f"_er_{symbol}"
+        last_review = self._early_review_times.get(review_key, 0)
+        if time.time() - last_review < 120:
+            return False
+
+        entry_price = pos.get('entry_price', 0)
+        stop_loss = pos.get('stop_loss', 0)
+        side = pos.get('side', 'long')
+
+        if not entry_price or not stop_loss:
+            return False
+
+        try:
+            ticker = await asyncio.to_thread(self.executor.exchange.fetch_ticker, symbol)
+            current_price = ticker['last']
+        except Exception:
+            return False
+
+        sl_dist = abs(entry_price - stop_loss)
+        if sl_dist == 0:
+            return False
+
+        pnl_dist = (current_price - entry_price) if side == 'long' else (entry_price - current_price)
+        r_multiple = pnl_dist / sl_dist
+
+        # 20min+: 达到 -0.5R → 收紧止损到 -0.7R 位置
+        if minutes_held >= 20 and r_multiple <= -0.5:
+            tighter_sl_dist = sl_dist * 0.7
+            if side == 'long':
+                new_sl = entry_price - tighter_sl_dist
+                if new_sl > pos['stop_loss']:
+                    self.logger.info(
+                        f"[EarlyReview] {symbol} {minutes_held:.0f}min R={r_multiple:.2f}, "
+                        f"收紧SL → {new_sl:.4f}"
+                    )
+                    pos['stop_loss'] = new_sl
+                    self.executor.positions[symbol] = pos
+                    self.executor._save_positions()
+            else:
+                new_sl = entry_price + tighter_sl_dist
+                if new_sl < pos['stop_loss']:
+                    self.logger.info(
+                        f"[EarlyReview] {symbol} {minutes_held:.0f}min R={r_multiple:.2f}, "
+                        f"收紧SL → {new_sl:.4f}"
+                    )
+                    pos['stop_loss'] = new_sl
+                    self.executor.positions[symbol] = pos
+                    self.executor._save_positions()
+
+            self._early_review_times[review_key] = time.time()
+
+        return False

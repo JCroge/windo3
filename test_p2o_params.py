@@ -24,7 +24,11 @@ def test_default_params_are_conservative():
     assert j._fallback_win_rate == 0.52, f"fallback 应=0.52，实际 {j._fallback_win_rate}"
     assert j._ev_min_threshold == 0.05, f"EV 阈值应=0.05，实际 {j._ev_min_threshold}"
     assert j._max_concurrent_positions == 3, f"并发上限应=3，实际 {j._max_concurrent_positions}"
-    print("  ✅ Case 1: 默认参数已调稳 (fallback=0.52, EV阈值=0.05, 并发=3)")
+    assert j._min_confidence == 60, f"开仓最低置信度应=60，实际 {j._min_confidence}"
+    assert j._min_deferred_signal_score == 45, (
+        f"回调最低信号强度应=45，实际 {j._min_deferred_signal_score}"
+    )
+    print("  ✅ Case 1: 默认参数已调稳 (fallback=0.52, EV阈值=0.05, 并发=3, min_conf=60)")
 
 
 def test_open_positions_tracked_on_executed():
@@ -167,6 +171,109 @@ def test_existing_symbol_not_blocked_by_limit():
     logging.disable(logging.NOTSET)
 
 
+def test_low_conf_rule_signal_blocked_before_live_open():
+    """rule_signal 触发但 LLM 观望导致 confidence<60 → Judge 直接 hold。"""
+    import logging
+    logging.disable(logging.CRITICAL)
+
+    j = _new_judge()
+    published = []
+
+    async def mock_publish(*args, **kwargs):
+        published.append((args, kwargs))
+    j.publish = mock_publish
+
+    async def mock_balance():
+        j._available_balance = 100.0
+    j._update_balance = mock_balance
+
+    async def mock_llm(*args, **kwargs):
+        return {'action': 'hold', 'confidence': 35, 'reasoning': 'mock neutral', 'key_factors': [], 'risk_warnings': []}
+    j._ask_llm = mock_llm
+
+    tech = {
+        'data_quality': {'degraded': False, 'dimensions_ok': 9, 'dimensions_total': 9},
+        'indicators': {'price': 100.0},
+        'momentum': {'rsi': 50, 'atr_pct': 0.02, 'volume_ratio': 1.0},
+        'trend': {'direction': 'neutral', 'strength': 45, 'higher_tf_bias': 'neutral', 'daily_bias': 'neutral'},
+        'levels': {'support': [98], 'resistance': [103]},
+        'money_flow': {'funding_rate': 0.0001, 'taker_pressure': 'neutral'},
+        'microstructure': {'whale_direction': 'neutral'},
+        'risk': {'liquidity_score': 50},
+        'crowd': {'contrarian_signal': 'neutral'},
+        'rule_signal': {'entry_long': True},
+    }
+    asyncio.get_event_loop().run_until_complete(j._make_decision('TEST-USDT', tech))
+
+    assert published, "应发布 hold 决策"
+    decision = published[-1][0][1]
+    assert decision['action'] == 'hold'
+    assert any('confidence=' in w for w in decision.get('risk_warnings', []))
+    print(f"  ✅ Case 7: rule_signal + LLM观望低置信度 → hold ({decision['reasoning']})")
+
+    logging.disable(logging.NOTSET)
+
+
+def test_deferred_pullback_weak_signal_blocked():
+    """弱信号延迟入场命中后，不得自动抬到 60 分进入实盘。"""
+    import logging
+    logging.disable(logging.CRITICAL)
+
+    j = _new_judge()
+    state = j._get_state('TEST-USDT')
+    state['deferred_entry'] = {
+        'action': 'open_long',
+        'signal_price': 100.0,
+        'signal_score': 25.0,
+        'target_price': 99.5,
+        'created_at': time.time(),
+        'chase_eligible': False,
+        'highest_since': 100.0,
+        'lowest_since': 100.0,
+        'timeout_hours': 3,
+    }
+
+    published = []
+
+    async def mock_publish(*args, **kwargs):
+        published.append((args, kwargs))
+    j.publish = mock_publish
+
+    async def mock_balance():
+        j._available_balance = 100.0
+    j._update_balance = mock_balance
+
+    tech = {
+        'data_quality': {'degraded': False, 'dimensions_ok': 9, 'dimensions_total': 9},
+        'indicators': {'price': 99.4},
+        'momentum': {'rsi': 50, 'atr_pct': 0.02, 'volume_ratio': 1.0},
+        'trend': {'direction': 'neutral', 'strength': 45, 'higher_tf_bias': 'neutral', 'daily_bias': 'neutral'},
+        'levels': {'support': [97], 'resistance': [103]},
+        'money_flow': {'funding_rate': 0.0001},
+        'microstructure': {'spread_pct': 0.01},
+        'risk': {'liquidity_score': 50},
+        'rule_signal': {'entry_long': True},
+        'entry_timing': {
+            'tf_15m_available': True, 'tf_15m_bias': 'bullish',
+            'tf_15m_confirm_long': True, 'tf_15m_block_long': False,
+            'tf_15m_confirm_short': False, 'tf_15m_block_short': False,
+            'tf_15m_rsi': 55, 'tf_15m_ma_alignment': 'bullish',
+            'tf_15m_recent_closes': 'up', 'tf_15m_momentum': 'rising',
+            'tf_15m_reason': '',
+        },
+    }
+    asyncio.get_event_loop().run_until_complete(j._make_decision('TEST-USDT', tech))
+
+    assert state.get('deferred_entry') is None
+    assert published, "应发布 hold 决策"
+    decision = published[-1][0][1]
+    assert decision['action'] == 'hold'
+    assert any('deferred_signal_score' in w for w in decision.get('risk_warnings', []))
+    print(f"  ✅ Case 8: 弱信号回调命中 → hold ({decision['reasoning']})")
+
+    logging.disable(logging.NOTSET)
+
+
 def main():
     print("=" * 60)
     print("P2-O: 参数稳健调整 测试")
@@ -177,8 +284,10 @@ def main():
     test_symbol_format_unified_on_close()
     test_concurrent_limit_blocks_new_open()
     test_existing_symbol_not_blocked_by_limit()
+    test_low_conf_rule_signal_blocked_before_live_open()
+    test_deferred_pullback_weak_signal_blocked()
     print("\n" + "=" * 60)
-    print("✅ 全部 6 个测试通过")
+    print("✅ 全部 8 个测试通过")
     print("=" * 60)
 
 

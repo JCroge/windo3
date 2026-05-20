@@ -84,6 +84,7 @@ class MultiTechAnalyst(BaseAgent):
         microstructure = self._analyze_microstructure(payload)
         crowd = self._analyze_crowd(payload.get('long_short_account', {}))
         risk = self._analyze_risk(payload)
+        entry_timing = self._analyze_entry_timing_15m(payload.get('klines_15m', []), payload.get('data_quality'))
 
         latest = df.iloc[-2]
         # MA alignment持续信号：MA fast/slow已对齐≥2根K线（含follow-through bar）
@@ -114,6 +115,7 @@ class MultiTechAnalyst(BaseAgent):
             "crowd": crowd,
             "risk": risk,
             "rule_signal": rule_signal,
+            "entry_timing": entry_timing,
             "indicators": {
                 "price": float(latest['close']),
                 "rsi": float(latest.get('rsi', 50)),
@@ -219,6 +221,126 @@ class MultiTechAnalyst(BaseAgent):
             "daily_near_resistance": daily_near_resistance,
             "daily_near_support": daily_near_support,
             "tf_4h_rsi": round(tf_4h_rsi, 1) if tf_4h_rsi else None,
+        }
+
+    # ═══ 15m 入场时机确认 ═══
+
+    def _analyze_entry_timing_15m(self, klines_15m: list, data_quality: dict = None) -> dict:
+        unavailable = {
+            "tf_15m_available": False,
+            "tf_15m_bias": "unavailable",
+            "tf_15m_ma_alignment": "unavailable",
+            "tf_15m_rsi": None,
+            "tf_15m_momentum": "flat",
+            "tf_15m_recent_closes": "mixed",
+            "tf_15m_confirm_long": False,
+            "tf_15m_confirm_short": False,
+            "tf_15m_block_long": False,
+            "tf_15m_block_short": False,
+            "tf_15m_reason": "15m data unavailable",
+        }
+        # 统一使用 data_quality.tf_15m_ok（含新鲜度判断）
+        if data_quality and not data_quality.get('tf_15m_ok', False):
+            unavailable['tf_15m_reason'] = "15m stale or insufficient" if data_quality.get('tf_15m_stale') else "15m data unavailable"
+            return unavailable
+        if not klines_15m or len(klines_15m) < 50:
+            return unavailable
+
+        df = pd.DataFrame(klines_15m, columns=['open_time', 'open', 'high', 'low', 'close', 'volume'])
+        df['close'] = df['close'].astype(float)
+
+        # MA(7) / MA(25)
+        ma_fast = df['close'].rolling(7).mean()
+        ma_slow = df['close'].rolling(25).mean()
+
+        # RSI(14)
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / loss.replace(0, 1e-9)
+        rsi_series = 100 - 100 / (1 + rs)
+
+        # 使用已闭合 K 线 (iloc[-2])
+        if len(df) < 27:
+            return unavailable
+
+        latest_ma_fast = float(ma_fast.iloc[-2])
+        latest_ma_slow = float(ma_slow.iloc[-2])
+        rsi_val = float(rsi_series.iloc[-2]) if not pd.isna(rsi_series.iloc[-2]) else 50.0
+
+        # MA alignment
+        if latest_ma_fast > latest_ma_slow:
+            ma_alignment = "bullish"
+        elif latest_ma_fast < latest_ma_slow:
+            ma_alignment = "bearish"
+        else:
+            ma_alignment = "neutral"
+
+        # 最近 3 根已闭合 close 方向
+        closes_3 = df['close'].iloc[-4:-1].values  # -4,-3,-2 (3根已闭合)
+        if len(closes_3) == 3:
+            if closes_3[2] > closes_3[1] > closes_3[0]:
+                recent_closes = "up"
+            elif closes_3[2] < closes_3[1] < closes_3[0]:
+                recent_closes = "down"
+            else:
+                recent_closes = "mixed"
+        else:
+            recent_closes = "mixed"
+
+        # Momentum: 比较当前 MA fast 与 2 根前的 MA fast
+        prev_ma_fast = float(ma_fast.iloc[-4]) if len(ma_fast) >= 4 and not pd.isna(ma_fast.iloc[-4]) else latest_ma_fast
+        if latest_ma_fast > prev_ma_fast * 1.0001:
+            momentum = "rising"
+        elif latest_ma_fast < prev_ma_fast * 0.9999:
+            momentum = "falling"
+        else:
+            momentum = "flat"
+
+        # Bias 综合判断
+        bullish_signals = (ma_alignment == "bullish") + (rsi_val > 52) + (recent_closes == "up")
+        bearish_signals = (ma_alignment == "bearish") + (rsi_val < 48) + (recent_closes == "down")
+        if bullish_signals >= 2:
+            bias = "bullish"
+        elif bearish_signals >= 2:
+            bias = "bearish"
+        else:
+            bias = "neutral"
+
+        # Block / Confirm 逻辑
+        block_long = (
+            (ma_alignment == "bearish" and rsi_val < 48) or
+            (recent_closes == "down" and rsi_val < 50) or
+            (bias == "bearish" and momentum == "falling")
+        )
+        block_short = (
+            (ma_alignment == "bullish" and rsi_val > 52) or
+            (recent_closes == "up" and rsi_val > 50) or
+            (bias == "bullish" and momentum == "rising")
+        )
+        confirm_long = (bias == "bullish" and not block_long)
+        confirm_short = (bias == "bearish" and not block_short)
+
+        reason_parts = []
+        if block_long:
+            reason_parts.append(f"block_long: MA={ma_alignment} RSI={rsi_val:.1f} closes={recent_closes}")
+        if block_short:
+            reason_parts.append(f"block_short: MA={ma_alignment} RSI={rsi_val:.1f} closes={recent_closes}")
+        if not reason_parts:
+            reason_parts.append(f"bias={bias} MA={ma_alignment} RSI={rsi_val:.1f}")
+
+        return {
+            "tf_15m_available": True,
+            "tf_15m_bias": bias,
+            "tf_15m_ma_alignment": ma_alignment,
+            "tf_15m_rsi": round(rsi_val, 1),
+            "tf_15m_momentum": momentum,
+            "tf_15m_recent_closes": recent_closes,
+            "tf_15m_confirm_long": confirm_long,
+            "tf_15m_confirm_short": confirm_short,
+            "tf_15m_block_long": block_long,
+            "tf_15m_block_short": block_short,
+            "tf_15m_reason": "; ".join(reason_parts),
         }
 
     # ═══ 2. 关键价位 ═══
@@ -506,8 +628,8 @@ class MultiTechAnalyst(BaseAgent):
         bid_depth = ob.get('bid_depth_usd', 0)
         ask_depth = ob.get('ask_depth_usd', 0)
         spread = ob.get('spread_pct', 1)
-        depth_score = min(100, int((bid_depth + ask_depth) / 100_000))
-        spread_penalty = min(50, int(spread * 1000))
+        depth_score = min(100, int((bid_depth + ask_depth) / 20_000))
+        spread_penalty = min(30, int(spread * 100))
         liquidity = max(0, depth_score - spread_penalty)
 
         return {

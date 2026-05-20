@@ -50,6 +50,7 @@ crypto-arbitrage/
 │   ├── klines.db          # ✅ K线数据
 │   ├── risk_state.json    # ✅ 风控状态持久化
 │   ├── positions.json     # ✅ 持仓记录持久化
+│   ├── judge_state.json   # ✅ Judge风险状态持久化（deferred/cooldown/sl_timestamps）
 │   ├── trade_history.json # ✅ 交易历史持久化（ReviewerAgent）
 │   └── riskguard_state.json # ✅ RiskGuard状态持久化
 ├── agents/                # ✅ 多Agent交易系统（两层架构）
@@ -92,9 +93,9 @@ crypto-arbitrage/
 ## 核心约束
 
 ### 风控参数（不可突破）
-- 单次最大交易额：10 USDT
+- 单次最大交易额：500 USDT（config.yaml，HARD_LIMITS上限10000）
 - 最大回撤：20%
-- 每日最大亏损：50 USDT
+- 每日最大亏损：300 USDT（config.yaml）
 
 ### 交易所
 - 主要：Binance + OKX
@@ -418,11 +419,36 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **向后兼容**：旧持仓无新字段时走原逻辑（单TP+固定SL）
 
 ### 🔄 Phase 8: 待开发
-- 大摸底Phase A-D：入场门槛优化（开仓率7.8%→15-20%）
 - Predictor（趋势预测Agent）
 - 更多数据源（链上大额转账、清算数据）
 - 参数 grid search（基于 event_backtest）
 - P3-R 验收测试体系
+- OKX testnet 端到端矩阵验证
+
+### ✅ RQ-15M: 15m 入场确认层（2026-05-20完成）
+- **问题**：1h setup 成立时直接开仓，多次开仓方向与 15m K 线趋势背驰
+- **DataCollector**：`_collect_15m(symbol)` 采集 100 根 15m K 线，含新鲜度追踪（`klines_15m_updated_at`/`klines_15m_last_ts`/`klines_15m_error`），stale 判定 age > 2×15min
+- **TechAnalyst**：`_analyze_entry_timing_15m()` 使用 iloc[-2]（已闭合），MA(7)/MA(25)、RSI(14)、recent 3 closes 方向，输出 bias/confirm/block
+- **Judge 硬过滤**：`_check_15m_entry_timing()` 在 EV gate 通过后、发布 open 前执行。block→deferred_15m_confirmation / confirm→pass / neutral+strong+HTF同向→pass
+- **Deferred 15m**：`deferred_15m_confirmation` 类型不检查价格回调，只等 15m 转向，超时由 `entry_timing_15m_timeout_hours` 控制
+- **Attribution**：所有开仓决策包含 `tf_15m_bias`/`tf_15m_rsi`/`tf_15m_ma_alignment`/`tf_15m_recent_closes`/`tf_15m_entry_status`/`tf_15m_block_reason`
+- **配置**：`ENTRY_TIMING_15M_ENABLED`/`_REQUIRED`/`_NEUTRAL_ALLOWS_STRONG_SIGNAL`/`_STRONG_SCORE_THRESHOLD`/`_DEFER_ON_BLOCK`/`_TIMEOUT_HOURS`
+
+### ✅ 第三次审计 P1/P2 修复（2026-05-20完成）
+- **P1-1**：15m 数据新鲜度 stale 检测（age > 30min → tf_15m_stale=True）
+- **P1-2**：deferred_15m_confirmation 路径补齐 `_open_quality_rejection()` + `_build_attribution()`
+- **P1-3**：Research cycle_id 切换修复（新 cycle market_data 到达时清空 pending 并切换）
+- **P1-4**：Ledger limit open + add lifecycle（`_execute_limit_order` 返回 order_id，limit/fallback/add 路径均调用 `ledger.record_open()`）
+- **P1-5**：CandidateRanker docstring 明确"仅用于归因，Top-N 未启用"
+- **P1-6**：Judge state 持久化 `data/judge_state.json`（deferred_entry/sl_timestamps/cooldown timestamps，原子写入，启动时恢复有效状态）
+- **P1-7**：LLM degraded 连续 3 次失败后发布 `risk_alert` 告警
+- **P2-1**：15m 配置纳入 `config_loader.py` DEFAULTS + env_map
+- **P2-2**：neutral 强信号放行增加 `_has_directional_confirmation()` HTF 同向条件
+- **P2-3**：新增 `test_15m_e2e.py` 端到端集成测试（5 tests）
+- **P2-4**：Telegram `/status` 展示 HaltState 对账状态
+- **P2-5**：PA `closed_externally` 时清理 `_pending_reviews`
+- **P2-6**：LiveLedger `position_id` 改用 uuid 防碰撞
+- **最终 CI**：`python3 -m pytest -q` → 252 passed / 4 deselected / 1 warning / ~159s
 
 ### ✅ Phase 7+: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
 - **4h RSI 二级保护**：`judge.py _compute_score` 末尾——1h RSI 未触发硬cap但 4h RSI ≥70/≤30 时 score×0.5。根因 ZEC 事故（1h=64 但 4h=73.9 仍开多 20x→-135）
@@ -469,7 +495,7 @@ python3 run_agents.py
 # Agent系统集成测试
 python3 test_agents_integration.py
 
-# 完整 CI 回归（默认排除 network 标记，184 passed / 3 deselected）
+# 完整 CI 回归（默认排除 network 标记，252 passed / 4 deselected）
 python3 -m pytest -q
 
 # 或使用启动脚本

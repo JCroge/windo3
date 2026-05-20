@@ -27,6 +27,12 @@ HARD_LIMITS = {
     "consecutive_loss_limit": (1, 20),           # 连续亏损次数熔断
     "leverage": (1, 100),                        # 杠杆倍数
     "effective_balance_cap": (10.0, 1_000_000.0),  # 逻辑账户拆分上限 USDT
+    "min_confidence": (1, 100),                    # 实盘开仓最低置信度
+    "min_deferred_signal_score": (1, 100),          # 回调入场最低原始信号强度
+    "min_liquidity_score_for_weak_signal": (0, 100), # 弱信号最低流动性评分
+    "ev_prior_wins": (0, 50),                       # Bayesian EV 先验胜场
+    "ev_prior_total": (1, 100),                     # Bayesian EV 先验总场
+    "ev_strong_signal_threshold": (30, 100),        # EV 强信号豁免阈值
 }
 
 
@@ -48,6 +54,29 @@ DEFAULTS = {
     # 逻辑账户拆分：None=用真实余额；设值则 risk_budget 用 min(real, cap)
     # 设计意图：6020 USDT 总余额中只让 1000 USDT 参与风控计算，相当于OKX逻辑拆分
     "effective_balance_cap": None,
+    # 交易质量门：Judge/Executor/PaperExecutor 统一口径
+    "min_confidence": 60,
+    "min_deferred_signal_score": 45,
+    "min_liquidity_score_for_weak_signal": 1,
+    # RQ-01: Bayesian EV 保守化
+    "ev_prior_wins": 2,
+    "ev_prior_total": 5,
+    "ev_strong_signal_threshold": 70,
+    # RQ-06: 信号原型 cooldown
+    "archetype_cooldown_enabled": True,
+    # RQ-04: 早期持仓复核
+    "early_review_enabled": True,
+    # RQ-05: 盈利保护
+    "profit_protection_enabled": True,
+    # RQ-03: 候选排序
+    "ranking_enabled": True,
+    # RQ-15M: 15m 入场时机确认
+    "entry_timing_15m_enabled": True,
+    "entry_timing_15m_required": True,
+    "entry_timing_15m_neutral_allows_strong_signal": True,
+    "entry_timing_15m_strong_score_threshold": 70,
+    "entry_timing_15m_defer_on_block": True,
+    "entry_timing_15m_timeout_hours": 4,
 }
 
 
@@ -105,6 +134,24 @@ def _read_env_overrides() -> dict:
         "RESEARCH_INTERVAL": ("research_interval", int),
         "MAX_ACTIVE_SYMBOLS": ("max_active_symbols", int),
         "EFFECTIVE_BALANCE_CAP": ("effective_balance_cap", float),
+        "MIN_CONFIDENCE": ("min_confidence", int),
+        "MIN_DEFERRED_SIGNAL_SCORE": ("min_deferred_signal_score", int),
+        "MIN_LIQUIDITY_SCORE_FOR_WEAK_SIGNAL": ("min_liquidity_score_for_weak_signal", int),
+        # RQ-01/06/04/05/03/09: 策略优化参数
+        "EV_PRIOR_WINS": ("ev_prior_wins", int),
+        "EV_PRIOR_TOTAL": ("ev_prior_total", int),
+        "EV_STRONG_SIGNAL_THRESHOLD": ("ev_strong_signal_threshold", int),
+        "ARCHETYPE_COOLDOWN_ENABLED": ("archetype_cooldown_enabled", _to_bool),
+        "EARLY_REVIEW_ENABLED": ("early_review_enabled", _to_bool),
+        "PROFIT_PROTECTION_ENABLED": ("profit_protection_enabled", _to_bool),
+        "RANKING_ENABLED": ("ranking_enabled", _to_bool),
+        # RQ-15M: 15m 入场时机确认
+        "ENTRY_TIMING_15M_ENABLED": ("entry_timing_15m_enabled", _to_bool),
+        "ENTRY_TIMING_15M_REQUIRED": ("entry_timing_15m_required", _to_bool),
+        "ENTRY_TIMING_15M_NEUTRAL_ALLOWS_STRONG_SIGNAL": ("entry_timing_15m_neutral_allows_strong_signal", _to_bool),
+        "ENTRY_TIMING_15M_STRONG_SCORE_THRESHOLD": ("entry_timing_15m_strong_score_threshold", int),
+        "ENTRY_TIMING_15M_DEFER_ON_BLOCK": ("entry_timing_15m_defer_on_block", _to_bool),
+        "ENTRY_TIMING_15M_TIMEOUT_HOURS": ("entry_timing_15m_timeout_hours", int),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
@@ -200,6 +247,9 @@ def format_banner(cfg: dict) -> str:
         f"  研判周期:              {cfg.get('research_interval') // 3600}h",
         f"  最大活跃标的:          {cfg.get('max_active_symbols')}",
         f"  逻辑账户拆分:          {cfg.get('effective_balance_cap') or '未启用（用真实余额）'}",
+        f"  开仓最低置信度:        {cfg.get('min_confidence')}",
+        f"  回调最低信号强度:      {cfg.get('min_deferred_signal_score')}",
+        f"  弱信号最低流动性:      {cfg.get('min_liquidity_score_for_weak_signal')}",
         "=" * 60,
     ]
     return "\n".join(lines)

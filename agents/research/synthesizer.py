@@ -90,20 +90,66 @@ class ResearchSynthesizer(BaseAgent):
         self._max_symbols = 12
         self._preliminary_result = None
         self._market_context = ""
+        self._barrier_event = None
+        self._barrier_timeout = 20
+        self._current_cycle_id = None
 
     async def setup(self):
         self.init_llm()
         self.logger.info("研判综合Agent就绪（两阶段决策）")
+
+    def _all_research_data_ready(self) -> bool:
+        return all(k in self._pending_data for k in
+                   ('research_market_data', 'research_sentiment_data', 'research_news_data'))
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'research_challenge':
             await self._final_decision(msg['payload'])
             return
 
-        self._pending_data[msg['type']] = msg['payload']
+        payload = msg['payload']
+        incoming_cycle = payload.get('cycle_id')
 
-        if 'research_market_data' in self._pending_data:
-            await self._preliminary_synthesis()
+        # research_market_data 开启新 cycle：允许切换并清空旧 pending
+        if msg['type'] == 'research_market_data' and incoming_cycle:
+            if self._current_cycle_id and incoming_cycle != self._current_cycle_id:
+                self.logger.info(f"[研判] 新cycle开始: {incoming_cycle} (旧={self._current_cycle_id})，清空pending")
+                self._pending_data.clear()
+            self._current_cycle_id = incoming_cycle
+
+        # 非 market_data 消息：丢弃不属于当前 cycle 的迟到数据
+        elif incoming_cycle and self._current_cycle_id and incoming_cycle != self._current_cycle_id:
+            self.logger.info(f"[研判] 丢弃过期数据 {msg['type']} cycle={incoming_cycle} (当前={self._current_cycle_id})")
+            return
+
+        self._pending_data[msg['type']] = payload
+
+        if 'research_market_data' not in self._pending_data:
+            return
+
+        if self._all_research_data_ready():
+            if self._barrier_event:
+                self._barrier_event.set()
+            else:
+                await self._preliminary_synthesis()
+        elif not self._barrier_event:
+            import asyncio
+            self._barrier_event = asyncio.Event()
+            asyncio.create_task(self._wait_and_synthesize())
+
+    async def _wait_and_synthesize(self):
+        """等待三路数据到齐或超时后触发初选"""
+        import asyncio
+        try:
+            await asyncio.wait_for(self._barrier_event.wait(), timeout=self._barrier_timeout)
+        except asyncio.TimeoutError:
+            missing = [k.replace('research_', '') for k in
+                       ('research_market_data', 'research_sentiment_data', 'research_news_data')
+                       if k not in self._pending_data]
+            self.logger.warning(f"[研判] 等待{self._barrier_timeout}s超时，缺失: {missing}，降级初选")
+        finally:
+            self._barrier_event = None
+        await self._preliminary_synthesis()
 
     async def _preliminary_synthesis(self):
         """第一阶段：初选"""
@@ -149,6 +195,7 @@ class ResearchSynthesizer(BaseAgent):
             "selected": selected,
             "market_regime": market_regime,
             "market_context": self._market_context,
+            "cycle_id": self._current_cycle_id,
         })
 
     async def _final_decision(self, challenge: dict):
@@ -211,6 +258,7 @@ class ResearchSynthesizer(BaseAgent):
             "overall_assessment": result.get('overall_assessment', '') if 'result' in dir() else '',
             "total_candidates": preliminary['total_candidates'],
             "censor_incorporated": True,
+            "cycle_id": self._current_cycle_id,
         })
 
     def _build_final_decision_request(self, selected: list, challenges: list,
