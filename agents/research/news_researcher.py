@@ -32,12 +32,14 @@ class NewsResearcher(BaseAgent):
         super().__init__(config)
         self._fetch_timeout = 15
         self._max_articles_per_feed = 10
+        self._current_cycle_id = None
 
     async def setup(self):
         self.logger.info("新闻研究Agent就绪")
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'research_trigger':
+            self._current_cycle_id = msg.get('payload', {}).get('cycle_id')
             await self._fetch_news()
 
     async def _fetch_news(self):
@@ -66,6 +68,7 @@ class NewsResearcher(BaseAgent):
             "symbol_mentions": symbol_mentions,
             "sources_ok": sum(1 for r in results if not isinstance(r, Exception)),
             "sources_total": len(RSS_FEEDS),
+            "cycle_id": self._current_cycle_id,
         })
 
         self.logger.info(

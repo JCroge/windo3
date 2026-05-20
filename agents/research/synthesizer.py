@@ -93,6 +93,7 @@ class ResearchSynthesizer(BaseAgent):
         self._barrier_event = None
         self._barrier_timeout = 20
         self._current_cycle_id = None
+        self._pending_by_cycle = {}  # {cycle_id: {msg_type: payload}}
 
     async def setup(self):
         self.init_llm()
@@ -104,25 +105,44 @@ class ResearchSynthesizer(BaseAgent):
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'research_challenge':
+            challenge_cycle = msg['payload'].get('cycle_id')
+            if challenge_cycle and self._current_cycle_id and challenge_cycle != self._current_cycle_id:
+                self.logger.info(f"[研判] 丢弃过期谏言 cycle={challenge_cycle} (当前={self._current_cycle_id})")
+                return
             await self._final_decision(msg['payload'])
             return
 
         payload = msg['payload']
         incoming_cycle = payload.get('cycle_id')
 
-        # research_market_data 开启新 cycle：允许切换并清空旧 pending
+        if incoming_cycle:
+            # 按 cycle_id 分桶缓存，任何一路都可以初始化桶
+            if incoming_cycle not in self._pending_by_cycle:
+                self._pending_by_cycle[incoming_cycle] = {}
+            self._pending_by_cycle[incoming_cycle][msg['type']] = payload
+
+            # 清理过期桶（只保留最新2个）
+            if len(self._pending_by_cycle) > 2:
+                oldest = sorted(self._pending_by_cycle.keys())[0]
+                del self._pending_by_cycle[oldest]
+
+        # research_market_data 到达时激活该 cycle
         if msg['type'] == 'research_market_data' and incoming_cycle:
             if self._current_cycle_id and incoming_cycle != self._current_cycle_id:
-                self.logger.info(f"[研判] 新cycle开始: {incoming_cycle} (旧={self._current_cycle_id})，清空pending")
-                self._pending_data.clear()
+                self.logger.info(f"[研判] 新cycle激活: {incoming_cycle} (旧={self._current_cycle_id})")
             self._current_cycle_id = incoming_cycle
-
-        # 非 market_data 消息：丢弃不属于当前 cycle 的迟到数据
-        elif incoming_cycle and self._current_cycle_id and incoming_cycle != self._current_cycle_id:
-            self.logger.info(f"[研判] 丢弃过期数据 {msg['type']} cycle={incoming_cycle} (当前={self._current_cycle_id})")
+            # 从桶中恢复该 cycle 已到达的数据
+            bucket = self._pending_by_cycle.get(incoming_cycle, {})
+            self._pending_data = dict(bucket)
+        elif incoming_cycle and incoming_cycle == self._current_cycle_id:
+            self._pending_data[msg['type']] = payload
+        elif not incoming_cycle:
+            # 无 cycle_id 的消息直接存入当前 pending
+            self._pending_data[msg['type']] = payload
+        else:
+            # 非当前 cycle 且非 market_data：已存入桶，等 market 激活
+            self.logger.debug(f"[研判] {msg['type']} cycle={incoming_cycle} 已缓存，等待market激活")
             return
-
-        self._pending_data[msg['type']] = payload
 
         if 'research_market_data' not in self._pending_data:
             return

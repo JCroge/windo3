@@ -71,11 +71,12 @@ python3 test_full_verification.py
 
 说明：默认 pytest 排除 `network` 标记的外部依赖测试；真实 OKX/Telegram 冒烟依赖本机网络和凭证。
 
-## 风控参数（硬限制）
+## 风控参数（当前实盘配置）
 
-- 单次最大交易额：10 USDT
+- 单笔最大保证金：30 USDT（`MAX_TRADE_AMOUNT=30`）
+- 逻辑账户拆分：300 USDT（`EFFECTIVE_BALANCE_CAP=300`）
 - 最大回撤：20%
-- 每日最大亏损：50 USDT
+- 每日最大亏损：300 USDT（`daily_pnl_hard_stop=-300`）
 
 ## 文档
 

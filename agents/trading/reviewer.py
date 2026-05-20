@@ -65,6 +65,25 @@ class ReviewerAgent(BaseAgent):
         payload = msg['payload']
         status = payload.get('status')
 
+        # 记录减仓 PnL（risk_reduced 状态）
+        if status == 'risk_reduced':
+            result = payload.get('result', {})
+            pnl = result.get('pnl', result.get('realized_pnl', 0))
+            if pnl != 0:
+                symbol = msg.get('symbol') or payload.get('symbol')
+                trade_record = {
+                    'timestamp': msg['timestamp'],
+                    'symbol': symbol,
+                    'status': 'risk_reduced',
+                    'pnl': pnl,
+                    'event_type': 'reduce',
+                    'confidence': payload.get('confidence', 0),
+                }
+                self.trade_history.append(trade_record)
+                self._save_trade_history()
+                self.logger.info(f"[复盘] 记录减仓: {symbol} PnL={pnl:+.4f} USDT")
+            return
+
         # 只记录已完成的交易（executed或force_closed或closed_externally）
         if status not in ('executed', 'force_closed', 'closed_externally'):
             return
@@ -72,22 +91,40 @@ class ReviewerAgent(BaseAgent):
         action = payload.get('action', '')
         result = payload.get('result', {})
 
-        # 只记录开仓，平仓时计算盈亏
+        # 开仓：不记录 PnL
         if action in ('open_long', 'open_short') and status == 'executed':
-            # 记录开仓信息，等待平仓时补充
             pass
         elif action == 'close' or status in ('force_closed', 'closed_externally'):
             # 平仓：记录完整交易
             symbol = msg.get('symbol') or payload.get('symbol')
-            pnl = result.get('pnl', 0)
+            pnl = result.get('pnl', result.get('realized_pnl', 0))
 
             trade_record = {
                 'timestamp': msg['timestamp'],
                 'symbol': symbol,
                 'status': status,
                 'pnl': pnl,
+                'side': result.get('side', ''),
+                'entry_price': result.get('entry_price', 0),
+                'exit_price': result.get('exit_price', 0),
+                'event_type': 'close',
                 'confidence': payload.get('confidence', 0),
+                'exit_reason': result.get('exit_reason', status),
             }
+
+            # RQ-07: 归因字段（从 execution_result 中提取）
+            attribution = result.get('attribution') or payload.get('attribution', {})
+            if attribution:
+                trade_record['entry_type'] = attribution.get('entry_type', 'unknown')
+                trade_record['rule_signal_type'] = attribution.get('rule_signal_type', 'none')
+                trade_record['signal_score'] = attribution.get('signal_score', 0)
+                trade_record['llm_relation'] = attribution.get('llm_relation', 'neutral')
+                trade_record['htf_votes'] = attribution.get('htf_votes', 0)
+                trade_record['liquidity_bucket'] = attribution.get('liquidity_bucket', 'unknown')
+                trade_record['rr_bucket'] = attribution.get('rr_bucket', 'unknown')
+                trade_record['ev_at_entry'] = attribution.get('ev_at_entry', 0)
+                trade_record['p_win_used'] = attribution.get('p_win_used', 0)
+                trade_record['p_win_source'] = attribution.get('p_win_source', 'unknown')
 
             self.trade_history.append(trade_record)
             self._save_trade_history()

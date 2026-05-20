@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：PnL追踪+递增冷却+上线时间过滤完成（2026-05-17）
-**下一阶段**：Phase 7（AI-USDT策略级优化、Predictor、Paper Trading、更多数据源）
+**当前阶段**：多 Agent 风控/15m 入场/Ranking/PnL 账本修复完成并通过最终审计（2026-05-20）
+**下一阶段**：修复最终审计遗留项后，进入 paper/testnet 连续验收和真实回测复验
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -547,6 +547,56 @@
    - 问题：`test_grid_search_trending` / `test_grid_search_choppy` / `test_grid_search_robustness` 三个测试函数返回 dict，pytest 报 `PytestReturnNotNoneWarning`
    - 修复：删除三处 `return` 语句（assert 已足够，返回值无意义）
    - 结果：`python3 -m pytest -q` → 184 passed / 4 deselected / 264 warnings / 229s
+
+### ✅ 最终审计收尾（2026-05-20）
+
+1. **已闭环修复**
+   - 15m 入场确认改为记录已闭合 K 线时间戳，避免用未收盘 15m K 线做入场判断
+   - Judge Ranking 启用 Top-N 短窗口裁决，selected 后进入 `_pending_open_symbols`，收到 `execution_result` 后释放或确认
+   - LiveLedger 加仓改为 `record_add()`，同一持仓生命周期维护加权均价、累计保证金和加仓次数
+   - Reconciler 查询失败改为 `query_ok=False` 并返回告警，避免 API 不可用时误判“无偏差”
+   - Telegram `/status` 读取 `HaltState.reason`，修复熔断状态展示字段错误
+   - README 和 runbook 已同步当前实盘风控口径与主入口
+
+2. **最终验证结果**
+   - `PYTHONPYCACHEPREFIX=/private/tmp/crypto-arbitrage-pycache python3 -m compileall -q .` 通过
+   - `PYTHONPYCACHEPREFIX=/private/tmp/crypto-arbitrage-pycache python3 -m pytest -q` → 263 passed / 4 deselected / 1 warning / 143.68s
+
+3. **下次优先处理**
+   - ~~Synthesizer 第 2 轮及以后可能丢弃先返回的 sentiment/news~~ → ✅ 已修复：按 `cycle_id` 分桶缓存，任一路可初始化桶，market_data 激活时恢复
+   - ~~Executor 对 halt、cooldown、已有持仓等静默拒单路径应统一发布 rejected `execution_result`~~ → ✅ 已修复：所有拒单路径发布 rejected + Judge pending TTL 120s 自动释放
+   - ~~`rank_flush_delay` 有默认值和硬限制，但缺 `RANK_FLUSH_DELAY` 环境变量映射~~ → ✅ 已修复：RANK_FLUSH_DELAY + MAX_CONCURRENT_POSITIONS 纳入 env_map/HARD_LIMITS/banner/runbook/.env.example
+   - ~~PnL `utils.reconciliation.Reconciler` 已有单测，但尚未接入运行期定时告警~~ → ✅ 已修复：Executor tick 每 10min 执行对账，偏差发布 risk_alert
+
+### ✅ 最终审计收尾第二轮（2026-05-20 晚）
+
+1. **Synthesizer cycle 分桶**（`agents/research/synthesizer.py`）
+   - 问题：第 2 轮及以后 sentiment/news 先到会被丢弃（cycle_id 不匹配当前 cycle）
+   - 修复：新增 `_pending_by_cycle = {}` 按 cycle_id 分桶缓存；任一路数据可初始化桶；market_data 到达时激活该 cycle 并从桶恢复已到达数据；保留最新 2 个桶防内存泄漏
+   - 测试：`test_synthesizer_cycle.py` 3 tests（sentiment先到不丢失 / 旧cycle challenge丢弃 / 桶清理保留最新2个）
+
+2. **Executor 拒单事件 + Judge pending TTL**（`agents/trading/executor.py` + `agents/trading/judge.py`）
+   - 问题：halt/reconciliation/cooldown/balance_fail/low_confidence 等拒单路径不发布 execution_result，导致 Judge pending 槽位永久占用
+   - 修复 Executor：所有 open_long/open_short 拒单路径统一发布 `{"status": "rejected", "reason": "...", ...}`
+   - 修复 Judge：新增 `_sweep_stale_pending()` 方法，在两处 `occupied` 计算前调用；超过 120s 未收到 execution_result 的 pending 自动释放
+   - 测试：`test_ranking_slots.py` 新增 TTL sweep 测试（共 9 tests 全过）
+
+3. **RANK_FLUSH_DELAY + MAX_CONCURRENT_POSITIONS 配置化**（`utils/config_loader.py`）
+   - 新增 HARD_LIMITS：`max_concurrent_positions: (1, 20)`
+   - 新增 DEFAULTS：`max_concurrent_positions: 3`
+   - 新增 env_map：`RANK_FLUSH_DELAY` + `MAX_CONCURRENT_POSITIONS`
+   - banner 新增"最大并发持仓"行
+   - `.env.example` 和 `docs/runbook.md` 同步
+
+4. **Reconciler 运行期接入**（`agents/trading/executor.py`）
+   - 修复：`MultiExecutor.setup()` 初始化 `Reconciler(exchange, ledger)`
+   - `tick()` 每 10min（`should_run(interval_sec=600)`）执行 `run_and_report()`
+   - 偏差或 API 失败时发布 `risk_alert`（type: reconciliation_mismatch），Telegram 和 RiskGuard 自动接收
+
+5. **验证结果**
+   - `python3 -m pytest -q` → 266 passed / 4 deselected / 1 warning / ~160s
+   - 1 flaky（test_phase_c.py MessageBus 单例状态泄漏，单独运行通过）
+   - 系统已重启（PID 11132）
 
 ## 技术债务
 

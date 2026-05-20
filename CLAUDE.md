@@ -126,7 +126,8 @@ crypto-arbitrage/
 | ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-opus-4-7） |
 | RESEARCH_INTERVAL | 研判层运行周期（秒） | 否（默认14400=4h） |
 | MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认5） |
-| MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认5） |
+| MAX_CONCURRENT_POSITIONS | 最大并发持仓数 | 否（默认3） |
+| RANK_FLUSH_DELAY | Ranking flush窗口秒数 | 否（默认5.0） |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | 否（留空则不启用通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | 否（留空则不启用通知） |
 
@@ -448,7 +449,14 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **P2-4**：Telegram `/status` 展示 HaltState 对账状态
 - **P2-5**：PA `closed_externally` 时清理 `_pending_reviews`
 - **P2-6**：LiveLedger `position_id` 改用 uuid 防碰撞
-- **最终 CI**：`python3 -m pytest -q` → 252 passed / 4 deselected / 1 warning / ~159s
+- **最终 CI**：`python3 -m pytest -q` → 266 passed / 4 deselected / 1 warning / ~160s
+
+### ✅ 最终审计报告4项修复（2026-05-20晚完成）
+- **P1-1 Synthesizer cycle分桶**：`_pending_by_cycle[cycle_id][msg_type]` 按 cycle 分桶缓存三路数据；market_data 到达时激活并恢复桶内已到达数据；保留最新2桶防泄漏
+- **P2-1 Executor拒单+Judge pending TTL**：所有 open 拒单路径（halt/reconciliation/cooldown/balance/confidence）发布 `execution_result:rejected`；Judge `_sweep_stale_pending()` 120s TTL 自动释放
+- **P2-2 配置化**：`RANK_FLUSH_DELAY`(float) + `MAX_CONCURRENT_POSITIONS`(int) 纳入 env_map/HARD_LIMITS/DEFAULTS/banner/.env.example/runbook
+- **P2-3 Reconciler接入**：`MultiExecutor.setup()` 初始化 Reconciler；`tick()` 每10min对账；偏差发布 `risk_alert`(type=reconciliation_mismatch)
+- **新增测试**：`test_synthesizer_cycle.py`(3) + `test_ranking_slots.py` TTL sweep(1) = +4 tests
 
 ### ✅ Phase 7+: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
 - **4h RSI 二级保护**：`judge.py _compute_score` 末尾——1h RSI 未触发硬cap但 4h RSI ≥70/≤30 时 score×0.5。根因 ZEC 事故（1h=64 但 4h=73.9 仍开多 20x→-135）
@@ -495,7 +503,7 @@ python3 run_agents.py
 # Agent系统集成测试
 python3 test_agents_integration.py
 
-# 完整 CI 回归（默认排除 network 标记，252 passed / 4 deselected）
+# 完整 CI 回归（默认排除 network 标记，266 passed / 4 deselected）
 python3 -m pytest -q
 
 # 或使用启动脚本

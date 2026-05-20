@@ -652,7 +652,7 @@ class MultiDataCollector(BaseAgent):
             health['klines_15m'] = klines_15m
             health['klines_15m_updated_at'] = time.time()
             if klines_15m:
-                health['klines_15m_last_ts'] = klines_15m[-1][0]
+                health['klines_15m_last_ts'] = klines_15m[-2][0] if len(klines_15m) >= 2 else klines_15m[-1][0]
             self._symbol_health[symbol] = health
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} 15m K线失败: {e}")

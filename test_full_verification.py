@@ -726,7 +726,17 @@ async def test_13_llm_fallback():
 
     bus.register("test_catch", ["research_preliminary"])
 
-    # 发送数据
+    # 发送数据（三路到齐才触发初选）
+    await synth.on_message({
+        "msg_id": "f0a", "from": "sentiment", "to": "broadcast",
+        "type": "research_sentiment_data", "symbol": None, "timestamp": time.time(),
+        "payload": {"fear_greed_index": 50}
+    })
+    await synth.on_message({
+        "msg_id": "f0b", "from": "news", "to": "broadcast",
+        "type": "research_news_data", "symbol": None, "timestamp": time.time(),
+        "payload": {}
+    })
     market_msg = {
         "msg_id": "f1", "from": "scanner", "to": "broadcast",
         "type": "research_market_data", "symbol": None, "timestamp": time.time(),

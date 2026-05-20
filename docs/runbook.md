@@ -24,19 +24,15 @@ cp .env.example .env
 
 ### 启动系统
 
-**单策略实盘交易**：
-```bash
-python3 live_trading.py
-```
-
-**多Agent交易系统**：
+**多 Agent 交易系统（主入口）**：
 ```bash
 python3 run_agents.py
 ```
 
+`live_trading.py` 已废弃，只保留作单策略调试参考；生产、paper、testnet、实盘验收都走 `run_agents.py`。
+
 **后台运行**：
 ```bash
-nohup python3 live_trading.py &
 nohup python3 run_agents.py &
 ```
 
@@ -68,7 +64,9 @@ kill -SIGINT $(pgrep -f run_agents.py)
 | `/stop` | 优雅退出 |
 | `/restart` | 优雅退出后自动重启 |
 | `/halt` | 手动熔断（停止新交易，保留持仓） |
-| `/resume` | 解除熔断 |
+| `/resume` | 对账通过后解除熔断 |
+| `/force_resume` | 跳过对账强制解除熔断 |
+| `/reconcile` | 执行持仓对账 |
 | `/log` | 最近10条关键日志 |
 
 **强制停止**：
@@ -91,12 +89,12 @@ python3 test_logical_account_split.py  # effective_balance_cap 逻辑账户拆�
 python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/TP/halt/persist/PnL）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 184 passed / 3 deselected / ~170s
+python3 -m pytest -q              # 266 passed / 4 deselected / ~160s（2026-05-20）
 python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
 ```
 
 > conftest.py 通过 `monkeypatch.chdir(tmp_path)` 把 `data/` 和 `logs/` 隔离到临时目录，每个测试独立。
-> `test_kline.py` 被 `collect_ignore` 跳过（连接 Binance WebSocket，DNS 不可用时会卡）。
+> pytest.ini 默认排除 `network` 标记的测试；网络冒烟需要显式 `-m network`。
 
 ## 数据持久化文件
 
@@ -118,27 +116,33 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 
 | 变量 | 说明 | 默认值 | 必需 |
 |------|------|--------|------|
-| EXCHANGE | 交易所（binance/okx） | binance | 是 |
+| EXCHANGE | 交易所（binance/okx） | okx | 是 |
 | OKX_API_KEY | OKX API密钥 | - | 是（OKX） |
 | OKX_SECRET | OKX Secret | - | 是（OKX） |
 | OKX_PASSWORD | OKX Passphrase | - | 是（OKX） |
 | BINANCE_API_KEY | Binance API密钥 | - | 是（Binance） |
 | BINANCE_SECRET | Binance Secret | - | 是（Binance） |
 | USE_TESTNET | 是否测试网 | false | 否 |
-| LEVERAGE | 杠杆倍数 | 1 | 否 |
-| MAX_TRADE_AMOUNT | 单次最大交易额(USDT) | 10 | 否 |
-| MAX_DRAWDOWN | 最大回撤比例 | 0.20 | 否 |
+| LEVERAGE | 杠杆倍数 | 3 | 否 |
+| MAX_TRADE_AMOUNT | 单笔最大保证金（USDT） | 10 | 否 |
+| MAX_DRAWDOWN_PCT | 最大回撤百分比 | 20.0 | 否 |
+| MAX_DAILY_LOSS | 每日最大亏损（USDT，正数） | 50 | 否 |
 | EFFECTIVE_BALANCE_CAP | 逻辑账户拆分：风控按此上限计算余额（真实余额不变）。留空=用真实余额。范围 [10, 1_000_000] | （未启用） | 否 |
 | ANTHROPIC_API_KEY | Claude API密钥 | - | 否（多Agent系统） |
 | ANTHROPIC_BASE_URL | Claude API地址（中转） | https://api.anthropic.com | 否 |
 | ANTHROPIC_MODEL | Claude模型名 | claude-opus-4-7 | 否 |
 | RESEARCH_INTERVAL | 研判层运行周期（秒） | 14400 (4h) | 否 |
+| RANKING_ENABLED | 是否启用候选 Top-N Ranking 裁决 | true | 否 |
+| RANK_FLUSH_DELAY | Ranking flush 窗口秒数，等待同批候选到齐后统一排序。范围 [1, 30] | 5.0 | 否 |
+| MAX_CONCURRENT_POSITIONS | 最大并发持仓数（同时开仓数量）。范围 [1, 20] | 3 | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
 ## 配置文件
 
 ### config.yaml
+
+`load_config()` 优先级为 `.env` > `config.yaml` > 内置默认值。生产风险参数以 `.env` 为准，`config.yaml` 主要用于历史兼容和离线脚本。
 
 ```yaml
 # 交易所
@@ -157,9 +161,9 @@ arbitrage:
 
 # 风控
 risk:
-  max_trade_amount: 10    # 单次最大交易额
+  max_trade_amount: 500   # 单次最大保证金（会被 .env 的 MAX_TRADE_AMOUNT 覆盖）
   max_drawdown: 0.20      # 最大回撤20%
-  max_daily_loss: 50      # 每日最大亏损
+  max_daily_loss: 300     # 每日最大亏损
 
 # 手续费
 fees:

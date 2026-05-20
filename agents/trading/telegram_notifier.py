@@ -147,7 +147,7 @@ class TelegramNotifier(BaseAgent):
         symbol = payload.get('symbol', '')
         self._daily_summary['alerts'] += 1
 
-        critical_types = ('flash_move', 'max_drawdown', 'emergency_close')
+        critical_types = ('flash_move', 'max_drawdown', 'emergency_close', 'llm_degraded')
         if alert_type not in critical_types:
             return
 
@@ -155,6 +155,7 @@ class TelegramNotifier(BaseAgent):
             'flash_move': '⚡ 闪崩',
             'max_drawdown': '📉 最大回撤',
             'emergency_close': '🆘 紧急平仓',
+            'llm_degraded': '🤖 LLM降级',
         }
         name = type_names.get(alert_type, alert_type)
         text = f"{name} {symbol}"
@@ -163,6 +164,8 @@ class TelegramNotifier(BaseAgent):
             text += f"\n变动: {payload.get('magnitude_pct', 0):.1f}%"
         elif alert_type == 'max_drawdown':
             text += f"\n回撤: {payload.get('drawdown_pct', 0):.1f}%"
+        elif alert_type == 'llm_degraded':
+            text += f"\n{payload.get('message', '')}"
 
         await self._send_message(text)
 
@@ -298,7 +301,7 @@ class TelegramNotifier(BaseAgent):
             from utils.halt_state import get_halt_state
             hs = get_halt_state()
             halted = hs.halted
-            halt_reason = hs.halt_reason or ""
+            halt_reason = hs.reason or ""
             if hs.reconciliation_pending:
                 reconciliation = "对账中..."
             elif hs.reconciliation_result:

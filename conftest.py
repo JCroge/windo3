@@ -19,3 +19,7 @@ def isolate_data_dirs(tmp_path, monkeypatch):
     project_root = os.path.dirname(os.path.abspath(__file__))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
+
+    # 重置 HaltState 单例，防止跨测试状态泄漏
+    import utils.halt_state as hs_mod
+    hs_mod._instance = None

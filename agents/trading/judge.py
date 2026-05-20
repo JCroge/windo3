@@ -6,6 +6,7 @@
 
 import os
 import time
+import asyncio
 import ccxt
 from agents.base import BaseAgent
 from utils.symbol import to_internal
@@ -86,6 +87,9 @@ class MultiJudge(BaseAgent):
         # 后续胜率验证后可在 config 中放宽
         self._max_concurrent_positions = config.get('max_concurrent_positions', 3) if config else 3
         self._open_positions = set()  # 当前已知开仓的 symbol 集合
+        self._pending_open_symbols = set()  # ranking selected 但尚未收到 execution_result
+        self._pending_open_ts = {}  # {symbol: timestamp} pending 加入时间
+        self._pending_ttl = 120  # pending 超时秒数，超时后自动释放
         # 与 Executor/PaperExecutor 保持同一实盘开仓门槛，避免 Judge 发布下游必然拒绝的开仓。
         self._min_confidence = config.get('min_confidence', 60) if config else 60
         # 弱信号只允许进入观察/回调队列，不允许回调命中后自动抬到 60 分实盘开仓。
@@ -119,6 +123,14 @@ class MultiJudge(BaseAgent):
         self._15m_strong_score_threshold = config.get('entry_timing_15m_strong_score_threshold', 70) if config else 70
         self._15m_defer_on_block = config.get('entry_timing_15m_defer_on_block', True) if config else True
         self._15m_timeout_hours = config.get('entry_timing_15m_timeout_hours', 4) if config else 4
+
+        # ═══ LLM degraded 告警 ═══
+        self._llm_consecutive_failures = 0
+        self._llm_degraded_alerted = False
+
+        # ═══ RQ-03: Ranking flush window ═══
+        self._rank_flush_delay = config.get('rank_flush_delay', 5.0) if config else 5.0
+        self._rank_flush_task = None
 
     def _get_state(self, symbol: str) -> dict:
         if symbol not in self._symbol_state:
@@ -248,6 +260,15 @@ class MultiJudge(BaseAgent):
             self.logger.warning(f"BalanceAdapter 初始化失败（降级）: {e}")
             self._balance_adapter = None
 
+    def _sweep_stale_pending(self):
+        """清理超时的 pending 槽位，防止 Executor 拒单后槽位永久占用"""
+        now = time.time()
+        stale = [s for s, ts in self._pending_open_ts.items() if now - ts > self._pending_ttl]
+        for s in stale:
+            self._pending_open_symbols.discard(s)
+            self._pending_open_ts.pop(s, None)
+            self.logger.warning(f"[Judge] pending TTL expired for {s}, releasing slot")
+
     async def on_message(self, msg: dict):
         if msg['type'] == 'symbol_update':
             for s in msg['payload'].get('removed', []):
@@ -285,6 +306,8 @@ class MultiJudge(BaseAgent):
                 state = self._get_state(symbol)
                 status = payload.get('status')
                 action = payload.get('action', '')
+                self._pending_open_symbols.discard(symbol)
+                self._pending_open_ts.pop(symbol, None)
                 if status == 'force_closed':
                     state["last_force_close_time"] = time.time()
                     closed_dir = payload.get('direction', payload.get('action', ''))
@@ -375,11 +398,13 @@ class MultiJudge(BaseAgent):
 
         # ═══ P2-O: 并发持仓上限保护 ═══
         # 当前 symbol 不在已开仓集合 + 已开仓数达上限 → 强制 hold
-        if (symbol not in self._open_positions and
-            len(self._open_positions) >= self._max_concurrent_positions):
+        self._sweep_stale_pending()
+        occupied = self._open_positions | self._pending_open_symbols
+        if (symbol not in occupied and
+            len(occupied) >= self._max_concurrent_positions):
             self.logger.info(
                 f"[Judge] {symbol} 并发持仓已达上限 "
-                f"{len(self._open_positions)}/{self._max_concurrent_positions}，跳过新开仓"
+                f"{len(occupied)}/{self._max_concurrent_positions}，跳过新开仓"
             )
             await self.publish("trade_decision", {
                 "symbol": symbol, "timestamp": time.time(),
@@ -550,6 +575,11 @@ class MultiJudge(BaseAgent):
                     return
                 plan['order_type'] = 'limit'
                 plan['entry_type'] = 'deferred_pullback'
+                attribution = self._build_attribution(
+                    tech, def_action, deferred.get('signal_score', 50),
+                    plan, None, 'deferred_pullback'
+                )
+                plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 state['last_open_time'] = time.time()
                 decision = {
@@ -560,6 +590,7 @@ class MultiJudge(BaseAgent):
                     "key_factors": ["deferred_pullback_filled"],
                     "risk_warnings": [],
                     "entry_type": "deferred_pullback",
+                    "attribution": attribution,
                 }
                 await self.publish("trade_decision", decision, symbol=symbol)
                 return
@@ -626,6 +657,12 @@ class MultiJudge(BaseAgent):
                     return
                 plan['order_type'] = 'market'
                 plan['entry_type'] = 'deferred_chase'
+                attribution = self._build_attribution(
+                    tech, def_action, deferred.get('signal_score', 50),
+                    plan, None, 'deferred_chase'
+                )
+                attribution['chase_move_pct'] = round(move_pct, 4)
+                plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 state['last_open_time'] = time.time()
                 self.logger.info(f"[Judge] {symbol} 价格已移动{move_pct:.1%}无回调，追价入场（仓位60%）")
@@ -637,6 +674,7 @@ class MultiJudge(BaseAgent):
                     "key_factors": ["chase_entry_no_pullback"],
                     "risk_warnings": [f"chase R:R={chase_rr:.2f}"],
                     "entry_type": "deferred_chase",
+                    "attribution": attribution,
                 }
                 await self.publish("trade_decision", decision, symbol=symbol)
                 return
@@ -1059,7 +1097,7 @@ class MultiJudge(BaseAgent):
                         tech, final_action, score, plan, llm_result, entry_type
                     )
 
-                    # RQ-03: 计算排名分数（用于归因和 paper 对比）
+                    # RQ-03: 计算排名分数并 buffer 候选
                     rank_candidate = {
                         'symbol': symbol, 'score': score, 'plan': plan,
                         'tech': tech, 'attribution': attribution,
@@ -1081,6 +1119,17 @@ class MultiJudge(BaseAgent):
                         "entry_type": entry_type,
                         "attribution": attribution,
                     }
+
+                    # Buffer into ranker for Top-N selection
+                    if self._candidate_ranker.enabled:
+                        rank_candidate['decision'] = decision
+                        self._candidate_ranker.add_candidate(rank_candidate)
+                        self._schedule_rank_flush()
+                        self.logger.info(
+                            f"[决策] {symbol} {decision['action']} "
+                            f"置信度={decision['confidence']} rank={rank_score:.1f} → 等待排名裁决"
+                        )
+                        return
                 else:
                     decision = {
                         "symbol": symbol, "timestamp": time.time(),
@@ -1102,6 +1151,52 @@ class MultiJudge(BaseAgent):
             f"{'plan='+str(decision['plan']['leverage'])+'x' if decision.get('plan') else ''} "
             f"理由: {decision.get('reasoning', '')[:60]}"
         )
+
+    # ═══ RQ-03: Ranking Top-N flush ═══
+
+    def _schedule_rank_flush(self):
+        """Schedule a flush after a short window to collect all candidates in this tick."""
+        if self._rank_flush_task and not self._rank_flush_task.done():
+            self._rank_flush_task.cancel()
+        loop = asyncio.get_event_loop()
+        self._rank_flush_task = loop.create_task(self._delayed_rank_flush())
+
+    async def _delayed_rank_flush(self):
+        await asyncio.sleep(self._rank_flush_delay)
+        await self._flush_ranked_candidates()
+
+    async def _flush_ranked_candidates(self):
+        """Flush ranker buffer: publish selected, hold rejected."""
+        self._sweep_stale_pending()
+        occupied = self._open_positions | self._pending_open_symbols
+        selected, rejected = self._candidate_ranker.rank_and_select(occupied)
+
+        for candidate in selected:
+            decision = candidate['decision']
+            symbol = decision['symbol']
+            state = self._get_state(symbol)
+            state['last_open_time'] = time.time()
+            self._pending_open_symbols.add(symbol)
+            self._pending_open_ts[symbol] = time.time()
+            await self.publish("trade_decision", decision, symbol=symbol)
+            self.logger.info(
+                f"[Ranking] {symbol} SELECTED rank={candidate.get('attribution', {}).get('rank_score', 0):.1f}"
+            )
+
+        for candidate in rejected:
+            decision = candidate['decision']
+            symbol = decision['symbol']
+            await self.publish("trade_decision", {
+                "symbol": symbol, "timestamp": time.time(),
+                "action": "hold", "confidence": 0,
+                "plan": None, "size_pct": 0,
+                "reasoning": f"排名淘汰: rank={candidate.get('attribution', {}).get('rank_score', 0):.1f}，槽位不足",
+                "key_factors": ["ranked_out"],
+                "risk_warnings": [],
+            }, symbol=symbol)
+            self.logger.info(
+                f"[Ranking] {symbol} REJECTED rank={candidate.get('attribution', {}).get('rank_score', 0):.1f}"
+            )
 
     # ═══ 信号聚合评分 ═══
 
@@ -1986,19 +2081,19 @@ class MultiJudge(BaseAgent):
                 result['action'] = 'hold'
             if 'confidence' not in result:
                 result['confidence'] = 50
+            self._llm_consecutive_failures = 0
+            if self._llm_degraded_alerted:
+                self._llm_degraded_alerted = False
+                self.logger.info("LLM恢复正常，重置degraded告警状态")
             return result
         except Exception as e:
             self.logger.warning(f"LLM决策失败({symbol})，规则降级: {e}")
-            # P1-7: LLM degraded 一次性 Telegram 告警
-            if not hasattr(self, '_llm_consecutive_failures'):
-                self._llm_consecutive_failures = 0
-                self._llm_degraded_alerted = False
             self._llm_consecutive_failures += 1
             if self._llm_consecutive_failures >= 3 and not self._llm_degraded_alerted:
                 self._llm_degraded_alerted = True
                 await self.publish("risk_alert", {
                     "symbol": "SYSTEM",
-                    "alert_type": "llm_degraded",
+                    "type": "llm_degraded",
                     "severity": "warning",
                     "message": f"Judge LLM连续{self._llm_consecutive_failures}次失败，已降级为规则引擎",
                 })

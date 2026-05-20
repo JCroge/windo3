@@ -53,6 +53,38 @@ class LiveLedger:
         self._open_lifecycle(event)
         return event
 
+    def record_add(self, order_id: str, symbol: str, side: str,
+                   amount_usdt: float, leverage: int,
+                   estimated_price: float) -> dict:
+        """加仓记录 — 追加到已有 open lifecycle，不新建"""
+        fill = self._fetch_fill(order_id, symbol, estimated_price)
+        position_id = self._find_open_position_id(symbol, side)
+
+        if not position_id:
+            return self.record_open(order_id, symbol, side,
+                                    amount_usdt, leverage, estimated_price)
+
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "ts": time.time(),
+            "position_id": position_id,
+            "symbol": symbol,
+            "event_type": "add",
+            "side": side,
+            "order_id": order_id,
+            "fill_price": fill["fill_price"],
+            "filled_amount": fill.get("filled_amount"),
+            "fee": fill["fee"],
+            "fee_currency": fill.get("fee_currency", "USDT"),
+            "amount_usdt": amount_usdt,
+            "leverage": leverage,
+            "realized_pnl": 0.0,
+            "source": fill["source"],
+        }
+        self._write_event(event)
+        self._update_lifecycle_pnl(event)
+        return event
+
     def record_reduce(self, order_id: str, symbol: str, side: str,
                       entry_price: float, reduce_usdt: float, leverage: int,
                       estimated_price: float) -> dict:
@@ -299,6 +331,9 @@ class LiveLedger:
             "closed_at": None,
             "status": "open",
             "entry_price": event["fill_price"],
+            "avg_entry_price": event["fill_price"],
+            "total_amount_usdt": event.get("amount_usdt", 0),
+            "adds_count": 0,
             "events": ["open"],
             "total_realized_pnl": 0.0,
             "total_fee": event["fee"],
@@ -315,6 +350,16 @@ class LiveLedger:
             lc["total_realized_pnl"] = round(
                 lc["total_realized_pnl"] + event["realized_pnl"], 4)
             lc["total_fee"] = round(lc["total_fee"] + event["fee"], 4)
+            if event["event_type"] == "add":
+                old_total = lc.get("total_amount_usdt", 0)
+                add_amount = event.get("amount_usdt", 0)
+                new_total = old_total + add_amount
+                if new_total > 0:
+                    old_avg = lc.get("avg_entry_price", lc.get("entry_price", 0))
+                    lc["avg_entry_price"] = round(
+                        (old_avg * old_total + event["fill_price"] * add_amount) / new_total, 8)
+                lc["total_amount_usdt"] = round(new_total, 4)
+                lc["adds_count"] = lc.get("adds_count", 0) + 1
             if event["source"] == "estimated":
                 lc["reconcile_status"] = "pending"
             self._save_lifecycle()

@@ -1235,7 +1235,7 @@ class ContractExecutor:
             # P1-4: 加仓 ledger 记录
             if self.ledger and order:
                 try:
-                    self.ledger.record_open(
+                    self.ledger.record_add(
                         order_id=order['id'], symbol=symbol, side=side,
                         amount_usdt=add_usdt, leverage=leverage,
                         estimated_price=current_price

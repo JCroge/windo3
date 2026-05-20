@@ -14,6 +14,7 @@ ENV/
 data/*.db
 data/*.db-journal
 data/*.json
+data/*.jsonl
 
 # Logs
 logs/*.log

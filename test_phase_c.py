@@ -59,6 +59,10 @@ async def test_research_to_trading_pipeline():
     assert msg is not None, "Synthesizer未收到消息"
     assert msg['type'] == 'research_market_data'
 
+    # 先注入 sentiment 和 news 数据，再处理 market_data（barrier 需要三路到齐）
+    await synthesizer.on_message({'type': 'research_sentiment_data', 'payload': {'fear_greed_index': 55}})
+    await synthesizer.on_message({'type': 'research_news_data', 'payload': {}})
+
     bus.register("censor", ["research_preliminary"])
     await synthesizer.on_message(msg)
 

@@ -18,6 +18,7 @@ class MarketScanner(BaseAgent):
         self.exchange = None
         self.top_n = 50
         self.min_volume_24h = 5_000_000
+        self._current_cycle_id = None
 
     async def setup(self):
         exchange_id = self.config.get('exchange', 'okx')
@@ -37,6 +38,7 @@ class MarketScanner(BaseAgent):
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'research_trigger':
+            self._current_cycle_id = msg.get('payload', {}).get('cycle_id')
             await self._scan_market()
 
     async def _scan_market(self):
@@ -130,6 +132,7 @@ class MarketScanner(BaseAgent):
                 "candidates": top_candidates,
                 "total_scanned": len(tickers),
                 "filtered": len(candidates),
+                "cycle_id": self._current_cycle_id,
             })
 
             self.logger.info(f"[扫描] 完成: {len(tickers)}个合约 → {len(candidates)}个符合条件 → Top{len(top_candidates)}")

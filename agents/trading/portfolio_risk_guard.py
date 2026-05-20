@@ -4,11 +4,12 @@ import asyncio
 import time
 from agents.base import BaseAgent
 from utils.symbol import to_internal
+from utils.halt_state import get_halt_state
 
 
 class PortfolioRiskGuard(BaseAgent):
     name = "portfolio_risk_guard"
-    subscriptions = ["execution_result", "market_data:*", "price_tick:*", "symbol_update", "daily_hard_stop_triggered"]
+    subscriptions = ["execution_result", "market_data:*", "price_tick:*", "symbol_update", "daily_hard_stop_triggered", "system_command"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -17,8 +18,9 @@ class PortfolioRiskGuard(BaseAgent):
         self._price_history = {}
         self._alert_cooldown = 60
         self._last_alert_times = {}
-        self._account_balance = 0.0  # 动态更新，从execution_result中读取
+        self._account_balance = 0.0
         self._trading_halted = False
+        self._halt_state = get_halt_state()
         self._state_file = 'data/riskguard_state.json'
 
         self._max_portfolio_exposure = 25.0
@@ -33,11 +35,23 @@ class PortfolioRiskGuard(BaseAgent):
 
     async def setup(self):
         self._load_state()
+        if self._halt_state.halted:
+            self._trading_halted = True
         self.logger.info("组合级风控Agent就绪 (6维度+trailing stop)")
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'daily_hard_stop_triggered':
             await self._handle_daily_hard_stop(msg['payload'])
+            return
+
+        if msg['type'] == 'system_command':
+            cmd = msg.get('payload', {}).get('command', '')
+            if cmd == 'halt':
+                self._trading_halted = True
+                self._save_state()
+            elif cmd == 'resume':
+                self._trading_halted = False
+                self._save_state()
             return
 
         # 熔断后仍需更新本地持仓 state——否则 emergency_close 后 execution_result 被丢弃，
@@ -61,6 +75,7 @@ class PortfolioRiskGuard(BaseAgent):
 
         elif msg['type'] == 'execution_result':
             self._handle_execution_result(msg['payload'])
+            self._save_state()
 
     def _handle_execution_result(self, payload: dict):
         result = payload.get('result', {})
@@ -454,6 +469,7 @@ class PortfolioRiskGuard(BaseAgent):
             }, symbol=symbol)
 
         self._trading_halted = True
+        self._halt_state.halt(reason=f"daily_hard_stop_{reason}", triggered_by="portfolio_risk_guard")
         self._save_state()
 
     def _save_state(self):

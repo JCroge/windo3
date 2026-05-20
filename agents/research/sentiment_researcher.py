@@ -12,12 +12,14 @@ class SentimentResearcher(BaseAgent):
     def __init__(self, config: dict = None):
         super().__init__(config)
         self._timeout = 15
+        self._current_cycle_id = None
 
     async def setup(self):
         self.logger.info("市场情绪研究Agent就绪")
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'research_trigger':
+            self._current_cycle_id = msg.get('payload', {}).get('cycle_id')
             await self._research_sentiment()
 
     async def _research_sentiment(self):
@@ -49,6 +51,7 @@ class SentimentResearcher(BaseAgent):
             "fear_greed": fear_greed,
             "trending_coins": trending,
             "taker_ratios": taker_ratios,
+            "cycle_id": self._current_cycle_id,
         })
 
         fg_val = fear_greed.get('value', '?') if fear_greed else '?'

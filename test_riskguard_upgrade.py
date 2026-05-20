@@ -275,10 +275,55 @@ async def test_correlation_risk():
     return True
 
 
-async def test_no_false_alarm():
-    """测试7: 正常情况不误报"""
+async def test_persist_after_external_close():
+    """测试7: 外部平仓后立即持久化，防止重启恢复幽灵持仓"""
     print("=" * 60)
-    print("测试7: 正常持仓不误报")
+    print("测试7: external_close 后持久化移除持仓")
+    print("=" * 60)
+
+    import json
+    import os
+    import tempfile
+
+    MessageBus.reset()
+    config = {"exchange": "okx", "max_trade_amount": 10}
+    rg = PortfolioRiskGuard(config)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        rg._state_file = os.path.join(tmpdir, "riskguard_state.json")
+        rg._positions = {
+            "SAHARA-USDT": {
+                "symbol": "SAHARA-USDT", "side": "long",
+                "entry_price": 0.03547, "amount_usdt": 30.0,
+                "leverage": 10, "stop_loss": 0.03519, "take_profit": 0.03682,
+                "open_time": time.time(), "highest_price": 0.03677, "lowest_price": 0.03547,
+            }
+        }
+
+        await rg.on_message({
+            "type": "execution_result",
+            "payload": {
+                "status": "closed_externally",
+                "action": "close",
+                "symbol": "SAHARA-USDT-SWAP",
+                "result": {"symbol": "SAHARA-USDT-SWAP"},
+            },
+        })
+
+        assert "SAHARA-USDT" not in rg._positions
+        with open(rg._state_file, "r") as f:
+            saved = json.load(f)
+        assert "SAHARA-USDT" not in saved.get("positions", {})
+
+    print("  ✓ external_close 后 state 文件不再包含 SAHARA-USDT")
+    print("\n✅ 测试8通过\n")
+    return True
+
+
+async def test_no_false_alarm():
+    """测试8: 正常情况不误报"""
+    print("=" * 60)
+    print("测试8: 正常持仓不误报")
     print("=" * 60)
 
     MessageBus.reset()
@@ -324,9 +369,9 @@ async def test_no_false_alarm():
 
 
 async def test_e2e_riskguard_to_executor():
-    """测试8: 端到端 RiskGuard → Executor 平仓"""
+    """测试9: 端到端 RiskGuard → Executor 平仓"""
     print("=" * 60)
-    print("测试8: 端到端 trailing_stop → Executor平仓")
+    print("测试9: 端到端 trailing_stop → Executor平仓")
     print("=" * 60)
 
     MessageBus.reset()
@@ -395,7 +440,7 @@ async def test_e2e_riskguard_to_executor():
     print("  ✓ RiskGuard trailing_stop → Executor 平仓 ETH-USDT")
     print("  ✓ 止损条件单被撤销")
 
-    print("\n✅ 测试8通过\n")
+    print("\n✅ 测试9通过\n")
     return True
 
 
@@ -407,6 +452,7 @@ async def main():
     results.append(await test_high_leverage_danger())
     results.append(await test_trailing_stop())
     results.append(await test_correlation_risk())
+    results.append(await test_persist_after_external_close())
     results.append(await test_no_false_alarm())
     results.append(await test_e2e_riskguard_to_executor())
 

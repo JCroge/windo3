@@ -8,6 +8,7 @@ import asyncio
 import signal
 import os
 import time
+import uuid
 from utils.logger import setup_logger
 from utils.config_loader import load_config, format_banner, ConfigError
 from agents.message_bus import MessageBus
@@ -126,7 +127,7 @@ class Orchestrator:
 
         await asyncio.sleep(5)
         self.logger.info("[编排] 首次研判触发...")
-        await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+        await bus.publish("orchestrator", "research_trigger", {"cycle_id": str(uuid.uuid4())[:8]}, "broadcast")
         self._last_research_time = time.time()
 
         check_interval = 300  # 每 5 min 检查一次状态
@@ -139,7 +140,7 @@ class Orchestrator:
             # 触发条件1：定时周期到了
             if elapsed_since_research >= self._research_interval:
                 self.logger.info(f"[编排] 定时研判触发（每{self._research_interval//3600}h）")
-                await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+                await bus.publish("orchestrator", "research_trigger", {"cycle_id": str(uuid.uuid4())[:8]}, "broadcast")
                 self._last_research_time = now
                 continue
 
@@ -149,7 +150,7 @@ class Orchestrator:
                 self.logger.info(
                     f"[编排] 空闲提前触发研判（连续{elapsed_since_active//60:.0f}min无开/平仓决策）"
                 )
-                await bus.publish("orchestrator", "research_trigger", {}, "broadcast")
+                await bus.publish("orchestrator", "research_trigger", {"cycle_id": str(uuid.uuid4())[:8]}, "broadcast")
                 self._last_research_time = now
                 # 重置 idle 计时，避免立即重复触发
                 self._last_active_time = now

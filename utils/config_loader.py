@@ -33,6 +33,10 @@ HARD_LIMITS = {
     "ev_prior_wins": (0, 50),                       # Bayesian EV 先验胜场
     "ev_prior_total": (1, 100),                     # Bayesian EV 先验总场
     "ev_strong_signal_threshold": (30, 100),        # EV 强信号豁免阈值
+    "entry_timing_15m_strong_score_threshold": (30, 100),  # 15m 强信号豁免阈值
+    "entry_timing_15m_timeout_hours": (0.5, 24),           # 15m defer 超时小时
+    "rank_flush_delay": (1.0, 30.0),                       # Ranking flush 窗口秒
+    "max_concurrent_positions": (1, 20),                   # 最大并发持仓数
 }
 
 
@@ -70,6 +74,8 @@ DEFAULTS = {
     "profit_protection_enabled": True,
     # RQ-03: 候选排序
     "ranking_enabled": True,
+    "rank_flush_delay": 5.0,
+    "max_concurrent_positions": 3,
     # RQ-15M: 15m 入场时机确认
     "entry_timing_15m_enabled": True,
     "entry_timing_15m_required": True,
@@ -145,6 +151,8 @@ def _read_env_overrides() -> dict:
         "EARLY_REVIEW_ENABLED": ("early_review_enabled", _to_bool),
         "PROFIT_PROTECTION_ENABLED": ("profit_protection_enabled", _to_bool),
         "RANKING_ENABLED": ("ranking_enabled", _to_bool),
+        "RANK_FLUSH_DELAY": ("rank_flush_delay", float),
+        "MAX_CONCURRENT_POSITIONS": ("max_concurrent_positions", int),
         # RQ-15M: 15m 入场时机确认
         "ENTRY_TIMING_15M_ENABLED": ("entry_timing_15m_enabled", _to_bool),
         "ENTRY_TIMING_15M_REQUIRED": ("entry_timing_15m_required", _to_bool),
@@ -234,6 +242,8 @@ def load_config(yaml_path: str = "config.yaml",
 def format_banner(cfg: dict) -> str:
     """生成启动 banner（硬限制摘要）"""
     mode = "TESTNET" if cfg.get("use_testnet") else "LIVE 实盘"
+    timing_15m = "开启" if cfg.get("entry_timing_15m_enabled") else "关闭"
+    ranking = "开启" if cfg.get("ranking_enabled") else "关闭"
     lines = [
         "=" * 60,
         f"配置摘要（{mode}）",
@@ -246,10 +256,13 @@ def format_banner(cfg: dict) -> str:
         f"  连续亏损熔断:          {cfg.get('consecutive_loss_limit')} 次",
         f"  研判周期:              {cfg.get('research_interval') // 3600}h",
         f"  最大活跃标的:          {cfg.get('max_active_symbols')}",
+        f"  最大并发持仓:          {cfg.get('max_concurrent_positions', 3)}",
         f"  逻辑账户拆分:          {cfg.get('effective_balance_cap') or '未启用（用真实余额）'}",
         f"  开仓最低置信度:        {cfg.get('min_confidence')}",
         f"  回调最低信号强度:      {cfg.get('min_deferred_signal_score')}",
         f"  弱信号最低流动性:      {cfg.get('min_liquidity_score_for_weak_signal')}",
+        f"  15m入场确认:           {timing_15m} (强信号≥{cfg.get('entry_timing_15m_strong_score_threshold')}, 超时{cfg.get('entry_timing_15m_timeout_hours')}h)",
+        f"  Ranking裁决:           {ranking} (flush窗口={cfg.get('rank_flush_delay', 5)}s)",
         "=" * 60,
     ]
     return "\n".join(lines)

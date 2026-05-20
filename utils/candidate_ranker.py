@@ -1,8 +1,11 @@
-"""RQ-03: 候选评分（当前仅用于归因，Top-N 裁决尚未启用）
+"""RQ-03: 候选排名与 Top-N 裁决
 
-多候选同时出现时，计算 rank_score 写入 attribution 供复盘分析。
-rank_and_select() 已实现但未被 Judge 调用——当前系统仍是先到先占槽。
-后续如需启用 Top-N，Judge 应在短窗口内 buffer 候选后调用 rank_and_select()。
+Judge 在 rank_flush_delay 窗口内 buffer 所有通过质量门的开仓候选，
+窗口结束后调用 rank_and_select() 按 rank_score 降序选取可用槽位数的 Top-N。
+未入选的候选以 hold + ranked_out 发布。
+
+槽位计算使用 _open_positions | _pending_open_symbols，
+selected 后立即预占 pending，收到 execution_result 后确认或释放。
 """
 
 import time

@@ -194,6 +194,8 @@ class LLMClient:
         self._last_call_time = 0
         self._min_interval = 1.0
         self._call_count = 0
+        self._consecutive_failures = 0
+        self._last_success_time = time.time()
 
     async def chat(self, system_prompt: str, user_message: str,
                    max_tokens: int = 2000, temperature: float = 0.3) -> str:
@@ -214,13 +216,16 @@ class LLMClient:
             )
 
             self._call_count += 1
+            self._consecutive_failures = 0
+            self._last_success_time = time.time()
             result = response.choices[0].message.content
             tokens = response.usage.total_tokens if response.usage else 0
             self.logger.info(f"LLM调用成功 (#{self._call_count}, tokens={tokens})")
             return result
 
         except Exception as e:
-            self.logger.error(f"LLM调用失败: {e}")
+            self._consecutive_failures += 1
+            self.logger.error(f"LLM调用失败 (连续第{self._consecutive_failures}次): {e}")
             raise
 
     async def chat_json(self, system_prompt: str, user_message: str,
@@ -317,3 +322,11 @@ class LLMClient:
     @property
     def stats(self) -> dict:
         return {"total_calls": self._call_count, "model": self.model}
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
+
+    @property
+    def degraded(self) -> bool:
+        return self._consecutive_failures >= 3

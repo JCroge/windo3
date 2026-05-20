@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from agents.base import BaseAgent
 from executor import ContractExecutor
 from utils.halt_state import get_halt_state
+from utils.reconciliation import Reconciler
 
 load_dotenv()
 
@@ -38,6 +39,11 @@ class MultiExecutor(BaseAgent):
             testnet=self.config.get('use_testnet', False),
             leverage=leverage
         )
+        self._reconciler = None
+        if self.executor.ledger:
+            self._reconciler = Reconciler(
+                self.executor.exchange, self.executor.ledger, logger=self.logger
+            )
         self.logger.info(f"智能执行Agent就绪: {exchange_id}, 默认杠杆{leverage}x")
 
     async def on_message(self, msg: dict):
@@ -82,6 +88,9 @@ class MultiExecutor(BaseAgent):
             if action in ('open_long', 'open_short'):
                 reason = "halted" if self._trading_halted else "reconciliation_pending"
                 self.logger.warning(f"[熔断] 拒绝执行: {symbol} {action} ({reason})")
+                await self.publish("execution_result", {
+                    "status": "rejected", "reason": reason, "action": action, "symbol": symbol
+                }, symbol=symbol)
                 return
             # close 允许通过（保护性平仓）
 
@@ -90,6 +99,11 @@ class MultiExecutor(BaseAgent):
 
         if confidence < self.min_confidence:
             self.logger.info(f"[执行] {symbol} 跳过：置信度不足 ({confidence} < {self.min_confidence})")
+            if action in ('open_long', 'open_short'):
+                await self.publish("execution_result", {
+                    "status": "rejected", "reason": "low_confidence",
+                    "action": action, "symbol": symbol
+                }, symbol=symbol)
             return
 
         # normalize symbol 确保与持仓key一致
@@ -98,6 +112,10 @@ class MultiExecutor(BaseAgent):
         balance = self._get_balance()
         if balance < 0:
             self.logger.warning(f"[执行] {symbol} 跳过：余额获取失败")
+            await self.publish("execution_result", {
+                "status": "rejected", "reason": "balance_fetch_failed",
+                "action": action, "symbol": symbol
+            }, symbol=symbol)
             return
         can_trade, reason = self.executor.risk_manager.check_can_trade(balance)
         if not can_trade:
@@ -122,10 +140,18 @@ class MultiExecutor(BaseAgent):
             # PA的add信号不应在无持仓时执行（持仓已被外部平仓）
             if source == 'position_analyst':
                 self.logger.warning(f"[执行] {symbol} PA加仓信号但无持仓（已被外部平仓），忽略")
+                await self.publish("execution_result", {
+                    "status": "rejected", "reason": "no_position_for_add",
+                    "action": action, "symbol": symbol
+                }, symbol=symbol)
                 return
             cooldown_until = self._open_fail_cooldown.get(norm_symbol, 0)
             if time.time() < cooldown_until:
                 self.logger.info(f"[执行] {symbol} 开仓失败冷却中，跳过")
+                await self.publish("execution_result", {
+                    "status": "rejected", "reason": "open_cooldown",
+                    "action": action, "symbol": symbol
+                }, symbol=symbol)
                 return
             side = 'long' if action == 'open_long' else 'short'
             try:
@@ -146,10 +172,18 @@ class MultiExecutor(BaseAgent):
             side = 'long' if action == 'open_long' else 'short'
             if position.get('side') != side:
                 self.logger.warning(f"[执行] {symbol} 加仓方向冲突: 持仓{position['side']} vs 请求{side}，跳过")
+                await self.publish("execution_result", {
+                    "status": "rejected", "reason": "add_direction_conflict",
+                    "action": "add", "symbol": symbol
+                }, symbol=symbol)
                 return
             cooldown_until = self._open_fail_cooldown.get(norm_symbol, 0)
             if time.time() < cooldown_until:
                 self.logger.info(f"[执行] {symbol} 开仓失败冷却中，跳过加仓")
+                await self.publish("execution_result", {
+                    "status": "rejected", "reason": "add_cooldown",
+                    "action": "add", "symbol": symbol
+                }, symbol=symbol)
                 return
             try:
                 result = await self._execute_add_position(norm_symbol, side, position, size_pct)
@@ -416,7 +450,23 @@ class MultiExecutor(BaseAgent):
             await self._notify_synced_positions()
             await self._notify_removed_positions()
 
+        if self._reconciler and self._reconciler.should_run(interval_sec=600):
+            await self._run_reconciliation()
+
         await self._check_all_positions()
+
+    async def _run_reconciliation(self):
+        """定时 PnL 对账：本地账本 vs 交易所账单"""
+        try:
+            report = await asyncio.to_thread(self._reconciler.run_and_report)
+            if report:
+                await self.publish("risk_alert", {
+                    "type": "reconciliation_mismatch",
+                    "message": report,
+                    "timestamp": time.time(),
+                })
+        except Exception as e:
+            self.logger.warning(f"[Reconciler] 对账异常: {e}")
 
     async def _notify_synced_positions(self):
         """将同步发现的新持仓通知RiskGuard"""

@@ -18,15 +18,16 @@ def _new_judge():
 
 
 def test_p_win_fallback_when_history_insufficient():
-    """历史 < 10 笔 → 用 fallback"""
+    """历史 < 10 笔 → 用 Bayesian prior 保守化"""
     j = _new_judge()
     j._recent_win_rate = 0.3  # 即使 rolling 很低
     j._total_completed_trades = 5  # 但样本不足
+    j._recent_wins = 1  # 5笔中1胜
     p_win, source = j._get_p_win()
-    assert source == 'fallback', f"应该 fallback，实际 {source}"
-    # P2-O 调整为 0.52
-    assert abs(p_win - 0.52) < 1e-6, f"fallback 应=0.52（P2-O 后），实际 {p_win}"
-    print("  ✅ Case 1: 历史不足，用 fallback=0.52")
+    assert source == 'bayesian_prior', f"应该 bayesian_prior，实际 {source}"
+    # posterior = (1+2)/(5+5) = 0.3, min(0.52, 0.3) = 0.3
+    assert abs(p_win - 0.3) < 1e-6, f"bayesian_prior 应=0.30，实际 {p_win}"
+    print("  ✅ Case 1: 历史不足，用 bayesian_prior=0.30")
 
 
 def test_p_win_rolling_when_sufficient():
@@ -109,7 +110,7 @@ def test_ev_gate_pass_when_rolling_low_but_signal_extreme():
 
 
 def test_ev_gate_exemption_for_strong_signal_marginal_ev():
-    """正常胜率 + EV 微负 (>=-0.3) + score>=60 强信号 → 豁免通过"""
+    """正常胜率 + EV 微负 (>=-0.3) + score>=70 强信号 → 豁免通过"""
     j = _new_judge()
     j._recent_win_rate = 0.55
     j._total_completed_trades = 20
@@ -120,9 +121,9 @@ def test_ev_gate_exemption_for_strong_signal_marginal_ev():
         'net_profit_usdt': 1.5,
         'net_loss_usdt': 1.7,
     }
-    assert j._check_expected_value('BTC-USDT', plan, score=65.0) is True, \
-        "EV=-0.10 + score=65 应该豁免通过"
-    print("  ✅ Case 7: EV=-0.10/score=65 → 强信号豁免通过")
+    assert j._check_expected_value('BTC-USDT', plan, score=75.0) is True, \
+        "EV=-0.10 + score=75 应该豁免通过"
+    print("  ✅ Case 7: EV=-0.10/score=75 → 强信号豁免通过")
 
 
 def test_ev_gate_no_exemption_when_ev_too_negative():
@@ -164,10 +165,10 @@ def test_build_plan_outputs_ev_fields():
     assert 'p_win_source' in plan, "plan 应包含 p_win_source"
     assert 'net_profit_usdt' in plan, "plan 应包含 net_profit_usdt"
     assert 'net_loss_usdt' in plan, "plan 应包含 net_loss_usdt"
-    # 启动时无 rolling，应该是 fallback
-    assert plan['p_win_source'] == 'fallback'
-    # P2-O 调整为 0.52
-    assert abs(plan['p_win_used'] - 0.52) < 1e-6
+    # 启动时无 rolling，应该是 bayesian_prior
+    assert plan['p_win_source'] == 'bayesian_prior'
+    # posterior = (0+2)/(0+5) = 0.4, min(0.52, 0.4) = 0.4
+    assert abs(plan['p_win_used'] - 0.4) < 1e-6
 
     print(f"  ✅ Case 9: plan={{'expected_value': {plan['expected_value']}, "
           f"'p_win_used': {plan['p_win_used']}, 'p_win_source': '{plan['p_win_source']}', "
@@ -185,6 +186,7 @@ def test_strategy_review_message_updates_state():
                 'win_rate': 0.68,
                 'profit_factor': 1.85,
                 'total_pnl': 5.2,
+                'winning_trades': 17,
             },
             'total_trades': 25,
         }
@@ -194,8 +196,9 @@ def test_strategy_review_message_updates_state():
     assert j._recent_win_rate == 0.68
     assert j._recent_profit_factor == 1.85
     assert j._total_completed_trades == 25
+    assert j._recent_wins == 17
     print(f"  ✅ Case 10: strategy_review 后 win_rate={j._recent_win_rate}, "
-          f"pf={j._recent_profit_factor}, n={j._total_completed_trades}")
+          f"pf={j._recent_profit_factor}, n={j._total_completed_trades}, wins={j._recent_wins}")
 
 
 def main():

@@ -1,17 +1,14 @@
 """Paper Trading Executor — 影子账户，与实盘 Executor 并行运行
 
-设计目标（2026-05-19）：
+设计目标：
 - 订阅相同的 trade_decision:* 和 price_tick:*，与真实执行器零交互
 - 模拟开仓/平仓/止损/止盈，维护影子账户余额
 - 持仓和已完成交易持久化到 data/paper_*
 - 不下任何真实订单，不查询交易所
-- PnL 计算与实盘口径一致（margin × pnl_pct × leverage，扣除 round_trip_fee）
 
-与实盘 Executor 的关键差异：
-- 不订阅 risk_alert（不响应 RiskGuard 强平，只响应自身 SL/TP 触发）
-- 不订阅 daily_hard_stop_triggered（影子账户独立熔断，避免与实盘耦合）
-- 不查询交易所余额/持仓（全部内存维护 + 文件持久化）
-- 不调用 ContractExecutor（避免误下单）
+mirror_risk 模式（默认 true）：
+- 跟随全局熔断状态，熔断期间禁止新模拟开仓
+- 拒绝时记录标的、动作、原因、来源
 """
 
 import json
@@ -20,6 +17,7 @@ import time
 from typing import Optional
 
 from agents.base import BaseAgent
+from utils.halt_state import get_halt_state
 
 PAPER_TRADES_FILE = "data/paper_trades.jsonl"
 PAPER_POSITIONS_FILE = "data/paper_positions.json"
@@ -36,18 +34,19 @@ class PaperExecutor(BaseAgent):
 
     def __init__(self, config: dict = None):
         super().__init__(config)
-        # 初始余额：用 effective_balance_cap（与逻辑拆分对齐，便于和实盘比较）
-        # 否则用 max_trade_amount × 100（兜底）
         cap = (config or {}).get('effective_balance_cap')
         self._initial_equity = float(cap) if cap and cap > 0 else 1000.0
         self.min_confidence = (config or {}).get('min_confidence', 60)
         self._max_trade_amount = (config or {}).get('max_trade_amount', 10)
+        self._mirror_risk = (config or {}).get('mirror_risk', True)
 
-        self._positions: dict = {}  # {symbol: position_dict}
+        self._positions: dict = {}
         self._equity: float = self._initial_equity
-        self._latest_price: dict = {}  # {symbol: price}
-        self._halted: bool = False  # 与实盘 halt 联动（仅观察用）
+        self._latest_price: dict = {}
+        self._halted: bool = False
+        self._halt_state = get_halt_state()
         self._cost_model = None
+        self._rejected_log: list = []
 
     async def setup(self):
         os.makedirs("data", exist_ok=True)
@@ -109,8 +108,15 @@ class PaperExecutor(BaseAgent):
         position = self._positions.get(norm_symbol)
 
         if self._halted and action in ('open_long', 'open_short') and position is None:
-            self.logger.info(f"[PAPER] {norm_symbol} 跳过：halted")
+            self._record_rejection(norm_symbol, action, "skip_halted", source)
             return
+
+        # mirror_risk: 跟随全局熔断状态
+        if self._mirror_risk and not self._halt_state.can_open_new:
+            if action in ('open_long', 'open_short') and position is None:
+                reason = "reconciliation_pending" if self._halt_state.reconciliation_pending else "global_halt"
+                self._record_rejection(norm_symbol, action, reason, source)
+                return
 
         if confidence < self.min_confidence and action in ('open_long', 'open_short'):
             return
@@ -127,6 +133,21 @@ class PaperExecutor(BaseAgent):
                 await self._reduce_paper(norm_symbol, size_pct, position)
             else:
                 await self._close_paper(norm_symbol, position, reason='signal_close')
+
+    def _record_rejection(self, symbol: str, action: str, reason: str, source: str):
+        """记录被拒绝的开仓请求（mirror_risk 模式下）"""
+        record = {
+            "ts": time.time(),
+            "symbol": symbol,
+            "action": action,
+            "reason": reason,
+            "source": source,
+            "halt_reason": self._halt_state.reason,
+        }
+        self._rejected_log.append(record)
+        if len(self._rejected_log) > 100:
+            self._rejected_log = self._rejected_log[-50:]
+        self.logger.info(f"[PAPER] {symbol} {action} 拒绝: {reason} (来源={source})")
 
     async def _open_paper(self, symbol: str, action: str, plan: Optional[dict], decision: dict):
         side = 'long' if action == 'open_long' else 'short'

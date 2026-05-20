@@ -48,6 +48,7 @@ class Censor(BaseAgent):
     async def _challenge(self, payload: dict):
         selected = payload.get('selected', [])
         market_context = payload.get('market_context', '')
+        cycle_id = payload.get('cycle_id')
 
         if not selected:
             return
@@ -89,6 +90,7 @@ class Censor(BaseAgent):
             "systemic_risks": list(set(all_systemic)),
             "overall_verdict": overall_verdict,
             "original_selected": selected,
+            "cycle_id": cycle_id,
         })
 
     def _build_challenge_request(self, selected: list, market_context: str) -> str:

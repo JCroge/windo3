@@ -137,6 +137,11 @@ class JudgeAgent(BaseAgent):
 
         except Exception as e:
             self.logger.warning(f"LLM决策失败，使用规则降级: {e}")
+            if self.llm and self.llm.degraded:
+                await self.publish("telegram_alert", {
+                    "level": "warning",
+                    "message": f"LLM连续{self.llm.consecutive_failures}次失败，已降级为规则引擎",
+                })
             return self._rule_fallback(tech)
 
     def _rule_fallback(self, tech: dict) -> dict:

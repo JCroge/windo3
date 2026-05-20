@@ -52,23 +52,45 @@ class BaseAgent(ABC):
 
         await self.setup()
 
+        msg_task = asyncio.create_task(self._message_loop())
+        tick_task = asyncio.create_task(self._periodic_loop())
+
+        try:
+            await asyncio.gather(msg_task, tick_task)
+        except asyncio.CancelledError:
+            msg_task.cancel()
+            tick_task.cancel()
+
+        self.logger.info(f"Agent [{self.name}] 停止")
+
+    async def _message_loop(self):
+        """快速消费消息，不被 tick sleep 阻塞"""
         while self._running and not self._should_stop:
             try:
                 msg = await self.bus.receive(self.name, timeout=0.5)
                 if msg:
                     await self.on_message(msg)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                import traceback
+                self.logger.error(f"消息处理错误: {e}\n{traceback.format_exc()}")
+                await asyncio.sleep(1)
+
+    async def _periodic_loop(self):
+        """独立周期任务，不阻塞消息消费"""
+        while self._running and not self._should_stop:
+            try:
                 await self.tick()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 import traceback
-                self.logger.error(f"运行错误: {e}\n{traceback.format_exc()}")
+                self.logger.error(f"tick错误: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(1)
 
-        self.logger.info(f"Agent [{self.name}] 停止")
-
     async def tick(self):
-        pass
+        await asyncio.sleep(1)
 
     async def publish(self, msg_type: str, payload: dict, to: str = "broadcast", symbol: str = None):
         await self.bus.publish(self.name, msg_type, payload, to, symbol=symbol)

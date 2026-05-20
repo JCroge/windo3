@@ -93,6 +93,19 @@ class RiskManager:
         self.daily_pnl += pnl
         self._save_state()  # 持久化，防止崩溃后绕过当日熔断
 
+    def sync_from_ledger(self, ledger) -> None:
+        """启动时从 LiveLedger 同步当日真实 PnL（修正重启后的 daily_pnl 偏差）"""
+        try:
+            ledger_daily = ledger.daily_realized_pnl()
+            if abs(ledger_daily - self.daily_pnl) > 0.01:
+                old = self.daily_pnl
+                self.daily_pnl = ledger_daily
+                self._save_state()
+                if hasattr(self, 'logger'):
+                    self.logger.info(f"[RiskManager] 从Ledger同步daily_pnl: {old:.4f} → {ledger_daily:.4f}")
+        except Exception:
+            pass
+
     def _update_daily_reset(self):
         """每日重置"""
         today = datetime.now().date()
