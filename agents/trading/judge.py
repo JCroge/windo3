@@ -89,7 +89,9 @@ class MultiJudge(BaseAgent):
         # 后续胜率验证后可在 config 中放宽
         self._max_concurrent_positions = config.get('max_concurrent_positions', 3) if config else 3
         self._open_positions = set()  # 当前已知开仓的 symbol 集合
+        self._position_slots = {}  # {symbol: slot_type} 记录每个持仓的 slot 类型
         self._pending_open_symbols = set()  # ranking selected 但尚未收到 execution_result
+        self._pending_open_slots = {}  # {symbol: slot_type} pending 的 slot 类型
         self._pending_open_ts = {}  # {symbol: timestamp} pending 加入时间
         self._pending_ttl = 120  # pending 超时秒数，超时后自动释放
         # 与 Executor/PaperExecutor 保持同一实盘开仓门槛，避免 Judge 发布下游必然拒绝的开仓。
@@ -258,6 +260,17 @@ class MultiJudge(BaseAgent):
                 for sym in saved_positions:
                     norm = sym.replace('-SWAP', '')
                     self._open_positions.add(norm)
+                    if isinstance(saved_positions, dict) and isinstance(saved_positions[sym], dict):
+                        pos_data = saved_positions[sym]
+                        attr = pos_data.get('attribution', {}) or {}
+                        slot = pos_data.get('slot_type') or attr.get('slot_type', 'main')
+                        is_probe = pos_data.get('is_probe') or attr.get('is_probe', False)
+                    else:
+                        slot = 'main'
+                        is_probe = False
+                    self._position_slots[norm] = slot
+                    if is_probe and self._probe_short_active is None:
+                        self._probe_short_active = norm
                 self.logger.info(
                     f"[Judge] 从 positions.json 恢复 {len(self._open_positions)} 个持仓: "
                     f"{sorted(self._open_positions)}"
@@ -302,6 +315,7 @@ class MultiJudge(BaseAgent):
         for s in stale:
             self._pending_open_symbols.discard(s)
             self._pending_open_ts.pop(s, None)
+            self._pending_open_slots.pop(s, None)
             self.logger.warning(f"[Judge] pending TTL expired for {s}, releasing slot")
 
     async def on_message(self, msg: dict):
@@ -346,6 +360,7 @@ class MultiJudge(BaseAgent):
                 action = payload.get('action', '')
                 self._pending_open_symbols.discard(symbol)
                 self._pending_open_ts.pop(symbol, None)
+                self._pending_open_slots.pop(symbol, None)
                 if status == 'force_closed':
                     state["last_force_close_time"] = time.time()
                     closed_dir = payload.get('direction', payload.get('action', ''))
@@ -353,6 +368,7 @@ class MultiJudge(BaseAgent):
                     self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
                     self._open_positions.discard(symbol)
+                    self._position_slots.pop(symbol, None)
                     # Probe short tracking
                     if self._probe_short_active == symbol:
                         self._probe_short_active = None
@@ -369,23 +385,38 @@ class MultiJudge(BaseAgent):
                     self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
                     self._open_positions.discard(symbol)
-                    # Probe short tracking: external close counts as SL
+                    self._position_slots.pop(symbol, None)
+                    # Probe short tracking: only count as SL if pnl < 0
                     if self._probe_short_active == symbol:
                         self._probe_short_active = None
-                        self._probe_short_sl_count += 1
-                        if self._probe_short_sl_count >= 2:
-                            self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
-                            self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL(external)，冷却{self._probe_short_cooldown_hours}h")
+                        result_data = payload.get('result', {})
+                        pnl = result_data.get('pnl', result_data.get('realized_pnl', -1))
+                        exit_reason = result_data.get('exit_reason', result_data.get('reason', ''))
+                        is_loss = pnl < 0 or exit_reason in ('sl', 'stop_loss', 'force_closed')
+                        if is_loss:
+                            self._probe_short_sl_count += 1
+                            if self._probe_short_sl_count >= 2:
+                                self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
+                                self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL(external)，冷却{self._probe_short_cooldown_hours}h")
+                        else:
+                            self._probe_short_sl_count = 0
                     self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{cooldown}s (active={len(self._open_positions)})")
                 elif status == 'executed' and action in ('open_long', 'open_short'):
                     state["last_open_time"] = time.time()
                     self._open_positions.add(symbol)
+                    # Invalidate counterfactual shadows for this symbol
+                    self._counterfactual_ledger.invalidate(symbol, "position_opened")
+                    # Record slot type from attribution
+                    slot_type = (payload.get('result', {}).get('attribution', {}).get('slot_type')
+                                 or self._pending_open_slots.pop(symbol, 'main'))
+                    self._position_slots[symbol] = slot_type
                     # Track probe_short
                     if payload.get('result', {}).get('attribution', {}).get('is_probe'):
                         self._probe_short_active = symbol
-                    self.logger.info(f"[Judge] {symbol} 开仓成功 (active={len(self._open_positions)}/{self._max_concurrent_positions})")
+                    self.logger.info(f"[Judge] {symbol} 开仓成功 slot={slot_type} (active={len(self._open_positions)}/{self._max_concurrent_positions})")
                 elif status == 'executed' and action == 'close':
                     self._open_positions.discard(symbol)
+                    self._position_slots.pop(symbol, None)
                     # Probe short tracking: normal close (TP or manual) resets SL count
                     if self._probe_short_active == symbol:
                         self._probe_short_active = None
@@ -473,25 +504,40 @@ class MultiJudge(BaseAgent):
             }, symbol=symbol)
             return
 
-        # ═══ P2-O: 并发持仓上限保护 ═══
-        # 当前 symbol 不在已开仓集合 + 已开仓数达上限 → 强制 hold
+        # ═══ P2-O: 并发持仓上限保护（按 slot 类型分开记账）═══
         self._sweep_stale_pending()
         occupied = self._open_positions | self._pending_open_symbols
-        if (symbol not in occupied and
-            len(occupied) >= self._max_concurrent_positions):
-            self.logger.info(
-                f"[Judge] {symbol} 并发持仓已达上限 "
-                f"{len(occupied)}/{self._max_concurrent_positions}，跳过新开仓"
-            )
-            await self.publish("trade_decision", {
-                "symbol": symbol, "timestamp": time.time(),
-                "action": "hold", "confidence": 0,
-                "plan": None, "size_pct": 0,
-                "reasoning": f"并发持仓已达上限{self._max_concurrent_positions}",
-                "key_factors": [f"active_positions={sorted(self._open_positions)}"],
-                "risk_warnings": ["concurrent_limit_reached"],
-            }, symbol=symbol)
-            return
+        if symbol not in occupied:
+            # Count main slots (exclude low_rr_extra and probe_short)
+            all_slots = {**self._position_slots, **self._pending_open_slots}
+            main_count = sum(1 for s in occupied if all_slots.get(s, 'main') == 'main')
+            low_rr_count = sum(1 for s in occupied if all_slots.get(s) == 'low_rr_extra')
+            probe_count = sum(1 for s in occupied if all_slots.get(s) == 'probe_short')
+
+            # low_rr_extra has its own cap (from ranker config)
+            low_rr_extra_cap = self._candidate_ranker.low_rr_extra_slot if hasattr(self, '_candidate_ranker') else 1
+            probe_cap = self._probe_short_max_concurrent
+
+            # Block only if ALL slot types are full
+            if main_count >= self._max_concurrent_positions:
+                # Main full — still allow low_rr_extra or probe if their caps aren't hit
+                # (actual slot_type assignment happens later in _apply_regime_policy)
+                if low_rr_count >= low_rr_extra_cap and probe_count >= probe_cap:
+                    self.logger.info(
+                        f"[Judge] {symbol} 所有槽位已满 "
+                        f"(main={main_count}/{self._max_concurrent_positions}, "
+                        f"low_rr={low_rr_count}/{low_rr_extra_cap}, "
+                        f"probe={probe_count}/{probe_cap})，跳过新开仓"
+                    )
+                    await self.publish("trade_decision", {
+                        "symbol": symbol, "timestamp": time.time(),
+                        "action": "hold", "confidence": 0,
+                        "plan": None, "size_pct": 0,
+                        "reasoning": f"并发持仓已达上限(main={main_count},low_rr={low_rr_count},probe={probe_count})",
+                        "key_factors": [f"active_positions={sorted(self._open_positions)}"],
+                        "risk_warnings": ["concurrent_limit_reached"],
+                    }, symbol=symbol)
+                    return
 
         # 回调入场检查：之前因RSI超买/超卖被拒，现在RSI回落到合理区间
         state = self._get_state(symbol)
@@ -559,6 +605,15 @@ class MultiJudge(BaseAgent):
                 if not self._check_expected_value(symbol, plan, deferred.get('signal_score', 50)):
                     self.logger.info(f"[Judge] {symbol} 15m确认入场EV<0，放弃")
                     state['deferred_entry'] = None
+                    return
+                # Regime policy: short guard + dynamic R:R floor + low R:R scaling
+                regime_reject = self._apply_regime_policy(
+                    symbol, def_action, plan, deferred.get('signal_score', 50), tech
+                )
+                if regime_reject:
+                    self.logger.info(f"[Judge] {symbol} 15m确认入场被regime policy拦截: {regime_reject}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
                 # P1-2: 统一走 open quality gate
                 reject_reason = self._open_quality_rejection(
@@ -650,6 +705,15 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} 回调入场 EV<0，放弃")
                     state['deferred_entry'] = None
                     return
+                # Regime policy: short guard + dynamic R:R floor + low R:R scaling
+                regime_reject = self._apply_regime_policy(
+                    symbol, def_action, plan, deferred.get('signal_score', 50), tech
+                )
+                if regime_reject:
+                    self.logger.info(f"[Judge] {symbol} 回调入场被regime policy拦截: {regime_reject}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, regime_reject, [regime_reject])
+                    return
                 plan['order_type'] = 'limit'
                 plan['entry_type'] = 'deferred_pullback'
                 attribution = self._build_attribution(
@@ -725,6 +789,15 @@ class MultiJudge(BaseAgent):
                 if not self._check_expected_value(symbol, plan, deferred.get('signal_score', 50)):
                     self.logger.info(f"[Judge] {symbol} 追价入场 EV<0，放弃")
                     state['deferred_entry'] = None
+                    return
+                # Regime policy: short guard + dynamic R:R floor + low R:R scaling
+                regime_reject = self._apply_regime_policy(
+                    symbol, def_action, plan, deferred.get('signal_score', 50), tech
+                )
+                if regime_reject:
+                    self.logger.info(f"[Judge] {symbol} 追价入场被regime policy拦截: {regime_reject}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
                 # RQ-02: chase 有效 RR 约束
                 chase_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
@@ -971,22 +1044,8 @@ class MultiJudge(BaseAgent):
                             trend.get('daily_bias', 'neutral')
                         )
                         if not allowed:
-                            # Check probe short eligibility
-                            is_probe = False
-                            if self._probe_short_enabled and time.time() > self._probe_short_cooldown_until:
-                                btc_tech = self._symbol_tech_cache.get('BTC-USDT')
-                                if (self._probe_short_active is None
-                                        and self._regime_manager.is_probe_short_eligible(btc_tech, self._symbol_tech_cache)
-                                        and abs(score) >= 50 and confirm_15m_short
-                                        and rr_for_guard >= 1.3):
-                                    is_probe = True
-
-                            if is_probe:
-                                # Route to probe_short: tiny position
-                                plan['size_usdt'] = round(self._max_trade_amount * self._probe_short_max_position_pct, 2)
-                                plan['leverage'] = min(plan.get('leverage', 3), self._probe_short_max_leverage)
-                                plan['is_probe'] = True
-                                plan['slot_type'] = 'probe_short'
+                            if self._can_route_probe_short(symbol, score, confirm_15m_short, rr_for_guard):
+                                self._route_to_probe(plan, symbol)
                                 self.logger.info(
                                     f"[Judge] {symbol} probe_short: size={plan['size_usdt']} lev={plan['leverage']}x"
                                 )
@@ -1010,6 +1069,35 @@ class MultiJudge(BaseAgent):
                                     "attribution": {
                                         "entry_regime": regime_snap['effective_regime'],
                                         "blocked_by": guard_reason,
+                                    },
+                                }
+                                await self.publish("trade_decision", decision, symbol=symbol)
+                                return
+                        elif guard_reason == 'degrade_to_probe':
+                            if self._can_route_probe_short(symbol, score, confirm_15m_short, rr_for_guard):
+                                self._route_to_probe(plan, symbol)
+                                self.logger.info(
+                                    f"[Judge] {symbol} strong short degraded to probe (daily=bullish): "
+                                    f"size={plan['size_usdt']} lev={plan['leverage']}x"
+                                )
+                            else:
+                                self._record_rejected_plan(
+                                    symbol, final_action, plan, score, final_conf,
+                                    "degrade_to_probe:probe_unavailable"
+                                )
+                                self.logger.info(
+                                    f"[Judge] {symbol} degrade_to_probe rejected: probe unavailable"
+                                )
+                                decision = {
+                                    "symbol": symbol, "timestamp": time.time(),
+                                    "action": "hold", "confidence": 0,
+                                    "plan": None, "size_pct": 0,
+                                    "reasoning": "Strong short degraded to probe but probe unavailable",
+                                    "key_factors": ["degrade_to_probe:probe_unavailable"],
+                                    "risk_warnings": ["short_regime_guard"],
+                                    "attribution": {
+                                        "entry_regime": regime_snap['effective_regime'],
+                                        "blocked_by": "degrade_to_probe:probe_unavailable",
                                     },
                                 }
                                 await self.publish("trade_decision", decision, symbol=symbol)
@@ -1054,7 +1142,7 @@ class MultiJudge(BaseAgent):
 
                     if is_long and eff_regime == 'bullish' and self._low_rr_slot_enabled:
                         min_rr = self._rr_floor_long_bullish
-                    elif not is_long and eff_regime == 'bullish':
+                    elif not is_long and eff_regime == 'bullish' and self._short_regime_guard_enabled:
                         min_rr = self._rr_floor_short_bullish
                     else:
                         min_rr = self._rr_floor_default
@@ -1223,6 +1311,61 @@ class MultiJudge(BaseAgent):
                         "attribution": attribution,
                     }
 
+                    # Final slot gate: verify slot availability before publish/buffer
+                    slot_type = plan.get('slot_type', 'main')
+                    if slot_type == 'main':
+                        occupied = self._open_positions | self._pending_open_symbols
+                        all_slots = {**self._position_slots, **self._pending_open_slots}
+                        main_count = sum(1 for s in occupied if all_slots.get(s, 'main') == 'main')
+                        if main_count >= self._max_concurrent_positions:
+                            gate_attr = self._rejection_attribution(final_action, plan, "main_slot_full")
+                            self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "main_slot_full", gate_attr)
+                            await self.publish("trade_decision", {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": f"Main slot full ({main_count}/{self._max_concurrent_positions})",
+                                "key_factors": ["slot_gate:main_full"],
+                                "risk_warnings": ["concurrent_limit_reached"],
+                                "attribution": gate_attr,
+                            }, symbol=symbol)
+                            return
+                    elif slot_type == 'low_rr_extra':
+                        occupied = self._open_positions | self._pending_open_symbols
+                        all_slots = {**self._position_slots, **self._pending_open_slots}
+                        low_rr_count = sum(1 for s in occupied if all_slots.get(s) == 'low_rr_extra')
+                        low_rr_cap = self._candidate_ranker.low_rr_extra_slot if hasattr(self, '_candidate_ranker') else 1
+                        if low_rr_count >= low_rr_cap:
+                            gate_attr = self._rejection_attribution(final_action, plan, "low_rr_slot_full")
+                            self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "low_rr_slot_full", gate_attr)
+                            await self.publish("trade_decision", {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": f"Low R:R extra slot full ({low_rr_count}/{low_rr_cap})",
+                                "key_factors": ["slot_gate:low_rr_full"],
+                                "risk_warnings": ["concurrent_limit_reached"],
+                                "attribution": gate_attr,
+                            }, symbol=symbol)
+                            return
+                    elif slot_type == 'probe_short':
+                        occupied = self._open_positions | self._pending_open_symbols
+                        all_slots = {**self._position_slots, **self._pending_open_slots}
+                        probe_count = sum(1 for s in occupied if all_slots.get(s) == 'probe_short')
+                        if probe_count >= self._probe_short_max_concurrent:
+                            gate_attr = self._rejection_attribution(final_action, plan, "probe_slot_full")
+                            self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "probe_slot_full", gate_attr)
+                            await self.publish("trade_decision", {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": f"Probe short slot full ({probe_count}/{self._probe_short_max_concurrent})",
+                                "key_factors": ["slot_gate:probe_full"],
+                                "risk_warnings": ["concurrent_limit_reached"],
+                                "attribution": gate_attr,
+                            }, symbol=symbol)
+                            return
+
                     # Buffer into ranker for Top-N selection
                     if self._candidate_ranker.enabled:
                         rank_candidate['decision'] = decision
@@ -1272,7 +1415,13 @@ class MultiJudge(BaseAgent):
         """Flush ranker buffer: publish selected, hold rejected."""
         self._sweep_stale_pending()
         occupied = self._open_positions | self._pending_open_symbols
-        selected, rejected = self._candidate_ranker.rank_and_select(occupied)
+        all_slots = {**self._position_slots, **self._pending_open_slots}
+        slot_occupancy = {
+            'main': sum(1 for s in occupied if all_slots.get(s, 'main') == 'main'),
+            'low_rr_extra': sum(1 for s in occupied if all_slots.get(s) == 'low_rr_extra'),
+            'probe_short': sum(1 for s in occupied if all_slots.get(s) == 'probe_short'),
+        }
+        selected, rejected = self._candidate_ranker.rank_and_select(occupied, slot_occupancy)
 
         for candidate in selected:
             decision = candidate['decision']
@@ -1281,17 +1430,23 @@ class MultiJudge(BaseAgent):
             state['last_open_time'] = time.time()
             self._pending_open_symbols.add(symbol)
             self._pending_open_ts[symbol] = time.time()
+            slot_type = (candidate.get('plan') or {}).get('slot_type', 'main')
+            self._pending_open_slots[symbol] = slot_type
             await self.publish("trade_decision", decision, symbol=symbol)
             self.logger.info(
-                f"[Ranking] {symbol} SELECTED rank={candidate.get('attribution', {}).get('rank_score', 0):.1f}"
+                f"[Ranking] {symbol} SELECTED rank={candidate.get('attribution', {}).get('rank_score', 0):.1f} slot={slot_type}"
             )
 
         for candidate in rejected:
             decision = candidate['decision']
             symbol = decision['symbol']
+            ranked_attr = candidate.get('attribution') or self._rejection_attribution(
+                decision.get('action', 'hold'), candidate.get('plan'), 'ranked_out'
+            )
             self._record_rejected_plan(
                 symbol, decision.get('action', 'hold'), candidate.get('plan'),
-                candidate.get('score', 0), decision.get('confidence', 0), 'ranked_out'
+                candidate.get('score', 0), decision.get('confidence', 0), 'ranked_out',
+                ranked_attr
             )
             await self.publish("trade_decision", {
                 "symbol": symbol, "timestamp": time.time(),
@@ -1300,6 +1455,7 @@ class MultiJudge(BaseAgent):
                 "reasoning": f"排名淘汰: rank={candidate.get('attribution', {}).get('rank_score', 0):.1f}，槽位不足",
                 "key_factors": ["ranked_out"],
                 "risk_warnings": [],
+                "attribution": ranked_attr,
             }, symbol=symbol)
             self.logger.info(
                 f"[Ranking] {symbol} REJECTED rank={candidate.get('attribution', {}).get('rank_score', 0):.1f}"
@@ -1612,15 +1768,115 @@ class MultiJudge(BaseAgent):
             return 'short_bullish_strong'
         return 'default'
 
+    def _can_route_probe_short(self, symbol: str, score: float,
+                               confirm_15m_short: bool, rr: float) -> bool:
+        """Check all probe_short prerequisites. Returns True if probe is allowed."""
+        if not self._probe_short_enabled:
+            return False
+        if time.time() <= self._probe_short_cooldown_until:
+            return False
+        if self._probe_short_active is not None:
+            return False
+        # Check pending probe in slots
+        if any(s == 'probe_short' for s in self._pending_open_slots.values()):
+            return False
+        btc_tech = self._symbol_tech_cache.get('BTC-USDT')
+        if not self._regime_manager.is_probe_short_eligible(btc_tech, self._symbol_tech_cache):
+            return False
+        if abs(score) < 50 or not confirm_15m_short or rr < 1.3:
+            return False
+        # Liquidity gate: symbol must have positive liquidity score
+        sym_tech = self._symbol_tech_cache.get(symbol, {})
+        liquidity_score = sym_tech.get('risk', {}).get('liquidity_score', 0)
+        if liquidity_score <= 0:
+            return False
+        return True
+
+    def _route_to_probe(self, plan: dict, symbol: str):
+        """Mutate plan to probe_short sizing."""
+        plan['size_usdt'] = round(self._max_trade_amount * self._probe_short_max_position_pct, 2)
+        plan['leverage'] = min(plan.get('leverage', 3), self._probe_short_max_leverage)
+        plan['is_probe'] = True
+        plan['slot_type'] = 'probe_short'
+
+    def _apply_regime_policy(self, symbol: str, action: str, plan: dict,
+                             score: float, tech: dict):
+        """Apply short guard + dynamic R:R floor + low R:R scaling to a plan.
+
+        Returns rejection reason string if blocked, None if passed (plan may be mutated).
+        Used by both main path and deferred paths for consistency.
+        """
+        is_long = 'long' in action
+        regime_snap = self._regime_manager.snapshot()
+        eff_regime = regime_snap['effective_regime']
+
+        # ── Short Regime Guard ──
+        if (not is_long and self._short_regime_guard_enabled
+                and eff_regime == 'bullish'):
+            trend = tech.get('trend', {})
+            entry_timing = tech.get('entry_timing', {})
+            htf_bearish = 0
+            for d in [trend.get('direction'), trend.get('higher_tf_bias'), trend.get('daily_bias')]:
+                if d == 'bearish':
+                    htf_bearish += 1
+            rr_for_guard = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
+            confirm_15m_short = entry_timing.get('tf_15m_confirm_short', False)
+            allowed, guard_reason = self._regime_manager.is_short_allowed(
+                score, htf_bearish, rr_for_guard, confirm_15m_short,
+                trend.get('daily_bias', 'neutral')
+            )
+            if not allowed:
+                if self._can_route_probe_short(symbol, score, confirm_15m_short, rr_for_guard):
+                    self._route_to_probe(plan, symbol)
+                else:
+                    self._record_rejected_plan(symbol, action, plan, score, 60,
+                                              f"short_regime_guard:{guard_reason}")
+                    return f"short_regime_guard:{guard_reason}"
+            elif guard_reason == 'degrade_to_probe':
+                if self._can_route_probe_short(symbol, score, confirm_15m_short, rr_for_guard):
+                    self._route_to_probe(plan, symbol)
+                else:
+                    self._record_rejected_plan(symbol, action, plan, score, 60,
+                                              "degrade_to_probe:probe_unavailable")
+                    return "degrade_to_probe:probe_unavailable"
+
+        # ── Dynamic R:R Floor ──
+        rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
+        if is_long and eff_regime == 'bullish' and self._low_rr_slot_enabled:
+            min_rr = self._rr_floor_long_bullish
+        elif not is_long and eff_regime == 'bullish' and self._short_regime_guard_enabled:
+            min_rr = self._rr_floor_short_bullish
+        else:
+            min_rr = self._rr_floor_default
+
+        if rr < min_rr:
+            self._record_rejected_plan(symbol, action, plan, score, 60,
+                                       f"rr_below_floor:{rr:.2f}<{min_rr:.2f}")
+            return f"rr_below_floor:{rr:.2f}<{min_rr:.2f}"
+
+        # ── Low R:R Scaling ──
+        if (rr < 1.5 and is_long and eff_regime == 'bullish'
+                and self._low_rr_slot_enabled and not plan.get('is_probe')):
+            rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
+            plan['size_usdt'] = round(plan['size_usdt'] * rr_scale * self._low_rr_max_position_pct, 2)
+            plan['leverage'] = min(plan.get('leverage', 5), self._low_rr_max_leverage)
+            plan['is_low_rr'] = True
+            plan['slot_type'] = 'low_rr_extra'
+
+        return None
+
     def _record_rejected_plan(self, symbol: str, action: str, plan: dict,
-                              score: float, confidence: float, reason: str):
+                              score: float, confidence: float, reason: str,
+                              attribution: dict = None):
         """Record a rejected planned signal to the counterfactual ledger."""
         if not self._counterfactual_ledger._enabled or not plan:
             return
         side = 'long' if 'long' in action else 'short'
         regime = self._regime_manager._effective_regime
+        attr = attribution or plan.get('attribution') or self._rejection_attribution(action, plan, reason)
         self._counterfactual_ledger.record_rejection(
-            symbol, side, plan, regime, score, confidence, reason
+            symbol, side, plan, regime, score, confidence, reason,
+            attribution=attr
         )
 
     def _rejection_attribution(self, action: str, plan: dict, blocked_by: str) -> dict:

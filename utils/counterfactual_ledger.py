@@ -27,7 +27,7 @@ class CounterfactualLedger:
 
     def record_rejection(self, symbol: str, side: str, plan: dict,
                          regime: str, score: float, confidence: float,
-                         reject_reason: str):
+                         reject_reason: str, attribution: dict = None):
         """Record a rejected plan for shadow tracking."""
         if not self._enabled:
             return
@@ -57,6 +57,15 @@ class CounterfactualLedger:
             "status": "tracking",
         }
 
+        if attribution:
+            record["raw_regime"] = attribution.get("raw_regime", "")
+            record["regime_confidence"] = attribution.get("regime_confidence", 0)
+            record["rr_policy"] = attribution.get("rr_policy", "")
+            record["slot_type"] = attribution.get("slot_type", "main")
+            record["blocked_by"] = attribution.get("blocked_by", reject_reason)
+            record["is_probe"] = attribution.get("is_probe", False)
+            record["is_low_rr"] = attribution.get("is_low_rr", False)
+
         self._active[record_id] = record
         self._append_event("rejected_plan_created", record)
         self._persist_lifecycle()
@@ -68,10 +77,34 @@ class CounterfactualLedger:
                 f"reason={reject_reason}"
             )
 
+    def invalidate(self, symbol: str, reason: str = "signal_reversed"):
+        """Invalidate active shadows for a symbol (e.g., reverse signal received)."""
+        if not self._enabled:
+            return
+        now = time.time()
+        resolved = []
+        for rid, rec in list(self._active.items()):
+            if rec['symbol'] != symbol or rec['status'] != 'tracking':
+                continue
+            rec['status'] = 'shadow_invalidated'
+            rec['resolved_at'] = now
+            rec['invalidate_reason'] = reason
+            self._append_event("shadow_invalidated", rec)
+            resolved.append(rid)
+        for rid in resolved:
+            self._active.pop(rid, None)
+        if resolved:
+            self._persist_lifecycle()
+            if self.logger:
+                self.logger.info(f"[Shadow] {symbol} invalidated {len(resolved)} shadow(s): {reason}")
+
     def check_price(self, symbol: str, price: float, timestamp: float):
         """Check if any active shadow for this symbol hit TP or SL."""
         if not self._enabled or not price:
             return
+
+        # Normalize symbol
+        symbol = symbol.replace('-SWAP', '').replace('/USDT:USDT', '-USDT')
 
         now = timestamp or time.time()
         resolved = []

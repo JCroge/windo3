@@ -70,6 +70,8 @@ class RegimeManager:
         """Check if short is allowed under current regime (PRD RQ-REG-03).
 
         Returns (allowed: bool, reason: str).
+        Reason 'degrade_to_probe' means strong short conditions met but daily
+        still bullish — caller should route to probe_short sizing.
         """
         if self._effective_regime != REGIME_BULLISH:
             return True, ""
@@ -79,6 +81,9 @@ class RegimeManager:
                 and htf_bearish_votes >= 2
                 and confirm_15m_short
                 and effective_rr >= 1.8):
+            # P1-1: daily still bullish → degrade to probe sizing
+            if daily_bias == 'bullish':
+                return True, "degrade_to_probe"
             return True, "short_bullish_strong"
 
         return False, "short_regime_guard"
@@ -253,7 +258,10 @@ class RegimeManager:
             required = 1
 
         # Switch if enough confirmations
-        if self._candidate_count >= required and confidence >= 65:
+        # Mixed/choppy have inherently lower confidence (max 55/60), so use
+        # a lower threshold — consecutive confirmations are sufficient evidence.
+        conf_threshold = 50 if raw_regime in (REGIME_MIXED, REGIME_CHOPPY) else 65
+        if self._candidate_count >= required and confidence >= conf_threshold:
             old = self._effective_regime
             self._effective_regime = raw_regime
             self._last_changed_at = now
@@ -269,6 +277,7 @@ class RegimeManager:
     # ── Persistence ─────────────────────────────────────────────────────────
 
     _STATE_PATH = "data/regime_state.json"
+    _STATE_TTL = 2 * 3600  # 2h: stale state resets to mixed
 
     def _persist_state(self):
         try:
@@ -277,6 +286,7 @@ class RegimeManager:
                 "last_changed_at": self._last_changed_at,
                 "candidate_regime": self._candidate_regime,
                 "candidate_count": self._candidate_count,
+                "saved_at": time.time(),
             })
         except Exception:
             pass
@@ -286,6 +296,12 @@ class RegimeManager:
         try:
             with open(self._STATE_PATH, 'r') as f:
                 data = json.load(f)
+            saved_at = data.get("saved_at", 0)
+            if time.time() - saved_at > self._STATE_TTL:
+                self._effective_regime = REGIME_MIXED
+                self._candidate_regime = None
+                self._candidate_count = 0
+                return
             self._effective_regime = data.get("effective_regime", REGIME_MIXED)
             self._last_changed_at = data.get("last_changed_at", 0)
             self._candidate_regime = data.get("candidate_regime")

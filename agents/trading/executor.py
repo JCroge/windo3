@@ -502,7 +502,8 @@ class MultiExecutor(BaseAgent):
                 "result": {"pnl": pnl, "symbol": symbol,
                            "side": pos_data.get('side', ''),
                            "entry_price": pos_data.get('entry_price', 0),
-                           "amount_usdt": pos_data.get('amount_usdt', 0)},
+                           "amount_usdt": pos_data.get('amount_usdt', 0),
+                           "attribution": pos_data.get('attribution', {})},
             }, symbol=symbol)
 
     def _get_external_close_pnl(self, symbol: str, pos_data: dict) -> float:

@@ -42,22 +42,36 @@ class CandidateRanker:
             'added_at': time.time(),
         })
 
-    def rank_and_select(self, open_positions: set) -> tuple:
+    def rank_and_select(self, open_positions: set, slot_occupancy: dict = None) -> tuple:
         """排序并选择。返回 (selected_list, rejected_list)。
 
         selected: 可以进入 live 的候选
         rejected: 被排名淘汰的候选（可进入 paper 观察）
 
-        Low R:R candidates get a rank penalty and use a separate extra slot
-        so they don't crowd out high R:R signals from main slots.
+        slot_occupancy: {main: int, low_rr_extra: int, probe_short: int} 当前各类型占用数。
+        Low R:R candidates get a rank penalty and use a separate extra slot.
+        Probe candidates use a dedicated probe slot (max 1).
         """
         if not self.enabled or not self._buffer:
             selected = list(self._buffer)
             self._buffer = []
             return selected, []
 
-        available_main = self.max_slots - len(open_positions)
-        if available_main <= 0 and self.low_rr_extra_slot <= 0:
+        # Use slot_occupancy if provided, otherwise fall back to simple count
+        if slot_occupancy:
+            main_used = slot_occupancy.get('main', 0)
+            low_rr_used = slot_occupancy.get('low_rr_extra', 0)
+            probe_used = slot_occupancy.get('probe_short', 0)
+        else:
+            main_used = len(open_positions)
+            low_rr_used = 0
+            probe_used = 0
+
+        available_main = self.max_slots - main_used
+        available_low_rr_extra = max(0, self.low_rr_extra_slot - low_rr_used)
+        available_probe = max(0, 1 - probe_used)
+
+        if available_main <= 0 and available_low_rr_extra <= 0 and available_probe <= 0:
             rejected = list(self._buffer)
             self._buffer = []
             self._rejected_candidates.extend(rejected)
@@ -70,23 +84,29 @@ class CandidateRanker:
             scored.append((rank_score, c))
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # Separate normal vs low_rr
-        normal_scored = [(s, c) for s, c in scored if not c.get('plan', {}).get('is_low_rr')]
+        # Separate by slot type
+        normal_scored = [(s, c) for s, c in scored
+                         if not c.get('plan', {}).get('is_low_rr')
+                         and not c.get('plan', {}).get('is_probe')]
         low_rr_scored = [(s, c) for s, c in scored if c.get('plan', {}).get('is_low_rr')]
+        probe_scored = [(s, c) for s, c in scored if c.get('plan', {}).get('is_probe')]
 
         selected = []
         # Fill main slots: normal candidates first
         main_from_normal = normal_scored[:max(0, available_main)]
         remaining_main = max(0, available_main - len(main_from_normal))
-        # If main slots still available, low_rr can use them
         main_from_low_rr = low_rr_scored[:remaining_main]
 
         selected = [c for _, c in main_from_normal + main_from_low_rr]
 
         # Extra slot: only for low_rr candidates that didn't get main slot
         low_rr_remaining = low_rr_scored[remaining_main:]
-        extra_selected = [c for _, c in low_rr_remaining[:self.low_rr_extra_slot]]
+        extra_selected = [c for _, c in low_rr_remaining[:available_low_rr_extra]]
         selected.extend(extra_selected)
+
+        # Probe slot: at most 1 probe candidate
+        probe_selected = [c for _, c in probe_scored[:available_probe]]
+        selected.extend(probe_selected)
 
         # Everything else is rejected
         all_selected_ids = {id(c) for c in selected}
@@ -99,15 +119,17 @@ class CandidateRanker:
             self.logger.info(
                 f"[Ranking] {len(scored)} candidates → "
                 f"selected {len(selected)} (main={len(main_from_normal)+len(main_from_low_rr)}, "
-                f"extra_low_rr={len(extra_selected)}), rejected {len(rejected)}"
+                f"extra_low_rr={len(extra_selected)}, probe={len(probe_selected)}), "
+                f"rejected {len(rejected)}"
             )
             for rank_score, c in scored:
                 low_rr_tag = " [low_rr]" if c.get('plan', {}).get('is_low_rr') else ""
+                probe_tag = " [probe]" if c.get('plan', {}).get('is_probe') else ""
                 self.logger.info(
                     f"  [{c['symbol']}] rank_score={rank_score:.2f} "
                     f"signal={c.get('score', 0):.0f} "
                     f"rr={c.get('plan', {}).get('effective_risk_reward_ratio', 0):.2f}"
-                    f"{low_rr_tag}"
+                    f"{low_rr_tag}{probe_tag}"
                 )
 
         return selected, rejected

@@ -77,6 +77,32 @@ class TestRegimeHysteresis:
         # After 2 consecutive with confidence >= 65, should switch
         assert regime._effective_regime == REGIME_BEARISH
 
+    def test_two_mixed_switches_from_bullish(self, regime):
+        """AC-REG-02: bullish → two consecutive mixed → switches to mixed."""
+        # mixed requires: high_vol + neutral < 40%, so use high ATR with
+        # a mix of bullish/bearish (not neutral) to avoid choppy branch
+        mixed_techs = {f'SYM{i}-USDT': make_tech('bullish', atr_pct=0.05) for i in range(3)}
+        mixed_techs.update({f'BEAR{i}-USDT': make_tech('bearish', atr_pct=0.05) for i in range(4)})
+        mixed_techs['BTC-USDT'] = make_tech('neutral', atr_pct=0.05)
+
+        regime.update(mixed_techs)
+        assert regime._effective_regime == REGIME_BULLISH  # first, need 2
+        regime.update(mixed_techs)
+        assert regime._effective_regime == REGIME_MIXED  # confirmed, switch
+
+    def test_two_choppy_switches_from_bullish(self, regime):
+        """AC-REG-02: bullish → two consecutive choppy → switches to choppy."""
+        from utils.market_regime import REGIME_CHOPPY
+        # choppy: low vol + neutral >= 50%
+        choppy_techs = {f'SYM{i}-USDT': make_tech('neutral', atr_pct=0.01) for i in range(6)}
+        choppy_techs['BTC-USDT'] = make_tech('neutral', atr_pct=0.01)
+        choppy_techs['ETH-USDT'] = make_tech('neutral', atr_pct=0.01)
+
+        regime.update(choppy_techs)
+        assert regime._effective_regime == REGIME_BULLISH  # first, need 2
+        regime.update(choppy_techs)
+        assert regime._effective_regime == REGIME_CHOPPY  # confirmed, switch
+
     def test_min_hold_period(self, regime):
         """AC-REG-03: Within min_hold, no switch."""
         regime._last_changed_at = time.time()  # just changed

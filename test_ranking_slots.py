@@ -95,6 +95,8 @@ class TestJudgeSlotReservation:
             judge._open_positions = set()
             judge._pending_open_symbols = set()
             judge._pending_open_ts = {}
+            judge._pending_open_slots = {}
+            judge._position_slots = {}
             judge._pending_ttl = 120
             judge._max_concurrent_positions = 3
             judge._candidate_ranker = CandidateRanker(max_slots=3, enabled=True)
@@ -221,3 +223,153 @@ class TestJudgeSlotReservation:
         assert 'STALE-USDT' not in judge._pending_open_ts
         assert 'FRESH-USDT' in judge._pending_open_symbols
         assert 'FRESH-USDT' in judge._pending_open_ts
+
+
+class TestProbeSlotChain:
+    """Probe short slot/pending 全链路闭环测试"""
+
+    def test_ranker_two_probes_only_one_selected(self):
+        """同一 ranking 窗口两个 probe 候选只选一个"""
+        ranker = CandidateRanker(max_slots=3, enabled=True, low_rr_extra_slot=1)
+
+        ranker.add_candidate({
+            'symbol': 'COIN1-USDT', 'action': 'open_short', 'score': -70,
+            'plan': {'is_probe': True, 'slot_type': 'probe_short',
+                     'effective_risk_reward_ratio': 2.0},
+            'tech': {}, 'attribution': {},
+            'decision': {'symbol': 'COIN1-USDT', 'action': 'open_short'},
+        })
+        ranker.add_candidate({
+            'symbol': 'COIN2-USDT', 'action': 'open_short', 'score': -65,
+            'plan': {'is_probe': True, 'slot_type': 'probe_short',
+                     'effective_risk_reward_ratio': 1.8},
+            'tech': {}, 'attribution': {},
+            'decision': {'symbol': 'COIN2-USDT', 'action': 'open_short'},
+        })
+
+        slot_occupancy = {'main': 0, 'low_rr_extra': 0, 'probe_short': 0}
+        selected, rejected = ranker.rank_and_select(set(), slot_occupancy)
+
+        probe_selected = [c for c in selected if c.get('plan', {}).get('is_probe')]
+        assert len(probe_selected) == 1
+        assert len(rejected) == 1
+
+    def test_ranker_probe_slot_full_rejects_probe(self):
+        """probe slot 已满时 probe 候选被 reject"""
+        ranker = CandidateRanker(max_slots=3, enabled=True, low_rr_extra_slot=1)
+
+        ranker.add_candidate({
+            'symbol': 'COIN1-USDT', 'action': 'open_short', 'score': -70,
+            'plan': {'is_probe': True, 'slot_type': 'probe_short',
+                     'effective_risk_reward_ratio': 2.0},
+            'tech': {}, 'attribution': {},
+            'decision': {'symbol': 'COIN1-USDT', 'action': 'open_short'},
+        })
+
+        # probe_short already occupied
+        slot_occupancy = {'main': 0, 'low_rr_extra': 0, 'probe_short': 1}
+        selected, rejected = ranker.rank_and_select(set(), slot_occupancy)
+
+        assert len(selected) == 0
+        assert len(rejected) == 1
+
+    def test_ranker_main_full_but_probe_slot_available(self):
+        """main slot 满但 probe slot 空时，probe 候选可进入 probe slot"""
+        ranker = CandidateRanker(max_slots=2, enabled=True, low_rr_extra_slot=0)
+
+        ranker.add_candidate({
+            'symbol': 'PROBE-USDT', 'action': 'open_short', 'score': -70,
+            'plan': {'is_probe': True, 'slot_type': 'probe_short',
+                     'effective_risk_reward_ratio': 2.0},
+            'tech': {}, 'attribution': {},
+            'decision': {'symbol': 'PROBE-USDT', 'action': 'open_short'},
+        })
+        ranker.add_candidate({
+            'symbol': 'NORMAL-USDT', 'action': 'open_long', 'score': 80,
+            'plan': {'effective_risk_reward_ratio': 2.5},
+            'tech': {}, 'attribution': {},
+            'decision': {'symbol': 'NORMAL-USDT', 'action': 'open_long'},
+        })
+
+        # main full, probe empty
+        slot_occupancy = {'main': 2, 'low_rr_extra': 0, 'probe_short': 0}
+        selected, rejected = ranker.rank_and_select({'A-USDT', 'B-USDT'}, slot_occupancy)
+
+        # Probe should be selected, normal should be rejected
+        probe_selected = [c for c in selected if c.get('plan', {}).get('is_probe')]
+        assert len(probe_selected) == 1
+        assert probe_selected[0]['symbol'] == 'PROBE-USDT'
+        normal_rejected = [c for c in rejected if not c.get('plan', {}).get('is_probe')]
+        assert len(normal_rejected) == 1
+
+    def test_pending_probe_blocks_second_probe(self):
+        """已有 pending probe 时 _can_route_probe_short 返回 False"""
+        with patch.dict(os.environ, {
+            'OKX_API_KEY': 'test', 'OKX_SECRET': 'test', 'OKX_PASSPHRASE': 'test',
+        }):
+            from agents.trading.judge import MultiJudge
+            judge = MultiJudge.__new__(MultiJudge)
+            judge._probe_short_enabled = True
+            judge._probe_short_cooldown_until = 0
+            judge._probe_short_active = None
+            judge._pending_open_slots = {'COIN1-USDT': 'probe_short'}
+            judge._symbol_tech_cache = {}
+
+            class _MockRegime:
+                _effective_regime = 'bullish'
+                def is_probe_short_eligible(self, btc_tech, techs):
+                    return True
+            judge._regime_manager = _MockRegime()
+
+            result = judge._can_route_probe_short('COIN2-USDT', -70, True, 1.5)
+            assert result is False
+
+    def test_liquidity_gate_blocks_zero_liquidity(self):
+        """liquidity_score <= 0 时 probe 被拒"""
+        with patch.dict(os.environ, {
+            'OKX_API_KEY': 'test', 'OKX_SECRET': 'test', 'OKX_PASSPHRASE': 'test',
+        }):
+            from agents.trading.judge import MultiJudge
+            judge = MultiJudge.__new__(MultiJudge)
+            judge._probe_short_enabled = True
+            judge._probe_short_cooldown_until = 0
+            judge._probe_short_active = None
+            judge._pending_open_slots = {}
+            judge._symbol_tech_cache = {
+                'BTC-USDT': {'trend': {'tf_4h_rsi': 65}, 'momentum': {'volume_ratio': 2.0}},
+                'TEST-USDT': {'risk': {'liquidity_score': 0}},
+            }
+
+            class _MockRegime:
+                _effective_regime = 'bullish'
+                def is_probe_short_eligible(self, btc_tech, techs):
+                    return True
+            judge._regime_manager = _MockRegime()
+
+            result = judge._can_route_probe_short('TEST-USDT', -70, True, 1.5)
+            assert result is False
+
+    def test_liquidity_gate_allows_positive_liquidity(self):
+        """liquidity_score > 0 时 probe 可通过"""
+        with patch.dict(os.environ, {
+            'OKX_API_KEY': 'test', 'OKX_SECRET': 'test', 'OKX_PASSPHRASE': 'test',
+        }):
+            from agents.trading.judge import MultiJudge
+            judge = MultiJudge.__new__(MultiJudge)
+            judge._probe_short_enabled = True
+            judge._probe_short_cooldown_until = 0
+            judge._probe_short_active = None
+            judge._pending_open_slots = {}
+            judge._symbol_tech_cache = {
+                'BTC-USDT': {'trend': {'tf_4h_rsi': 65}, 'momentum': {'volume_ratio': 2.0}},
+                'TEST-USDT': {'risk': {'liquidity_score': 50}},
+            }
+
+            class _MockRegime:
+                _effective_regime = 'bullish'
+                def is_probe_short_eligible(self, btc_tech, techs):
+                    return True
+            judge._regime_manager = _MockRegime()
+
+            result = judge._can_route_probe_short('TEST-USDT', -70, True, 1.5)
+            assert result is True

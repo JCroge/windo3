@@ -86,12 +86,16 @@ def test_symbol_format_unified_on_close():
 
 
 def test_concurrent_limit_blocks_new_open():
-    """已开仓 3 个 + 新 symbol → _make_decision 入口直接 hold"""
+    """已开仓 3 个(main满) + extra slots满 → _make_decision 入口直接 hold"""
     import logging
     logging.disable(logging.CRITICAL)  # 静默 LLM 等噪声
 
     j = _new_judge()
-    j._open_positions = {'BTC-USDT', 'ETH-USDT', 'SOL-USDT'}
+    j._open_positions = {'BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'AVAX-USDT', 'LINK-USDT'}
+    j._position_slots = {
+        'BTC-USDT': 'main', 'ETH-USDT': 'main', 'SOL-USDT': 'main',
+        'AVAX-USDT': 'low_rr_extra', 'LINK-USDT': 'probe_short',
+    }
 
     published = []
     async def mock_publish(*args, **kwargs):

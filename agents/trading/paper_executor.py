@@ -202,6 +202,7 @@ class PaperExecutor(BaseAgent):
             'atr_pct': atr_pct,
             'source': decision.get('source', 'judge'),
             'confidence': decision.get('confidence', 0),
+            'attribution': decision.get('attribution') or (plan or {}).get('attribution') or {},
         }
         self._positions[symbol] = pos
         self._equity -= entry_fee  # 入场费立即结算
@@ -256,6 +257,14 @@ class PaperExecutor(BaseAgent):
             'closed_at': time.time(),
             'paper_equity_after': round(self._equity, 4),
         }
+        attr = position.get('attribution', {})
+        if attr:
+            trade_record['entry_regime'] = attr.get('entry_regime', 'unknown')
+            trade_record['raw_regime'] = attr.get('raw_regime', 'unknown')
+            trade_record['rr_policy'] = attr.get('rr_policy', '')
+            trade_record['slot_type'] = attr.get('slot_type', 'main')
+            trade_record['is_low_rr'] = attr.get('is_low_rr', False)
+            trade_record['is_probe'] = attr.get('is_probe', False)
         self._append_trade(trade_record)
         self.logger.info(
             f"[PAPER] CLOSE {symbol} @ {exit_price:.6f} ({reason}) "
@@ -348,7 +357,7 @@ class PaperExecutor(BaseAgent):
         position['margin'] -= reduce_margin
         position['notional'] = position['margin'] * leverage
         self._persist_state()
-        self._append_trade({
+        reduce_record = {
             **{k: position[k] for k in ('symbol', 'side', 'leverage')},
             'entry_price': entry,
             'exit_price': price,
@@ -358,7 +367,14 @@ class PaperExecutor(BaseAgent):
             'net_pnl': round(net_partial, 4),
             'closed_at': time.time(),
             'paper_equity_after': round(self._equity, 4),
-        })
+        }
+        attr = position.get('attribution', {})
+        if attr:
+            reduce_record['entry_regime'] = attr.get('entry_regime', 'unknown')
+            reduce_record['slot_type'] = attr.get('slot_type', 'main')
+            reduce_record['is_low_rr'] = attr.get('is_low_rr', False)
+            reduce_record['is_probe'] = attr.get('is_probe', False)
+        self._append_trade(reduce_record)
         self.logger.info(f"[PAPER] REDUCE {symbol} {int(size_pct*100)}% PnL={net_partial:+.4f}")
 
     async def _check_sl_tp(self, symbol: str, price: float):

@@ -155,6 +155,7 @@ class EventBacktest:
                         'slot_type': position.get('slot_type', 'main'),
                         'is_low_rr': position.get('is_low_rr', False),
                         'is_probe': position.get('is_probe', False),
+                        'rr_floor_used': position.get('rr_floor_used', self.rr_floor),
                     })
                     if exit_info['reason'] == 'sl' and position.get('is_probe'):
                         last_probe_sl_idx = i
@@ -232,10 +233,10 @@ class EventBacktest:
                 'slot_type': position.get('slot_type', 'main'),
                 'is_low_rr': position.get('is_low_rr', False),
                 'is_probe': position.get('is_probe', False),
+                'rr_floor_used': position.get('rr_floor_used', self.rr_floor),
             })
 
         return {
-            'symbol': symbol,
             'trades': trades,
             'equity_curve': equity_curve,
             'final_equity': equity,
@@ -471,6 +472,7 @@ class EventBacktest:
             'notional': notional,
             'atr_pct': atr_pct,
             'sl_dist_pct': sl_dist_pct,
+            'rr_floor_used': min_rr,
             'rr': rr,
             'slot_type': slot_type,
             'is_low_rr': is_low_rr,
@@ -563,7 +565,8 @@ class EventBacktest:
         """开仓：用真实入场价（next open）重算 SL/TP 距离。"""
         direction = plan['direction']
         sl_dist_pct = plan['sl_dist_pct']
-        tp_dist_pct = sl_dist_pct * self.rr_floor
+        rr_floor_used = plan.get('rr_floor_used', self.rr_floor)
+        tp_dist_pct = sl_dist_pct * rr_floor_used
 
         if direction == 'long':
             sl = entry_price * (1 - sl_dist_pct)
@@ -588,6 +591,7 @@ class EventBacktest:
             'original_amount': plan['margin'],
             'atr_pct': plan['atr_pct'],
             'sl_dist_pct': sl_dist_pct,
+            'rr_floor_used': rr_floor_used,
             'highest_price': entry_price,
             'lowest_price': entry_price,
             'tp_filled': 0,  # 0=未触发, 1=tp1 已平 50%, 2=tp2 已平 25%

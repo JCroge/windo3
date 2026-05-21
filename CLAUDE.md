@@ -428,13 +428,13 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **Dynamic R:R**：牛市多头 1.30 / 牛市空头 1.80 / 默认 1.50
 - **Low R:R Extra Slot**（candidate_ranker.py）：低 R:R 多头独立额外槽位，rank score 打 70% 折扣
 - **Feature Flags**：REGIME_HYSTERESIS_ENABLED / SHORT_REGIME_GUARD_ENABLED / PROBE_SHORT_ENABLED / LOW_RR_SLOT_ENABLED / COUNTERFACTUAL_LEDGER_ENABLED
-- **验证**：293 passed / 4 deselected / 0 failed
+- **验证**：329 passed / 4 deselected / 0 failed
 
 ### ✅ Phase 1.5: 观测与回测同构补齐（2026-05-21完成）
 - **EventBacktest同构Phase 1 live策略**（`event_backtest.py`）：regime列支持、动态R:R floor（bullish long 1.30/bullish short 1.80/default 1.50）、short regime guard、probe short with cooldown、low R:R position scaling、segmented metrics输出（side×regime×slot_type）、insufficient_sample标记
 - **Reviewer分层策略复盘**（`agents/trading/reviewer.py`）：`_calculate_segmented_metrics()`输出metrics_by_side/metrics_by_regime/metrics_by_slot_type，每项含trade_count/win_rate/profit_factor/total_pnl/insufficient_sample
 - **PA entry_regime grace**（`agents/trading/position_analyst.py`）：`_get_current_regime()`读取`data/regime_state.json`；low_rr仓位在entry_regime=bullish→current≠bullish的60min内不触发trend-based reduce/close
-- **验证**：304 passed / 4 deselected / 0 failed（新增test_event_backtest_regime.py 11 tests）
+- **验证**：329 passed / 4 deselected / 0 failed
 - **Phase 2 Go/No-Go**：三项阻塞全部解除，可进入Phase 2（side/regime Bayesian EV）
 
 ### 🔄 Phase 9: 待开发
@@ -475,6 +475,14 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **P2-2 配置化**：`RANK_FLUSH_DELAY`(float) + `MAX_CONCURRENT_POSITIONS`(int) 纳入 env_map/HARD_LIMITS/DEFAULTS/banner/.env.example/runbook
 - **P2-3 Reconciler接入**：`MultiExecutor.setup()` 初始化 Reconciler；`tick()` 每10min对账；偏差发布 `risk_alert`(type=reconciliation_mismatch)
 - **新增测试**：`test_synthesizer_cycle.py`(3) + `test_ranking_slots.py` TTL sweep(1) = +4 tests
+
+### ✅ Regime优化最终审计P0/P1/P2全修复（2026-05-21完成）
+- **P0-1 Probe slot/pending全链路闭环**：`_can_route_probe_short()`检查`_pending_open_slots`中已有probe_short + liquidity gate(liquidity_score>0)；Final slot gate增加probe_short分支；`CandidateRanker.rank_and_select()`将probe候选独立分类(available_probe=max(0,1-probe_used))
+- **P1-1 `_record_rejected_plan`支持显式attribution**：新增`attribution: dict = None`参数，无显式传入时自动调用`_rejection_attribution()`生成完整attribution
+- **P1-3 Final slot gate + ranked_out补attribution**：main/low_rr/probe三个slot gate分支都生成并传递gate_attr；ranked_out hold决策也带完整attribution
+- **P2-1 PA补漏仓位normalize**：抽取`_normalize_position_record()`静态方法，`_load_positions()`和`_evaluate_all_positions()`补漏路径共用
+- **新增测试**：6个probe slot chain测试（同窗口两probe只选一个/probe slot满拒绝/main满probe可进/pending probe阻止第二个/liquidity gate拦截+放行）
+- **验证**：329 passed / 4 deselected / 0 failed
 
 ### ✅ Phase 7+: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
 - **4h RSI 二级保护**：`judge.py _compute_score` 末尾——1h RSI 未触发硬cap但 4h RSI ≥70/≤30 时 score×0.5。根因 ZEC 事故（1h=64 但 4h=73.9 仍开多 20x→-135）
@@ -521,7 +529,7 @@ python3 run_agents.py
 # Agent系统集成测试
 python3 test_agents_integration.py
 
-# 完整 CI 回归（默认排除 network 标记，304 passed / 4 deselected）
+# 完整 CI 回归（默认排除 network 标记，329 passed / 4 deselected）
 python3 -m pytest -q
 
 # 或使用启动脚本

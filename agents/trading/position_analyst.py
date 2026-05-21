@@ -45,9 +45,23 @@ class PositionAnalyst(BaseAgent):
             try:
                 with open(positions_file, 'r') as f:
                     raw = json.load(f)
-                self._positions = {to_internal(k): v for k, v in raw.items()}
+                self._positions = {}
+                for k, v in raw.items():
+                    sym = to_internal(k)
+                    if isinstance(v, dict):
+                        self._normalize_position_record(v)
+                    self._positions[sym] = v
             except Exception as e:
                 self.logger.error(f"加载持仓失败: {e}")
+
+    @staticmethod
+    def _normalize_position_record(v: dict):
+        """Ensure attribution fields are top-level on position dict."""
+        attr = v.get('attribution', {}) or {}
+        v.setdefault('is_probe', attr.get('is_probe', False))
+        v.setdefault('is_low_rr', attr.get('is_low_rr', False))
+        v.setdefault('slot_type', attr.get('slot_type', 'main'))
+        v.setdefault('entry_regime', attr.get('entry_regime', 'unknown'))
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'execution_result':
@@ -151,6 +165,8 @@ class PositionAnalyst(BaseAgent):
                     for k, v in file_positions.items():
                         internal = to_internal(k)
                         if internal not in self._positions:
+                            if isinstance(v, dict):
+                                self._normalize_position_record(v)
                             self._positions[internal] = v
             except Exception:
                 pass
@@ -384,6 +400,8 @@ class PositionAnalyst(BaseAgent):
                 "rsi": rsi,
                 "trend": trend_dir,
                 "higher_trend": higher_trend,
+                "r_multiple": self._compute_r_multiple(pos, current_price),
+                "tf_15m_confirm_short": tech.get('entry_timing', {}).get('tf_15m_confirm_short', False),
             },
             "reasoning": self._build_reasoning(action, position_score, trend_alignment, momentum_shift, pnl_pct, entry_thesis_intact),
         }
@@ -467,7 +485,33 @@ class PositionAnalyst(BaseAgent):
             return self._make_final("close", 1.0, symbol, verdict['action'],
                                     None, None, "硬性规则：剩余R:R<0.3，空间不足")
 
+        # 规则6: probe_short 2h 生命周期退出
+        # PRD: probe 持仓超过 2h 且未达 0.5R 且 15m 不继续走弱 → close
+        if pos.get('is_probe') and hours_held > 2:
+            r_multiple = ctx.get('r_multiple', 0)
+            tf_15m_short_confirm = ctx.get('tf_15m_confirm_short', False)
+            if r_multiple < 0.5 and not tf_15m_short_confirm:
+                return self._make_final("close", 1.0, symbol, verdict['action'],
+                                        None, None,
+                                        f"硬性规则：probe_short持仓{hours_held:.1f}h>2h，R={r_multiple:.2f}<0.5且15m未继续走弱")
+
         return None
+
+    def _compute_r_multiple(self, pos: dict, current_price: float) -> float:
+        """Compute current R-multiple: profit / initial risk."""
+        entry_price = pos.get('entry_price', 0)
+        stop_loss = pos.get('stop_loss', 0)
+        side = pos.get('side', 'long')
+        if not entry_price or not stop_loss:
+            return 0.0
+        initial_risk = abs(entry_price - stop_loss)
+        if initial_risk == 0:
+            return 0.0
+        if side == 'long':
+            profit = current_price - entry_price
+        else:
+            profit = entry_price - current_price
+        return profit / initial_risk
 
     async def _handle_critic_verdict(self, payload: dict):
         """收到批判官意见，执行裁决"""

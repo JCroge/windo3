@@ -42,8 +42,11 @@ HARD_LIMITS = {
     "rr_floor_long_bullish": (1.0, 2.0),
     "rr_floor_short_bullish": (1.0, 3.0),
     "low_rr_max_leverage": (1, 20),
+    "low_rr_max_position_pct": (0.1, 0.5),
     "low_rr_extra_slot": (0, 5),
     "probe_short_max_leverage": (1, 10),
+    "probe_short_max_position_pct": (0.1, 0.3),
+    "probe_short_max_concurrent": (1, 1),
     "probe_short_cooldown_hours": (1, 72),
 }
 
@@ -286,6 +289,9 @@ def format_banner(cfg: dict) -> str:
     ranking = "开启" if cfg.get("ranking_enabled") else "关闭"
     regime_guard = "开启" if cfg.get("short_regime_guard_enabled") else "关闭"
     low_rr = "开启" if cfg.get("low_rr_slot_enabled") else "关闭"
+    hysteresis = "开启" if cfg.get("regime_hysteresis_enabled") else "关闭"
+    probe_short = "开启" if cfg.get("probe_short_enabled") else "关闭"
+    ledger = "开启" if cfg.get("counterfactual_ledger_enabled") else "关闭"
     lines = [
         "=" * 60,
         f"配置摘要（{mode}）",
@@ -305,8 +311,11 @@ def format_banner(cfg: dict) -> str:
         f"  弱信号最低流动性:      {cfg.get('min_liquidity_score_for_weak_signal')}",
         f"  15m入场确认:           {timing_15m} (强信号≥{cfg.get('entry_timing_15m_strong_score_threshold')}, 超时{cfg.get('entry_timing_15m_timeout_hours')}h)",
         f"  Ranking裁决:           {ranking} (flush窗口={cfg.get('rank_flush_delay', 5)}s)",
+        f"  Regime Hysteresis:     {hysteresis}",
         f"  Short Regime Guard:    {regime_guard} (R:R≥{cfg.get('rr_floor_short_bullish', 1.8)})",
+        f"  Probe Short:           {probe_short} (max_lev={cfg.get('probe_short_max_leverage', 3)}x, cooldown={cfg.get('probe_short_cooldown_hours', 24)}h)",
         f"  Low R:R Long:          {low_rr} (floor={cfg.get('rr_floor_long_bullish', 1.3)}, slot={cfg.get('low_rr_extra_slot', 1)}, lev≤{cfg.get('low_rr_max_leverage', 5)}x)",
+        f"  Counterfactual Ledger: {ledger}",
         "=" * 60,
     ]
     return "\n".join(lines)

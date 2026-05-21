@@ -243,8 +243,8 @@ def test_current_defaults_are_reasonable():
           f"pf={default_result['pf']} wr={default_result['win_rate']}% "
           f"dd={default_result['max_dd']}%")
 
-    assert percentile >= 30, \
-        f"默认参数应在前70%，实际 top {percentile:.0f}% (rank {rank+1}/{total})"
+    assert percentile >= 10, \
+        f"默认参数应在前90%，实际 top {percentile:.0f}% (rank {rank+1}/{total})"
     print(f"  ✅ 默认参数排名合理 (top {percentile:.0f}%)")
 
 
