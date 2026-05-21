@@ -88,6 +88,7 @@ class PositionAnalyst(BaseAgent):
                     pos['take_profit'] = result.get('new_take_profit') or result.get('take_profit') or pos.get('take_profit')
                 else:
                     # 新开仓
+                    attribution = result.get('attribution', {})
                     self._positions[symbol] = {
                         "symbol": symbol,
                         "side": 'long' if action == 'open_long' else 'short',
@@ -97,6 +98,10 @@ class PositionAnalyst(BaseAgent):
                         "stop_loss": result.get('stop_loss'),
                         "take_profit": result.get('take_profit'),
                         "open_time": time.time(),
+                        "is_probe": attribution.get('is_probe', False),
+                        "is_low_rr": attribution.get('is_low_rr', False),
+                        "slot_type": attribution.get('slot_type', 'main'),
+                        "entry_regime": attribution.get('entry_regime', 'unknown'),
                     }
             elif action == 'close':
                 self._positions.pop(symbol, None)
@@ -331,10 +336,12 @@ class PositionAnalyst(BaseAgent):
 
         # action映射 — 提高close/reduce门槛
         if position_score >= 50:
+            # Probe positions must not be added to
+            if pos.get('is_probe'):
+                action = 'hold'
+                conviction = position_score
             # 加仓上限检查：总保证金不超过max_trade_amount×2
-            max_margin = self.config.get('max_trade_amount', 10) * 2
-            current_margin = pos.get('amount_usdt', 0)
-            if current_margin >= max_margin:
+            elif pos.get('amount_usdt', 0) >= self.config.get('max_trade_amount', 10) * 2:
                 action = 'hold'
                 conviction = position_score
             else:
@@ -389,6 +396,25 @@ class PositionAnalyst(BaseAgent):
         side = pos.get('side', 'long')
         higher_trend = ctx.get('higher_trend', 'neutral')
 
+        # Regime grace: low_rr/probe positions within 60min of open
+        # are protected from reduce/close triggered by regime flap
+        current_regime = self._get_current_regime()
+        entry_regime = pos.get('entry_regime', 'unknown')
+        open_time = pos.get('open_time', 0)
+        regime_grace_active = (
+            pos.get('is_low_rr') and
+            entry_regime == 'bullish' and
+            current_regime != 'bullish' and
+            (time.time() - open_time) < 3600
+        )
+
+        # Store regime context for review logging
+        verdict['regime_context'] = {
+            'entry_regime': entry_regime,
+            'current_regime': current_regime,
+            'regime_grace_active': regime_grace_active,
+        }
+
         # 规则1: 浮亏超过SL预期水平 → close（SL失败时的第三道防线）
         # 正常触发顺序：交易所SL条件单(实时) → Executor兜底(5s) → PA规则1(1h)
         # 规则1只在前两道都失败时才有意义，阈值=SL含杠杆距离（不抢跑SL）
@@ -411,9 +437,10 @@ class PositionAnalyst(BaseAgent):
                                     None, None, f"硬性规则：持仓{hours_held:.0f}h>72h且浮亏{pnl_pct:.1f}%")
 
         # 规则3: 高时间框架趋势反转 + 浮亏>5% → close（放宽：原1h反转+3%）
+        # Regime grace: skip trend-based rules for low_rr within 60min of regime flap
         htf_reversed = (side == 'long' and higher_trend == 'bearish') or \
                        (side == 'short' and higher_trend == 'bullish')
-        if htf_reversed and pnl_pct < -5:
+        if htf_reversed and pnl_pct < -5 and not regime_grace_active:
             return self._make_final("close", 1.0, symbol, verdict['action'],
                                     None, None, f"硬性规则：高级别趋势反转+浮亏{pnl_pct:.1f}%")
 
@@ -425,7 +452,7 @@ class PositionAnalyst(BaseAgent):
             rule3b_threshold = -(sl_dist_pct * 0.5)
         else:
             rule3b_threshold = -20
-        if pnl_pct < rule3b_threshold and not trend_aligned:
+        if pnl_pct < rule3b_threshold and not trend_aligned and not regime_grace_active:
             return self._make_final("close", 1.0, symbol, verdict['action'],
                                     None, None, f"硬性规则：浮亏{pnl_pct:.1f}%超SL半程({rule3b_threshold:.1f}%)且趋势非顺向({higher_trend})")
 
@@ -602,6 +629,15 @@ class PositionAnalyst(BaseAgent):
                 return v
         pos = self._positions.get(symbol, {})
         return pos.get('entry_price', 0)
+
+    def _get_current_regime(self) -> str:
+        """Read current effective regime from RegimeManager's persisted state."""
+        try:
+            with open('data/regime_state.json', 'r') as f:
+                data = json.load(f)
+            return data.get('effective_regime', 'mixed')
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return 'mixed'
 
     def _build_reasoning(self, action: str, score: float, trend: float, momentum: float, pnl: float, thesis: float = 0) -> str:
         parts = []

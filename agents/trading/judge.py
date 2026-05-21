@@ -12,6 +12,8 @@ from agents.base import BaseAgent
 from utils.symbol import to_internal
 from utils.archetype_cooldown import ArchetypeCooldown
 from utils.candidate_ranker import CandidateRanker
+from utils.market_regime import RegimeManager
+from utils.counterfactual_ledger import CounterfactualLedger
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -51,7 +53,7 @@ JUDGE_PROMPT = """你是加密货币合约交易的裁判。基于技术分析�
 
 class MultiJudge(BaseAgent):
     name = "judge"
-    subscriptions = ["tech_analysis:*", "symbol_update", "execution_result:*", "news_snapshot", "strategy_review"]
+    subscriptions = ["tech_analysis:*", "price_tick:*", "symbol_update", "execution_result:*", "news_snapshot", "strategy_review"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -110,9 +112,11 @@ class MultiJudge(BaseAgent):
 
         # ═══ RQ-03: 候选排序 ═══
         ranking_enabled = config.get('ranking_enabled', True) if config else True
+        low_rr_extra = config.get('low_rr_extra_slot', 1) if config else 1
         self._candidate_ranker = CandidateRanker(
             max_slots=self._max_concurrent_positions,
             enabled=ranking_enabled,
+            low_rr_extra_slot=low_rr_extra if (config.get('low_rr_slot_enabled', True) if config else True) else 0,
             logger=self.logger,
         )
 
@@ -131,6 +135,29 @@ class MultiJudge(BaseAgent):
         # ═══ RQ-03: Ranking flush window ═══
         self._rank_flush_delay = config.get('rank_flush_delay', 5.0) if config else 5.0
         self._rank_flush_task = None
+
+        # ═══ Regime Optimization (Phase 1) ═══
+        self._regime_manager = RegimeManager(config or {}, self.logger)
+        self._counterfactual_ledger = CounterfactualLedger(
+            enabled=config.get('counterfactual_ledger_enabled', True) if config else True,
+            logger=self.logger,
+        )
+        self._symbol_tech_cache = {}
+        self._short_regime_guard_enabled = config.get('short_regime_guard_enabled', True) if config else True
+        self._probe_short_enabled = config.get('probe_short_enabled', True) if config else True
+        self._low_rr_slot_enabled = config.get('low_rr_slot_enabled', True) if config else True
+        self._rr_floor_default = config.get('rr_floor_default', 1.5) if config else 1.5
+        self._rr_floor_long_bullish = config.get('rr_floor_long_bullish', 1.30) if config else 1.30
+        self._rr_floor_short_bullish = config.get('rr_floor_short_bullish', 1.80) if config else 1.80
+        self._low_rr_max_leverage = config.get('low_rr_max_leverage', 5) if config else 5
+        self._low_rr_max_position_pct = config.get('low_rr_max_position_pct', 0.5) if config else 0.5
+        self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
+        self._probe_short_max_leverage = config.get('probe_short_max_leverage', 3) if config else 3
+        self._probe_short_max_concurrent = config.get('probe_short_max_concurrent', 1) if config else 1
+        self._probe_short_cooldown_hours = config.get('probe_short_cooldown_hours', 24) if config else 24
+        self._probe_short_active = None
+        self._probe_short_sl_count = 0
+        self._probe_short_cooldown_until = 0
 
     def _get_state(self, symbol: str) -> dict:
         if symbol not in self._symbol_state:
@@ -253,6 +280,14 @@ class MultiJudge(BaseAgent):
             f"ranking={self._candidate_ranker.enabled} "
             f"max_positions={self._max_concurrent_positions}"
         )
+        self.logger.info(
+            f"[Judge Config] regime_guard={self._short_regime_guard_enabled} "
+            f"rr_floor_long_bull={self._rr_floor_long_bullish} "
+            f"rr_floor_short_bull={self._rr_floor_short_bullish} "
+            f"low_rr_slot={self._low_rr_slot_enabled} "
+            f"probe_short={self._probe_short_enabled} "
+            f"counterfactual={self._counterfactual_ledger._enabled}"
+        )
         try:
             from utils.balance_adapter import BalanceAdapter
             self._balance_adapter = BalanceAdapter(self.exchange, ttl=10.0, logger=self.logger)
@@ -275,6 +310,9 @@ class MultiJudge(BaseAgent):
                 removed_state = self._symbol_state.pop(s, None)
                 if removed_state and removed_state.get('deferred_entry'):
                     self.logger.info(f"[Judge] {s} 移除，取消延迟入场")
+                self._symbol_tech_cache.pop(s, None)
+            if msg['payload'].get('removed'):
+                self._regime_manager.update(self._symbol_tech_cache)
             return
 
         if msg['type'] == 'news_snapshot':
@@ -315,6 +353,13 @@ class MultiJudge(BaseAgent):
                     self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
                     self._open_positions.discard(symbol)
+                    # Probe short tracking
+                    if self._probe_short_active == symbol:
+                        self._probe_short_active = None
+                        self._probe_short_sl_count += 1
+                        if self._probe_short_sl_count >= 2:
+                            self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
+                            self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL，冷却{self._probe_short_cooldown_hours}h")
                     self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{cooldown}s内禁止同方向开仓 (active={len(self._open_positions)})")
                 elif status == 'closed_externally':
                     state["last_force_close_time"] = time.time()
@@ -324,13 +369,27 @@ class MultiJudge(BaseAgent):
                     self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
                     self._open_positions.discard(symbol)
+                    # Probe short tracking: external close counts as SL
+                    if self._probe_short_active == symbol:
+                        self._probe_short_active = None
+                        self._probe_short_sl_count += 1
+                        if self._probe_short_sl_count >= 2:
+                            self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
+                            self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL(external)，冷却{self._probe_short_cooldown_hours}h")
                     self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{cooldown}s (active={len(self._open_positions)})")
                 elif status == 'executed' and action in ('open_long', 'open_short'):
                     state["last_open_time"] = time.time()
                     self._open_positions.add(symbol)
+                    # Track probe_short
+                    if payload.get('result', {}).get('attribution', {}).get('is_probe'):
+                        self._probe_short_active = symbol
                     self.logger.info(f"[Judge] {symbol} 开仓成功 (active={len(self._open_positions)}/{self._max_concurrent_positions})")
                 elif status == 'executed' and action == 'close':
                     self._open_positions.discard(symbol)
+                    # Probe short tracking: normal close (TP or manual) resets SL count
+                    if self._probe_short_active == symbol:
+                        self._probe_short_active = None
+                        self._probe_short_sl_count = 0
                     self.logger.info(f"[Judge] {symbol} 主动平仓 (active={len(self._open_positions)})")
 
                 # RQ-06: 记录交易结果到原型 cooldown
@@ -342,6 +401,14 @@ class MultiJudge(BaseAgent):
                     self._archetype_cooldown.record_result(archetype, pnl)
                 self._state_dirty = True
                 self._persist_state()
+            return
+
+        if msg['type'] == 'price_tick':
+            if self._counterfactual_ledger._enabled:
+                symbol = msg.get('symbol') or msg.get('payload', {}).get('symbol')
+                price = msg.get('payload', {}).get('price', 0)
+                if symbol and price > 0:
+                    self._counterfactual_ledger.check_price(symbol, price, time.time())
             return
 
         if msg['type'] != 'tech_analysis':
@@ -371,6 +438,16 @@ class MultiJudge(BaseAgent):
 
         state["last_tech"] = msg['payload']
         state["last_decision_time"] = now
+
+        # Update regime from all cached tech snapshots
+        self._symbol_tech_cache[symbol] = msg['payload']
+        self._regime_manager.update(self._symbol_tech_cache)
+
+        # Check counterfactual ledger shadow positions
+        if self._counterfactual_ledger._enabled:
+            price = msg['payload'].get('indicators', {}).get('price', 0)
+            if price > 0:
+                self._counterfactual_ledger.check_price(symbol, price, now)
 
         await self._make_decision(symbol, msg['payload'])
         self._state_dirty = True
@@ -864,6 +941,7 @@ class MultiJudge(BaseAgent):
                     )
                     if reject_reason:
                         self.logger.info(f"[Judge] {symbol} 实盘开仓质量门拦截: {reject_reason}")
+                        self._record_rejected_plan(symbol, final_action, plan, score, final_conf, f"quality_gate:{reject_reason}")
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
@@ -871,9 +949,71 @@ class MultiJudge(BaseAgent):
                             "reasoning": reject_reason,
                             "key_factors": llm_result.get('key_factors', []),
                             "risk_warnings": [reject_reason],
+                            "attribution": self._rejection_attribution(final_action, plan, f"quality_gate:{reject_reason}"),
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
+
+                    # ═══ Short Regime Guard (Phase 1B) ═══
+                    regime_snap = self._regime_manager.snapshot()
+                    if (final_action == 'open_short' and self._short_regime_guard_enabled
+                            and regime_snap['effective_regime'] == 'bullish'):
+                        trend = tech.get('trend', {})
+                        entry_timing = tech.get('entry_timing', {})
+                        htf_bearish = 0
+                        for d in [trend.get('direction'), trend.get('higher_tf_bias'), trend.get('daily_bias')]:
+                            if d == 'bearish':
+                                htf_bearish += 1
+                        rr_for_guard = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
+                        confirm_15m_short = entry_timing.get('tf_15m_confirm_short', False)
+                        allowed, guard_reason = self._regime_manager.is_short_allowed(
+                            score, htf_bearish, rr_for_guard, confirm_15m_short,
+                            trend.get('daily_bias', 'neutral')
+                        )
+                        if not allowed:
+                            # Check probe short eligibility
+                            is_probe = False
+                            if self._probe_short_enabled and time.time() > self._probe_short_cooldown_until:
+                                btc_tech = self._symbol_tech_cache.get('BTC-USDT')
+                                if (self._probe_short_active is None
+                                        and self._regime_manager.is_probe_short_eligible(btc_tech, self._symbol_tech_cache)
+                                        and abs(score) >= 50 and confirm_15m_short
+                                        and rr_for_guard >= 1.3):
+                                    is_probe = True
+
+                            if is_probe:
+                                # Route to probe_short: tiny position
+                                plan['size_usdt'] = round(self._max_trade_amount * self._probe_short_max_position_pct, 2)
+                                plan['leverage'] = min(plan.get('leverage', 3), self._probe_short_max_leverage)
+                                plan['is_probe'] = True
+                                plan['slot_type'] = 'probe_short'
+                                self.logger.info(
+                                    f"[Judge] {symbol} probe_short: size={plan['size_usdt']} lev={plan['leverage']}x"
+                                )
+                            else:
+                                # Record to counterfactual ledger and reject
+                                self._record_rejected_plan(
+                                    symbol, final_action, plan, score, final_conf,
+                                    f"short_regime_guard:{guard_reason}"
+                                )
+                                self.logger.info(
+                                    f"[Judge] {symbol} short blocked by regime guard "
+                                    f"(regime={regime_snap['effective_regime']}, score={score:.0f})"
+                                )
+                                decision = {
+                                    "symbol": symbol, "timestamp": time.time(),
+                                    "action": "hold", "confidence": 0,
+                                    "plan": None, "size_pct": 0,
+                                    "reasoning": f"Short blocked: bullish regime, score={score:.0f} (need ≤-70)",
+                                    "key_factors": [f"blocked_by={guard_reason}"],
+                                    "risk_warnings": ["short_regime_guard"],
+                                    "attribution": {
+                                        "entry_regime": regime_snap['effective_regime'],
+                                        "blocked_by": guard_reason,
+                                    },
+                                }
+                                await self.publish("trade_decision", decision, symbol=symbol)
+                                return
 
                     # RSI超买/超卖硬性入场禁令：不追高不追低，标记待回调
                     rsi = tech.get('momentum', {}).get('rsi', 50)
@@ -906,93 +1046,48 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
-                    # R:R分级响应：强信号追价入场，弱信号等待回调
+                    # R:R分级响应：动态门槛基于 regime + 方向
                     rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
-                    min_rr = 1.5
+                    is_long = (final_action == 'open_long')
+                    regime_snap = regime_snap if 'regime_snap' in dir() else self._regime_manager.snapshot()
+                    eff_regime = regime_snap.get('effective_regime', 'mixed')
+
+                    if is_long and eff_regime == 'bullish' and self._low_rr_slot_enabled:
+                        min_rr = self._rr_floor_long_bullish
+                    elif not is_long and eff_regime == 'bullish':
+                        min_rr = self._rr_floor_short_bullish
+                    else:
+                        min_rr = self._rr_floor_default
+
                     if rr < min_rr:
-                        if rr < 1.2:
-                            self.logger.info(f"[Judge] {symbol} R:R={rr:.2f}<1.2，赔率过低放弃")
-                            decision = {
-                                "symbol": symbol, "timestamp": time.time(),
-                                "action": "hold", "confidence": 0,
-                                "plan": None, "size_pct": 0,
-                                "reasoning": f"R:R={rr:.2f}<1.2，赔率过低无法补救",
-                                "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
-                            }
-                            await self.publish("trade_decision", decision, symbol=symbol)
-                            return
+                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f}<{min_rr:.2f}，低于动态地板")
+                        self._record_rejected_plan(symbol, final_action, plan, score, final_conf, f"rr_below_floor:{rr:.2f}<{min_rr:.2f}")
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"R:R={rr:.2f}<{min_rr:.2f}(动态地板)，赔率不足",
+                            "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
+                            "attribution": self._rejection_attribution(final_action, plan, f"rr_below_floor:{rr:.2f}"),
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
 
-                        abs_score = abs(score)
-                        if abs_score >= 50:
-                            chase_pct = max(0.6, min(0.9, rr / min_rr))
-                            plan['size_usdt'] = round(plan['size_usdt'] * chase_pct, 2)
-                            self.logger.info(
-                                f"[Judge] {symbol} R:R={rr:.2f}<1.5但score={score:.0f}强信号，"
-                                f"追价入场仓位缩至{chase_pct:.0%}"
-                            )
-                        else:
-                            sl_dist = abs(price - plan['stop_loss']) / price if price > 0 else 0.02
-                            needed_improve = (min_rr - rr) * sl_dist / (1 + min_rr)
-                            # 回调下限：至少0.3%或ATR的15%，防止噪声触发假回调
-                            atr_pct = tech.get('momentum', {}).get('atr_pct', 0.02)
-                            min_pullback = max(0.003, atr_pct * 0.15)
-                            needed_improve = max(needed_improve, min_pullback)
-                            if needed_improve > 0.03:
-                                self.logger.info(f"[Judge] {symbol} 需回调{needed_improve:.1%}>3%，不现实，放弃")
-                                decision = {
-                                    "symbol": symbol, "timestamp": time.time(),
-                                    "action": "hold", "confidence": 0,
-                                    "plan": None, "size_pct": 0,
-                                    "reasoning": f"R:R={rr:.2f}，需回调{needed_improve:.1%}不现实",
-                                    "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
-                                }
-                                await self.publish("trade_decision", decision, symbol=symbol)
-                                return
-
-                            is_long = (final_action == 'open_long')
-                            target_price = price * (1 - needed_improve) if is_long else price * (1 + needed_improve)
-                            state = self._get_state(symbol)
-                            # 动态超时：信号源越"高时间框架/越持久" → 等待越久
-                            ma_crossover = rule.get('entry_long') or rule.get('entry_short')
-                            ma_aligned = rule.get('ma_aligned_long') or rule.get('ma_aligned_short')
-                            htf_aligned = htf_bias in ('bullish', 'bearish')
-                            if htf_aligned and ma_aligned:
-                                timeout_h = 12  # HTF共振+1h趋势持续=最强信号
-                            elif ma_crossover:
-                                timeout_h = 8   # 1h MA交叉=新鲜信号
-                            elif ma_aligned:
-                                timeout_h = 6   # 1h趋势对齐
-                            elif htf_aligned:
-                                timeout_h = 5   # HTF共振但1h未确认
-                            else:
-                                timeout_h = 3   # 弱信号短窗口
-                            state['deferred_entry'] = {
-                                'action': final_action,
-                                'signal_price': price,
-                                'signal_score': score,
-                                'target_price': target_price,
-                                'created_at': time.time(),
-                                'expiry_bars': 3,
-                                'chase_eligible': False,
-                                'highest_since': price,
-                                'lowest_since': price,
-                                'timeout_hours': timeout_h,
-                            }
-                            state['pullback_bonus'] = 0
-                            self.logger.info(
-                                f"[Judge] {symbol} R:R={rr:.2f}<1.5，score={score:.0f}弱信号，"
-                                f"等待回调至{target_price:.4f}（需{needed_improve:.2%}）"
-                            )
-                            decision = {
-                                "symbol": symbol, "timestamp": time.time(),
-                                "action": "hold", "confidence": 0,
-                                "plan": None, "size_pct": 0,
-                                "reasoning": f"R:R={rr:.2f}<1.5，等待回调至{target_price:.4f}入场（3h有效）",
-                                "key_factors": [f"deferred_entry: target={target_price:.4f}"],
-                                "risk_warnings": [f"R:R={rr:.2f}"],
-                            }
-                            await self.publish("trade_decision", decision, symbol=symbol)
-                            return
+                    # ═══ Low R:R position scaling (Phase 1C) ═══
+                    # If R:R passed dynamic threshold but is below default 1.5, scale down
+                    if (rr < 1.5 and is_long and eff_regime == 'bullish'
+                            and self._low_rr_slot_enabled and not plan.get('is_probe')):
+                        rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
+                        plan['size_usdt'] = round(
+                            plan['size_usdt'] * rr_scale * self._low_rr_max_position_pct, 2
+                        )
+                        plan['leverage'] = min(plan.get('leverage', 5), self._low_rr_max_leverage)
+                        plan['is_low_rr'] = True
+                        plan['slot_type'] = 'low_rr_extra'
+                        self.logger.info(
+                            f"[Judge] {symbol} low_rr_long: R:R={rr:.2f} scale={rr_scale:.0%} "
+                            f"size={plan['size_usdt']} lev={plan['leverage']}x"
+                        )
 
                     # 余额兜底检查（size_usdt已经是保证金）
                     required_margin = plan['size_usdt']
@@ -1014,6 +1109,10 @@ class MultiJudge(BaseAgent):
                     # ═══ P2-N: 期望值门（在所有开仓决策前的最后闸门）═══
                     # 历史交易不足时使用降级胜率（不会过严）；rolling 胜率生效时严格执行
                     if not self._check_expected_value(symbol, plan, score):
+                        self._record_rejected_plan(
+                            symbol, final_action, plan, score, final_conf,
+                            f"ev_gate:EV={plan.get('expected_value', 0):.3f}"
+                        )
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
@@ -1027,6 +1126,7 @@ class MultiJudge(BaseAgent):
                                 f"net_loss={plan['net_loss_usdt']:.2f}",
                             ],
                             "risk_warnings": [f"negative_ev:{plan['expected_value']:.3f}"],
+                            "attribution": self._rejection_attribution(final_action, plan, f"ev_gate:EV={plan['expected_value']:.3f}"),
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
@@ -1046,6 +1146,7 @@ class MultiJudge(BaseAgent):
                     )
                     if not timing_allowed:
                         entry_timing = tech.get('entry_timing', {})
+                        self._record_rejected_plan(symbol, final_action, plan, score, final_conf, f"15m_blocked:{timing_reason}")
                         self.logger.info(
                             f"[Judge] {symbol} 15m入场过滤拦截: action={final_action} "
                             f"score={score:.0f} 15m_bias={entry_timing.get('tf_15m_bias')} "
@@ -1075,6 +1176,13 @@ class MultiJudge(BaseAgent):
                                 'lowest_since': price,
                             }
                         against_label = f"15m_{'bearish' if final_action == 'open_long' else 'bullish'}_against_{final_action.split('_')[1]}"
+                        _15m_attr = {
+                            "tf_15m_bias": entry_timing.get('tf_15m_bias', 'unavailable'),
+                            "tf_15m_rsi": entry_timing.get('tf_15m_rsi'),
+                            "tf_15m_entry_status": "blocked",
+                            "tf_15m_block_reason": timing_reason,
+                        }
+                        _15m_attr.update(self._rejection_attribution(final_action, plan, f"15m_blocked:{timing_reason}"))
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
@@ -1082,12 +1190,7 @@ class MultiJudge(BaseAgent):
                             "reasoning": f"15m入场时机不符: {timing_reason}",
                             "key_factors": [f"deferred_15m={timing_defer}"],
                             "risk_warnings": [against_label],
-                            "attribution": {
-                                "tf_15m_bias": entry_timing.get('tf_15m_bias', 'unavailable'),
-                                "tf_15m_rsi": entry_timing.get('tf_15m_rsi'),
-                                "tf_15m_entry_status": "blocked",
-                                "tf_15m_block_reason": timing_reason,
-                            },
+                            "attribution": _15m_attr,
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
@@ -1149,7 +1252,7 @@ class MultiJudge(BaseAgent):
             f"[决策] {symbol} {decision['action']} "
             f"置信度={decision['confidence']} "
             f"{'plan='+str(decision['plan']['leverage'])+'x' if decision.get('plan') else ''} "
-            f"理由: {decision.get('reasoning', '')[:60]}"
+            f"理由: {(decision.get('reasoning') or '')[:60]}"
         )
 
     # ═══ RQ-03: Ranking Top-N flush ═══
@@ -1186,6 +1289,10 @@ class MultiJudge(BaseAgent):
         for candidate in rejected:
             decision = candidate['decision']
             symbol = decision['symbol']
+            self._record_rejected_plan(
+                symbol, decision.get('action', 'hold'), candidate.get('plan'),
+                candidate.get('score', 0), decision.get('confidence', 0), 'ranked_out'
+            )
             await self.publish("trade_decision", {
                 "symbol": symbol, "timestamp": time.time(),
                 "action": "hold", "confidence": 0,
@@ -1467,6 +1574,15 @@ class MultiJudge(BaseAgent):
             'tf_15m_recent_closes': entry_timing.get('tf_15m_recent_closes', 'unavailable'),
             'tf_15m_entry_status': tf_15m_entry_status,
             'tf_15m_block_reason': entry_timing.get('tf_15m_reason', '') if tf_15m_entry_status == 'blocked' else '',
+            # Regime attribution
+            'entry_regime': self._regime_manager._effective_regime,
+            'raw_regime': self._regime_manager._raw_regime,
+            'regime_confidence': self._regime_manager._confidence,
+            'rr_policy': self._get_rr_policy_label(action, plan),
+            'slot_type': (plan or {}).get('slot_type', 'main'),
+            'is_low_rr': (plan or {}).get('is_low_rr', False),
+            'is_probe': (plan or {}).get('is_probe', False),
+            'blocked_by': '',
         }
 
     def _hold_reason(self, tech: dict, score: float) -> str:
@@ -1483,6 +1599,43 @@ class MultiJudge(BaseAgent):
         if abs(score) < 10:
             return "多空信号对冲，净得分接近零，观望"
         return "信号强度不足，观望"
+
+    def _get_rr_policy_label(self, action: str, plan: dict) -> str:
+        if not plan:
+            return 'default'
+        if plan.get('is_probe'):
+            return 'probe_short'
+        if plan.get('is_low_rr'):
+            return 'long_bullish_low_rr'
+        regime = self._regime_manager._effective_regime
+        if action == 'open_short' and regime == 'bullish':
+            return 'short_bullish_strong'
+        return 'default'
+
+    def _record_rejected_plan(self, symbol: str, action: str, plan: dict,
+                              score: float, confidence: float, reason: str):
+        """Record a rejected planned signal to the counterfactual ledger."""
+        if not self._counterfactual_ledger._enabled or not plan:
+            return
+        side = 'long' if 'long' in action else 'short'
+        regime = self._regime_manager._effective_regime
+        self._counterfactual_ledger.record_rejection(
+            symbol, side, plan, regime, score, confidence, reason
+        )
+
+    def _rejection_attribution(self, action: str, plan: dict, blocked_by: str) -> dict:
+        """Build minimal attribution for rejected decisions."""
+        regime_snap = self._regime_manager.snapshot()
+        return {
+            'entry_regime': regime_snap['effective_regime'],
+            'raw_regime': regime_snap.get('raw_regime', regime_snap['effective_regime']),
+            'regime_confidence': regime_snap.get('confidence', 0),
+            'rr_policy': self._get_rr_policy_label(action, plan),
+            'slot_type': (plan or {}).get('slot_type', 'main'),
+            'is_low_rr': (plan or {}).get('is_low_rr', False),
+            'is_probe': (plan or {}).get('is_probe', False),
+            'blocked_by': blocked_by,
+        }
 
     def _record_sl_hit(self, state: dict, direction: str = None):
         """记录一次SL触发，用于escalating cooldown（参考Freqtrade StoplossGuard）"""

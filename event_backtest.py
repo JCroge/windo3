@@ -18,6 +18,8 @@
     rsi  (用于 RSI cap & 极端值禁区)
 可选列：
     htf_bias   ('bullish'|'bearish'|'neutral')
+    daily_bias ('bullish'|'bearish'|'neutral')
+    regime     ('bullish'|'bearish'|'mixed'|'choppy') — if absent, derived from htf_bias
     funding_rate  (单期费率，每 8h)
     ma_aligned_long / ma_aligned_short
 
@@ -67,21 +69,49 @@ class EventBacktest:
                  enable_partial_tp: bool = True,
                  enable_trailing: bool = True,
                  enable_sl_guard: bool = True,
+                 # Phase 1 regime-aware parameters
+                 enable_regime: bool = True,
+                 rr_floor_long_bullish: float = 1.30,
+                 rr_floor_short_bullish: float = 1.80,
+                 short_regime_guard: bool = True,
+                 short_guard_min_score: int = 70,
+                 short_guard_min_htf_votes: int = 2,
+                 short_guard_min_rr: float = 1.80,
+                 low_rr_scaling: bool = True,
+                 low_rr_max_position_pct: float = 0.5,
+                 low_rr_max_leverage: int = 5,
+                 probe_short_enabled: bool = True,
+                 probe_short_position_pct: float = 0.3,
+                 probe_short_max_leverage: int = 3,
+                 probe_short_cooldown_bars: int = 24,
                  verbose: bool = False):
         self.initial_capital = initial_capital
-        self.risk_per_trade_pct = risk_per_trade_pct  # 单笔最大亏损占余额比
-        self.margin_pct = margin_pct                  # 单笔保证金占余额比
+        self.risk_per_trade_pct = risk_per_trade_pct
+        self.margin_pct = margin_pct
         self.max_margin = max_margin
         self.rr_floor = rr_floor
         self.entry_threshold = entry_threshold
-        # entry_only_on_signal=True 时，只在 entry_long/entry_short=1 的 K 线尝试入场（事件驱动）
-        # False 时每根 K 线都重新评分（向量化模式，可能过度开仓）
         self.entry_only_on_signal = entry_only_on_signal
-        # 平仓后冷却 N 根 K 线再尝试开仓（模拟实盘 Judge 的开仓冷却）
         self.post_close_cooldown_bars = post_close_cooldown_bars
         self.enable_partial_tp = enable_partial_tp
         self.enable_trailing = enable_trailing
         self.enable_sl_guard = enable_sl_guard
+
+        # Regime-aware settings
+        self.enable_regime = enable_regime
+        self.rr_floor_long_bullish = rr_floor_long_bullish
+        self.rr_floor_short_bullish = rr_floor_short_bullish
+        self.short_regime_guard = short_regime_guard
+        self.short_guard_min_score = short_guard_min_score
+        self.short_guard_min_htf_votes = short_guard_min_htf_votes
+        self.short_guard_min_rr = short_guard_min_rr
+        self.low_rr_scaling = low_rr_scaling
+        self.low_rr_max_position_pct = low_rr_max_position_pct
+        self.low_rr_max_leverage = low_rr_max_leverage
+        self.probe_short_enabled = probe_short_enabled
+        self.probe_short_position_pct = probe_short_position_pct
+        self.probe_short_max_leverage = probe_short_max_leverage
+        self.probe_short_cooldown_bars = probe_short_cooldown_bars
         self.verbose = verbose
 
         self.cm = _COST_MODEL
@@ -101,6 +131,7 @@ class EventBacktest:
         equity_curve: List[Dict] = []
         sl_history: List[float] = []  # ts 列表（小时为单位）
         last_close_idx: int = -10000  # 平仓后冷却用
+        last_probe_sl_idx: int = -10000  # probe short cooldown
 
         for i in range(len(df)):
             row = df.iloc[i]
@@ -120,7 +151,13 @@ class EventBacktest:
                         'exit_reason': exit_info['reason'],
                         'direction': position['direction'],
                         'leverage': position['leverage'],
+                        'regime': position.get('regime', 'mixed'),
+                        'slot_type': position.get('slot_type', 'main'),
+                        'is_low_rr': position.get('is_low_rr', False),
+                        'is_probe': position.get('is_probe', False),
                     })
+                    if exit_info['reason'] == 'sl' and position.get('is_probe'):
+                        last_probe_sl_idx = i
                     if exit_info['reason'] == 'sl':
                         sl_history.append(ts_h)
                     position = None
@@ -146,11 +183,12 @@ class EventBacktest:
                         int(row.get('entry_long', 0)) or int(row.get('entry_short', 0))):
                     pass
                 else:
-                    direction = self._check_entry_signal(row)
-                    if direction is not None and i + 1 < len(df):
-                        plan = self._build_plan(row, direction, equity)
+                    regime = self._determine_regime(row)
+                    entry_result = self._check_entry_with_regime(row, regime, last_probe_sl_idx, i)
+                    if entry_result is not None and i + 1 < len(df):
+                        direction = entry_result['direction']
+                        plan = self._build_plan_with_regime(row, direction, equity, regime, entry_result)
                         if plan is not None:
-                            # 3. 记录权益曲线（在开仓前，当前 K 线不含下一根才入场的仓位）
                             equity_curve.append({
                                 'idx': i,
                                 'ts': row.get('open_time', i),
@@ -158,10 +196,13 @@ class EventBacktest:
                                 'equity': equity + self._mark_to_market(position, row),
                                 'has_position': position is not None,
                             })
-                            # 下一根 K 线开盘价入场
                             next_row = df.iloc[i + 1]
                             entry_price = next_row['open']
                             position = self._open_position(plan, entry_price, i + 1, next_row)
+                            position['regime'] = regime
+                            position['slot_type'] = plan.get('slot_type', 'main')
+                            position['is_low_rr'] = plan.get('is_low_rr', False)
+                            position['is_probe'] = plan.get('is_probe', False)
                             continue
 
             # 3. 记录权益曲线
@@ -187,6 +228,10 @@ class EventBacktest:
                 'exit_reason': 'end_of_data',
                 'direction': position['direction'],
                 'leverage': position['leverage'],
+                'regime': position.get('regime', 'mixed'),
+                'slot_type': position.get('slot_type', 'main'),
+                'is_low_rr': position.get('is_low_rr', False),
+                'is_probe': position.get('is_probe', False),
             })
 
         return {
@@ -260,6 +305,177 @@ class EventBacktest:
             score -= 10
 
         return score
+
+    def _determine_regime(self, row) -> str:
+        """Determine market regime from row data.
+
+        Uses 'regime' column if present, otherwise derives from htf_bias.
+        """
+        if not self.enable_regime:
+            return 'mixed'
+        regime = str(row.get('regime', '')).lower()
+        if regime in ('bullish', 'bearish', 'mixed', 'choppy'):
+            return regime
+        htf_bias = str(row.get('htf_bias', 'neutral')).lower()
+        if htf_bias == 'bullish':
+            return 'bullish'
+        elif htf_bias == 'bearish':
+            return 'bearish'
+        return 'mixed'
+
+    def _check_entry_with_regime(self, row, regime: str, last_probe_sl_idx: int, current_idx: int) -> Optional[Dict]:
+        """Regime-aware entry check. Returns dict with direction + metadata or None."""
+        score = self._compute_score(row)
+        abs_score = abs(score)
+
+        if score >= self.entry_threshold:
+            return {'direction': 'long', 'score': score}
+
+        if score <= -self.entry_threshold:
+            # Short regime guard: block weak shorts in bullish regime
+            if self.short_regime_guard and regime == 'bullish':
+                htf_votes = self._count_htf_votes(row, 'short')
+                rsi = float(row.get('rsi', 50))
+                # Strong short passes: high score + htf confirmation + high rsi
+                if abs_score >= self.short_guard_min_score and htf_votes >= self.short_guard_min_htf_votes:
+                    return {'direction': 'short', 'score': score, 'strong_short': True}
+                # Probe short: RSI reversal signal in bullish
+                if self.probe_short_enabled:
+                    if rsi >= 70 and current_idx - last_probe_sl_idx >= self.probe_short_cooldown_bars:
+                        return {'direction': 'short', 'score': score, 'is_probe': True}
+                return None  # blocked by short guard
+            return {'direction': 'short', 'score': score}
+
+        return None
+
+    def _count_htf_votes(self, row, direction: str) -> int:
+        """Count higher timeframe votes for a direction."""
+        votes = 0
+        htf_bias = str(row.get('htf_bias', 'neutral')).lower()
+        daily_bias = str(row.get('daily_bias', 'neutral')).lower()
+        if direction == 'short':
+            if htf_bias == 'bearish':
+                votes += 1
+            if daily_bias == 'bearish':
+                votes += 1
+        else:
+            if htf_bias == 'bullish':
+                votes += 1
+            if daily_bias == 'bullish':
+                votes += 1
+        return votes
+
+    def _build_plan_with_regime(self, row, direction: str, equity: float,
+                                regime: str, entry_result: dict) -> Optional[Dict]:
+        """Regime-aware plan builder with dynamic R:R floors and position scaling."""
+        price = float(row['close'])
+        atr = float(row.get('atr', 0))
+        if atr <= 0 or price <= 0:
+            return None
+
+        is_probe = entry_result.get('is_probe', False)
+        is_long = (direction == 'long')
+
+        # Dynamic R:R floor
+        if self.enable_regime and regime == 'bullish':
+            if is_long:
+                min_rr = self.rr_floor_long_bullish
+            else:
+                min_rr = self.rr_floor_short_bullish
+        else:
+            min_rr = self.rr_floor
+
+        # SL distance
+        atr_pct = atr / price
+        sl_dist_pct = min(2.5 * atr_pct, 0.05)
+        sl_dist_pct = max(sl_dist_pct, 0.005)
+
+        # TP distance
+        tp_dist_pct = sl_dist_pct * min_rr
+
+        if direction == 'long':
+            sl = price * (1 - sl_dist_pct)
+            tp = price * (1 + tp_dist_pct)
+        else:
+            sl = price * (1 + sl_dist_pct)
+            tp = price * (1 - tp_dist_pct)
+
+        # Margin
+        margin = min(equity * self.margin_pct, self.max_margin)
+        if margin < 1.0:
+            return None
+
+        # Leverage
+        max_loss = equity * self.risk_per_trade_pct
+        raw_leverage = max_loss / (margin * sl_dist_pct)
+        leverage = 1
+        for lev in self.LEVERAGE_LADDER:
+            if lev <= raw_leverage:
+                leverage = lev
+        leverage = min(leverage, 20)
+
+        # Slot type and position scaling
+        slot_type = 'main'
+        is_low_rr = False
+
+        if is_probe:
+            slot_type = 'probe_short'
+            margin *= self.probe_short_position_pct
+            leverage = min(leverage, self.probe_short_max_leverage)
+        elif is_long and regime == 'bullish' and self.low_rr_scaling and min_rr < self.rr_floor:
+            # Low R:R long in bullish: scale down position
+            is_low_rr = True
+            slot_type = 'low_rr_extra'
+            rr_scale = min(0.8, max(0.4, (min_rr - 1.2) / (self.rr_floor - 1.2)))
+            margin *= rr_scale * self.low_rr_max_position_pct
+            leverage = min(leverage, self.low_rr_max_leverage)
+
+        if margin < 1.0:
+            return None
+
+        # R:R check with costs
+        notional = margin * leverage
+        gross_profit = notional * tp_dist_pct
+        gross_loss = notional * sl_dist_pct
+        if self.cm:
+            fees = self.cm.round_trip_fee(notional)
+            funding_rate = float(row.get('funding_rate', 0))
+            funding = self.cm.funding_cost(notional, funding_rate, 8, direction)
+            net_profit = gross_profit - fees - funding
+            net_loss = gross_loss + fees + funding
+        else:
+            net_profit = gross_profit * 0.998
+            net_loss = gross_loss * 1.002
+
+        rr = net_profit / net_loss if net_loss > 0 else 0
+        if rr < 1.0:
+            return None
+
+        # tp_levels for partial TP
+        tp1_dist = tp_dist_pct * 0.7
+        if direction == 'long':
+            tp1 = price * (1 + tp1_dist)
+            tp2 = tp
+        else:
+            tp1 = price * (1 - tp1_dist)
+            tp2 = tp
+
+        return {
+            'direction': direction,
+            'entry_price': price,
+            'stop_loss': sl,
+            'take_profit': tp,
+            'tp_levels': [tp1, tp2],
+            'leverage': leverage,
+            'margin': margin,
+            'notional': notional,
+            'atr_pct': atr_pct,
+            'sl_dist_pct': sl_dist_pct,
+            'rr': rr,
+            'slot_type': slot_type,
+            'is_low_rr': is_low_rr,
+            'is_probe': is_probe,
+        }
 
     def _build_plan(self, row, direction: str, equity: float) -> Optional[Dict]:
         """生成入场计划：SL / TP / 杠杆 / 仓位 (统一风险预算)。"""
@@ -582,6 +798,7 @@ class EventBacktest:
                 'total_trades': 0, 'win_rate': 0, 'profit_factor': 0,
                 'total_pnl': 0, 'max_drawdown_pct': 0, 'sharpe': 0,
                 'avg_holding_bars': 0, 'sl_count': 0, 'tp_count': 0,
+                'segmented_metrics': {},
             }
         df = pd.DataFrame(trades)
         wins = df[df['net_pnl'] > 0]
@@ -603,11 +820,14 @@ class EventBacktest:
         if len(eq) > 1:
             returns = eq['equity'].pct_change().dropna()
             if returns.std() > 0:
-                sharpe = (returns.mean() / returns.std()) * math.sqrt(24 * 365)  # 假设小时级
+                sharpe = (returns.mean() / returns.std()) * math.sqrt(24 * 365)
             else:
                 sharpe = 0
         else:
             sharpe = 0
+
+        # Segmented metrics
+        segmented = self._calc_segmented_metrics(trades)
 
         return {
             'total_trades': len(df),
@@ -623,7 +843,74 @@ class EventBacktest:
             'tp_count': int((df['exit_reason'] == 'tp').sum()),
             'signal_exit_count': int((df['exit_reason'] == 'signal').sum()),
             'avg_holding_bars': float((df['exit_idx'] - df['entry_idx']).mean()),
+            'segmented_metrics': segmented,
         }
+
+    def _calc_segmented_metrics(self, trades: List[Dict]) -> Dict:
+        """Compute metrics segmented by side, regime, and slot_type."""
+        min_sample = 5
+
+        def _metrics_for(subset: List[Dict]) -> Optional[Dict]:
+            if not subset:
+                return None
+            wins = [t for t in subset if t['net_pnl'] > 0]
+            losses = [t for t in subset if t['net_pnl'] <= 0]
+            gp = sum(t['net_pnl'] for t in wins)
+            gl = abs(sum(t['net_pnl'] for t in losses)) if losses else 0
+            return {
+                'trade_count': len(subset),
+                'win_rate': len(wins) / len(subset) * 100,
+                'profit_factor': gp / gl if gl > 0 else (float('inf') if gp > 0 else 0),
+                'total_pnl': sum(t['net_pnl'] for t in subset),
+                'gross_profit': gp,
+                'gross_loss': gl,
+                'insufficient_sample': len(subset) < min_sample,
+            }
+
+        result = {}
+
+        # By side (direction)
+        by_side = {}
+        for side in ('long', 'short'):
+            subset = [t for t in trades if t.get('direction') == side]
+            m = _metrics_for(subset)
+            if m:
+                by_side[side] = m
+        if by_side:
+            result['metrics_by_side'] = by_side
+
+        # By regime
+        by_regime = {}
+        for regime in ('bullish', 'mixed', 'bearish', 'choppy'):
+            subset = [t for t in trades if t.get('regime') == regime]
+            m = _metrics_for(subset)
+            if m:
+                by_regime[regime] = m
+        if by_regime:
+            result['metrics_by_regime'] = by_regime
+
+        # By slot_type
+        by_slot = {}
+        for slot in ('main', 'low_rr_extra', 'probe_short'):
+            subset = [t for t in trades if t.get('slot_type') == slot]
+            m = _metrics_for(subset)
+            if m:
+                by_slot[slot] = m
+        if by_slot:
+            result['metrics_by_slot_type'] = by_slot
+
+        # Cross: side x regime
+        by_side_regime = {}
+        for side in ('long', 'short'):
+            for regime in ('bullish', 'mixed', 'bearish', 'choppy'):
+                subset = [t for t in trades if t.get('direction') == side and t.get('regime') == regime]
+                m = _metrics_for(subset)
+                if m:
+                    by_side_regime[f"{side}_{regime}"] = m
+        if by_side_regime:
+            result['metrics_by_side_regime'] = by_side_regime
+
+        return result
 
     # ────────────────────────────────────────────
     # Validation

@@ -166,7 +166,7 @@ def test_existing_symbol_not_blocked_by_limit():
     # 即使被其他逻辑拦截也行，但 reason 不应该是 concurrent_limit
     assert 'concurrent_limit_reached' not in decision.get('risk_warnings', []), \
         "已开仓 symbol 不应被并发限制拦截"
-    print(f"  ✅ Case 6: 已开仓 BTC-USDT 再来 tick → 不被并发拦截 (reason={decision.get('reasoning','')[:40]})")
+    print(f"  ✅ Case 6: 已开仓 BTC-USDT 再来 tick → 不被并发拦截 (reason={(decision.get('reasoning') or '')[:40]})")
 
     logging.disable(logging.NOTSET)
 

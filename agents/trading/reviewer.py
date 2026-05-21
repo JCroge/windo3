@@ -125,6 +125,14 @@ class ReviewerAgent(BaseAgent):
                 trade_record['ev_at_entry'] = attribution.get('ev_at_entry', 0)
                 trade_record['p_win_used'] = attribution.get('p_win_used', 0)
                 trade_record['p_win_source'] = attribution.get('p_win_source', 'unknown')
+                # Phase 8: Regime attribution
+                trade_record['entry_regime'] = attribution.get('entry_regime', 'unknown')
+                trade_record['raw_regime'] = attribution.get('raw_regime', 'unknown')
+                trade_record['regime_confidence'] = attribution.get('regime_confidence', 0)
+                trade_record['rr_policy'] = attribution.get('rr_policy', 'default')
+                trade_record['slot_type'] = attribution.get('slot_type', 'main')
+                trade_record['is_probe'] = attribution.get('is_probe', False)
+                trade_record['is_low_rr'] = attribution.get('is_low_rr', False)
 
             self.trade_history.append(trade_record)
             self._save_trade_history()
@@ -196,6 +204,7 @@ class ReviewerAgent(BaseAgent):
             return
 
         recent_metrics = self._calculate_rolling_metrics()
+        segmented_metrics = self._calculate_segmented_metrics()
         decay_signals = self._detect_strategy_decay()
         consecutive_losses = self._track_consecutive_losses()
         daily_pnl = self._calculate_daily_pnl()
@@ -203,6 +212,7 @@ class ReviewerAgent(BaseAgent):
         review_report = {
             'timestamp': time.time(),
             'recent_metrics': recent_metrics,
+            'segmented_metrics': segmented_metrics,
             'decay_signals': decay_signals,
             'consecutive_losses': consecutive_losses,
             'daily_pnl': daily_pnl,
@@ -260,6 +270,62 @@ class ReviewerAgent(BaseAgent):
             'gross_profit': gross_profit,
             'gross_loss': gross_loss,
         }
+
+    def _calculate_segmented_metrics(self) -> dict:
+        """Compute metrics segmented by side, regime, and slot_type."""
+        min_sample = 5
+        window_size = min(self.rolling_window_size, len(self.trade_history))
+        if window_size == 0:
+            return {}
+        recent = self.trade_history[-window_size:]
+
+        def _metrics_for(trades):
+            if not trades:
+                return None
+            wins = [t for t in trades if t['pnl'] > 0]
+            losses = [t for t in trades if t['pnl'] < 0]
+            gp = sum(t['pnl'] for t in wins)
+            gl = abs(sum(t['pnl'] for t in losses)) if losses else 0
+            return {
+                'trade_count': len(trades),
+                'win_rate': len(wins) / len(trades),
+                'profit_factor': gp / gl if gl > 0 else (gp if gp > 0 else 0),
+                'total_pnl': sum(t['pnl'] for t in trades),
+                'insufficient_sample': len(trades) < min_sample,
+            }
+
+        result = {}
+        # By side
+        by_side = {}
+        for side in ('long', 'short'):
+            subset = [t for t in recent if t.get('side') == side]
+            m = _metrics_for(subset)
+            if m:
+                by_side[side] = m
+        if by_side:
+            result['metrics_by_side'] = by_side
+
+        # By regime
+        by_regime = {}
+        for regime in ('bullish', 'mixed', 'bearish', 'choppy'):
+            subset = [t for t in recent if t.get('entry_regime') == regime]
+            m = _metrics_for(subset)
+            if m:
+                by_regime[regime] = m
+        if by_regime:
+            result['metrics_by_regime'] = by_regime
+
+        # By slot_type
+        by_slot = {}
+        for slot in ('main', 'low_rr_extra', 'probe_short'):
+            subset = [t for t in recent if t.get('slot_type') == slot]
+            m = _metrics_for(subset)
+            if m:
+                by_slot[slot] = m
+        if by_slot:
+            result['metrics_by_slot_type'] = by_slot
+
+        return result
 
     def _detect_strategy_decay(self):
         """检测策略衰减（对比近期 vs 历史基线）"""

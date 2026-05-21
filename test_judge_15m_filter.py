@@ -29,6 +29,12 @@ def _make_judge(config_overrides: dict = None) -> MultiJudge:
     judge._15m_strong_score_threshold = config['entry_timing_15m_strong_score_threshold']
     judge._15m_defer_on_block = config['entry_timing_15m_defer_on_block']
     judge._15m_timeout_hours = config['entry_timing_15m_timeout_hours']
+
+    class _MockRegime:
+        _effective_regime = 'mixed'
+        _raw_regime = 'mixed'
+        _confidence = 50
+    judge._regime_manager = _MockRegime()
     return judge
 
 

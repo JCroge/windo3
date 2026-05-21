@@ -104,6 +104,16 @@ class TestJudgeSlotReservation:
             judge._symbol_state = {}
             judge._state_dirty = False
             judge.publish = AsyncMock()
+
+            class _MockLedger:
+                _enabled = False
+            judge._counterfactual_ledger = _MockLedger()
+
+            class _MockRegime:
+                _effective_regime = 'mixed'
+                def snapshot(self):
+                    return {'effective_regime': 'mixed', 'raw_regime': 'mixed', 'confidence': 50}
+            judge._regime_manager = _MockRegime()
             return judge
 
     @pytest.mark.asyncio

@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：多 Agent 风控/15m 入场/Ranking/PnL 账本修复完成并通过最终审计（2026-05-20）
-**下一阶段**：修复最终审计遗留项后，进入 paper/testnet 连续验收和真实回测复验
+**当前阶段**：Phase 1.5 观测与回测同构补齐完成（2026-05-21），304 tests 全通过，Phase 2 三项阻塞已解除
+**下一阶段**：Phase 2 side/regime Bayesian EV + 48h paper/testnet 验证
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -597,6 +597,21 @@
    - `python3 -m pytest -q` → 266 passed / 4 deselected / 1 warning / ~160s
    - 1 flaky（test_phase_c.py MessageBus 单例状态泄漏，单独运行通过）
    - 系统已重启（PID 11132）
+
+### ✅ Phase 8: 市场 Regime 优化（2026-05-21完成）
+
+**问题**：28h 实盘 449 plans / 0 openings（R:R<1.5 全拦），long 66.7% win rate 被浪费，short 14.3% win rate 持续亏损。
+
+**解决方案**：
+1. **RegimeManager**（`utils/market_regime.py`）：基于 BTC/ETH bias + 全标的趋势共识计算 bullish/bearish/mixed/choppy，2 次确认切换 + 30min min_hold 防抖
+2. **CounterfactualLedger**（`utils/counterfactual_ledger.py`）：被拒信号影子追踪，24h 内 TP/SL 解析，验证 regime 策略有效性
+3. **Short Regime Guard**：牛市中普通做空被拦截，强做空（score≤-70, htf≥2, rr≥1.8, 15m confirm）放行
+4. **Probe Short**：牛市中 BTC RSI 反转/breadth 恶化时允许小仓位探针做空（30% position, 3x leverage, 24h cooldown）
+5. **Dynamic R:R**：牛市多头 1.30 / 牛市空头 1.80 / 默认 1.50
+6. **Low R:R Extra Slot**：低 R:R 多头使用独立额外槽位，不挤占主槽位，rank score 打 70% 折扣
+7. **全部 feature-flagged**：5 个 env 开关，关闭即回退原行为
+
+**验证**：293 passed / 4 deselected / 0 failed
 
 ## 技术债务
 

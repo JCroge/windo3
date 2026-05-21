@@ -23,9 +23,13 @@ class CandidateRanker:
         'entry_type': 0.05,
     }
 
-    def __init__(self, max_slots: int = 3, enabled: bool = True, logger=None):
+    LOW_RR_PENALTY = 0.7  # 30% rank score penalty for low R:R candidates
+
+    def __init__(self, max_slots: int = 3, enabled: bool = True,
+                 low_rr_extra_slot: int = 0, logger=None):
         self.max_slots = max_slots
         self.enabled = enabled
+        self.low_rr_extra_slot = low_rr_extra_slot
         self.logger = logger
         self._buffer = []
         self._last_flush = time.time()
@@ -43,30 +47,50 @@ class CandidateRanker:
 
         selected: 可以进入 live 的候选
         rejected: 被排名淘汰的候选（可进入 paper 观察）
+
+        Low R:R candidates get a rank penalty and use a separate extra slot
+        so they don't crowd out high R:R signals from main slots.
         """
         if not self.enabled or not self._buffer:
             selected = list(self._buffer)
             self._buffer = []
             return selected, []
 
-        available_slots = self.max_slots - len(open_positions)
-        if available_slots <= 0:
+        available_main = self.max_slots - len(open_positions)
+        if available_main <= 0 and self.low_rr_extra_slot <= 0:
             rejected = list(self._buffer)
             self._buffer = []
             self._rejected_candidates.extend(rejected)
             return [], rejected
 
-        # 计算综合得分
+        # Score all candidates
         scored = []
         for c in self._buffer:
             rank_score = self._compute_rank_score(c)
             scored.append((rank_score, c))
-
-        # 降序排列
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        selected = [c for _, c in scored[:available_slots]]
-        rejected = [c for _, c in scored[available_slots:]]
+        # Separate normal vs low_rr
+        normal_scored = [(s, c) for s, c in scored if not c.get('plan', {}).get('is_low_rr')]
+        low_rr_scored = [(s, c) for s, c in scored if c.get('plan', {}).get('is_low_rr')]
+
+        selected = []
+        # Fill main slots: normal candidates first
+        main_from_normal = normal_scored[:max(0, available_main)]
+        remaining_main = max(0, available_main - len(main_from_normal))
+        # If main slots still available, low_rr can use them
+        main_from_low_rr = low_rr_scored[:remaining_main]
+
+        selected = [c for _, c in main_from_normal + main_from_low_rr]
+
+        # Extra slot: only for low_rr candidates that didn't get main slot
+        low_rr_remaining = low_rr_scored[remaining_main:]
+        extra_selected = [c for _, c in low_rr_remaining[:self.low_rr_extra_slot]]
+        selected.extend(extra_selected)
+
+        # Everything else is rejected
+        all_selected_ids = {id(c) for c in selected}
+        rejected = [c for _, c in scored if id(c) not in all_selected_ids]
 
         self._buffer = []
         self._rejected_candidates.extend(rejected)
@@ -74,13 +98,16 @@ class CandidateRanker:
         if self.logger and len(scored) > 1:
             self.logger.info(
                 f"[Ranking] {len(scored)} candidates → "
-                f"selected {len(selected)}, rejected {len(rejected)}"
+                f"selected {len(selected)} (main={len(main_from_normal)+len(main_from_low_rr)}, "
+                f"extra_low_rr={len(extra_selected)}), rejected {len(rejected)}"
             )
             for rank_score, c in scored:
+                low_rr_tag = " [low_rr]" if c.get('plan', {}).get('is_low_rr') else ""
                 self.logger.info(
                     f"  [{c['symbol']}] rank_score={rank_score:.2f} "
                     f"signal={c.get('score', 0):.0f} "
                     f"rr={c.get('plan', {}).get('effective_risk_reward_ratio', 0):.2f}"
+                    f"{low_rr_tag}"
                 )
 
         return selected, rejected
@@ -135,6 +162,11 @@ class CandidateRanker:
             self.WEIGHTS['ev'] * ev_norm +
             self.WEIGHTS['entry_type'] * type_norm
         )
+
+        # Low R:R penalty: ensure high R:R candidates always rank above
+        if candidate.get('plan', {}).get('is_low_rr'):
+            total *= self.LOW_RR_PENALTY
+
         return round(total, 2)
 
     def get_rejected_candidates(self, clear: bool = True) -> list:

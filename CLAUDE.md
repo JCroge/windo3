@@ -419,7 +419,25 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **Judge plan输出**（judge.py `_build_plan`）：新增`atr_pct`字段传递给Executor用于trailing距离计算
 - **向后兼容**：旧持仓无新字段时走原逻辑（单TP+固定SL）
 
-### 🔄 Phase 8: 待开发
+### ✅ Phase 8: 市场 Regime 优化（2026-05-21完成）
+- **问题**：28h 实盘 449 plans / 0 openings，R:R<1.5 全拦；long 66.7% win rate 被浪费，short 14.3% 持续亏损
+- **RegimeManager**（`utils/market_regime.py`）：BTC/ETH bias + 全标的趋势共识 → bullish/bearish/mixed/choppy，2次确认切换 + 30min min_hold 防抖
+- **CounterfactualLedger**（`utils/counterfactual_ledger.py`）：被拒信号影子追踪，24h TP/SL 解析，验证策略有效性
+- **Short Regime Guard**（judge.py）：牛市普通做空拦截，强做空（score≤-70, htf≥2, rr≥1.8, 15m confirm）放行
+- **Probe Short**：牛市 BTC RSI 反转/breadth 恶化时小仓位探针做空（30% position, 3x, 24h cooldown）
+- **Dynamic R:R**：牛市多头 1.30 / 牛市空头 1.80 / 默认 1.50
+- **Low R:R Extra Slot**（candidate_ranker.py）：低 R:R 多头独立额外槽位，rank score 打 70% 折扣
+- **Feature Flags**：REGIME_HYSTERESIS_ENABLED / SHORT_REGIME_GUARD_ENABLED / PROBE_SHORT_ENABLED / LOW_RR_SLOT_ENABLED / COUNTERFACTUAL_LEDGER_ENABLED
+- **验证**：293 passed / 4 deselected / 0 failed
+
+### ✅ Phase 1.5: 观测与回测同构补齐（2026-05-21完成）
+- **EventBacktest同构Phase 1 live策略**（`event_backtest.py`）：regime列支持、动态R:R floor（bullish long 1.30/bullish short 1.80/default 1.50）、short regime guard、probe short with cooldown、low R:R position scaling、segmented metrics输出（side×regime×slot_type）、insufficient_sample标记
+- **Reviewer分层策略复盘**（`agents/trading/reviewer.py`）：`_calculate_segmented_metrics()`输出metrics_by_side/metrics_by_regime/metrics_by_slot_type，每项含trade_count/win_rate/profit_factor/total_pnl/insufficient_sample
+- **PA entry_regime grace**（`agents/trading/position_analyst.py`）：`_get_current_regime()`读取`data/regime_state.json`；low_rr仓位在entry_regime=bullish→current≠bullish的60min内不触发trend-based reduce/close
+- **验证**：304 passed / 4 deselected / 0 failed（新增test_event_backtest_regime.py 11 tests）
+- **Phase 2 Go/No-Go**：三项阻塞全部解除，可进入Phase 2（side/regime Bayesian EV）
+
+### 🔄 Phase 9: 待开发
 - Predictor（趋势预测Agent）
 - 更多数据源（链上大额转账、清算数据）
 - 参数 grid search（基于 event_backtest）
@@ -503,7 +521,7 @@ python3 run_agents.py
 # Agent系统集成测试
 python3 test_agents_integration.py
 
-# 完整 CI 回归（默认排除 network 标记，266 passed / 4 deselected）
+# 完整 CI 回归（默认排除 network 标记，304 passed / 4 deselected）
 python3 -m pytest -q
 
 # 或使用启动脚本

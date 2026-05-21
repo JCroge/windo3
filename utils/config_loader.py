@@ -37,6 +37,14 @@ HARD_LIMITS = {
     "entry_timing_15m_timeout_hours": (0.5, 24),           # 15m defer 超时小时
     "rank_flush_delay": (1.0, 30.0),                       # Ranking flush 窗口秒
     "max_concurrent_positions": (1, 20),                   # 最大并发持仓数
+    # Regime optimization
+    "rr_floor_default": (1.0, 3.0),
+    "rr_floor_long_bullish": (1.0, 2.0),
+    "rr_floor_short_bullish": (1.0, 3.0),
+    "low_rr_max_leverage": (1, 20),
+    "low_rr_extra_slot": (0, 5),
+    "probe_short_max_leverage": (1, 10),
+    "probe_short_cooldown_hours": (1, 72),
 }
 
 
@@ -83,6 +91,22 @@ DEFAULTS = {
     "entry_timing_15m_strong_score_threshold": 70,
     "entry_timing_15m_defer_on_block": True,
     "entry_timing_15m_timeout_hours": 4,
+    # Regime optimization (Phase 1)
+    "regime_hysteresis_enabled": True,
+    "short_regime_guard_enabled": True,
+    "probe_short_enabled": True,
+    "low_rr_slot_enabled": True,
+    "counterfactual_ledger_enabled": True,
+    "rr_floor_default": 1.5,
+    "rr_floor_long_bullish": 1.30,
+    "rr_floor_short_bullish": 1.80,
+    "low_rr_max_leverage": 5,
+    "low_rr_max_position_pct": 0.5,
+    "low_rr_extra_slot": 1,
+    "probe_short_max_position_pct": 0.3,
+    "probe_short_max_leverage": 3,
+    "probe_short_max_concurrent": 1,
+    "probe_short_cooldown_hours": 24,
 }
 
 
@@ -160,6 +184,22 @@ def _read_env_overrides() -> dict:
         "ENTRY_TIMING_15M_STRONG_SCORE_THRESHOLD": ("entry_timing_15m_strong_score_threshold", int),
         "ENTRY_TIMING_15M_DEFER_ON_BLOCK": ("entry_timing_15m_defer_on_block", _to_bool),
         "ENTRY_TIMING_15M_TIMEOUT_HOURS": ("entry_timing_15m_timeout_hours", int),
+        # Regime optimization
+        "REGIME_HYSTERESIS_ENABLED": ("regime_hysteresis_enabled", _to_bool),
+        "SHORT_REGIME_GUARD_ENABLED": ("short_regime_guard_enabled", _to_bool),
+        "PROBE_SHORT_ENABLED": ("probe_short_enabled", _to_bool),
+        "LOW_RR_SLOT_ENABLED": ("low_rr_slot_enabled", _to_bool),
+        "COUNTERFACTUAL_LEDGER_ENABLED": ("counterfactual_ledger_enabled", _to_bool),
+        "RR_FLOOR_DEFAULT": ("rr_floor_default", float),
+        "RR_FLOOR_LONG_BULLISH": ("rr_floor_long_bullish", float),
+        "RR_FLOOR_SHORT_BULLISH": ("rr_floor_short_bullish", float),
+        "LOW_RR_MAX_LEVERAGE": ("low_rr_max_leverage", int),
+        "LOW_RR_MAX_POSITION_PCT": ("low_rr_max_position_pct", float),
+        "LOW_RR_EXTRA_SLOT": ("low_rr_extra_slot", int),
+        "PROBE_SHORT_MAX_POSITION_PCT": ("probe_short_max_position_pct", float),
+        "PROBE_SHORT_MAX_LEVERAGE": ("probe_short_max_leverage", int),
+        "PROBE_SHORT_MAX_CONCURRENT": ("probe_short_max_concurrent", int),
+        "PROBE_SHORT_COOLDOWN_HOURS": ("probe_short_cooldown_hours", int),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
@@ -244,6 +284,8 @@ def format_banner(cfg: dict) -> str:
     mode = "TESTNET" if cfg.get("use_testnet") else "LIVE 实盘"
     timing_15m = "开启" if cfg.get("entry_timing_15m_enabled") else "关闭"
     ranking = "开启" if cfg.get("ranking_enabled") else "关闭"
+    regime_guard = "开启" if cfg.get("short_regime_guard_enabled") else "关闭"
+    low_rr = "开启" if cfg.get("low_rr_slot_enabled") else "关闭"
     lines = [
         "=" * 60,
         f"配置摘要（{mode}）",
@@ -263,6 +305,8 @@ def format_banner(cfg: dict) -> str:
         f"  弱信号最低流动性:      {cfg.get('min_liquidity_score_for_weak_signal')}",
         f"  15m入场确认:           {timing_15m} (强信号≥{cfg.get('entry_timing_15m_strong_score_threshold')}, 超时{cfg.get('entry_timing_15m_timeout_hours')}h)",
         f"  Ranking裁决:           {ranking} (flush窗口={cfg.get('rank_flush_delay', 5)}s)",
+        f"  Short Regime Guard:    {regime_guard} (R:R≥{cfg.get('rr_floor_short_bullish', 1.8)})",
+        f"  Low R:R Long:          {low_rr} (floor={cfg.get('rr_floor_long_bullish', 1.3)}, slot={cfg.get('low_rr_extra_slot', 1)}, lev≤{cfg.get('low_rr_max_leverage', 5)}x)",
         "=" * 60,
     ]
     return "\n".join(lines)

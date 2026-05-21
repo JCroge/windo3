@@ -538,9 +538,10 @@ async def test_9_daily_hard_stop_flow():
         "payload": {"action": "open_long", "symbol": "BTC-USDT", "confidence": 90}
     }
     await executor.on_message(new_decision)
-    # 不应有 execution_result 输出
-    no_msg = await bus.receive("reviewer", timeout=0.5)
-    assert no_msg is None, "Executor should reject trades when halted"
+    # Executor now publishes a rejected execution_result when halted
+    reject_msg = await bus.receive("reviewer", timeout=0.5)
+    assert reject_msg is not None and reject_msg['payload'].get('status') == 'rejected', \
+        "Executor should publish rejected result when halted"
     print("  ✓ 熔断后正确拒绝新交易")
     print("  ✓ 全系统熔断链路通畅")
     return True
