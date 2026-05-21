@@ -635,7 +635,6 @@ class MultiJudge(BaseAgent):
                 attribution['tf_15m_wait_seconds'] = int(age_seconds)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
-                state['last_open_time'] = time.time()
                 decision = {
                     "symbol": symbol, "timestamp": time.time(),
                     "action": def_action, "confidence": 60,
@@ -646,7 +645,9 @@ class MultiJudge(BaseAgent):
                     "entry_type": "deferred_15m_confirmation",
                     "attribution": attribution,
                 }
-                await self.publish("trade_decision", decision, symbol=symbol)
+                published = await self._gate_and_publish_open(symbol, decision, state)
+                if not published:
+                    self.logger.info(f"[Judge] {symbol} deferred_15m open rejected by slot gate")
                 return
 
             pullback_hit = (is_long and current_price <= target) or \
@@ -722,7 +723,6 @@ class MultiJudge(BaseAgent):
                 )
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
-                state['last_open_time'] = time.time()
                 decision = {
                     "symbol": symbol, "timestamp": time.time(),
                     "action": def_action, "confidence": 60,
@@ -733,7 +733,9 @@ class MultiJudge(BaseAgent):
                     "entry_type": "deferred_pullback",
                     "attribution": attribution,
                 }
-                await self.publish("trade_decision", decision, symbol=symbol)
+                published = await self._gate_and_publish_open(symbol, decision, state)
+                if not published:
+                    self.logger.info(f"[Judge] {symbol} deferred_pullback open rejected by slot gate")
                 return
 
             signal_price = deferred['signal_price']
@@ -814,7 +816,6 @@ class MultiJudge(BaseAgent):
                 attribution['chase_move_pct'] = round(move_pct, 4)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
-                state['last_open_time'] = time.time()
                 self.logger.info(f"[Judge] {symbol} 价格已移动{move_pct:.1%}无回调，追价入场（仓位60%）")
                 decision = {
                     "symbol": symbol, "timestamp": time.time(),
@@ -826,7 +827,9 @@ class MultiJudge(BaseAgent):
                     "entry_type": "deferred_chase",
                     "attribution": attribution,
                 }
-                await self.publish("trade_decision", decision, symbol=symbol)
+                published = await self._gate_and_publish_open(symbol, decision, state)
+                if not published:
+                    self.logger.info(f"[Judge] {symbol} deferred_chase open rejected by slot gate")
                 return
 
             # 动态超时：ma_aligned持续时间长的信号允许更长等待
@@ -1388,15 +1391,94 @@ class MultiJudge(BaseAgent):
                         "risk_warnings": llm_result.get('risk_warnings', []),
                     }
 
-        await self.publish("trade_decision", decision, symbol=symbol)
         if decision['action'] in ('open_long', 'open_short') and decision.get('confidence', 0) >= 60:
-            state['last_open_time'] = time.time()
+            published = await self._gate_and_publish_open(symbol, decision, state)
+            if not published:
+                self.logger.info(f"[Judge] {symbol} open rejected by slot gate (ranking disabled)")
+        else:
+            await self.publish("trade_decision", decision, symbol=symbol)
+            self.logger.info(
+                f"[决策] {symbol} {decision['action']} "
+                f"置信度={decision['confidence']} "
+                f"{'plan='+str(decision['plan']['leverage'])+'x' if decision.get('plan') else ''} "
+                f"理由: {(decision.get('reasoning') or '')[:60]}"
+            )
+
+    # ═══ Unified Open Dispatch ═══
+
+    async def _gate_and_publish_open(self, symbol: str, decision: dict, state: dict) -> bool:
+        """Unified open dispatch: final slot gate + pending reservation + publish.
+
+        Returns True if published, False if rejected by slot gate.
+        All open decisions (main path ranking-disabled, deferred flows) MUST use this.
+        """
+        self._sweep_stale_pending()
+        plan = decision.get('plan') or {}
+        slot_type = plan.get('slot_type', 'main')
+        action = decision.get('action', 'hold')
+        occupied = self._open_positions | self._pending_open_symbols
+        all_slots = {**self._position_slots, **self._pending_open_slots}
+
+        if slot_type == 'main':
+            main_count = sum(1 for s in occupied if all_slots.get(s, 'main') == 'main')
+            if main_count >= self._max_concurrent_positions:
+                gate_attr = self._rejection_attribution(action, plan, "main_slot_full")
+                self._record_rejected_plan(symbol, action, plan, 0, 0, "main_slot_full", gate_attr)
+                await self.publish("trade_decision", {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": "hold", "confidence": 0,
+                    "plan": None, "size_pct": 0,
+                    "reasoning": f"Main slot full ({main_count}/{self._max_concurrent_positions})",
+                    "key_factors": ["slot_gate:main_full"],
+                    "risk_warnings": ["concurrent_limit_reached"],
+                    "attribution": gate_attr,
+                }, symbol=symbol)
+                return False
+        elif slot_type == 'low_rr_extra':
+            low_rr_count = sum(1 for s in occupied if all_slots.get(s) == 'low_rr_extra')
+            low_rr_cap = self._candidate_ranker.low_rr_extra_slot if hasattr(self, '_candidate_ranker') else 1
+            if low_rr_count >= low_rr_cap:
+                gate_attr = self._rejection_attribution(action, plan, "low_rr_slot_full")
+                self._record_rejected_plan(symbol, action, plan, 0, 0, "low_rr_slot_full", gate_attr)
+                await self.publish("trade_decision", {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": "hold", "confidence": 0,
+                    "plan": None, "size_pct": 0,
+                    "reasoning": f"Low R:R extra slot full ({low_rr_count}/{low_rr_cap})",
+                    "key_factors": ["slot_gate:low_rr_full"],
+                    "risk_warnings": ["concurrent_limit_reached"],
+                    "attribution": gate_attr,
+                }, symbol=symbol)
+                return False
+        elif slot_type == 'probe_short':
+            probe_count = sum(1 for s in occupied if all_slots.get(s) == 'probe_short')
+            if probe_count >= self._probe_short_max_concurrent:
+                gate_attr = self._rejection_attribution(action, plan, "probe_slot_full")
+                self._record_rejected_plan(symbol, action, plan, 0, 0, "probe_slot_full", gate_attr)
+                await self.publish("trade_decision", {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": "hold", "confidence": 0,
+                    "plan": None, "size_pct": 0,
+                    "reasoning": f"Probe short slot full ({probe_count}/{self._probe_short_max_concurrent})",
+                    "key_factors": ["slot_gate:probe_full"],
+                    "risk_warnings": ["concurrent_limit_reached"],
+                    "attribution": gate_attr,
+                }, symbol=symbol)
+                return False
+
+        # Reserve pending slot
+        self._pending_open_symbols.add(symbol)
+        self._pending_open_ts[symbol] = time.time()
+        self._pending_open_slots[symbol] = slot_type
+        state['last_open_time'] = time.time()
+
+        await self.publish("trade_decision", decision, symbol=symbol)
         self.logger.info(
-            f"[决策] {symbol} {decision['action']} "
-            f"置信度={decision['confidence']} "
-            f"{'plan='+str(decision['plan']['leverage'])+'x' if decision.get('plan') else ''} "
-            f"理由: {(decision.get('reasoning') or '')[:60]}"
+            f"[决策] {symbol} {action} slot={slot_type} "
+            f"置信度={decision.get('confidence', 0)} "
+            f"{'plan='+str(plan.get('leverage', '?'))+'x' if plan else ''}"
         )
+        return True
 
     # ═══ RQ-03: Ranking Top-N flush ═══
 

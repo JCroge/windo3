@@ -373,3 +373,112 @@ class TestProbeSlotChain:
 
             result = judge._can_route_probe_short('TEST-USDT', -70, True, 1.5)
             assert result is True
+
+
+class TestUnifiedOpenDispatch:
+    """Unified _gate_and_publish_open tests — all open flows share slot gate + pending."""
+
+    @pytest.fixture
+    def judge_for_dispatch(self):
+        with patch.dict(os.environ, {
+            'OKX_API_KEY': 'test', 'OKX_SECRET': 'test', 'OKX_PASSPHRASE': 'test',
+        }):
+            from agents.trading.judge import MultiJudge
+            judge = MultiJudge.__new__(MultiJudge)
+            judge._open_positions = set()
+            judge._pending_open_symbols = set()
+            judge._pending_open_ts = {}
+            judge._pending_open_slots = {}
+            judge._position_slots = {}
+            judge._pending_ttl = 120
+            judge._max_concurrent_positions = 2
+            judge._probe_short_max_concurrent = 1
+            judge._candidate_ranker = CandidateRanker(max_slots=2, enabled=True, low_rr_extra_slot=1)
+            judge.logger = MagicMock()
+            judge.publish = AsyncMock()
+            judge._symbol_state = {}
+
+            class _MockLedger:
+                _enabled = False
+            judge._counterfactual_ledger = _MockLedger()
+
+            class _MockRegime:
+                _effective_regime = 'bullish'
+                def snapshot(self):
+                    return {'effective_regime': 'bullish', 'raw_regime': 'bullish', 'confidence': 70}
+            judge._regime_manager = _MockRegime()
+            return judge
+
+    @pytest.mark.asyncio
+    async def test_deferred_open_main_slot_full_rejected(self, judge_for_dispatch):
+        """Deferred open when main slot full → rejected."""
+        judge = judge_for_dispatch
+        judge._open_positions = {'BTC-USDT', 'ETH-USDT'}
+        judge._position_slots = {'BTC-USDT': 'main', 'ETH-USDT': 'main'}
+
+        state = {}
+        decision = {
+            'symbol': 'SOL-USDT', 'action': 'open_long', 'confidence': 60,
+            'plan': {'slot_type': 'main', 'size_usdt': 10, 'leverage': 3},
+        }
+        result = await judge._gate_and_publish_open('SOL-USDT', decision, state)
+
+        assert result is False
+        assert 'SOL-USDT' not in judge._pending_open_symbols
+        # Should have published a hold instead
+        hold_calls = [c for c in judge.publish.call_args_list
+                      if c[0][1].get('action') == 'hold']
+        assert len(hold_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_deferred_probe_pending_probe_rejected(self, judge_for_dispatch):
+        """Deferred probe when pending probe exists → rejected."""
+        judge = judge_for_dispatch
+        judge._pending_open_symbols = {'COIN1-USDT'}
+        judge._pending_open_slots = {'COIN1-USDT': 'probe_short'}
+        judge._pending_open_ts = {'COIN1-USDT': time.time()}
+
+        state = {}
+        decision = {
+            'symbol': 'COIN2-USDT', 'action': 'open_short', 'confidence': 60,
+            'plan': {'slot_type': 'probe_short', 'is_probe': True, 'size_usdt': 3, 'leverage': 3},
+        }
+        result = await judge._gate_and_publish_open('COIN2-USDT', decision, state)
+
+        assert result is False
+        assert 'COIN2-USDT' not in judge._pending_open_symbols
+
+    @pytest.mark.asyncio
+    async def test_dispatch_success_creates_pending(self, judge_for_dispatch):
+        """Successful dispatch creates pending reservation."""
+        judge = judge_for_dispatch
+
+        state = {}
+        decision = {
+            'symbol': 'SOL-USDT', 'action': 'open_long', 'confidence': 60,
+            'plan': {'slot_type': 'main', 'size_usdt': 10, 'leverage': 3},
+        }
+        result = await judge._gate_and_publish_open('SOL-USDT', decision, state)
+
+        assert result is True
+        assert 'SOL-USDT' in judge._pending_open_symbols
+        assert judge._pending_open_slots['SOL-USDT'] == 'main'
+        assert 'SOL-USDT' in judge._pending_open_ts
+        assert state.get('last_open_time') is not None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_low_rr_slot_full_rejected(self, judge_for_dispatch):
+        """Low R:R slot full → rejected."""
+        judge = judge_for_dispatch
+        judge._open_positions = {'LRR-USDT'}
+        judge._position_slots = {'LRR-USDT': 'low_rr_extra'}
+
+        state = {}
+        decision = {
+            'symbol': 'NEW-USDT', 'action': 'open_long', 'confidence': 60,
+            'plan': {'slot_type': 'low_rr_extra', 'is_low_rr': True, 'size_usdt': 5, 'leverage': 3},
+        }
+        result = await judge._gate_and_publish_open('NEW-USDT', decision, state)
+
+        assert result is False
+        assert 'NEW-USDT' not in judge._pending_open_symbols
