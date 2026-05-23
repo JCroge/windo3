@@ -48,6 +48,11 @@ HARD_LIMITS = {
     "probe_short_max_position_pct": (0.1, 0.3),
     "probe_short_max_concurrent": (1, 1),
     "probe_short_cooldown_hours": (1, 72),
+    "short_live_min_score": (30, 100),
+    "short_live_min_rsi": (1, 100),
+    "short_live_min_range_pos": (0.0, 1.0),
+    "short_live_min_htf_votes": (1, 3),
+    "short_live_max_pre_move": (-0.20, 0.0),
 }
 
 
@@ -110,6 +115,20 @@ DEFAULTS = {
     "probe_short_max_leverage": 3,
     "probe_short_max_concurrent": 1,
     "probe_short_cooldown_hours": 24,
+    "short_live_min_score": 55,
+    "short_live_min_rsi": 40,
+    "short_live_min_range_pos": 0.45,
+    "short_live_require_daily_bearish": True,
+    "short_live_min_htf_votes": 2,
+    "short_live_max_pre_move": -0.01,
+    # Phase 2: 决策语义拆分 + 开仓解冻
+    "phase2_signal_confidence_split_enabled": True,
+    "phase2_momentum_probe_long_enabled": True,
+    "phase2_trend_saturation_enabled": True,
+    "phase2_bucketed_ev_enabled": True,
+    # Drawdown baseline
+    "drawdown_baseline_mode": "session_start",
+    "reset_risk_baseline_on_start": True,
 }
 
 
@@ -203,6 +222,20 @@ def _read_env_overrides() -> dict:
         "PROBE_SHORT_MAX_LEVERAGE": ("probe_short_max_leverage", int),
         "PROBE_SHORT_MAX_CONCURRENT": ("probe_short_max_concurrent", int),
         "PROBE_SHORT_COOLDOWN_HOURS": ("probe_short_cooldown_hours", int),
+        "SHORT_LIVE_MIN_SCORE": ("short_live_min_score", int),
+        "SHORT_LIVE_MIN_RSI": ("short_live_min_rsi", int),
+        "SHORT_LIVE_MIN_RANGE_POS": ("short_live_min_range_pos", float),
+        "SHORT_LIVE_REQUIRE_DAILY_BEARISH": ("short_live_require_daily_bearish", _to_bool),
+        "SHORT_LIVE_MIN_HTF_VOTES": ("short_live_min_htf_votes", int),
+        "SHORT_LIVE_MAX_PRE_MOVE": ("short_live_max_pre_move", float),
+        # Phase 2: 决策语义拆分 + 开仓解冻
+        "PHASE2_SIGNAL_CONFIDENCE_SPLIT_ENABLED": ("phase2_signal_confidence_split_enabled", _to_bool),
+        "PHASE2_MOMENTUM_PROBE_LONG_ENABLED": ("phase2_momentum_probe_long_enabled", _to_bool),
+        "PHASE2_TREND_SATURATION_ENABLED": ("phase2_trend_saturation_enabled", _to_bool),
+        "PHASE2_BUCKETED_EV_ENABLED": ("phase2_bucketed_ev_enabled", _to_bool),
+        # Drawdown baseline
+        "DRAWDOWN_BASELINE_MODE": ("drawdown_baseline_mode", str),
+        "RESET_RISK_BASELINE_ON_START": ("reset_risk_baseline_on_start", _to_bool),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
@@ -292,6 +325,10 @@ def format_banner(cfg: dict) -> str:
     hysteresis = "开启" if cfg.get("regime_hysteresis_enabled") else "关闭"
     probe_short = "开启" if cfg.get("probe_short_enabled") else "关闭"
     ledger = "开启" if cfg.get("counterfactual_ledger_enabled") else "关闭"
+    conf_split = "开启" if cfg.get("phase2_signal_confidence_split_enabled") else "关闭"
+    momentum_probe = "开启" if cfg.get("phase2_momentum_probe_long_enabled") else "关闭"
+    trend_sat = "开启" if cfg.get("phase2_trend_saturation_enabled") else "关闭"
+    bucketed_ev = "开启" if cfg.get("phase2_bucketed_ev_enabled") else "关闭"
     lines = [
         "=" * 60,
         f"配置摘要（{mode}）",
@@ -306,16 +343,21 @@ def format_banner(cfg: dict) -> str:
         f"  最大活跃标的:          {cfg.get('max_active_symbols')}",
         f"  最大并发持仓:          {cfg.get('max_concurrent_positions', 3)}",
         f"  逻辑账户拆分:          {cfg.get('effective_balance_cap') or '未启用（用真实余额）'}",
+        f"  回撤基准模式:          {cfg.get('drawdown_baseline_mode', 'session_start')} (cap={cfg.get('effective_balance_cap') or 'None'})",
         f"  开仓最低置信度:        {cfg.get('min_confidence')}",
         f"  回调最低信号强度:      {cfg.get('min_deferred_signal_score')}",
         f"  弱信号最低流动性:      {cfg.get('min_liquidity_score_for_weak_signal')}",
         f"  15m入场确认:           {timing_15m} (强信号≥{cfg.get('entry_timing_15m_strong_score_threshold')}, 超时{cfg.get('entry_timing_15m_timeout_hours')}h)",
         f"  Ranking裁决:           {ranking} (flush窗口={cfg.get('rank_flush_delay', 5)}s)",
         f"  Regime Hysteresis:     {hysteresis}",
-        f"  Short Regime Guard:    {regime_guard} (R:R≥{cfg.get('rr_floor_short_bullish', 1.8)})",
+        f"  Short Regime Guard:    {regime_guard} (R:R≥{cfg.get('rr_floor_short_bullish', 1.8)}, score≥{cfg.get('short_live_min_score', 55)}, RSI≥{cfg.get('short_live_min_rsi', 40)}, range≥{cfg.get('short_live_min_range_pos', 0.45)}, HTF票数≥{cfg.get('short_live_min_htf_votes', 2)}, daily={cfg.get('short_live_require_daily_bearish', True)})",
         f"  Probe Short:           {probe_short} (max_lev={cfg.get('probe_short_max_leverage', 3)}x, cooldown={cfg.get('probe_short_cooldown_hours', 24)}h)",
         f"  Low R:R Long:          {low_rr} (floor={cfg.get('rr_floor_long_bullish', 1.3)}, slot={cfg.get('low_rr_extra_slot', 1)}, lev≤{cfg.get('low_rr_max_leverage', 5)}x)",
         f"  Counterfactual Ledger: {ledger}",
+        f"  Phase2 Confidence Split: {conf_split}",
+        f"  Phase2 Momentum Probe Long: {momentum_probe}",
+        f"  Phase2 Trend Saturation: {trend_sat}",
+        f"  Phase2 Bucketed EV: {bucketed_ev}",
         "=" * 60,
     ]
     return "\n".join(lines)

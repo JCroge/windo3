@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：Phase 1.5 观测与回测同构补齐完成（2026-05-21），304 tests 全通过，Phase 2 三项阻塞已解除
-**下一阶段**：Phase 2 side/regime Bayesian EV + 48h paper/testnet 验证
+**当前阶段**：回撤基准修正完成（2026-05-23），469 tests 全通过；live Executor 不再因历史 peak 误判回撤
+**下一阶段**：恢复 live 小额验证（EFFECTIVE_BALANCE_CAP=300），OKX testnet 端到端矩阵验证
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -594,7 +594,7 @@
    - 偏差或 API 失败时发布 `risk_alert`（type: reconciliation_mismatch），Telegram 和 RiskGuard 自动接收
 
 5. **验证结果**
-   - `python3 -m pytest -q` → 266 passed / 4 deselected / 1 warning / ~160s
+   - `python3 -m pytest -q` → 373 passed / 4 deselected / 1 warning / ~186s
    - 1 flaky（test_phase_c.py MessageBus 单例状态泄漏，单独运行通过）
    - 系统已重启（PID 11132）
 

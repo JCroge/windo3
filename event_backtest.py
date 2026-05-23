@@ -77,6 +77,12 @@ class EventBacktest:
                  short_guard_min_score: int = 70,
                  short_guard_min_htf_votes: int = 2,
                  short_guard_min_rr: float = 1.80,
+                 short_live_min_score: int = 55,
+                 short_live_min_rsi: int = 40,
+                 short_live_min_range_pos: float = 0.45,
+                 short_live_require_daily_bearish: bool = True,
+                 short_live_min_htf_votes: int = 2,
+                 short_live_max_pre_move: float = -0.01,
                  low_rr_scaling: bool = True,
                  low_rr_max_position_pct: float = 0.5,
                  low_rr_max_leverage: int = 5,
@@ -105,6 +111,12 @@ class EventBacktest:
         self.short_guard_min_score = short_guard_min_score
         self.short_guard_min_htf_votes = short_guard_min_htf_votes
         self.short_guard_min_rr = short_guard_min_rr
+        self.short_live_min_score = short_live_min_score
+        self.short_live_min_rsi = short_live_min_rsi
+        self.short_live_min_range_pos = short_live_min_range_pos
+        self.short_live_require_daily_bearish = short_live_require_daily_bearish
+        self.short_live_min_htf_votes = short_live_min_htf_votes
+        self.short_live_max_pre_move = short_live_max_pre_move
         self.low_rr_scaling = low_rr_scaling
         self.low_rr_max_position_pct = low_rr_max_position_pct
         self.low_rr_max_leverage = low_rr_max_leverage
@@ -124,6 +136,14 @@ class EventBacktest:
         """运行回测。"""
         df = df.copy().reset_index(drop=True)
         self._validate_input(df)
+
+        # Pre-compute short-side context columns
+        high_24 = df['high'].rolling(24, min_periods=1).max()
+        low_24 = df['low'].rolling(24, min_periods=1).min()
+        range_24 = high_24 - low_24
+        df['position_in_24h_range'] = ((df['close'] - low_24) / range_24).fillna(0.5)
+        df.loc[range_24 == 0, 'position_in_24h_range'] = 0.5
+        df['pre_12h_return_pct'] = df['close'].pct_change(12).fillna(0)
 
         equity = self.initial_capital
         position: Optional[Dict] = None
@@ -333,11 +353,43 @@ class EventBacktest:
             return {'direction': 'long', 'score': score}
 
         if score <= -self.entry_threshold:
+            # Side-aware short live gate (applies in ALL regimes)
+            daily_bias = str(row.get('daily_bias', 'neutral')).lower()
+            range_pos = float(row.get('position_in_24h_range', 0.5))
+            pre_move = float(row.get('pre_12h_return_pct', 0.0))
+            rsi = float(row.get('rsi', 50))
+
+            if abs_score < self.short_live_min_score:
+                if self.probe_short_enabled and rsi >= 70 and current_idx - last_probe_sl_idx >= self.probe_short_cooldown_bars:
+                    return {'direction': 'short', 'score': score, 'is_probe': True}
+                return None
+            # Late chase detection: block if price already near 24h low
+            if range_pos < self.short_live_min_range_pos:
+                if self.probe_short_enabled and rsi >= 70 and current_idx - last_probe_sl_idx >= self.probe_short_cooldown_bars:
+                    return {'direction': 'short', 'score': score, 'is_probe': True}
+                return None
+            # Block if already moved too much
+            if pre_move <= self.short_live_max_pre_move:
+                if self.probe_short_enabled and rsi >= 70 and current_idx - last_probe_sl_idx >= self.probe_short_cooldown_bars:
+                    return {'direction': 'short', 'score': score, 'is_probe': True}
+                return None
+            # Block if RSI too low (oversold, reversal risk)
+            if rsi < self.short_live_min_rsi:
+                return None
+            # Normal short live requires daily_bias=bearish
+            if self.short_live_require_daily_bearish and daily_bias != 'bearish':
+                if self.probe_short_enabled and rsi >= 70 and current_idx - last_probe_sl_idx >= self.probe_short_cooldown_bars:
+                    return {'direction': 'short', 'score': score, 'is_probe': True}
+                return None
+            htf_votes = self._count_htf_votes(row, 'short')
+            if htf_votes < self.short_live_min_htf_votes:
+                if self.probe_short_enabled and rsi >= 70 and current_idx - last_probe_sl_idx >= self.probe_short_cooldown_bars:
+                    return {'direction': 'short', 'score': score, 'is_probe': True}
+                return None
+
             # Short regime guard: block weak shorts in bullish regime
             if self.short_regime_guard and regime == 'bullish':
-                htf_votes = self._count_htf_votes(row, 'short')
-                rsi = float(row.get('rsi', 50))
-                # Strong short passes: high score + htf confirmation + high rsi
+                # Strong short passes: high score + htf confirmation
                 if abs_score >= self.short_guard_min_score and htf_votes >= self.short_guard_min_htf_votes:
                     return {'direction': 'short', 'score': score, 'strong_short': True}
                 # Probe short: RSI reversal signal in bullish
@@ -378,7 +430,12 @@ class EventBacktest:
         is_long = (direction == 'long')
 
         # Dynamic R:R floor
-        if self.enable_regime and regime == 'bullish':
+        if is_probe:
+            # Probe shorts are the early-reversal channel; live Judge accepts
+            # them at R:R >= 1.30 with reduced size instead of the 1.80
+            # bullish strong-short floor.
+            min_rr = 1.30
+        elif self.enable_regime and regime == 'bullish':
             if is_long:
                 min_rr = self.rr_floor_long_bullish
             else:
@@ -838,6 +895,8 @@ class EventBacktest:
             'winning_trades': len(wins),
             'losing_trades': len(losses),
             'win_rate': len(wins) / len(df) * 100,
+            'win_rate_ratio': len(wins) / len(df),
+            'win_rate_pct': len(wins) / len(df) * 100,
             'profit_factor': pf,
             'total_pnl': float(df['net_pnl'].sum()),
             'avg_pnl': float(df['net_pnl'].mean()),
@@ -863,7 +922,9 @@ class EventBacktest:
             gl = abs(sum(t['net_pnl'] for t in losses)) if losses else 0
             return {
                 'trade_count': len(subset),
-                'win_rate': len(wins) / len(subset) * 100,
+                'win_rate': len(wins) / len(subset),
+                'win_rate_ratio': len(wins) / len(subset),
+                'win_rate_pct': len(wins) / len(subset) * 100,
                 'profit_factor': gp / gl if gl > 0 else (float('inf') if gp > 0 else 0),
                 'total_pnl': sum(t['net_pnl'] for t in subset),
                 'gross_profit': gp,
@@ -895,7 +956,7 @@ class EventBacktest:
 
         # By slot_type
         by_slot = {}
-        for slot in ('main', 'low_rr_extra', 'probe_short'):
+        for slot in ('main', 'low_rr_extra', 'probe_short', 'probe_long'):
             subset = [t for t in trades if t.get('slot_type') == slot]
             m = _metrics_for(subset)
             if m:

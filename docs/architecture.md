@@ -44,6 +44,15 @@
 - 2026-05-17：Telegram启动flush旧消息（telegram_notifier.py）：_flush_old_updates()跳过所有pending消息，防止历史/stop命令杀掉新启动的进程
 - 2026-05-17：终选prompt优化（synthesizer.py）：明确区分reject（移除）和warning（保留降置信度），代码保底防LLM过度收窄
 - 2026-05-17：Logger防重复（utils/logger.py）：propagate=False + handler去重，解决每条日志打印7次的问题
+- 2026-05-19：Phase 7 Trailing Stop + 分批止盈（executor.py）：Break-Even→TP1(50%)→TP2(25%)→Trailing Stop，棘轮机制
+- 2026-05-19：4h RSI二级保护（judge.py）：1h RSI未触发硬cap但4h RSI≥70/≤30时score×0.5
+- 2026-05-19：逻辑账户拆分（config_loader.py）：EFFECTIVE_BALANCE_CAP限制风控计算余额
+- 2026-05-19：Paper Trading全并行（paper_executor.py）：影子账户Agent，独立余额+持仓+topic
+- 2026-05-20：15m入场确认层（tech_analyst.py+judge.py）：MA7/25+RSI14→bias/confirm/block，block时defer等待转向
+- 2026-05-21：Phase 8 Regime优化（market_regime.py+judge.py）：RegimeManager+Short Guard+Probe Short+Dynamic R:R+Low R:R Slot+Counterfactual Ledger
+- 2026-05-21：Side-Aware Short Entry Gates（tech_analyst.py+judge.py+event_backtest.py）：daily_bias=bearish必须+position_in_24h_range≥0.45+pre_12h_return>-1%+RSI≥40，防止"追空"入场。BTCUSDT回测short从0%WR/-9.18 PnL改善为全部过滤（避免亏损）
+- 2026-05-21：Unified Open Dispatch（judge.py）：_gate_and_publish_open统一入口+dispatch_path归因(main_direct/main_ranking/deferred_15m/deferred_pullback/deferred_chase)+_can_route_probe_short返回(bool,reason)元组
+- 2026-05-22：Phase 1.5 观测与回测同构补齐（reviewer分层、position_analyst regime grace、event_backtest 同构）+ 14h shadow observation，验证 373 passed / 4 deselected / 1 warning
 
 ## 架构图
 
@@ -543,7 +552,15 @@ CREATE TABLE klines (
 - **Paper Trading 全并行**（`agents/trading/paper_executor.py` 新建 ~340 行）：与 MultiExecutor 并行运行，订阅同 `trade_decision:*` 和 `price_tick:*`，独立 in-memory 余额持久化到 `data/paper_*`，发布独立 topic `paper_execution_result` 不污染实盘
 - **交易层Agent数量**：9→10（新增 PaperExecutor）
 
-### Phase 8: 待开发
+### ✅ Phase 8: 市场 Regime 优化（2026-05-21完成）
+- **RegimeManager**（`utils/market_regime.py`）：BTC/ETH bias + 全标的趋势共识 → bullish/bearish/mixed/choppy，2次确认切换 + 30min min_hold 防抖
+- **CounterfactualLedger**（`utils/counterfactual_ledger.py`）：仅追踪被 Judge 拒绝且已形成 plan 的信号，记录 shadow_tp/shadow_sl/shadow_expired/shadow_invalidated
+- **Short Regime Guard**（`agents/trading/judge.py`）：牛市普通做空拦截，强做空（score≤-70, htf≥2, rr≥1.8, 15m confirm）放行
+- **Probe Short**：牛市中允许小仓位探针做空（30% position, 3x leverage, 24h cooldown），同时要求 pending probe 与流动性检查
+- **Low R:R Extra Slot**（`utils/candidate_ranker.py`）：低 R:R 多头使用独立额外槽位，不挤占主槽位，rank score 打 70% 折扣
+- **验证**：329 passed / 4 deselected / 0 failed
+
+### Phase 9: 待开发
 - Predictor（趋势预测Agent）
 - 更多数据源接入（链上大额转账、清算数据）
 - 参数 grid search（基于 event_backtest）

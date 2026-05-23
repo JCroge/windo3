@@ -87,6 +87,16 @@ class MultiTechAnalyst(BaseAgent):
         entry_timing = self._analyze_entry_timing_15m(payload.get('klines_15m', []), payload.get('data_quality'))
 
         latest = df.iloc[-2]
+        current_price = float(latest['close'])
+
+        # Short-side context: position in 24h range + pre-12h return
+        high_24h = float(df['high'].tail(24).max())
+        low_24h = float(df['low'].tail(24).min())
+        range_24h = high_24h - low_24h
+        position_in_24h_range = (current_price - low_24h) / range_24h if range_24h > 0 else 0.5
+        price_12h_ago = float(df.iloc[-14]['close']) if len(df) >= 14 else current_price
+        pre_12h_return_pct = (current_price - price_12h_ago) / price_12h_ago if price_12h_ago > 0 else 0.0
+
         # MA alignment持续信号：MA fast/slow已对齐≥2根K线（含follow-through bar）
         ma_aligned_long = (df['ma_fast'] > df['ma_slow']).iloc[-3:-1].all() if len(df) >= 3 else False
         ma_aligned_short = (df['ma_fast'] < df['ma_slow']).iloc[-3:-1].all() if len(df) >= 3 else False
@@ -117,10 +127,14 @@ class MultiTechAnalyst(BaseAgent):
             "rule_signal": rule_signal,
             "entry_timing": entry_timing,
             "indicators": {
-                "price": float(latest['close']),
+                "price": current_price,
                 "rsi": float(latest.get('rsi', 50)),
                 "ma_fast": float(latest.get('ma_fast', 0)),
                 "ma_slow": float(latest.get('ma_slow', 0)),
+            },
+            "short_context": {
+                "position_in_24h_range": round(position_in_24h_range, 4),
+                "pre_12h_return_pct": round(pre_12h_return_pct, 4),
             },
             "llm_analysis": llm_analysis,
             # 透传数据质量信息给下游 Judge 做降级判断

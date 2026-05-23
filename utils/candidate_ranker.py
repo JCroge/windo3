@@ -48,9 +48,9 @@ class CandidateRanker:
         selected: 可以进入 live 的候选
         rejected: 被排名淘汰的候选（可进入 paper 观察）
 
-        slot_occupancy: {main: int, low_rr_extra: int, probe_short: int} 当前各类型占用数。
+        slot_occupancy: {main: int, low_rr_extra: int, probe_short: int, probe_long: int} 当前各类型占用数。
         Low R:R candidates get a rank penalty and use a separate extra slot.
-        Probe candidates use a dedicated probe slot (max 1).
+        Probe candidates use dedicated probe slots (max 1 each).
         """
         if not self.enabled or not self._buffer:
             selected = list(self._buffer)
@@ -61,17 +61,20 @@ class CandidateRanker:
         if slot_occupancy:
             main_used = slot_occupancy.get('main', 0)
             low_rr_used = slot_occupancy.get('low_rr_extra', 0)
-            probe_used = slot_occupancy.get('probe_short', 0)
+            probe_short_used = slot_occupancy.get('probe_short', 0)
+            probe_long_used = slot_occupancy.get('probe_long', 0)
         else:
             main_used = len(open_positions)
             low_rr_used = 0
-            probe_used = 0
+            probe_short_used = 0
+            probe_long_used = 0
 
         available_main = self.max_slots - main_used
         available_low_rr_extra = max(0, self.low_rr_extra_slot - low_rr_used)
-        available_probe = max(0, 1 - probe_used)
+        available_probe_short = max(0, 1 - probe_short_used)
+        available_probe_long = max(0, 1 - probe_long_used)
 
-        if available_main <= 0 and available_low_rr_extra <= 0 and available_probe <= 0:
+        if available_main <= 0 and available_low_rr_extra <= 0 and available_probe_short <= 0 and available_probe_long <= 0:
             rejected = list(self._buffer)
             self._buffer = []
             self._rejected_candidates.extend(rejected)
@@ -89,7 +92,12 @@ class CandidateRanker:
                          if not c.get('plan', {}).get('is_low_rr')
                          and not c.get('plan', {}).get('is_probe')]
         low_rr_scored = [(s, c) for s, c in scored if c.get('plan', {}).get('is_low_rr')]
-        probe_scored = [(s, c) for s, c in scored if c.get('plan', {}).get('is_probe')]
+        probe_short_scored = [(s, c) for s, c in scored
+                              if c.get('plan', {}).get('is_probe')
+                              and c.get('plan', {}).get('slot_type') == 'probe_short']
+        probe_long_scored = [(s, c) for s, c in scored
+                             if c.get('plan', {}).get('is_probe')
+                             and c.get('plan', {}).get('slot_type') == 'probe_long']
 
         selected = []
         # Fill main slots: normal candidates first
@@ -104,9 +112,13 @@ class CandidateRanker:
         extra_selected = [c for _, c in low_rr_remaining[:available_low_rr_extra]]
         selected.extend(extra_selected)
 
-        # Probe slot: at most 1 probe candidate
-        probe_selected = [c for _, c in probe_scored[:available_probe]]
-        selected.extend(probe_selected)
+        # Probe short slot
+        probe_short_selected = [c for _, c in probe_short_scored[:available_probe_short]]
+        selected.extend(probe_short_selected)
+
+        # Probe long slot
+        probe_long_selected = [c for _, c in probe_long_scored[:available_probe_long]]
+        selected.extend(probe_long_selected)
 
         # Everything else is rejected
         all_selected_ids = {id(c) for c in selected}
@@ -119,8 +131,9 @@ class CandidateRanker:
             self.logger.info(
                 f"[Ranking] {len(scored)} candidates → "
                 f"selected {len(selected)} (main={len(main_from_normal)+len(main_from_low_rr)}, "
-                f"extra_low_rr={len(extra_selected)}, probe={len(probe_selected)}), "
-                f"rejected {len(rejected)}"
+                f"extra_low_rr={len(extra_selected)}, "
+                f"probe_short={len(probe_short_selected)}, probe_long={len(probe_long_selected)}), "
+                f"rejected={len(rejected)}"
             )
             for rank_score, c in scored:
                 low_rr_tag = " [low_rr]" if c.get('plan', {}).get('is_low_rr') else ""

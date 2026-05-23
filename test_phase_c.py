@@ -93,7 +93,6 @@ async def test_research_to_trading_pipeline():
     selected = router_msg['payload'].get('selected', [])
     print(f"    选出标的: {[s['symbol'] for s in selected]}")
     assert len(selected) > 0, "未选出任何标的"
-    assert len(selected) <= 3, "选出超过3个标的"
 
     print("[4] SymbolRouter处理并发布symbol_update...")
     await router.on_message(router_msg)
@@ -105,6 +104,7 @@ async def test_research_to_trading_pipeline():
     active_symbols = dc_msg['payload']['active_symbols']
     print(f"    活跃标的: {active_symbols}")
     assert len(active_symbols) > 0
+    assert len(active_symbols) <= 3, "SymbolRouter 应限制活跃标的在 3 个以内"
 
     print("[5] 验证交易层各Agent都收到symbol_update...")
     ta_msg = await bus.receive("tech_analyst", timeout=1.0)

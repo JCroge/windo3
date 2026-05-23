@@ -121,6 +121,8 @@ crypto-arbitrage/
 | MAX_TRADE_AMOUNT | 单次最大交易额 | 否（默认10） |
 | MAX_DRAWDOWN | 最大回撤 | 否（默认0.20） |
 | EFFECTIVE_BALANCE_CAP | 逻辑账户拆分：风控按此上限算余额（不影响真实余额查询）。范围[10, 1_000_000]。留空=用真实余额 | 否 |
+| DRAWDOWN_BASELINE_MODE | 回撤基准模式：`session_start`（默认，启动重置）/ `persisted_peak`（继承历史峰值） | 否 |
+| RESET_RISK_BASELINE_ON_START | 启动时是否重置本轮回撤基准 | 否（默认true） |
 | ANTHROPIC_API_KEY | Claude API密钥 | 否（使用多Agent系统时必需） |
 | ANTHROPIC_BASE_URL | Claude API地址（支持中转） | 否（默认api.anthropic.com） |
 | ANTHROPIC_MODEL | Claude模型名 | 否（默认claude-opus-4-7） |
@@ -128,6 +130,10 @@ crypto-arbitrage/
 | MAX_ACTIVE_SYMBOLS | 最大同时交易标的数 | 否（默认5） |
 | MAX_CONCURRENT_POSITIONS | 最大并发持仓数 | 否（默认3） |
 | RANK_FLUSH_DELAY | Ranking flush窗口秒数 | 否（默认5.0） |
+| SHORT_LIVE_MIN_RSI | 空单入场最低RSI（防超卖追空） | 否（默认40） |
+| SHORT_LIVE_MIN_RANGE_POS | 空单入场最低24h区间位置 | 否（默认0.45） |
+| SHORT_LIVE_REQUIRE_DAILY_BEARISH | 空单是否要求日线偏空 | 否（默认true） |
+| SHORT_LIVE_MAX_PRE_MOVE | 空单入场前12h最大跌幅 | 否（默认-0.01） |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | 否（留空则不启用通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | 否（留空则不启用通知） |
 
@@ -428,14 +434,50 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **Dynamic R:R**：牛市多头 1.30 / 牛市空头 1.80 / 默认 1.50
 - **Low R:R Extra Slot**（candidate_ranker.py）：低 R:R 多头独立额外槽位，rank score 打 70% 折扣
 - **Feature Flags**：REGIME_HYSTERESIS_ENABLED / SHORT_REGIME_GUARD_ENABLED / PROBE_SHORT_ENABLED / LOW_RR_SLOT_ENABLED / COUNTERFACTUAL_LEDGER_ENABLED
-- **验证**：329 passed / 4 deselected / 0 failed
+- **验证**：373 passed / 4 deselected / 1 warning
 
 ### ✅ Phase 1.5: 观测与回测同构补齐（2026-05-21完成）
 - **EventBacktest同构Phase 1 live策略**（`event_backtest.py`）：regime列支持、动态R:R floor（bullish long 1.30/bullish short 1.80/default 1.50）、short regime guard、probe short with cooldown、low R:R position scaling、segmented metrics输出（side×regime×slot_type）、insufficient_sample标记
 - **Reviewer分层策略复盘**（`agents/trading/reviewer.py`）：`_calculate_segmented_metrics()`输出metrics_by_side/metrics_by_regime/metrics_by_slot_type，每项含trade_count/win_rate/profit_factor/total_pnl/insufficient_sample
 - **PA entry_regime grace**（`agents/trading/position_analyst.py`）：`_get_current_regime()`读取`data/regime_state.json`；low_rr仓位在entry_regime=bullish→current≠bullish的60min内不触发trend-based reduce/close
 - **验证**：329 passed / 4 deselected / 0 failed
-- **Phase 2 Go/No-Go**：三项阻塞全部解除，可进入Phase 2（side/regime Bayesian EV）
+- **Phase 2 Go/No-Go**：主路径已通过，但 deferred open / ranking-disabled 的统一 slot gate 仍需收口后再进入 Phase 2
+
+### ✅ Phase 2: 决策语义拆分 + 分桶EV + 动量探针（2026-05-22完成）
+- **EPIC A: Confidence Split**（`judge.py`）：signal_score(原始评分) / execution_confidence(是否执行) / position_scale(0-1仓位缩放)三层拆分；LLM hold+rule_signal+HTF aligned时conf floor从40提升到60
+- **EPIC B: Momentum Probe Long**（`judge.py`）：RSI 70-85区间+强趋势+HTF bullish+无背离→小仓位追趋势（30% position, 3x leverage, max 1 concurrent）
+- **EPIC C: 趋势饱和修正**（`judge.py _compute_score`）：strength>90 cap at 90（不再线性压缩）；4h RSI动态衰减（70-75→0.7, 75-80→0.5, >80→0.3替代固定0.5）
+- **EPIC D: 分桶EV门**（`judge.py _check_expected_value`）：per side×regime×entry_type×slot_type胜率替代全局fallback；Reviewer segmented metrics注入；insufficient sample→60%缩仓不冻结强信号
+- **EPIC E: request_id + replay_report**（`judge.py` + `replay_report.py`）：每次决策UUID追踪；回放报表脚本（时间窗口过滤、bucket PF、shadow TP/SL）
+- **Side-Aware Short Gates**（`judge.py _apply_regime_policy`）：daily_bias/range_pos/pre_move/rsi/score/htf_votes六重做空入场门（所有regime生效）
+- **Unified Dispatch Path**（`judge.py _gate_and_publish_open`）：所有open决策带`dispatch_path`归因（main_direct/main_ranking/deferred_15m/deferred_pullback/deferred_chase）
+- **`_can_route_probe_short`返回`(bool, str)`元组**：reason包含probe_disabled/probe_active_full/probe_cooldown/probe_pending_full/probe_not_eligible/score_too_low/15m_not_confirmed/rr_too_low/liquidity_zero
+- **Probe R:R Floor**：probe仓位使用1.3 floor（不受bullish short 1.80限制）
+- **Feature Flags**：PHASE2_SIGNAL_CONFIDENCE_SPLIT_ENABLED / PHASE2_MOMENTUM_PROBE_LONG_ENABLED / PHASE2_TREND_SATURATION_ENABLED / PHASE2_BUCKETED_EV_ENABLED；request_id 已改为 always-on，旧 PHASE2_REQUEST_ID_ENABLED 仅视为兼容 no-op
+- **新增测试**：test_phase2_confidence_split(9) + test_phase2_momentum_probe(10) + test_phase2_bucketed_ev(7) + test_phase2_replay_report(4) + test_phase2_regressions(6) = +36 tests
+- **验证**：408 passed / 4 deselected / 0 failed
+
+### ✅ 系统审计阻断项修复（2026-05-22完成）
+- **AC-01 EV正数loss契约**：`_check_expected_value`公式修复（`+`→`-`），`net_loss_usdt`统一为正数，测试契约修正
+- **AC-02 win_rate单位统一**：event_backtest输出`win_rate_ratio`(0-1)+`win_rate_pct`(0-100)；Judge `_normalize_bucket_win_rate`自动检测>1并转换；Reviewer增加`win_rate_ratio`/`win_rate_pct`/`gross_profit`/`gross_loss`字段
+- **AC-03 统一open dispatcher**：`_flush_ranked_candidates` selected路径改为调用`_gate_and_publish_open`（不再直接publish）
+- **AC-04 request_id全链路**：dispatcher生成`{date8}-{symbol}-{uuid8}`格式request_id；顶层+attribution双写；Executor/PaperExecutor透传；Reviewer记录`entry_request_id`/`exit_request_id`/`dispatch_path`
+- **AC-05 Executor拒单终态**：`result is None`时发布`rejected:unknown_none_result`；所有execution_result带`schema_version=execution_result.v2`+`request_id`
+- **AC-06 probe_long控制面**：CandidateRanker分离probe_short/probe_long独立slot；Judge slot_occupancy增加probe_long；event_backtest slot_type循环增加probe_long
+- **AC-07 接口契约**：open decision带`schema_version`/`request_id`/`signal_score`/`execution_confidence`/`position_scale`/`dispatch_path`
+- **当前待解决事项**：统一收敛到 `docs/待解决事项.md`（OKX testnet 验收仍待执行）
+- **新增测试**：test_executor_terminal_result(5) + test_request_id_flow(5) + test_metrics_contract(5) = +15 tests
+- **验证**：423 passed / 4 deselected / 0 failed
+
+### ✅ 回撤基准修正（2026-05-23完成）
+- **问题**：用户从OKX转出资金后（6268→4864 USDT），历史`peak_balance=6268`误判22%回撤，拒绝所有开仓
+- **RiskManager session基准**（`risk_manager.py`）：新增`initialize_session(real_total, cap)`，启动时用`min(real_balance, EFFECTIVE_BALANCE_CAP)`作为本轮`session_peak_equity`
+- **check_can_open()**：基于`session_peak_equity`计算回撤（替代历史`peak_balance`），reason包含`risk_equity/peak/drawdown_pct`
+- **close/reduce绕过风控**（`agents/trading/executor.py`）：只对`open_long/open_short`执行回撤检查，close/reduce不拦截
+- **状态文件v2**（`data/risk_state.json`）：`schema_version=risk_state.v2`，含`session_baseline_equity/session_peak_equity/legacy_peak_balance/baseline_mode`，兼容旧v1格式
+- **配置项**：`DRAWDOWN_BASELINE_MODE`（默认`session_start`，兼容`persisted_peak`）、`RESET_RISK_BASELINE_ON_START`（默认true）
+- **启动日志**：`[RiskBaseline] real_total=4864.46 cap=300 risk_equity=300.00 mode=session_start peak=300.00`
+- **验证**：469 passed / 4 deselected / 0 failed
 
 ### 🔄 Phase 9: 待开发
 - Predictor（趋势预测Agent）
@@ -467,7 +509,7 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **P2-4**：Telegram `/status` 展示 HaltState 对账状态
 - **P2-5**：PA `closed_externally` 时清理 `_pending_reviews`
 - **P2-6**：LiveLedger `position_id` 改用 uuid 防碰撞
-- **最终 CI**：`python3 -m pytest -q` → 266 passed / 4 deselected / 1 warning / ~160s
+- **最终 CI**：`python3 -m pytest -q` → 373 passed / 4 deselected / 1 warning / ~186s
 
 ### ✅ 最终审计报告4项修复（2026-05-20晚完成）
 - **P1-1 Synthesizer cycle分桶**：`_pending_by_cycle[cycle_id][msg_type]` 按 cycle 分桶缓存三路数据；market_data 到达时激活并恢复桶内已到达数据；保留最新2桶防泄漏
@@ -483,6 +525,20 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 - **P2-1 PA补漏仓位normalize**：抽取`_normalize_position_record()`静态方法，`_load_positions()`和`_evaluate_all_positions()`补漏路径共用
 - **新增测试**：6个probe slot chain测试（同窗口两probe只选一个/probe slot满拒绝/main满probe可进/pending probe阻止第二个/liquidity gate拦截+放行）
 - **验证**：329 passed / 4 deselected / 0 failed
+
+### ✅ Short-Side Fix + Unified Dispatch（2026-05-21完成）
+- **Side-Aware Short Entry Gates**（`tech_analyst.py` + `judge.py` + `event_backtest.py`）：
+  - `position_in_24h_range`：24h高低点区间内当前价格位置，<0.45禁止做空（底部追空）
+  - `pre_12h_return_pct`：前12h价格变动，<=-1%禁止做空（已跌太多）
+  - `daily_bias=bearish`：日线必须偏空才允许正常做空（否则路由到probe或拒绝）
+  - RSI>=40：超卖区禁止做空（反弹风险）
+- **Unified Open Dispatch**（`judge.py`）：`_gate_and_publish_open`统一入口，所有open决策带`dispatch_path`归因
+- **dispatch_path类型**：main_direct / main_ranking / deferred_15m / deferred_pullback / deferred_chase
+- **`_can_route_probe_short`**：返回`(bool, str)`元组，reason包含probe_disabled/probe_active_full/probe_cooldown/probe_not_eligible/probe_low_liquidity
+- **新增环境变量**：SHORT_LIVE_MIN_RSI(40) / SHORT_LIVE_MIN_RANGE_POS(0.45) / SHORT_LIVE_REQUIRE_DAILY_BEARISH(true) / SHORT_LIVE_MAX_PRE_MOVE(-0.01)
+- **回测验证**：BTCUSDT 1h×1000 bars，side-aware gates将short从4笔(0%WR, -9.18 PnL)过滤为0笔，long从7→9笔
+- **新增测试**：test_short_side_guard.py(10) + test_ac_fix_unified_dispatch.py(24) = +34 tests
+- **验证**：367 passed / 4 deselected / 0 failed
 
 ### ✅ Phase 7+: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
 - **4h RSI 二级保护**：`judge.py _compute_score` 末尾——1h RSI 未触发硬cap但 4h RSI ≥70/≤30 时 score×0.5。根因 ZEC 事故（1h=64 但 4h=73.9 仍开多 20x→-135）
@@ -529,7 +585,7 @@ python3 run_agents.py
 # Agent系统集成测试
 python3 test_agents_integration.py
 
-# 完整 CI 回归（默认排除 network 标记，329 passed / 4 deselected）
+# 完整 CI 回归（默认排除 network 标记，469 passed / 4 deselected / 1 warning，2026-05-23）
 python3 -m pytest -q
 
 # 或使用启动脚本

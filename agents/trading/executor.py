@@ -4,6 +4,7 @@ import os
 import math
 import numbers
 import time
+import uuid
 import asyncio
 from dotenv import load_dotenv
 from agents.base import BaseAgent
@@ -83,16 +84,18 @@ class MultiExecutor(BaseAgent):
         plan = decision.get('plan')
         source = decision.get('source', '')
         size_pct = decision.get('size_pct', 1.0)
+        request_id = decision.get('request_id', '')
 
         if self._trading_halted or not self._halt_state.can_open_new:
             if action in ('open_long', 'open_short'):
                 reason = "halted" if self._trading_halted else "reconciliation_pending"
                 self.logger.warning(f"[熔断] 拒绝执行: {symbol} {action} ({reason})")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2",
+                    "request_id": request_id,
                     "status": "rejected", "reason": reason, "action": action, "symbol": symbol
                 }, symbol=symbol)
                 return
-            # close 允许通过（保护性平仓）
 
         if action == 'hold' or not symbol:
             return
@@ -101,6 +104,8 @@ class MultiExecutor(BaseAgent):
             self.logger.info(f"[执行] {symbol} 跳过：置信度不足 ({confidence} < {self.min_confidence})")
             if action in ('open_long', 'open_short'):
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2",
+                    "request_id": request_id,
                     "status": "rejected", "reason": "low_confidence",
                     "action": action, "symbol": symbol
                 }, symbol=symbol)
@@ -109,27 +114,32 @@ class MultiExecutor(BaseAgent):
         # normalize symbol 确保与持仓key一致
         norm_symbol = self.executor._normalize_symbol(symbol)
 
-        balance = self._get_balance()
-        if balance < 0:
-            self.logger.warning(f"[执行] {symbol} 跳过：余额获取失败")
-            await self.publish("execution_result", {
-                "status": "rejected", "reason": "balance_fetch_failed",
-                "action": action, "symbol": symbol
-            }, symbol=symbol)
-            return
-        can_trade, reason = self.executor.risk_manager.check_can_trade(balance)
-        if not can_trade:
-            self.logger.warning(f"[执行] {symbol} 风控拒绝: {reason}")
-            await self.publish("execution_result", {
-                "status": "rejected", "reason": reason, "action": action, "symbol": symbol
-            }, symbol=symbol)
-            return
+        # 只对新增风险动作（open/add）执行回撤风控检查；close/reduce 不拦截
+        if action in ('open_long', 'open_short'):
+            balance = self._get_balance()
+            if balance < 0:
+                self.logger.warning(f"[执行] {symbol} 跳过：余额获取失败")
+                await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
+                    "status": "rejected", "reason": "balance_fetch_failed",
+                    "action": action, "symbol": symbol
+                }, symbol=symbol)
+                return
+            can_trade, reason = self.executor.risk_manager.check_can_trade(balance)
+            if not can_trade:
+                self.logger.warning(f"[执行] {symbol} 风控拒绝: {reason}")
+                await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
+                    "status": "rejected", "reason": reason, "action": action, "symbol": symbol
+                }, symbol=symbol)
+                return
 
         try:
             position = self.executor.get_position(norm_symbol)
         except Exception as e:
             self.logger.error(f"[执行] {symbol} 获取持仓失败: {e}")
             await self.publish("execution_result", {
+                "schema_version": "execution_result.v2", "request_id": request_id,
                 "status": "error", "reason": str(e), "action": action, "symbol": symbol
             }, symbol=symbol)
             return
@@ -137,10 +147,10 @@ class MultiExecutor(BaseAgent):
         result = None
 
         if action in ('open_long', 'open_short') and position is None:
-            # PA的add信号不应在无持仓时执行（持仓已被外部平仓）
             if source == 'position_analyst':
                 self.logger.warning(f"[执行] {symbol} PA加仓信号但无持仓（已被外部平仓），忽略")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
                     "status": "rejected", "reason": "no_position_for_add",
                     "action": action, "symbol": symbol
                 }, symbol=symbol)
@@ -149,6 +159,7 @@ class MultiExecutor(BaseAgent):
             if time.time() < cooldown_until:
                 self.logger.info(f"[执行] {symbol} 开仓失败冷却中，跳过")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
                     "status": "rejected", "reason": "open_cooldown",
                     "action": action, "symbol": symbol
                 }, symbol=symbol)
@@ -156,6 +167,7 @@ class MultiExecutor(BaseAgent):
             side = 'long' if action == 'open_long' else 'short'
             try:
                 if plan:
+                    plan['request_id'] = request_id
                     result = await self._execute_with_plan(symbol, side, plan)
                 else:
                     result = await self._execute_legacy(symbol, side, decision)
@@ -163,16 +175,17 @@ class MultiExecutor(BaseAgent):
                 self._open_fail_cooldown[norm_symbol] = time.time() + 120
                 self.logger.error(f"[执行] {symbol} 开仓失败(120s冷却): {e}")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
                     "status": "error", "reason": str(e), "action": action, "symbol": symbol
                 }, symbol=symbol)
                 return
 
         elif action in ('open_long', 'open_short') and position is not None and source == 'position_analyst':
-            # 加仓：已有持仓，PositionAnalyst要求追加
             side = 'long' if action == 'open_long' else 'short'
             if position.get('side') != side:
                 self.logger.warning(f"[执行] {symbol} 加仓方向冲突: 持仓{position['side']} vs 请求{side}，跳过")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
                     "status": "rejected", "reason": "add_direction_conflict",
                     "action": "add", "symbol": symbol
                 }, symbol=symbol)
@@ -181,6 +194,7 @@ class MultiExecutor(BaseAgent):
             if time.time() < cooldown_until:
                 self.logger.info(f"[执行] {symbol} 开仓失败冷却中，跳过加仓")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
                     "status": "rejected", "reason": "add_cooldown",
                     "action": "add", "symbol": symbol
                 }, symbol=symbol)
@@ -191,6 +205,7 @@ class MultiExecutor(BaseAgent):
                 self._open_fail_cooldown[norm_symbol] = time.time() + 120
                 self.logger.error(f"[执行] {symbol} 加仓失败(120s冷却): {e}")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
                     "status": "error", "reason": str(e), "action": "add", "symbol": symbol
                 }, symbol=symbol)
                 return
@@ -214,17 +229,38 @@ class MultiExecutor(BaseAgent):
             except Exception as e:
                 self.logger.error(f"[执行] {symbol} 平仓失败: {e}")
                 await self.publish("execution_result", {
+                    "schema_version": "execution_result.v2", "request_id": request_id,
                     "status": "error", "reason": str(e), "action": action, "symbol": symbol
                 }, symbol=symbol)
                 return
 
         elif action in ('open_long', 'open_short') and position is not None:
-            # Judge在已有持仓时发信号（非加仓），忽略
-            self.logger.debug(f"[执行] {symbol} 已有持仓，忽略开仓信号(source={source})")
+            pos_side = position.get('side', 'unknown')
+            req_side = 'long' if action == 'open_long' else 'short'
+            reason = 'position_exists_same_side' if pos_side == req_side else 'position_exists_opposite_side'
+            self.logger.debug(f"[执行] {symbol} 已有持仓({pos_side})，拒绝开仓信号(source={source})")
+            await self.publish("execution_result", {
+                "schema_version": "execution_result.v2",
+                "request_id": request_id,
+                "status": "rejected",
+                "reason": reason,
+                "action": action,
+                "symbol": symbol,
+                "used_plan": plan is not None,
+            }, symbol=symbol)
             return
 
         if result:
+            # AC2-04: write request_id into result for downstream consumers
+            if action in ('open_long', 'open_short'):
+                result['request_id'] = request_id
+                result['entry_request_id'] = request_id
+            elif action == 'close':
+                result['entry_request_id'] = (position or {}).get('request_id', '')
+                result['exit_request_id'] = request_id
             payload = {
+                "schema_version": "execution_result.v2",
+                "request_id": request_id,
                 "status": "executed",
                 "action": action,
                 "symbol": symbol,
@@ -243,6 +279,13 @@ class MultiExecutor(BaseAgent):
                 payload["status"] = "risk_reduced"
                 payload["reduce_pct"] = size_pct
             await self.publish("execution_result", payload, symbol=symbol)
+        elif action in ('open_long', 'open_short'):
+            self.logger.warning(f"[执行] {symbol} 底层返回None，发布rejected终态")
+            await self.publish("execution_result", {
+                "schema_version": "execution_result.v2", "request_id": request_id,
+                "status": "rejected", "reason": "unknown_none_result",
+                "action": action, "symbol": symbol, "used_plan": plan is not None,
+            }, symbol=symbol)
 
     async def _execute_with_plan(self, symbol: str, side: str, plan: dict) -> dict:
         """基于Judge plan智能执行（限价单可能阻塞30s，用线程池避免冻结事件循环）"""
@@ -291,8 +334,6 @@ class MultiExecutor(BaseAgent):
         self.logger.warning(f"[风控警报] 收到: {alert_type} scope={scope}")
 
         if alert_type == 'emergency_close':
-            # RiskGuard 兜底：daily_hard_stop 等场景的强平
-            # 注：Executor 收到 daily_hard_stop_triggered 时已自行全平，此处为双保险
             symbol = alert.get('symbol')
             reason = alert.get('reason', 'emergency_close')
             norm_sym = self.executor._normalize_symbol(symbol) if symbol else None
@@ -306,14 +347,16 @@ class MultiExecutor(BaseAgent):
             pos = self.executor.positions.get(norm_sym)
             if pos and pos.get('sl_order_id'):
                 self.executor.cancel_order(norm_sym, pos['sl_order_id'])
+            entry_req_id = (pos or {}).get('request_id', '')
             result = self.executor.close_position(norm_sym)
             if result:
-                await self.publish("execution_result", {
-                    "status": "force_closed",
-                    "symbol": symbol,
-                    "reason": reason,
-                    "result": result,
-                }, symbol=symbol)
+                result['entry_request_id'] = entry_req_id
+                payload = self._build_execution_result(
+                    status="force_closed", action="close", symbol=symbol,
+                    source="risk_alert", reason=reason, result=result,
+                    request_id=entry_req_id,
+                )
+                await self.publish("execution_result", payload, symbol=symbol)
             return
 
         if alert_type == 'flash_move':
@@ -327,14 +370,16 @@ class MultiExecutor(BaseAgent):
                 pos = self.executor.positions.get(norm_sym)
                 if pos and pos.get('sl_order_id'):
                     self.executor.cancel_order(norm_sym, pos['sl_order_id'])
+                entry_req_id = (pos or {}).get('request_id', '')
                 result = self.executor.close_position(norm_sym)
                 if result:
-                    await self.publish("execution_result", {
-                        "status": "force_closed",
-                        "symbol": symbol,
-                        "reason": "flash_move",
-                        "result": result,
-                    }, symbol=symbol)
+                    result['entry_request_id'] = entry_req_id
+                    payload = self._build_execution_result(
+                        status="force_closed", action="close", symbol=symbol,
+                        source="risk_alert", reason="flash_move", result=result,
+                        request_id=entry_req_id,
+                    )
+                    await self.publish("execution_result", payload, symbol=symbol)
 
         elif alert_type == 'max_drawdown':
             await self._close_all_positions("最大回撤触发")
@@ -347,14 +392,16 @@ class MultiExecutor(BaseAgent):
                 pos = self.executor.positions.get(norm_sym)
                 if pos and pos.get('sl_order_id'):
                     self.executor.cancel_order(norm_sym, pos['sl_order_id'])
+                entry_req_id = (pos or {}).get('request_id', '')
                 result = self.executor.close_position(norm_sym)
                 if result:
-                    await self.publish("execution_result", {
-                        "status": "force_closed",
-                        "symbol": symbol,
-                        "reason": alert_type,
-                        "result": result,
-                    }, symbol=symbol)
+                    result['entry_request_id'] = entry_req_id
+                    payload = self._build_execution_result(
+                        status="force_closed", action="close", symbol=symbol,
+                        source="risk_alert", reason=alert_type, result=result,
+                        request_id=entry_req_id,
+                    )
+                    await self.publish("execution_result", payload, symbol=symbol)
 
         elif alert_type in ('portfolio_exposure', 'correlation_risk'):
             positions = self.executor.get_all_positions()
@@ -362,15 +409,17 @@ class MultiExecutor(BaseAgent):
                 return
             largest_sym = max(positions, key=lambda s: positions[s].get('amount_usdt', 0))
             self.logger.warning(f"[风控] {alert_type}: 减仓 {largest_sym} 50%")
+            pos = positions.get(largest_sym, {})
+            entry_req_id = pos.get('request_id', '')
             result = self.executor.reduce_position(largest_sym, 0.5)
             if result:
-                await self.publish("execution_result", {
-                    "status": "risk_reduced",
-                    "symbol": largest_sym,
-                    "action": "reduce_50pct",
-                    "trigger": alert_type,
-                    "result": {"pnl": result.get('realized_pnl', 0), "symbol": largest_sym},
-                }, symbol=largest_sym)
+                result['entry_request_id'] = entry_req_id
+                payload = self._build_execution_result(
+                    status="risk_reduced", action="reduce", symbol=largest_sym,
+                    source="risk_alert", reason=alert_type, result=result,
+                    request_id=entry_req_id, reduce_pct=0.5,
+                )
+                await self.publish("execution_result", payload, symbol=largest_sym)
 
         elif alert_type == 'stale_position':
             symbol = alert.get('symbol')
@@ -395,15 +444,17 @@ class MultiExecutor(BaseAgent):
             try:
                 if pos.get('sl_order_id'):
                     await asyncio.to_thread(self.executor.cancel_order, symbol, pos['sl_order_id'])
+                entry_req_id = pos.get('request_id', '')
                 result = await asyncio.to_thread(self.executor.close_position, symbol)
                 if result:
                     self.logger.warning(f"[全平] {symbol} 已平仓, PnL={result.get('pnl', 0):.2f}")
-                    await self.publish("execution_result", {
-                        "status": "force_closed",
-                        "symbol": symbol,
-                        "reason": reason,
-                        "result": result,
-                    }, symbol=symbol)
+                    result['entry_request_id'] = entry_req_id
+                    payload = self._build_execution_result(
+                        status="force_closed", action="close", symbol=symbol,
+                        source="close_all", reason=reason, result=result,
+                        request_id=entry_req_id,
+                    )
+                    await self.publish("execution_result", payload, symbol=symbol)
                     return True, symbol, None
                 else:
                     return False, symbol, "close_position returned None"
@@ -441,6 +492,29 @@ class MultiExecutor(BaseAgent):
             self.logger.error(f"获取余额失败: {e}")
             return -1.0
 
+    def _make_correlation_id(self, symbol: str) -> str:
+        return f"{time.strftime('%Y%m%d')}-{symbol}-{uuid.uuid4().hex[:8]}"
+
+    def _build_execution_result(self, *, status, action, symbol, source, reason="",
+                                result=None, request_id="", correlation_id="",
+                                reduce_pct=None, **extra) -> dict:
+        payload = {
+            "schema_version": "execution_result.v2",
+            "status": status,
+            "action": action,
+            "symbol": symbol,
+            "source": source,
+            "request_id": request_id,
+            "correlation_id": correlation_id or (self._make_correlation_id(symbol) if not request_id else ""),
+            "reason": reason,
+            "result": result or {},
+            "timestamp": time.time(),
+        }
+        if reduce_pct is not None:
+            payload["reduce_pct"] = reduce_pct
+        payload.update(extra)
+        return payload
+
     async def tick(self):
         await asyncio.sleep(5)
         self._sync_counter += 1
@@ -474,15 +548,12 @@ class MultiExecutor(BaseAgent):
         for pos in newly_synced:
             symbol = pos['symbol']
             action = 'open_long' if pos['side'] == 'long' else 'open_short'
-            await self.publish("execution_result", {
-                "status": "executed",
-                "action": action,
-                "symbol": symbol,
-                "result": pos,
-                "confidence": 0,
-                "used_plan": False,
-                "source": "sync",
-            }, symbol=symbol)
+            payload = self._build_execution_result(
+                status="executed", action=action, symbol=symbol,
+                source="sync", result=pos,
+                confidence=0, used_plan=False,
+            )
+            await self.publish("execution_result", payload, symbol=symbol)
 
     async def _notify_removed_positions(self):
         """通知下游：持仓已被交易所平仓（SL/TP触发），含真实PnL"""
@@ -493,18 +564,22 @@ class MultiExecutor(BaseAgent):
         for symbol in removed:
             pos_data = data_map.get(symbol, {})
             pnl = self._get_external_close_pnl(symbol, pos_data)
+            entry_req_id = pos_data.get('request_id', '')
             self.logger.info(f"[执行] {symbol} 被交易所平仓，PnL={pnl:+.3f} USDT")
-            await self.publish("execution_result", {
-                "status": "closed_externally",
-                "action": "close",
-                "symbol": symbol,
-                "reason": "exchange_sl_tp_triggered",
-                "result": {"pnl": pnl, "symbol": symbol,
-                           "side": pos_data.get('side', ''),
-                           "entry_price": pos_data.get('entry_price', 0),
-                           "amount_usdt": pos_data.get('amount_usdt', 0),
-                           "attribution": pos_data.get('attribution', {})},
-            }, symbol=symbol)
+            result = {
+                "pnl": pnl, "symbol": symbol,
+                "side": pos_data.get('side', ''),
+                "entry_price": pos_data.get('entry_price', 0),
+                "amount_usdt": pos_data.get('amount_usdt', 0),
+                "attribution": pos_data.get('attribution', {}),
+                "entry_request_id": entry_req_id,
+            }
+            payload = self._build_execution_result(
+                status="closed_externally", action="close", symbol=symbol,
+                source="external_close", reason="exchange_sl_tp_triggered",
+                result=result, request_id=entry_req_id,
+            )
+            await self.publish("execution_result", payload, symbol=symbol)
 
     def _get_external_close_pnl(self, symbol: str, pos_data: dict) -> float:
         """外部平仓 PnL：优先通过 ledger 查询交易所真实数据"""
@@ -584,35 +659,47 @@ class MultiExecutor(BaseAgent):
                 pos = self.executor.positions.get(symbol)
                 if pos and pos.get('sl_order_id'):
                     self.executor.cancel_order(symbol, pos['sl_order_id'])
+                entry_req_id = (pos or {}).get('request_id', '')
                 result = self.executor.close_position(symbol)
                 if result:
-                    await self.publish("execution_result", {
-                        "status": "force_closed", "action": "close",
-                        "symbol": symbol, "reason": trigger, "result": result,
-                    }, symbol=symbol)
+                    result['entry_request_id'] = entry_req_id
+                    payload = self._build_execution_result(
+                        status="force_closed", action="close", symbol=symbol,
+                        source="local_stop", reason=trigger, result=result,
+                        request_id=entry_req_id,
+                    )
+                    await self.publish("execution_result", payload, symbol=symbol)
 
             elif trigger in ('partial_tp_1', 'partial_tp_2'):
                 pct = 0.5 if trigger == 'partial_tp_1' else 0.25
                 self.logger.info(f"[Trailing] {symbol} {trigger}，减仓{int(pct*100)}%")
+                pos = self.executor.positions.get(symbol)
+                entry_req_id = (pos or {}).get('request_id', '')
                 result = await asyncio.to_thread(self.executor.reduce_position, symbol, pct)
                 if result:
-                    await self.publish("execution_result", {
-                        "status": "risk_reduced", "action": "close",
-                        "symbol": symbol, "reason": trigger,
-                        "result": result, "reduce_pct": pct,
-                    }, symbol=symbol)
+                    result['entry_request_id'] = entry_req_id
+                    payload = self._build_execution_result(
+                        status="risk_reduced", action="close", symbol=symbol,
+                        source="partial_tp", reason=trigger, result=result,
+                        request_id=entry_req_id, reduce_pct=pct,
+                    )
+                    await self.publish("execution_result", payload, symbol=symbol)
 
             else:
                 self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
                 pos = self.executor.positions.get(symbol)
                 if pos and pos.get('sl_order_id'):
                     self.executor.cancel_order(symbol, pos['sl_order_id'])
+                entry_req_id = (pos or {}).get('request_id', '')
                 result = self.executor.close_position(symbol)
                 if result:
-                    await self.publish("execution_result", {
-                        "status": "force_closed", "action": "close",
-                        "symbol": symbol, "reason": trigger, "result": result,
-                    }, symbol=symbol)
+                    result['entry_request_id'] = entry_req_id
+                    payload = self._build_execution_result(
+                        status="force_closed", action="close", symbol=symbol,
+                        source="local_stop", reason=trigger, result=result,
+                        request_id=entry_req_id,
+                    )
+                    await self.publish("execution_result", payload, symbol=symbol)
 
     async def _early_review(self, symbol: str, pos: dict, minutes_held: float) -> bool:
         """RQ-04: 早期持仓复核（入场后30分钟内）。

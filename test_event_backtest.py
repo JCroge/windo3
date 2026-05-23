@@ -27,6 +27,7 @@ def make_df(prices, signals=None, atrs=None, rsis=None, htf=None):
         'atr': atrs if atrs else [p * 0.01 for p in prices],
         'rsi': rsis if rsis else [50] * n,
         'htf_bias': htf if htf else ['neutral'] * n,
+        'daily_bias': ['bearish'] * n,
         'ma_aligned_long': [0] * n,
         'ma_aligned_short': [0] * n,
         'funding_rate': [0] * n,
@@ -74,7 +75,11 @@ def test_long_signal_to_sl():
 def test_short_signal_to_tp():
     """做空信号 → TP 触发"""
     prices = [100] * 5 + [99, 98, 95, 92, 88] + [88] * 5
-    df = make_df(prices, signals={'entry_short': [4]})
+    df = make_df(
+        prices,
+        signals={'entry_short': [4], 'ma_aligned_short': [4]},
+        htf=['bearish'] * len(prices)
+    )
     eb = EventBacktest(initial_capital=100, entry_threshold=30)
     result = eb.run(df, 'TEST')
     assert result['total_trades'] >= 1

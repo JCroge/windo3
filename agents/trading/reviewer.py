@@ -78,6 +78,8 @@ class ReviewerAgent(BaseAgent):
                     'pnl': pnl,
                     'event_type': 'reduce',
                     'confidence': payload.get('confidence', 0),
+                    'source': payload.get('source', ''),
+                    'correlation_id': payload.get('correlation_id', ''),
                 }
                 self.trade_history.append(trade_record)
                 self._save_trade_history()
@@ -98,22 +100,30 @@ class ReviewerAgent(BaseAgent):
             # 平仓：记录完整交易
             symbol = msg.get('symbol') or payload.get('symbol')
             pnl = result.get('pnl', result.get('realized_pnl', 0))
+            attribution = result.get('attribution') or payload.get('attribution', {})
+            side = result.get('side') or attribution.get('side', '')
+            if not side:
+                side = 'long' if action == 'open_long' else ('short' if action == 'open_short' else '')
 
             trade_record = {
                 'timestamp': msg['timestamp'],
                 'symbol': symbol,
                 'status': status,
                 'pnl': pnl,
-                'side': result.get('side', ''),
+                'side': side,
                 'entry_price': result.get('entry_price', 0),
                 'exit_price': result.get('exit_price', 0),
                 'event_type': 'close',
                 'confidence': payload.get('confidence', 0),
                 'exit_reason': result.get('exit_reason', status),
+                'entry_request_id': result.get('entry_request_id') or result.get('request_id', payload.get('request_id', '')),
+                'exit_request_id': result.get('exit_request_id') or payload.get('request_id', ''),
+                'dispatch_path': (payload.get('attribution') or {}).get('dispatch_path', ''),
+                'source': payload.get('source', ''),
+                'correlation_id': payload.get('correlation_id', ''),
             }
 
             # RQ-07: 归因字段（从 execution_result 中提取）
-            attribution = result.get('attribution') or payload.get('attribution', {})
             if attribution:
                 trade_record['entry_type'] = attribution.get('entry_type', 'unknown')
                 trade_record['rule_signal_type'] = attribution.get('rule_signal_type', 'none')
@@ -218,6 +228,9 @@ class ReviewerAgent(BaseAgent):
             'daily_pnl': daily_pnl,
             'total_trades': len(self.trade_history),
         }
+        # Keep the grouped metrics available at top level for downstream agents
+        # that do not want to understand the nested report shape yet.
+        review_report.update(segmented_metrics)
 
         # 生成建议
         if decay_signals:
@@ -286,11 +299,16 @@ class ReviewerAgent(BaseAgent):
             losses = [t for t in trades if t['pnl'] < 0]
             gp = sum(t['pnl'] for t in wins)
             gl = abs(sum(t['pnl'] for t in losses)) if losses else 0
+            wr = len(wins) / len(trades)
             return {
                 'trade_count': len(trades),
-                'win_rate': len(wins) / len(trades),
+                'win_rate': wr,
+                'win_rate_ratio': wr,
+                'win_rate_pct': round(wr * 100, 1),
                 'profit_factor': gp / gl if gl > 0 else (gp if gp > 0 else 0),
                 'total_pnl': sum(t['pnl'] for t in trades),
+                'gross_profit': gp,
+                'gross_loss': gl,
                 'insufficient_sample': len(trades) < min_sample,
             }
 
@@ -317,13 +335,44 @@ class ReviewerAgent(BaseAgent):
 
         # By slot_type
         by_slot = {}
-        for slot in ('main', 'low_rr_extra', 'probe_short'):
+        for slot in ('main', 'low_rr_extra', 'probe_short', 'probe_long'):
             subset = [t for t in recent if t.get('slot_type') == slot]
             m = _metrics_for(subset)
             if m:
                 by_slot[slot] = m
         if by_slot:
             result['metrics_by_slot_type'] = by_slot
+
+        # By side x regime
+        by_side_regime = {}
+        for side in ('long', 'short'):
+            for regime in ('bullish', 'mixed', 'bearish', 'choppy'):
+                subset = [
+                    t for t in recent
+                    if t.get('side') == side and t.get('entry_regime') == regime
+                ]
+                m = _metrics_for(subset)
+                if m:
+                    by_side_regime[f'{side}_{regime}'] = m
+        if by_side_regime:
+            result['metrics_by_side_regime'] = by_side_regime
+
+        # Phase 2 EPIC D: full cross-product bucket (side_regime_entry_type_slot_type)
+        by_bucket = {}
+        for t in recent:
+            side = t.get('side', 'long')
+            regime = t.get('entry_regime', 'mixed')
+            entry_type = t.get('entry_type', 'unknown')
+            slot_type = t.get('slot_type', 'main')
+            key = f"{side}_{regime}_{entry_type}_{slot_type}"
+            by_bucket.setdefault(key, []).append(t)
+        metrics_by_bucket = {}
+        for key, trades in by_bucket.items():
+            m = _metrics_for(trades)
+            if m:
+                metrics_by_bucket[key] = m
+        if metrics_by_bucket:
+            result['metrics_by_bucket'] = metrics_by_bucket
 
         return result
 

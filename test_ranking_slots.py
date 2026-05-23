@@ -322,7 +322,7 @@ class TestProbeSlotChain:
             judge._regime_manager = _MockRegime()
 
             result = judge._can_route_probe_short('COIN2-USDT', -70, True, 1.5)
-            assert result is False
+            assert result == (False, 'probe_pending_full')
 
     def test_liquidity_gate_blocks_zero_liquidity(self):
         """liquidity_score <= 0 时 probe 被拒"""
@@ -347,7 +347,7 @@ class TestProbeSlotChain:
             judge._regime_manager = _MockRegime()
 
             result = judge._can_route_probe_short('TEST-USDT', -70, True, 1.5)
-            assert result is False
+            assert result == (False, 'liquidity_zero')
 
     def test_liquidity_gate_allows_positive_liquidity(self):
         """liquidity_score > 0 时 probe 可通过"""
@@ -372,7 +372,7 @@ class TestProbeSlotChain:
             judge._regime_manager = _MockRegime()
 
             result = judge._can_route_probe_short('TEST-USDT', -70, True, 1.5)
-            assert result is True
+            assert result == (True, 'probe_eligible')
 
 
 class TestUnifiedOpenDispatch:

@@ -62,16 +62,22 @@ class ContractExecutor:
             max_amount = _cfg.get('max_trade_amount', 10.0)
             max_dd = _cfg.get('max_drawdown_pct', 20.0)
             max_daily = abs(_cfg.get('daily_pnl_hard_stop', -50.0))
+            _cap = _cfg.get('effective_balance_cap')
+            _baseline_mode = _cfg.get('drawdown_baseline_mode', 'session_start')
         except Exception as e:
             self.logger.warning(f"config_loader 加载失败，使用 env 兜底: {e}")
             max_amount = float(os.getenv('MAX_TRADE_AMOUNT', 10))
             max_dd = float(os.getenv('MAX_DRAWDOWN_PCT', 20))
             max_daily = abs(float(os.getenv('MAX_DAILY_LOSS', 50)))
+            _cap = float(os.getenv('EFFECTIVE_BALANCE_CAP', 0)) or None
+            _baseline_mode = os.getenv('DRAWDOWN_BASELINE_MODE', 'session_start')
         self.risk_manager = RiskManager(
             max_trade_amount=max_amount,
             max_drawdown_pct=max_dd,
             max_daily_loss=max_daily,
-            state_file='data/risk_state.json'
+            state_file='data/risk_state.json',
+            effective_balance_cap=_cap,
+            baseline_mode=_baseline_mode,
         )
 
         # 持仓记录
@@ -111,6 +117,14 @@ class ContractExecutor:
         except Exception as e:
             self.logger.warning(f"LiveLedger 初始化失败（降级）: {e}")
             self.ledger = None
+
+        # 启动时初始化 session 回撤基准
+        try:
+            real_total = self.get_balance()
+            if real_total > 0:
+                self.risk_manager.initialize_session(real_total, _cap)
+        except Exception as e:
+            self.logger.warning(f"initialize_session 失败（降级）: {e}")
 
         self.logger.info(f"杠杆设置: {leverage}x")
 
@@ -331,6 +345,7 @@ class ContractExecutor:
                 'pnl_pct': pnl / position['amount_usdt'] * 100,
                 'attribution': position.get('attribution', {}),
                 'entry_type': position.get('entry_type', 'unknown'),
+                'entry_request_id': position.get('request_id', ''),
             }
 
             # 删除持仓
@@ -780,6 +795,7 @@ class ContractExecutor:
                 'entry_type': plan.get('entry_type', 'unknown'),
                 'attribution': plan.get('attribution', {}),
                 'open_time': time.time(),
+                'request_id': plan.get('request_id', ''),
             }
             self.positions[symbol] = position
             self._save_positions()
@@ -1138,7 +1154,7 @@ class ContractExecutor:
             self._save_positions()
 
             self.logger.info(f"减仓: {symbol} 减{pct*100:.0f}%, 剩余{position.get('amount', 0):.6f}, PnL={realized_pnl:+.4f}")
-            return {'symbol': symbol, 'reduced_pct': pct, 'order': order, 'realized_pnl': realized_pnl}
+            return {'symbol': symbol, 'reduced_pct': pct, 'order': order, 'realized_pnl': realized_pnl, 'entry_request_id': position.get('request_id', '')}
 
         except Exception as e:
             self.logger.error(f"减仓失败: {e}")

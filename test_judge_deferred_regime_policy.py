@@ -27,6 +27,12 @@ def _make_judge_with_regime(regime='bullish'):
     }
     judge = MultiJudge.__new__(MultiJudge)
     judge._short_regime_guard_enabled = True
+    judge._short_live_min_score = 55
+    judge._short_live_min_rsi = 40
+    judge._short_live_min_range_pos = 0.45
+    judge._short_live_require_daily_bearish = True
+    judge._short_live_min_htf_votes = 2
+    judge._short_live_max_pre_move = -0.01
     judge._probe_short_enabled = False
     judge._low_rr_slot_enabled = True
     judge._rr_floor_default = 1.5
@@ -78,7 +84,7 @@ class TestDeferredRegimePolicy:
                 'effective_risk_reward_ratio': 2.0}
         tech = _make_tech('bearish')
 
-        result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -40, tech)
+        result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -60, tech)
         assert result is not None
         assert 'short_regime_guard' in result
 
@@ -89,7 +95,7 @@ class TestDeferredRegimePolicy:
                 'effective_risk_reward_ratio': 2.0}
         tech = _make_tech('bearish')
 
-        result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -40, tech)
+        result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -60, tech)
         assert result is None
 
     def test_rr_below_floor_rejected(self):
@@ -197,7 +203,7 @@ class TestDeferredRegimePolicy:
 
         result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -75, tech)
         assert result is not None
-        assert 'probe_unavailable' in result
+        assert 'probe_disabled' in result
 
     def test_degrade_to_probe_rejected_when_probe_active(self):
         """degrade_to_probe should reject when another probe is already active."""
@@ -215,7 +221,7 @@ class TestDeferredRegimePolicy:
 
         result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -75, tech)
         assert result is not None
-        assert 'probe_unavailable' in result
+        assert 'probe_active_full' in result
 
     def test_degrade_to_probe_rejected_during_cooldown(self):
         """degrade_to_probe should reject during probe cooldown period."""
@@ -233,7 +239,34 @@ class TestDeferredRegimePolicy:
 
         result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -75, tech)
         assert result is not None
-        assert 'probe_unavailable' in result
+        assert 'probe_cooldown' in result
+
+    def test_probe_short_uses_probe_rr_floor_not_strong_short_floor(self):
+        """Probe short with R:R>=1.30 should not be rejected by bullish short floor 1.80."""
+        judge = _make_judge_with_regime('bullish')
+        judge._probe_short_enabled = True
+        judge._probe_short_active = None
+        judge._probe_short_cooldown_until = 0
+        judge._regime_manager.is_probe_short_eligible = lambda *a, **kw: True
+        judge._symbol_tech_cache = {
+            'BTC-USDT': {
+                'trend': {'tf_4h_rsi': 65},
+                'momentum': {'volume_ratio': 2.0},
+                'risk': {'liquidity_score': 50},
+            },
+        }
+        plan = {'size_usdt': 10, 'leverage': 5, 'risk_reward_ratio': 1.35,
+                'effective_risk_reward_ratio': 1.35}
+        tech = _make_tech('bearish')
+        tech['entry_timing']['tf_15m_confirm_short'] = True
+        tech['trend']['higher_tf_bias'] = 'bearish'
+        tech['trend']['daily_bias'] = 'bullish'
+
+        result = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, -55, tech)
+        assert result is None
+        assert plan['is_probe'] is True
+        assert plan['slot_type'] == 'probe_short'
+        assert plan['leverage'] <= 3
 
     def test_short_guard_disabled_uses_default_rr_floor(self):
         """When SHORT_REGIME_GUARD_ENABLED=false, short in bullish uses default floor (1.5), not 1.8."""

@@ -202,6 +202,7 @@ class PaperExecutor(BaseAgent):
             'atr_pct': atr_pct,
             'source': decision.get('source', 'judge'),
             'confidence': decision.get('confidence', 0),
+            'request_id': decision.get('request_id', ''),
             'attribution': decision.get('attribution') or (plan or {}).get('attribution') or {},
         }
         self._positions[symbol] = pos
@@ -216,6 +217,7 @@ class PaperExecutor(BaseAgent):
             "status": "executed",
             "action": action,
             "symbol": symbol,
+            "request_id": pos.get('request_id', ''),
             "result": dict(pos),
             "paper_equity": round(self._equity, 4),
             "locked_margin": round(self._locked_margin(), 4),
@@ -277,6 +279,7 @@ class PaperExecutor(BaseAgent):
             "symbol": symbol,
             "reason": reason,
             "result": trade_record,
+            "entry_request_id": position.get('request_id', ''),
             "paper_equity": round(self._equity, 4),
             "locked_margin": round(self._locked_margin(), 4),
             "free_equity": round(self._equity - self._locked_margin(), 4),

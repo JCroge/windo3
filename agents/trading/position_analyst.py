@@ -376,6 +376,8 @@ class PositionAnalyst(BaseAgent):
             action = 'close'
             conviction = min(95, abs(position_score))
 
+        regime_context = self._build_regime_context(pos)
+
         return {
             "symbol": symbol,
             "action": action,
@@ -402,7 +404,13 @@ class PositionAnalyst(BaseAgent):
                 "higher_trend": higher_trend,
                 "r_multiple": self._compute_r_multiple(pos, current_price),
                 "tf_15m_confirm_short": tech.get('entry_timing', {}).get('tf_15m_confirm_short', False),
+                "entry_regime": regime_context['entry_regime'],
+                "current_regime": regime_context['current_regime'],
+                "regime_age_sec": regime_context['regime_age_sec'],
+                "position_age_sec": regime_context['position_age_sec'],
+                "regime_grace_active": regime_context['regime_grace_active'],
             },
+            "regime_context": regime_context,
             "reasoning": self._build_reasoning(action, position_score, trend_alignment, momentum_shift, pnl_pct, entry_thesis_intact),
         }
 
@@ -414,24 +422,12 @@ class PositionAnalyst(BaseAgent):
         side = pos.get('side', 'long')
         higher_trend = ctx.get('higher_trend', 'neutral')
 
-        # Regime grace: low_rr/probe positions within 60min of open
-        # are protected from reduce/close triggered by regime flap
-        current_regime = self._get_current_regime()
-        entry_regime = pos.get('entry_regime', 'unknown')
-        open_time = pos.get('open_time', 0)
-        regime_grace_active = (
-            pos.get('is_low_rr') and
-            entry_regime == 'bullish' and
-            current_regime != 'bullish' and
-            (time.time() - open_time) < 3600
-        )
-
-        # Store regime context for review logging
-        verdict['regime_context'] = {
-            'entry_regime': entry_regime,
-            'current_regime': current_regime,
-            'regime_grace_active': regime_grace_active,
-        }
+        # Regime grace protects fresh low-R:R bullish longs from being reduced
+        # solely because effective_regime temporarily flips away from bullish.
+        regime_context = verdict.get('regime_context') or self._build_regime_context(pos)
+        verdict['regime_context'] = regime_context
+        verdict['context'].update(regime_context)
+        regime_grace_active = regime_context['regime_grace_active']
 
         # 规则1: 浮亏超过SL预期水平 → close（SL失败时的第三道防线）
         # 正常触发顺序：交易所SL条件单(实时) → Executor兜底(5s) → PA规则1(1h)
@@ -448,6 +444,14 @@ class PositionAnalyst(BaseAgent):
         if pnl_pct < hard_stop_threshold:
             return self._make_final("close", 1.0, symbol, verdict['action'],
                                     None, None, f"硬性规则：浮亏{pnl_pct:.1f}%超SL水平({hard_stop_threshold:.1f}%)，SL可能失效")
+
+        if regime_grace_active and verdict.get('action') in ('reduce', 'close'):
+            verdict['reasoning'] = (
+                f"{verdict.get('reasoning', '')}; regime_grace: "
+                f"entry={regime_context['entry_regime']} current={regime_context['current_regime']}"
+            )
+            verdict['action'] = 'hold'
+            verdict['conviction'] = max(verdict.get('conviction', 0), 40)
 
         # 规则2: 持仓>72h + 浮亏>3% → close（放宽：原48h+任何浮亏）
         if hours_held > 72 and pnl_pct < -3:
@@ -676,12 +680,39 @@ class PositionAnalyst(BaseAgent):
 
     def _get_current_regime(self) -> str:
         """Read current effective regime from RegimeManager's persisted state."""
+        return self._get_current_regime_snapshot().get('effective_regime', 'mixed')
+
+    def _get_current_regime_snapshot(self) -> dict:
+        """Read current regime snapshot persisted by Judge/RegimeManager."""
         try:
             with open('data/regime_state.json', 'r') as f:
                 data = json.load(f)
-            return data.get('effective_regime', 'mixed')
+            return data if isinstance(data, dict) else {'effective_regime': 'mixed'}
         except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return 'mixed'
+            return {'effective_regime': 'mixed'}
+
+    def _build_regime_context(self, pos: dict) -> dict:
+        now = time.time()
+        snap = self._get_current_regime_snapshot()
+        current_regime = snap.get('effective_regime', 'mixed')
+        entry_regime = pos.get('entry_regime', 'unknown')
+        open_time = pos.get('open_time', now)
+        last_changed_at = snap.get('last_changed_at') or snap.get('saved_at') or now
+        position_age_sec = max(0, now - open_time)
+        regime_age_sec = max(0, now - last_changed_at)
+        grace_active = (
+            pos.get('is_low_rr') and
+            entry_regime == 'bullish' and
+            current_regime != 'bullish' and
+            position_age_sec < 3600
+        )
+        return {
+            'entry_regime': entry_regime,
+            'current_regime': current_regime,
+            'regime_age_sec': round(regime_age_sec, 1),
+            'position_age_sec': round(position_age_sec, 1),
+            'regime_grace_active': bool(grace_active),
+        }
 
     def _build_reasoning(self, action: str, score: float, trend: float, momentum: float, pnl: float, thesis: float = 0) -> str:
         parts = []

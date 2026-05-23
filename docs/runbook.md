@@ -87,9 +87,10 @@ python3 test_p0_features.py       # P0功能测试（Reviewer/Hard Stop/Graceful
 python3 test_4h_rsi_decay.py      # 4h RSI 二级保护衰减
 python3 test_logical_account_split.py  # effective_balance_cap 逻辑账户拆分
 python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/TP/halt/persist/PnL）
+python3 -m pytest test_drawdown_baseline.py  # 回撤基准修正验收（14 tests）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 266 passed / 4 deselected / ~160s（2026-05-20）
+python3 -m pytest -q              # 469 passed / 4 deselected / 1 warning（2026-05-23）
 python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
 ```
 
@@ -101,7 +102,7 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 | 文件 | 写入者 | 用途 | 备注 |
 |------|--------|------|------|
 | `data/positions.json` | ContractExecutor | 实盘持仓快照 | 重启恢复 |
-| `data/risk_state.json` | RiskManager | 峰值余额/回撤状态 | 重启不丢 |
+| `data/risk_state.json` | RiskManager | 回撤基准（v2 schema：session_peak_equity/baseline_mode/legacy_peak_balance） | 重启不丢，启动时按 baseline_mode 决定是否重置 |
 | `data/trade_history.json` | ReviewerAgent | 已平仓历史+策略衰减 | 缺失时空起 |
 | `data/riskguard_state.json` | PortfolioRiskGuard | 持仓追踪/价格缓存/熔断状态 | 缺失时空起 |
 | `data/judge_state.json` | MultiJudge | deferred_entry/sl_timestamps/cooldown | 缺失时空起，启动时清理过期条目 |
@@ -128,6 +129,8 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 | MAX_DRAWDOWN_PCT | 最大回撤百分比 | 20.0 | 否 |
 | MAX_DAILY_LOSS | 每日最大亏损（USDT，正数） | 50 | 否 |
 | EFFECTIVE_BALANCE_CAP | 逻辑账户拆分：风控按此上限计算余额（真实余额不变）。留空=用真实余额。范围 [10, 1_000_000] | （未启用） | 否 |
+| DRAWDOWN_BASELINE_MODE | 回撤基准模式：`session_start`=启动时重置基准（默认）；`persisted_peak`=继承历史峰值（兼容旧行为） | session_start | 否 |
+| RESET_RISK_BASELINE_ON_START | 启动时是否重置本轮回撤基准 | true | 否 |
 | ANTHROPIC_API_KEY | Claude API密钥 | - | 否（多Agent系统） |
 | ANTHROPIC_BASE_URL | Claude API地址（中转） | https://api.anthropic.com | 否 |
 | ANTHROPIC_MODEL | Claude模型名 | claude-opus-4-7 | 否 |
@@ -135,6 +138,14 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 | RANKING_ENABLED | 是否启用候选 Top-N Ranking 裁决 | true | 否 |
 | RANK_FLUSH_DELAY | Ranking flush 窗口秒数，等待同批候选到齐后统一排序。范围 [1, 30] | 5.0 | 否 |
 | MAX_CONCURRENT_POSITIONS | 最大并发持仓数（同时开仓数量）。范围 [1, 20] | 3 | 否 |
+| SHORT_LIVE_MIN_RSI | 空单入场最低RSI（防超卖追空） | 40 | 否 |
+| SHORT_LIVE_MIN_RANGE_POS | 空单入场最低24h区间位置（防底部追空） | 0.45 | 否 |
+| SHORT_LIVE_REQUIRE_DAILY_BEARISH | 空单是否要求日线偏空 | true | 否 |
+| SHORT_LIVE_MAX_PRE_MOVE | 空单入场前12h最大跌幅（防追空） | -0.01 | 否 |
+| PHASE2_SIGNAL_CONFIDENCE_SPLIT_ENABLED | Confidence Split：signal_score/execution_confidence/position_scale 三层拆分 | true | 否 |
+| PHASE2_MOMENTUM_PROBE_LONG_ENABLED | Momentum Probe Long：RSI 70-85 强趋势追踪小仓位 | true | 否 |
+| PHASE2_TREND_SATURATION_ENABLED | Trend Saturation：strength>90 cap + 4h RSI 动态衰减 | true | 否 |
+| PHASE2_BUCKETED_EV_ENABLED | Bucketed EV：per side×regime×entry_type 分桶胜率 | true | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
