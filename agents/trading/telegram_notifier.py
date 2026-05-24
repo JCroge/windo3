@@ -18,6 +18,7 @@ class TelegramNotifier(BaseAgent):
         "risk_alert",
         "strategy_review",
         "telegram_alert",
+        "data_alert",
     ]
 
     def __init__(self, config: dict = None):
@@ -70,6 +71,8 @@ class TelegramNotifier(BaseAgent):
             text = msg['payload'].get('message', '')
             prefix = '⚠️' if level == 'warning' else 'ℹ️'
             await self._send_message(f"{prefix} {text}")
+        elif msg['type'] == 'data_alert':
+            await self._handle_data_alert(msg)
 
     async def tick(self):
         if not self._enabled:
@@ -168,6 +171,16 @@ class TelegramNotifier(BaseAgent):
             text += f"\n{payload.get('message', '')}"
 
         await self._send_message(text)
+
+    async def _handle_data_alert(self, msg: dict):
+        payload = msg['payload']
+        symbol = payload.get('symbol', '?')
+        consecutive_failures = payload.get('consecutive_failures', 0)
+        error = payload.get('error', '')
+        if consecutive_failures >= 3:
+            await self._send_message(
+                f"⚠️ 数据采集告警: {symbol} 连续{consecutive_failures}次失败\n{str(error)[:100]}"
+            )
 
     async def _handle_strategy_review(self, msg: dict):
         payload = msg['payload']
@@ -383,11 +396,12 @@ class TelegramNotifier(BaseAgent):
         reconcile_ok = await self._run_reconciliation()
 
         if reconcile_ok:
-            self._halt_state.confirm_resume(resume_by="telegram", reconcile_ok=True)
-            await self.publish("system_command", {"command": "resume"})
-            await self._send_message("✅ 对账通过，已解除熔断，恢复交易")
+            await self.publish("system_command", {
+                "command": "resume", "source": "telegram",
+                "reconciliation_result": {"status": "matched"},
+            })
+            await self._send_message("✅ 对账通过，已发送恢复请求")
         else:
-            self._halt_state.confirm_resume(resume_by="telegram", reconcile_ok=False)
             await self._send_message(
                 "❌ 对账不通过，维持熔断\n"
                 "使用 /force_resume 强制解除（跳过对账）"
@@ -397,9 +411,8 @@ class TelegramNotifier(BaseAgent):
         if not self._halt_state.halted:
             await self._send_message("ℹ️ 当前未处于熔断状态")
             return
-        self._halt_state.force_resume(resume_by="telegram")
-        await self.publish("system_command", {"command": "resume"})
-        await self._send_message("⚠️ 已强制解除熔断（跳过对账）")
+        await self.publish("system_command", {"command": "force_resume", "source": "telegram"})
+        await self._send_message("⚠️ 已发送强制解除请求（跳过对账）")
 
     async def _cmd_reconcile(self):
         await self._send_message("🔍 正在执行四方对账...")
@@ -412,18 +425,11 @@ class TelegramNotifier(BaseAgent):
     async def _run_reconciliation(self) -> bool:
         try:
             from utils.position_reconciler import PositionReconciler
-            import ccxt
+            from utils.exchange_factory import create_exchange
 
             exchange = None
             try:
-                from dotenv import load_dotenv
-                load_dotenv()
-                exchange = ccxt.okx({
-                    'apiKey': os.environ.get('OKX_API_KEY', ''),
-                    'secret': os.environ.get('OKX_SECRET', ''),
-                    'password': os.environ.get('OKX_PASSWORD', os.environ.get('OKX_PASSPHRASE', '')),
-                    'options': {'defaultType': 'swap'},
-                })
+                exchange = create_exchange(self.config, require_private=True, purpose="telegram_reconcile")
             except Exception:
                 pass
 
@@ -431,6 +437,14 @@ class TelegramNotifier(BaseAgent):
             try:
                 with open('data/positions.json', 'r') as f:
                     executor_positions = json.load(f)
+            except Exception:
+                pass
+
+            riskguard_positions = {}
+            try:
+                with open('data/riskguard_state.json', 'r') as f:
+                    rg_state = json.load(f)
+                    riskguard_positions = rg_state.get('positions', {})
             except Exception:
                 pass
 
@@ -452,7 +466,10 @@ class TelegramNotifier(BaseAgent):
                 exchange=exchange,
                 logger=self.logger,
             )
-            result = reconciler.reconcile(paper_positions=paper_positions)
+            result = reconciler.reconcile(
+                riskguard_positions=riskguard_positions,
+                paper_positions=paper_positions,
+            )
 
             if result['status'] == 'matched' and result.get('exchange_query_ok', False):
                 return True

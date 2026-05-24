@@ -64,7 +64,8 @@ class Censor(BaseAgent):
             user_msg = self._build_challenge_request(batch, market_context if i == 0 else "")
 
             try:
-                result = await self.ask_claude_json(CENSOR_PROMPT, user_msg)
+                from agents.llm_client import CENSOR_SCHEMA
+                result = await self.ask_claude_json(CENSOR_PROMPT, user_msg, schema=CENSOR_SCHEMA)
                 all_challenges.extend(result.get('challenges', []))
                 all_systemic.extend(result.get('systemic_risks', []))
                 if not overall_verdict:

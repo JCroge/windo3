@@ -44,20 +44,11 @@ class MultiDataCollector(BaseAgent):
         self._news_cache = {}  # {symbol: {"headlines": [...], "fetched_at": ts}}
 
     async def setup(self):
-        exchange_id = self.config.get('exchange', 'okx')
-        ex_config = {'enableRateLimit': True, 'options': {'defaultType': 'swap'}}
-
-        if exchange_id == 'okx':
-            ex_config['apiKey'] = os.getenv('OKX_API_KEY')
-            ex_config['secret'] = os.getenv('OKX_SECRET')
-            ex_config['password'] = os.getenv('OKX_PASSWORD')
-            self.exchange = ccxt.okx(ex_config)
-        else:
-            ex_config['apiKey'] = os.getenv('BINANCE_API_KEY')
-            ex_config['secret'] = os.getenv('BINANCE_SECRET')
-            self.exchange = ccxt.binance(ex_config)
+        from utils.exchange_factory import create_exchange
+        self.exchange = create_exchange(self.config, purpose="data_collector")
 
         await asyncio.to_thread(self.exchange.load_markets)
+        exchange_id = self.config.get('exchange', 'okx')
         self.logger.info(f"9维度数据采集就绪: {exchange_id}")
 
     async def on_message(self, msg: dict):
@@ -411,6 +402,7 @@ class MultiDataCollector(BaseAgent):
     async def _fetch_orderbook(self, symbol: str):
         try:
             okx_inst = self._to_okx_inst(symbol)
+            ct_size = self._get_contract_size(symbol)
             async with aiohttp.ClientSession() as session:
                 url = f"https://www.okx.com/api/v5/market/books?instId={okx_inst}&sz=20"
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -423,8 +415,8 @@ class MultiDataCollector(BaseAgent):
 
                 mid_price = (bids[0][0] + asks[0][0]) / 2 if bids and asks else 0
                 spread_pct = ((asks[0][0] - bids[0][0]) / mid_price * 100) if mid_price else 0
-                bid_depth = sum(b[0] * b[1] for b in bids)
-                ask_depth = sum(a[0] * a[1] for a in asks)
+                bid_depth = sum(b[0] * b[1] * ct_size for b in bids)
+                ask_depth = sum(a[0] * a[1] * ct_size for a in asks)
 
                 self._orderbook_cache[symbol] = {
                     "asks": asks,
@@ -439,6 +431,7 @@ class MultiDataCollector(BaseAgent):
     async def _fetch_liquidations(self, symbol: str):
         try:
             uly = self._to_okx_uly(symbol)
+            ct_size = self._get_contract_size(symbol)
             async with aiohttp.ClientSession() as session:
                 url = (f"https://www.okx.com/api/v5/public/liquidation-orders"
                        f"?instType=SWAP&uly={uly}&state=filled")
@@ -456,7 +449,7 @@ class MultiDataCollector(BaseAgent):
                         side = d.get('side', '')
                         sz = float(d.get('sz', 0))
                         px = float(d.get('bkPx', 0))
-                        vol_usd = sz * px
+                        vol_usd = sz * px * ct_size
 
                         if side == 'buy':
                             short_vol += vol_usd
@@ -734,6 +727,20 @@ class MultiDataCollector(BaseAgent):
             return symbol
         base = symbol.replace('/USDT:USDT', '').replace('/USDT', '').replace('-USDT', '')
         return f"{base}-USDT-SWAP"
+
+    def _get_contract_size(self, symbol: str) -> float:
+        """获取合约面值（contractSize），用于将合约张数转换为 USD notional"""
+        try:
+            ccxt_sym = symbol.replace('-USDT', '/USDT:USDT').replace('-SWAP', '')
+            if not ccxt_sym.endswith('/USDT:USDT'):
+                base = symbol.replace('-USDT', '').replace('-SWAP', '')
+                ccxt_sym = f"{base}/USDT:USDT"
+            market = self.exchange.markets.get(ccxt_sym)
+            if market:
+                return float(market.get('contractSize', 1) or 1)
+        except Exception:
+            pass
+        return 1.0
 
     def _to_okx_uly(self, symbol: str) -> str:
         """SOL/USDT:USDT → SOL-USDT"""

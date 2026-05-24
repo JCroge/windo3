@@ -1,6 +1,11 @@
 import logging
+import logging.handlers
 import os
 from datetime import datetime
+
+_MAX_BYTES = 50 * 1024 * 1024  # 50MB per log file
+_BACKUP_COUNT = 5              # keep 5 rotated files
+
 
 def setup_logger(name):
     logger = logging.getLogger(name)
@@ -9,10 +14,13 @@ def setup_logger(name):
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-    # 启动健壮性：logs/ 目录可能不存在（全新部署），先确保创建
     os.makedirs('logs', exist_ok=True)
 
-    handler = logging.FileHandler(f'logs/{name}_{datetime.now().strftime("%Y%m%d")}.log')
+    handler = logging.handlers.RotatingFileHandler(
+        f'logs/{name}_{datetime.now().strftime("%Y%m%d")}.log',
+        maxBytes=_MAX_BYTES,
+        backupCount=_BACKUP_COUNT,
+    )
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
     console = logging.StreamHandler()

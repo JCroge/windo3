@@ -186,7 +186,8 @@ class ResearchSynthesizer(BaseAgent):
         self._market_context = self._build_research_summary(candidates, sentiment_data, news_data)
 
         try:
-            result = await self.ask_claude_json(SYNTHESIS_PROMPT, self._market_context)
+            from agents.llm_client import SYNTHESIS_SCHEMA
+            result = await self.ask_claude_json(SYNTHESIS_PROMPT, self._market_context, schema=SYNTHESIS_SCHEMA)
             selected = result.get('selected_symbols', [])[:self._max_symbols]
             market_regime = result.get('market_regime', 'unknown')
         except Exception as e:
@@ -236,7 +237,8 @@ class ResearchSynthesizer(BaseAgent):
         )
 
         try:
-            result = await self.ask_claude_json(FINAL_DECISION_PROMPT, user_msg)
+            from agents.llm_client import FINAL_SYNTHESIS_SCHEMA
+            result = await self.ask_claude_json(FINAL_DECISION_PROMPT, user_msg, schema=FINAL_SYNTHESIS_SCHEMA)
             final_selected = result.get('final_symbols', [])[:self._max_symbols]
             market_regime = result.get('market_regime', preliminary['market_regime'])
             censor_response = result.get('censor_response', '')

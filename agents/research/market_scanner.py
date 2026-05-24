@@ -21,18 +21,8 @@ class MarketScanner(BaseAgent):
         self._current_cycle_id = None
 
     async def setup(self):
-        exchange_id = self.config.get('exchange', 'okx')
-        ex_config = {'enableRateLimit': True, 'options': {'defaultType': 'swap'}}
-
-        if exchange_id == 'okx':
-            ex_config['apiKey'] = os.getenv('OKX_API_KEY')
-            ex_config['secret'] = os.getenv('OKX_SECRET')
-            ex_config['password'] = os.getenv('OKX_PASSWORD')
-            self.exchange = ccxt.okx(ex_config)
-        else:
-            ex_config['apiKey'] = os.getenv('BINANCE_API_KEY')
-            ex_config['secret'] = os.getenv('BINANCE_SECRET')
-            self.exchange = ccxt.binance(ex_config)
+        from utils.exchange_factory import create_exchange
+        self.exchange = create_exchange(self.config, purpose="market_scanner")
 
         self.logger.info(f"市场扫描Agent就绪: {self.config.get('exchange', 'okx')}")
 

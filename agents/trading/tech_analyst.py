@@ -673,7 +673,8 @@ class MultiTechAnalyst(BaseAgent):
 【风险】杠杆={risk['leverage_risk']} 波动={risk['volatility_regime']} 流动性={risk['liquidity_score']}"""
 
         try:
-            return await self.ask_claude_json(TECH_PROMPT, summary)
+            from agents.llm_client import TECH_ANALYST_SCHEMA
+            return await self.ask_claude_json(TECH_PROMPT, summary, schema=TECH_ANALYST_SCHEMA)
         except Exception as e:
             self.logger.warning(f"LLM分析失败({symbol})，规则降级: {e}")
             direction = trend['direction']

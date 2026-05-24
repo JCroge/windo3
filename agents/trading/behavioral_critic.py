@@ -97,10 +97,12 @@ class BehavioralCritic(BaseAgent):
         )
 
         try:
+            from agents.llm_client import BEHAVIORAL_CRITIC_SCHEMA
             result = await self.ask_claude_json(
                 prompt_filled,
                 f"请审视分析师对{symbol}的{review.get('action', 'hold')}建议，检测认知偏差。",
                 temperature=0.3,
+                schema=BEHAVIORAL_CRITIC_SCHEMA,
             )
 
             if not result or not isinstance(result, dict):

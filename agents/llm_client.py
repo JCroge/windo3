@@ -91,6 +91,34 @@ SYNTHESIS_SCHEMA = {
     'reasoning': {'type': str, 'default': ''},
 }
 
+FINAL_SYNTHESIS_SCHEMA = {
+    'final_symbols': {'type': list, 'default': []},
+    'market_regime': {'type': str, 'default': 'unknown'},
+    'censor_response': {'type': str, 'default': ''},
+}
+
+CENSOR_SCHEMA = {
+    'challenges': {'type': list, 'default': []},
+    'systemic_risks': {'type': list, 'default': []},
+    'overall_verdict': {'type': str, 'default': ''},
+}
+
+TECH_ANALYST_SCHEMA = {
+    'direction': {'type': str, 'allowed': ['bullish', 'bearish', 'neutral'], 'default': 'neutral'},
+    'confidence': {'type': (int, float), 'range': (0, 100), 'default': 40},
+    'reasoning': {'type': str, 'default': ''},
+    'key_factors': {'type': list, 'default': []},
+    'risk_warnings': {'type': list, 'default': []},
+}
+
+BEHAVIORAL_CRITIC_SCHEMA = {
+    'bias_detected': {'type': str, 'default': 'none'},
+    'severity': {'type': str, 'allowed': ['none', 'low', 'medium', 'high', 'critical'], 'default': 'none'},
+    'challenge': {'type': str, 'default': ''},
+    'counter_action': {'type': str, 'allowed': ['hold', 'close', 'reduce', 'add', ''], 'default': ''},
+    'confidence': {'type': (int, float), 'range': (0, 100), 'default': 0},
+}
+
 # ═══ P2-P: Prompt 安全 ═══
 # 用户输入中出现以下模式时记 warning（不直接删除——避免误伤合法新闻）
 _INJECTION_PATTERNS = [
@@ -309,8 +337,20 @@ class LLMClient:
             path = f'logs/llm_audit_{today}.jsonl'
             with open(path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + '\n')
+            self._cleanup_old_audit_logs()
         except Exception as e:
             self.logger.warning(f"LLM 审计日志写入失败: {e}")
+
+    def _cleanup_old_audit_logs(self, max_days: int = 7):
+        """删除超过 max_days 天的审计日志"""
+        try:
+            import glob
+            cutoff = time.time() - max_days * 86400
+            for f in glob.glob('logs/llm_audit_*.jsonl'):
+                if os.path.getmtime(f) < cutoff:
+                    os.remove(f)
+        except Exception:
+            pass
 
     async def _rate_limit(self):
         now = time.time()

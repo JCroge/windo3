@@ -150,5 +150,90 @@ def main():
     print("=" * 60)
 
 
+def test_synthesis_schema_fills_defaults():
+    """AC-P1-011: Synthesizer schema 缺字段填充"""
+    from agents.llm_client import validate_against_schema, SYNTHESIS_SCHEMA
+    data = {}
+    cleaned, errors = validate_against_schema(data, SYNTHESIS_SCHEMA)
+    assert cleaned['selected_symbols'] == []
+    assert cleaned['reasoning'] == ''
+    assert 'missing:selected_symbols' in errors
+
+
+def test_censor_schema_fills_defaults():
+    """AC-P1-012: Censor schema 缺字段填充"""
+    from agents.llm_client import validate_against_schema, CENSOR_SCHEMA
+    data = {'challenges': [{'symbol': 'BTC', 'recommendation': 'reject'}]}
+    cleaned, errors = validate_against_schema(data, CENSOR_SCHEMA)
+    assert len(cleaned['challenges']) == 1
+    assert cleaned['systemic_risks'] == []
+    assert cleaned['overall_verdict'] == ''
+
+
+def test_tech_analyst_schema_invalid_direction():
+    """AC-P1-012: TechAnalyst schema 非法 direction → neutral"""
+    from agents.llm_client import validate_against_schema, TECH_ANALYST_SCHEMA
+    data = {
+        'direction': 'moon',
+        'confidence': 80,
+        'reasoning': 'test',
+        'key_factors': [],
+        'risk_warnings': [],
+    }
+    cleaned, errors = validate_against_schema(data, TECH_ANALYST_SCHEMA)
+    assert cleaned['direction'] == 'neutral'
+    assert any('not_allowed:direction' in e for e in errors)
+
+
+def test_tech_analyst_schema_clamps_confidence():
+    """AC-P1-012: TechAnalyst confidence 越界 clamp"""
+    from agents.llm_client import validate_against_schema, TECH_ANALYST_SCHEMA
+    data = {
+        'direction': 'bullish',
+        'confidence': -10,
+        'reasoning': '',
+        'key_factors': [],
+        'risk_warnings': [],
+    }
+    cleaned, errors = validate_against_schema(data, TECH_ANALYST_SCHEMA)
+    assert cleaned['confidence'] == 0
+
+
+def test_behavioral_critic_schema_fills_defaults():
+    """AC-P1-012: BehavioralCritic schema 缺字段填充"""
+    from agents.llm_client import validate_against_schema, BEHAVIORAL_CRITIC_SCHEMA
+    data = {'bias_detected': 'loss_aversion'}
+    cleaned, errors = validate_against_schema(data, BEHAVIORAL_CRITIC_SCHEMA)
+    assert cleaned['bias_detected'] == 'loss_aversion'
+    assert cleaned['severity'] == 'none'
+    assert cleaned['confidence'] == 0
+    assert 'missing:severity' in errors
+
+
+def test_behavioral_critic_schema_invalid_severity():
+    """AC-P1-012: BehavioralCritic 非法 severity → none"""
+    from agents.llm_client import validate_against_schema, BEHAVIORAL_CRITIC_SCHEMA
+    data = {
+        'bias_detected': 'fomo',
+        'severity': 'extreme',
+        'challenge': 'test',
+        'counter_action': 'hold',
+        'confidence': 70,
+    }
+    cleaned, errors = validate_against_schema(data, BEHAVIORAL_CRITIC_SCHEMA)
+    assert cleaned['severity'] == 'none'
+    assert any('not_allowed:severity' in e for e in errors)
+
+
+def test_final_synthesis_schema():
+    """AC-P1-011: Final synthesis schema"""
+    from agents.llm_client import validate_against_schema, FINAL_SYNTHESIS_SCHEMA
+    data = {'final_symbols': ['BTC-USDT', 'ETH-USDT']}
+    cleaned, errors = validate_against_schema(data, FINAL_SYNTHESIS_SCHEMA)
+    assert cleaned['final_symbols'] == ['BTC-USDT', 'ETH-USDT']
+    assert cleaned['market_regime'] == 'unknown'
+    assert cleaned['censor_response'] == ''
+
+
 if __name__ == '__main__':
     main()

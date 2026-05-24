@@ -145,7 +145,12 @@ class PositionReconciler:
                     "detail": "交易所持仓量为0（可能SL/TP已触发）",
                 })
 
-        status = "matched" if not issues else "mismatch"
+        # 区分 blocking vs advisory issues
+        ADVISORY_TYPES = {'paper_live_mismatch'}
+        blocking_issues = [i for i in issues if i['type'] not in ADVISORY_TYPES]
+        advisory_issues = [i for i in issues if i['type'] in ADVISORY_TYPES]
+
+        status = "matched" if not blocking_issues else "mismatch"
         result = {
             "status": status,
             "exchange_query_ok": True,
@@ -155,6 +160,8 @@ class PositionReconciler:
             "riskguard_symbols": sorted(rg_symbols_raw),
             "paper_symbols": sorted(paper_symbols),
             "issues": issues,
+            "blocking_issues": blocking_issues,
+            "advisory_issues": advisory_issues,
         }
 
         self._last_result = result

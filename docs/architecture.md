@@ -350,6 +350,17 @@ CREATE TABLE klines (
 
 **LLM降级机制**：Claude不可用时自动回退到规则引擎，系统不中断。
 
+**基础设施组件（2026-05-24审计整改新增）**：
+
+| 文件 | 职责 |
+|------|------|
+| `utils/exchange_factory.py` | 统一交易所创建工厂（sandbox/live边界隔离，所有Agent共用） |
+| `utils/event_journal.py` | 关键事件JSONL落盘（trade_decision/execution_result/system_command/risk_alert），MessageBus自动触发 |
+| `utils/position_reconciler.py` | 4路对账（exchange/executor/riskguard/paper），blocking vs advisory issue分离 |
+| `utils/market_regime.py` | 市场Regime检测（BTC/ETH bias + 全标的趋势共识 → bullish/bearish/mixed/choppy） |
+| `utils/counterfactual_ledger.py` | 被拒信号影子追踪，24h TP/SL解析验证策略有效性 |
+| `requirements.lock` | 精确版本锁定，ccxt升级需走`docs/dependency_upgrade_runbook.md`门控流程 |
+
 **研判层消息类型**：
 - `research_trigger`：编排器触发研判（Orchestrator → 研判层）
 - `research_market_data`：市场扫描结果（MarketScanner → Synthesizer）

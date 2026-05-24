@@ -576,8 +576,8 @@ execution_result → Reviewer → 交易历史记录 → 策略复盘（每4h）
 # 测试连接
 python3 test_connection.py
 
-# 启动单策略实盘
-python3 main.py
+# 启动单策略实盘（DEPRECATED，仅调试参考）
+# python3 main.py
 
 # 启动多Agent交易系统
 python3 run_agents.py
@@ -585,7 +585,7 @@ python3 run_agents.py
 # Agent系统集成测试
 python3 test_agents_integration.py
 
-# 完整 CI 回归（默认排除 network 标记，469 passed / 4 deselected / 1 warning，2026-05-23）
+# 完整 CI 回归（默认排除 network 标记，493 passed / 4 deselected / 1 warning，2026-05-24）
 python3 -m pytest -q
 
 # 或使用启动脚本

@@ -15,6 +15,7 @@ from typing import Optional, Any
 from dataclasses import dataclass, field
 from collections import deque
 from utils.logger import setup_logger
+from utils.event_journal import get_event_journal
 
 
 # 优先级（数字越小越高）
@@ -51,6 +52,11 @@ _PRIORITY_MAP = {
 _QSIZE_SOFT_LIMIT = 500   # 超过此值开始丢 LOW
 _QSIZE_HARD_LIMIT = 1000  # 超过此值丢 LOW 和 NORMAL
 _DLQ_MAX = 200            # 死信队列最大保留条数
+
+_IMPORTANT_TOPICS = frozenset({
+    'trade_decision', 'execution_result', 'risk_alert',
+    'daily_hard_stop_triggered', 'data_alert', 'system_command',
+})
 
 
 @dataclass(order=True)
@@ -138,8 +144,15 @@ class MessageBus:
             "payload": payload
         }
 
+        journal = get_event_journal()
+        if journal.should_record(msg_type):
+            journal.append(msg_type, payload, msg_id=msg["msg_id"])
+
         if to == "broadcast":
             subscribers = self._find_subscribers(msg_type, symbol, from_agent)
+            if not subscribers and msg_type in _IMPORTANT_TOPICS:
+                self.logger.warning(f"无订阅者: topic={msg_type} from={from_agent}")
+                self._record_dlq(msg, reason="no_subscriber")
             for agent_name in subscribers:
                 await self._enqueue(agent_name, msg, priority)
         else:

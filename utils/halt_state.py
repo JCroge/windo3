@@ -118,8 +118,18 @@ class HaltState:
             self.resume_by = state.get("resume_by", "")
             self.reconciliation_pending = state.get("reconciliation_pending", False)
             self.reconciliation_result = state.get("reconciliation_result")
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+            self.halted = True
+            self.reason = f"state_load_failed: {type(e).__name__}"
+            self.triggered_at = time.time()
+            self.triggered_by = "system_startup"
+            self.reconciliation_pending = True
         except Exception:
-            pass
+            self.halted = True
+            self.reason = "state_load_failed: unknown"
+            self.triggered_at = time.time()
+            self.triggered_by = "system_startup"
+            self.reconciliation_pending = True
 
 
 # 全局单例

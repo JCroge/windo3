@@ -383,10 +383,10 @@ curl -s https://www.dorocli.cc/v1/chat/completions \
 **解决**：
 ```bash
 # 停止所有运行实例
-pkill -f main.py
+pkill -f run_agents.py
 
 # 重启
-python3 main.py
+python3 run_agents.py
 ```
 
 ## 维护

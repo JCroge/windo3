@@ -943,13 +943,24 @@ class ContractExecutor:
             if spread > 0.001:
                 self.logger.warning(f"spread过大: {spread*100:.3f}%")
                 return False
-            depth_usdt = sum(p * q for p, q in ob['asks'][:5])
+            ct_size = self._get_contract_size(symbol)
+            depth_usdt = sum(p * q * ct_size for p, q in ob['asks'][:5])
             if depth_usdt < size_usdt * 3:
                 self.logger.warning(f"深度不足: {depth_usdt:.0f} < {size_usdt*3:.0f}")
                 return False
             return True
         except Exception:
             return True
+
+    def _get_contract_size(self, symbol: str) -> float:
+        """获取合约面值"""
+        try:
+            market = self.exchange.markets.get(symbol)
+            if market:
+                return float(market.get('contractSize', 1) or 1)
+        except Exception:
+            pass
+        return 1.0
 
     def place_stop_loss_order(self, symbol: str, side: str, stop_price: float,
                               amount: float) -> Optional[str]:

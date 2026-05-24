@@ -255,17 +255,8 @@ class MultiJudge(BaseAgent):
 
     async def setup(self):
         self.init_llm()
-        exchange_id = self.config.get('exchange', 'okx')
-        ex_config = {'enableRateLimit': True, 'options': {'defaultType': 'swap'}}
-        if exchange_id == 'okx':
-            ex_config['apiKey'] = os.getenv('OKX_API_KEY')
-            ex_config['secret'] = os.getenv('OKX_SECRET')
-            ex_config['password'] = os.getenv('OKX_PASSWORD')
-            self.exchange = ccxt.okx(ex_config)
-        else:
-            ex_config['apiKey'] = os.getenv('BINANCE_API_KEY')
-            ex_config['secret'] = os.getenv('BINANCE_SECRET')
-            self.exchange = ccxt.binance(ex_config)
+        from utils.exchange_factory import create_exchange
+        self.exchange = create_exchange(self.config, require_private=True, purpose="judge_balance")
 
         # 从 positions.json 恢复 _open_positions，防止重启后突破并发上限
         try:
@@ -2591,6 +2582,7 @@ class MultiJudge(BaseAgent):
             return round(x, digits)
 
         return {
+            "side": "long" if is_long else "short",
             "entry_zone": [price_round(e) for e in entry_zone],
             "stop_loss": price_round(stop_loss),
             "take_profit": [price_round(tp) for tp in take_profit],
@@ -2695,9 +2687,21 @@ class MultiJudge(BaseAgent):
         """Phase 2 EPIC D: 从 Reviewer 分桶指标中查找对应桶的胜率。"""
         if not hasattr(self, '_bucketed_metrics') or not self._bucketed_metrics:
             return None
-        side = 'long' if plan.get('side', 'long') == 'long' else 'short'
-        if 'long' in str(plan.get('entry_type', '')):
-            side = 'long'
+        # Side 来源优先级：plan["side"] > plan["action"] 推断 > score 符号推断
+        explicit_side = plan.get('side')
+        if explicit_side in ('long', 'short'):
+            side = explicit_side
+        else:
+            action = plan.get('action', '')
+            if 'short' in action:
+                side = 'short'
+            elif 'long' in action:
+                side = 'long'
+            else:
+                side = 'short' if score < 0 else 'long'
+            self.logger.warning(
+                f"[Judge] bucketed EV: plan缺少side字段, 推断side={side} (action={action}, score={score:.0f})"
+            )
         regime = self._regime_manager._effective_regime
         entry_type = plan.get('entry_type', 'unknown')
         slot_type = plan.get('slot_type', 'main')
