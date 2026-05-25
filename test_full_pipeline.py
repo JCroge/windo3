@@ -384,14 +384,15 @@ async def test_full_trading_cycle():
 
     # Step 3: 价格下跌，RiskGuard检测到浮亏
     print("  [Step 3] 价格下跌 → 浮亏检测")
-    rg._prices["SOL-USDT"] = 163.0
-    # PnL: (163-170)/170 * 5 * 100 = -20.6% > -15% threshold
-    await rg._check_position_pnl("SOL-USDT", 163.0)
+    rg._prices["SOL-USDT"] = 157.0
+    # SL=165, entry=170, lev=5 → 动态阈值=(5/170)*5*100+5=19.7%
+    # PnL: (157-170)/170 * 5 * 100 = -38.2% > -19.7% → 触发
+    await rg._check_position_pnl("SOL-USDT", 157.0)
 
     risk_msg = await bus.receive("executor", timeout=1.0)
     assert risk_msg is not None, "Executor should receive risk_alert"
     assert risk_msg['payload']['type'] == 'position_danger'
-    print("    ✓ RiskGuard 发出 position_danger (pnl=-20.6%)")
+    print(f"    ✓ RiskGuard 发出 position_danger (pnl={risk_msg['payload']['pnl_pct']:.1f}%)")
 
     # Step 4: Executor执行风控平仓
     print("  [Step 4] Executor 风控平仓")

@@ -24,7 +24,8 @@ class PortfolioRiskGuard(BaseAgent):
         self._state_file = 'data/riskguard_state.json'
 
         self._max_portfolio_exposure = 25.0
-        self._max_single_loss_pct = 15.0
+        self._max_single_loss_pct_fallback = 50.0
+        self._position_danger_buffer_pct = 5.0
         self._max_portfolio_drawdown_pct = 15.0
         self._flash_move_threshold = 3.0
         self._flash_move_window = 60
@@ -203,22 +204,44 @@ class PortfolioRiskGuard(BaseAgent):
             return (entry - current_price) / entry * 100 * leverage
 
     async def _check_position_pnl(self, symbol: str, price: float):
-        """维度1: 单仓浮亏监控"""
+        """维度1: 单仓浮亏监控（动态阈值 = SL距离×杠杆 + 缓冲）"""
         pos = self._positions[symbol]
         pnl_pct = self._calc_pnl_pct(pos, price)
 
-        if pnl_pct < -self._max_single_loss_pct:
+        threshold = self._get_danger_threshold(pos)
+        if pnl_pct < -threshold:
             if self._can_alert(f"position_danger:{symbol}"):
                 self.logger.warning(
-                    f"[风控] {symbol} 浮亏{pnl_pct:.1f}% > -{self._max_single_loss_pct}%!"
+                    f"[风控] {symbol} 浮亏{pnl_pct:.1f}% > -{threshold:.1f}%（动态阈值）!"
                 )
                 await self.publish("risk_alert", {
                     "type": "position_danger",
                     "scope": "symbol",
                     "symbol": symbol,
                     "pnl_pct": pnl_pct,
+                    "threshold": threshold,
                     "action": "close_position"
                 }, symbol=symbol)
+
+    def _get_danger_threshold(self, pos: dict) -> float:
+        """计算单仓 position_danger 动态阈值。
+
+        公式: SL距离% × 杠杆 + 缓冲(5%)
+        兜底: 如果无法计算SL距离，使用 fallback(50%)
+        """
+        entry = pos.get('entry_price', 0)
+        sl = pos.get('stop_loss', 0)
+        leverage = pos.get('leverage', 1)
+
+        if entry <= 0 or sl <= 0:
+            return self._max_single_loss_pct_fallback
+
+        sl_dist_pct = abs(entry - sl) / entry * 100
+        if sl_dist_pct <= 0:
+            return self._max_single_loss_pct_fallback
+
+        threshold = sl_dist_pct * leverage + self._position_danger_buffer_pct
+        return min(threshold, self._max_single_loss_pct_fallback)
 
     async def _check_portfolio_drawdown(self):
         """维度2: 组合回撤保护

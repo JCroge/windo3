@@ -149,7 +149,7 @@ class MultiJudge(BaseAgent):
         self._short_regime_guard_enabled = config.get('short_regime_guard_enabled', True) if config else True
         self._probe_short_enabled = config.get('probe_short_enabled', True) if config else True
         self._low_rr_slot_enabled = config.get('low_rr_slot_enabled', True) if config else True
-        self._rr_floor_default = config.get('rr_floor_default', 1.5) if config else 1.5
+        self._rr_floor_default = config.get('rr_floor_default', 1.30) if config else 1.30
         self._rr_floor_long_bullish = config.get('rr_floor_long_bullish', 1.30) if config else 1.30
         self._rr_floor_short_bullish = config.get('rr_floor_short_bullish', 1.80) if config else 1.80
         self._low_rr_max_leverage = config.get('low_rr_max_leverage', 5) if config else 5
@@ -815,8 +815,8 @@ class MultiJudge(BaseAgent):
                     return
                 # RQ-02: chase 有效 RR 约束
                 chase_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
-                if chase_rr < 1.5:
-                    self.logger.info(f"[Judge] {symbol} 追价入场 R:R={chase_rr:.2f}<1.5，放弃")
+                if chase_rr < self._rr_floor_default:
+                    self.logger.info(f"[Judge] {symbol} 追价入场 R:R={chase_rr:.2f}<{self._rr_floor_default}，放弃")
                     state['deferred_entry'] = None
                     return
                 plan['order_type'] = 'market'

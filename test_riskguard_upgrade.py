@@ -12,7 +12,7 @@ from agents.trading.portfolio_risk_guard import PortfolioRiskGuard
 async def test_position_danger():
     """测试1: 单仓浮亏超限 → position_danger"""
     print("=" * 60)
-    print("测试1: 单仓浮亏 > 15% → position_danger")
+    print("测试1: 单仓浮亏超过动态阈值 → position_danger")
     print("=" * 60)
 
     MessageBus.reset()
@@ -31,10 +31,10 @@ async def test_position_danger():
             "open_time": time.time(), "highest_price": 172.0, "lowest_price": 170.0,
         }
     }
-    # 5x杠杆，价格跌4% → 浮亏20% > 15%
-    rg._prices = {"SOL-USDT": 163.2}
+    # 5x杠杆，价格跌8% → 浮亏40% > 35%
+    rg._prices = {"SOL-USDT": 156.4}
 
-    await rg._check_position_pnl("SOL-USDT", 163.2)
+    await rg._check_position_pnl("SOL-USDT", 156.4)
 
     msg = await bus.receive("test_listener", timeout=1.0)
     assert msg is not None, "Should emit position_danger"
