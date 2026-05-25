@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-05-19，系统主入口是多 Agent 交易系统：
+截至 2026-05-25，系统主入口是多 Agent 交易系统：
 
 ```bash
 python3 run_agents.py
@@ -12,7 +12,9 @@ python3 run_agents.py
 
 `live_trading.py` 已标记为 deprecated，只保留给单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
 
-当前工程链路已具备 paper/testnet 验收基础；但收益目标仍未证明。真实事件回测仍需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
+当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地（基线 531 passed），但 OKX 真实 testnet 语义验收仍未执行，阻断 live 扩容。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
+
+**热更新陷阱**：Telegram `/restart` 走的是 `run_agents.py` 内 `while True: Orchestrator()` 同进程循环，**不会重新 import** 已修改的模块。要让代码改动生效必须 OS 层重启进程：`kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。`/restart` 适合复位状态、不适合发版。
 
 ## 目录职责
 
@@ -167,7 +169,7 @@ python3 test_event_backtest_real_data.py
 - amount 已按 `amount_to_precision()` 处理。
 - 已通过 `OrderCapabilities.precheck_order()` 或有等价本地限制。
 - OKX 下单带 `clOrdId`，避免重复提交。
-- 平仓/减仓使用 `reduceOnly`。
+- 平仓/减仓必须通过 OKX posMode 参数构造器生成 `posSide` / `reduceOnly`，禁止业务路径手写固定 `reduceOnly`。
 - 下单失败不会重复开仓。
 - 成功/失败都能形成下游可理解的 `execution_result`。
 

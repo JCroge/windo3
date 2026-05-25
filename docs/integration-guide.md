@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-05-15）**：两层多Agent系统完成，研判层每4h自动选币，交易层持续运行。Judge含统一风险预算框架（杠杆由风险约束推导）+ LLM-Rule方向冲突保护。PA含动态阈值止损防线。
+**系统状态（2026-05-25）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `531 passed / 4 deselected / 1 warning`（含 OKX posMode 38 单测）；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
 
 ## 核心模块接口
 
@@ -62,7 +62,7 @@ result = await llm.chat("system prompt", "user message")
 json_result = await llm.chat_json("system prompt", "user message")
 ```
 
-### 实时交易系统 ✅
+### 旧单策略实时交易系统（归档）
 
 ```python
 from live_trading import LiveTradingSystem
@@ -80,6 +80,8 @@ system = LiveTradingSystem(
 system.run(check_interval=60)
 ```
 
+`live_trading.py` 仅保留给旧单策略调试参考，生产、paper、testnet 和实盘验收都必须走 `run_agents.py`。新集成优先接入 `trade_decision.v2` / `execution_result.v2` 消息契约。
+
 ### 合约执行器 ✅
 
 ```python
@@ -96,6 +98,13 @@ executor.open_short('BTC-USDT', amount_usdt=10.0)
 executor.close_position('BTC-USDT')
 executor.get_position('BTC-USDT')  # 返回持仓或None
 ```
+
+**OKX posMode 注意事项（2026-05-25）**：
+
+- `ContractExecutor.__init__` 在 `exchange_id='okx'` 时会自动调用 `private_get_account_config()` 探测账户 `posMode`（`net_mode` / `long_short_mode`），结果缓存在 `executor._okx_pos_mode`。
+- live (`testnet=False`) 探测失败 → fail-closed：`can_open_new_okx()` 返回 `False`，禁止开新仓直至人工介入。testnet 失败时降级为 `net_mode`（带 warning），可用 `OKX_POS_MODE_OVERRIDE` 环境变量覆盖。
+- 业务路径**禁止手写** `params={'reduceOnly': True}` 或 `posSide`；统一调用 `_build_okx_open_params` / `_build_okx_close_params` / `_build_okx_algo_params`。
+- close / reduce 前会自动 `fetch_positions()` 取交易所真实仓位，按 `availPos` 钳制 amount；51169/51205/51112/51333 拒单走 `_handle_okx_close_reject` 状态复核（`already_flat` / `external_closed` / `still_open` / `direction_conflict`），不再无限重试。
 
 ### 风控管理器 ✅
 
@@ -192,7 +201,7 @@ class MyAgent(BaseAgent):
         await asyncio.sleep(5)
 ```
 
-**交易层消息格式（2026-05-07）**：
+**交易层消息格式（2026-05-24）**：
 
 `market_data:{symbol}` — DataCollector发布，9维度：
 - klines, klines_4h, funding_rate, funding_history, latest_price
@@ -211,14 +220,20 @@ class MyAgent(BaseAgent):
 - risk (leverage_risk/volatility_regime/liquidity_score)
 - rule_signal, indicators, llm_analysis
 
-`trade_decision:{symbol}` — Judge发布，精确交易计划：
-- action, confidence, reasoning, key_factors[], risk_warnings[]
-- plan: {entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt(=margin), order_type, risk_reward_ratio, effective_risk_reward_ratio, funding_cost, est_hold_hours}
+`trade_decision:{symbol}` — Judge发布，open 主链路为 `trade_decision.v2`：
+- schema_version, request_id, action, confidence, reasoning, key_factors[], risk_warnings[]
+- dispatch_path, signal_score, execution_confidence, position_scale, attribution
+- plan: {side, entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt(=margin), order_type, risk_reward_ratio, effective_risk_reward_ratio, funding_cost, est_hold_hours, expected_value, p_win_used, p_win_source}
 
-`execution_result:{symbol}` — Executor发布，交易执行结果：
-- status (executed/force_closed/rejected/risk_reduced/closed_externally)
-- action, symbol, result (entry_price/pnl/leverage/amount_usdt), confidence
-- is_add (bool, 加仓时为true), reduce_pct (float, 减仓比例), source (sync/position_analyst)
+`execution_result:{symbol}` — Executor发布，统一为 `execution_result.v2`：
+- schema_version, status, action, symbol, source, request_id, correlation_id, reason, result, timestamp
+- status: executed / force_closed / rejected / risk_reduced / closed_externally / error
+- 可选字段：confidence, used_plan, is_add, reduce_pct, attribution
+- 下游不得假设 `result` 一定含 entry_price；拒绝、异常和外部平仓都必须按 `status/source/reason` 解释。
+
+`paper_execution_result:{symbol}` — PaperExecutor发布，影子账户执行结果：
+- status, action, symbol, request_id, result, paper_equity, locked_margin, free_equity
+- 该 topic 与 live `execution_result` 隔离，默认不进入 live Reviewer/EV 闭环。
 
 `daily_hard_stop_triggered` — Reviewer发布，熔断信号（broadcast）：
 - reason: "daily_loss_limit" | "consecutive_losses"

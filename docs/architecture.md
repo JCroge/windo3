@@ -4,6 +4,8 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
+**当前状态（2026-05-25）**：主入口为 `run_agents.py`，全量回归 `531 passed / 4 deselected / 1 warning`（含 38 个 OKX posMode 单测）。OKX posMode 执行兼容代码已落地（启动期探测 + 三入口参数构造器 + 拒单状态复核），mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下方"重要变更"是历史时间线，不代表当前待办状态。
+
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
 - 2026-05-07：多Agent系统完成，两层架构（研判层6 Agent + 交易层7 Agent），含言官逆向审查机制
@@ -52,7 +54,10 @@
 - 2026-05-21：Phase 8 Regime优化（market_regime.py+judge.py）：RegimeManager+Short Guard+Probe Short+Dynamic R:R+Low R:R Slot+Counterfactual Ledger
 - 2026-05-21：Side-Aware Short Entry Gates（tech_analyst.py+judge.py+event_backtest.py）：daily_bias=bearish必须+position_in_24h_range≥0.45+pre_12h_return>-1%+RSI≥40，防止"追空"入场。BTCUSDT回测short从0%WR/-9.18 PnL改善为全部过滤（避免亏损）
 - 2026-05-21：Unified Open Dispatch（judge.py）：_gate_and_publish_open统一入口+dispatch_path归因(main_direct/main_ranking/deferred_15m/deferred_pullback/deferred_chase)+_can_route_probe_short返回(bool,reason)元组
-- 2026-05-22：Phase 1.5 观测与回测同构补齐（reviewer分层、position_analyst regime grace、event_backtest 同构）+ 14h shadow observation，验证 373 passed / 4 deselected / 1 warning
+- 2026-05-22：Phase 1.5 观测与回测同构补齐（reviewer分层、position_analyst regime grace、event_backtest 同构）+ 14h shadow observation，验证 373 passed / 4 deselected / 1 warning（历史基线）
+- 2026-05-24：审计整改自动化验收通过，验证 493 passed / 4 deselected / 1 warning；OKX 真实 testnet 仍待执行。
+- 2026-05-25：OKX posMode 执行兼容代码完成（executor.py）：启动期 `private_get_account_config` 探测 posMode，live fail-closed；新增 `_build_okx_open_params` / `_build_okx_close_params` / `_build_okx_algo_params` 三入口构造器，业务路径全部接入；close/reduce 前 `_fetch_okx_position_state` 拉真实仓位并按 `availPos` 钳制；51169/51205/51112/51333 拒单触发 `_handle_okx_close_reject` 状态复核（already_flat/external_closed/still_open/direction_conflict），不再无脑重试或错删本地仓位。新增 `test_okx_posmode_executor.py` 38 PASS，`verify_okx_testnet_semantics.py` 扩展为 10 case（posMode close 矩阵 + 拒单复核）；基线 493 → 531。OKX 真实 testnet T0-T9 仍待执行。
+- 2026-05-25：发现 `/restart`（Telegram 远程重启）走的是 `run_agents.py` 的同进程 `while True: Orchestrator()` 循环，不 fork 不 exec，Python `sys.modules` 缓存旧 `executor.py`，**新代码不会被加载**。要让代码热更新生效必须 OS 层 `kill -TERM` 后 `nohup python3 run_agents.py` 重启进程。
 
 ## 架构图
 

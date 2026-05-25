@@ -1,12 +1,12 @@
 # 审计整改产品需求文档
 
-更新日期：2026-05-23  
-关联审计报告：`docs/generated_reports/系统性审计报告_20260523.md`  
+更新日期：2026-05-24  
+关联审计报告：`docs/generated_reports/系统性审计报告_20260524.md`  
 目标阶段：从“本地/paper/mock 可继续迭代”推进到“testnet 稳定、小额 live 灰度可评审”  
 
 ## 1. 背景
 
-2026-05-23 系统性审计确认：当前项目已经形成 Research/Trading 两层多 Agent 架构，默认回归达到 `469 passed / 4 deselected / 1 warning`，工程底座可以继续推进。但审计同时发现，阻断 live 扩容的风险不在于功能缺失，而在于交易关键链路中的字段契约、状态所有权、交易所真实语义和运维入口仍未完全压实。
+2026-05-23 系统性审计确认：当前项目已经形成 Research/Trading 两层多 Agent 架构，工程底座可以继续推进。2026-05-24 复核结果为 `493 passed / 4 deselected / 1 warning`，FR-001~FR-010 的自动化整改已完成；当前阻断 live 扩容的关键风险收敛为 OKX 真实 testnet 语义验收未执行，以及少量 P1/P2 契约和观测收敛项。
 
 本 PRD 将审计项 F-001 至 F-026 转换为可排期的产品需求与技术实施路径。目标不是新增策略收益功能，而是提高系统在真实交易环境下的可控性、可恢复性、可追踪性和可验收性。
 
@@ -216,7 +216,7 @@
    - 若保留，运行时默认退出并提示 `run_agents.py`。
 3. 文档同步：
    - README、runbook、development、architecture、handoff、CLAUDE、待解决事项。
-   - 当前测试基线统一为 `469 passed / 4 deselected / 1 warning`，除非重新测试更新。
+   - 当前测试基线统一为 `493 passed / 4 deselected / 1 warning`（2026-05-24），除非重新测试更新。
 
 ### FR-007 LLM schema 全覆盖
 
@@ -399,7 +399,7 @@
 - P1 中 exchange factory、contractSize、start.sh、依赖锁定、对账恢复全部通过。
 - 全量 pytest 通过。
 - OKX mock 和真实 testnet 验收通过或有明确非阻断豁免。
-- `docs/待解决事项.md` 无 P0/P1 BLOCKED。
+- `docs/to-do-list.md` 无除 OKX testnet 外的 P0/P1 BLOCKED。
 
 不允许扩大 live 的情况：
 

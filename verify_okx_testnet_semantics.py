@@ -12,6 +12,10 @@ AC2-07: 使用 mock exchange 验证 8 个 OKX 执行语义 case。
 6. Move SL
 7. Close 后条件单状态
 8. Duplicate clOrdId / idempotency
+
+PosMode 扩展（mock 矩阵）：
+9. PosMode aware close: net_mode 和 long_short_mode 各跑一次开/平
+10. PosMode aware reject reconciliation: 模拟 51169/51205 后的状态复核
 """
 import sys
 import time
@@ -24,9 +28,16 @@ sys.path.insert(0, '.')
 
 
 class MockOKXExchange:
-    """Mock OKX exchange simulating testnet behavior."""
+    """Mock OKX exchange simulating testnet behavior.
 
-    def __init__(self, balance=1000.0):
+    pos_mode: 'net_mode' or 'long_short_mode'.
+    - net_mode: close/reduce 必须带 reduceOnly=True 和 posSide=net
+    - long_short_mode: close/reduce 不带 reduceOnly，posSide 标识仓位方向
+    reject_codes: 强制注入的拒单码集合，用于状态复核测试。
+    """
+
+    def __init__(self, balance=1000.0, pos_mode='net_mode', reject_codes=None,
+                 keep_position_on_reject=False):
         self._balance = balance
         self._positions = {}
         self._orders = {}
@@ -34,6 +45,29 @@ class MockOKXExchange:
         self._used_clord_ids = set()
         self._leverage = {}
         self._order_counter = 0
+        self._pos_mode = pos_mode
+        self._reject_codes = set(reject_codes or [])
+        self._keep_position_on_reject = keep_position_on_reject
+
+    def fetch_account_config(self):
+        return {'data': [{'posMode': self._pos_mode}]}
+
+    def fetch_positions(self, symbols=None):
+        out = []
+        for sym, p in self._positions.items():
+            if symbols and sym not in symbols:
+                continue
+            pos_side = 'net' if self._pos_mode == 'net_mode' else p['side']
+            out.append({
+                'symbol': sym,
+                'side': p['side'],
+                'contracts': p['amount'],
+                'contractSize': 0.01,
+                'entryPrice': p['entry_price'],
+                'leverage': 5,
+                'info': {'posSide': pos_side, 'availPos': str(p['amount'])},
+            })
+        return out
 
     def fetch_balance(self):
         return {'USDT': {'free': self._balance, 'total': self._balance}}
@@ -64,19 +98,40 @@ class MockOKXExchange:
         if amount < 0.001:
             raise Exception("51020: Order amount too small")
 
-        if params.get('reduceOnly') and symbol not in self._positions:
+        is_close_intent = (
+            params.get('reduceOnly')
+            or (self._pos_mode == 'long_short_mode'
+                and params.get('posSide') in ('long', 'short')
+                and self._is_reverse_of_position(symbol, side, params.get('posSide')))
+        )
+
+        if '51169' in self._reject_codes and is_close_intent:
+            raise Exception("51169: No position to close in this direction")
+        if '51205' in self._reject_codes and params.get('reduceOnly'):
             raise Exception("51205: Reduce Only order not allowed without position")
 
+        if self._pos_mode == 'net_mode':
+            if params.get('reduceOnly') and symbol not in self._positions:
+                raise Exception("51205: Reduce Only order not allowed without position")
+        else:
+            if is_close_intent and symbol not in self._positions:
+                raise Exception("51169: No position to close in this direction")
+
         cost = amount * 67000.0
-        if not params.get('reduceOnly') and cost > self._balance * 10:
+        if not is_close_intent and cost > self._balance * 10:
             raise Exception("51008: Insufficient balance")
 
         self._order_counter += 1
         order_id = f"mock-order-{self._order_counter}"
 
-        if not params.get('reduceOnly'):
+        if not is_close_intent:
+            pos_side_in = ('net' if self._pos_mode == 'net_mode'
+                           else ('long' if side == 'buy' else 'short'))
             self._positions[symbol] = {
-                'side': side, 'amount': amount, 'entry_price': 67000.0
+                'side': 'long' if side == 'buy' else 'short',
+                'amount': amount,
+                'entry_price': 67000.0,
+                'pos_side': pos_side_in,
             }
             if 'attachAlgoOrds' in params:
                 for algo in params['attachAlgoOrds']:
@@ -87,7 +142,7 @@ class MockOKXExchange:
                         'tpTriggerPx': algo.get('tpTriggerPx'),
                     }
         else:
-            if symbol in self._positions:
+            if symbol in self._positions and not self._keep_position_on_reject:
                 del self._positions[symbol]
                 cancelled = [k for k, v in self._algo_orders.items()
                              if v['symbol'] == symbol]
@@ -95,6 +150,13 @@ class MockOKXExchange:
                     self._algo_orders[k]['status'] = 'canceled'
 
         return {'id': order_id, 'status': 'closed', 'filled': amount}
+
+    def _is_reverse_of_position(self, symbol, side, pos_side):
+        p = self._positions.get(symbol)
+        if not p:
+            return False
+        return (p['side'] == 'long' and side == 'sell' and pos_side == 'long') or \
+               (p['side'] == 'short' and side == 'buy' and pos_side == 'short')
 
     def cancel_order(self, order_id, symbol=None):
         if order_id in self._algo_orders:
@@ -136,6 +198,8 @@ class OKXSemanticVerifier:
         self._case6_move_sl()
         self._case7_close_algo_status()
         self._case8_duplicate_clord_id()
+        self._case9_posmode_close_matrix()
+        self._case10_posmode_reject_reconciliation()
 
         print("\n" + "=" * 60)
         print("验收结果汇总")
@@ -359,6 +423,103 @@ class OKXSemanticVerifier:
         except Exception as e:
             self._record(8, "Duplicate clOrdId", False, str(e),
                         _normalize_result('error', 'open_long', symbol, str(e)), {})
+
+    def _case9_posmode_close_matrix(self):
+        """Case 9: PosMode aware close — net_mode 与 long_short_mode 各一次开/平"""
+        symbol = 'BTC-USDT-SWAP'
+        sub_results = []
+        try:
+            net_ex = MockOKXExchange(balance=1000.0, pos_mode='net_mode')
+            net_ex.create_order(
+                symbol=symbol, type='market', side='buy', amount=0.01,
+                params={'posSide': 'net'}
+            )
+            net_ex.create_order(
+                symbol=symbol, type='market', side='sell', amount=0.01,
+                params={'reduceOnly': True, 'posSide': 'net'}
+            )
+            net_passed = symbol not in net_ex._positions
+            sub_results.append(('net_mode', net_passed))
+
+            ls_ex = MockOKXExchange(balance=1000.0, pos_mode='long_short_mode')
+            ls_ex.create_order(
+                symbol=symbol, type='market', side='buy', amount=0.01,
+                params={'posSide': 'long'}
+            )
+            ls_ex.create_order(
+                symbol=symbol, type='market', side='sell', amount=0.01,
+                params={'posSide': 'long'}
+            )
+            ls_passed = symbol not in ls_ex._positions
+            sub_results.append(('long_short_mode', ls_passed))
+
+            passed = all(r[1] for r in sub_results)
+            normalized = _normalize_result(
+                'executed', 'close_matrix', symbol, sub_results,
+                pos_modes_tested=[r[0] for r in sub_results]
+            )
+            self._record(9, "PosMode aware close", passed, sub_results,
+                        normalized, {'net_mode': sub_results[0][1],
+                                     'long_short_mode': sub_results[1][1]})
+        except Exception as e:
+            self._record(9, "PosMode aware close", False, str(e),
+                        _normalize_result('error', 'close_matrix', symbol, str(e)),
+                        {'sub_results': sub_results})
+
+    def _case10_posmode_reject_reconciliation(self):
+        """Case 10: PosMode aware reject reconciliation — 51169/51205 拒单后状态复核"""
+        symbol = 'BTC-USDT-SWAP'
+        sub_results = []
+        try:
+            ex_51169 = MockOKXExchange(
+                balance=1000.0, pos_mode='net_mode',
+                reject_codes={'51169'}, keep_position_on_reject=True,
+            )
+            ex_51169.create_order(
+                symbol=symbol, type='market', side='buy', amount=0.01,
+                params={'posSide': 'net'}
+            )
+            try:
+                ex_51169.create_order(
+                    symbol=symbol, type='market', side='sell', amount=0.01,
+                    params={'reduceOnly': True, 'posSide': 'net'}
+                )
+                sub_results.append(('51169_raised', False))
+            except Exception as e:
+                code_ok = '51169' in str(e)
+                positions = ex_51169.fetch_positions([symbol])
+                still_has = len(positions) > 0
+                sub_results.append(('51169_classified', code_ok and still_has))
+
+            ex_51205 = MockOKXExchange(
+                balance=1000.0, pos_mode='net_mode',
+                reject_codes={'51205'},
+            )
+            try:
+                ex_51205.create_order(
+                    symbol=symbol, type='market', side='sell', amount=0.01,
+                    params={'reduceOnly': True, 'posSide': 'net'}
+                )
+                sub_results.append(('51205_raised', False))
+            except Exception as e:
+                code_ok = '51205' in str(e)
+                positions = ex_51205.fetch_positions([symbol])
+                already_flat = len(positions) == 0
+                sub_results.append(('51205_classified', code_ok and already_flat))
+
+            passed = all(r[1] for r in sub_results)
+            normalized = _normalize_result(
+                'reconciled', 'reject_reconciliation', symbol, sub_results,
+                reject_codes_tested=['51169', '51205']
+            )
+            self._record(10, "PosMode aware reject reconciliation", passed,
+                        sub_results, normalized,
+                        {'51169_still_open_kept_local': sub_results[0][1],
+                         '51205_already_flat_clears_local': sub_results[1][1]})
+        except Exception as e:
+            self._record(10, "PosMode aware reject reconciliation", False, str(e),
+                        _normalize_result('error', 'reject_reconciliation', symbol, str(e)),
+                        {'sub_results': sub_results})
 
 
 def generate_report(verifier):

@@ -15,6 +15,7 @@ data/*.db
 data/*.db-journal
 data/*.json
 data/*.jsonl
+data/journal/
 
 # Logs
 logs/*.log

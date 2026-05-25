@@ -1,7 +1,7 @@
 # Live 准入产品需求文档
 
 更新日期：2026-05-22  
-关联待办：`docs/待解决事项.md`
+关联待办：`docs/to-do-list.md`
 
 ## 1. 背景
 
@@ -107,7 +107,7 @@ Reviewer 应继续兼容旧 payload，同时优先读取：
 2. limit open timeout
 3. insufficient balance
 4. min amount
-5. reduceOnly close
+5. posMode-aware close/reduce
 6. move SL
 7. close 后条件单状态
 8. duplicate clOrdId / idempotency
@@ -140,7 +140,7 @@ live 扩容评审必须同时满足：
 - OKX 真实 testnet 8 case 通过或有明确非阻断解释。
 - 所有 `execution_result` 发布点使用统一契约。
 - Phase 2 四个运行配置 key 存在，paper/testnet 观察中确认不再出现“配置缺失导致功能关闭”。
-- `docs/待解决事项.md` 中无 P1 BLOCKED。
+- `docs/to-do-list.md` 中除 OKX testnet 外无 P1 BLOCKED。
 
 ## 6. 非功能需求
 
@@ -155,7 +155,7 @@ live 扩容评审必须同时满足：
 2. 单测先行：新增非 open 分支契约测试，锁定字段要求和 Reviewer 兼容行为。
 3. Phase 2 配置：补默认值、环境变量映射、banner、runbook 和配置单测。
 4. OKX testnet：给验收脚本增加真实 testnet 模式或单独 testnet runner，确保 sandbox/testnet 在 exchange 初始化后立即启用。
-5. 回归与文档：跑全量测试、mock 验收、真实 testnet 验收，并更新 `docs/待解决事项.md` 与 testnet 报告。
+5. 回归与文档：跑全量测试、mock 验收、真实 testnet 验收，并更新 `docs/to-do-list.md` 与 testnet 报告。
 
 ## 8. 交付物
 
@@ -164,4 +164,4 @@ live 扩容评审必须同时满足：
 - Reviewer 兼容测试。
 - Phase 2 配置加载和 banner 测试。
 - OKX testnet 验收记录。
-- 更新后的 `docs/待解决事项.md`。
+- 更新后的 `docs/to-do-list.md`。

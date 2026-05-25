@@ -56,6 +56,13 @@ kill -SIGINT $(pgrep -f run_agents.py)
 # 系统写入 data/.restart_flag 后优雅退出，run_agents.py 检测标记后自动重启
 ```
 
+> ⚠️ `/restart` 走的是 `run_agents.py` 的 `while True: Orchestrator()` 同进程循环，不 fork 不 exec，**Python `sys.modules` 缓存的旧代码不会被替换**。改了 `executor.py` 等模块要让新代码生效，必须 OS 层重启进程：
+> ```bash
+> kill -TERM $(pgrep -f run_agents.py) && sleep 5
+> nohup python3 run_agents.py > logs/launcher_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+> ```
+> 验证新代码上线（OKX 路径）：日志出现 `[OKX posMode] 探测成功: net_mode/long_short_mode (testnet=...)`。
+
 **Telegram远程命令**（需配置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID）：
 | 命令 | 功能 |
 |------|------|
@@ -90,7 +97,7 @@ python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/T
 python3 -m pytest test_drawdown_baseline.py  # 回撤基准修正验收（14 tests）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 469 passed / 4 deselected / 1 warning（2026-05-23）
+python3 -m pytest -q              # 531 passed / 4 deselected / 1 warning（2026-05-25，含 38 个 OKX posMode 单测）
 python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
 ```
 
@@ -121,6 +128,7 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 | OKX_API_KEY | OKX API密钥 | - | 是（OKX） |
 | OKX_SECRET | OKX Secret | - | 是（OKX） |
 | OKX_PASSWORD | OKX Passphrase | - | 是（OKX） |
+| OKX_POS_MODE_OVERRIDE | OKX posMode 兜底覆盖（仅 testnet 生效，可选 `net_mode` / `long_short_mode`）。live 永远以 `private_get_account_config` 返回为准；testnet 拿不到时若设此值则使用，否则降级 `net_mode` 并 warning | （未启用） | 否 |
 | BINANCE_API_KEY | Binance API密钥 | - | 是（Binance） |
 | BINANCE_SECRET | Binance Secret | - | 是（Binance） |
 | USE_TESTNET | 是否测试网 | false | 否 |
@@ -347,6 +355,15 @@ pip3 install --upgrade ccxt
 **错误11045：设置杠杆失败**
 - 原因：偶发性API错误，通常不影响后续交易
 - 处理：忽略，系统继续运行；如持续出现，检查账户是否有未平仓持仓
+
+**错误51169：仓位方向不匹配 / 错误51205：reduceOnly 无对应持仓**
+- 原因：本地认为有持仓但交易所已无（被 SL 触发或被手动平仓），或 posMode 与下单参数不匹配
+- 处理（2026-05-25 起代码已落地）：Executor 不再无限重试，改为 `_handle_okx_close_reject` 状态复核：
+  - `already_flat`：本地无仓位 + 交易所无 → 清理 idempotency
+  - `external_closed`：本地有仓位 + 交易所无 → 标记为已被外部平仓，清理本地 + cooldown 60s
+  - `still_open`：本地有 + 交易所有 → 保留本地，halt symbol 阻止重复提交
+  - `direction_conflict`：方向冲突 → 保留本地状态，halt symbol，等待人工介入
+- 如反复出现：核对 `executor._okx_pos_mode` 与 OKX 账户配置一致；如 live 探测失败要重启进程
 
 **OKX下单数量计算公式**：
 ```

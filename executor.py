@@ -10,6 +10,16 @@ from risk_manager import RiskManager
 from utils.logger import setup_logger
 
 
+# OKX 拒单错误码：与持仓状态相关，必须做交易所状态复核
+OKX_POSITION_REJECT_CODES = ('51169', '51205', '51112', '51333')
+
+
+def _is_okx_position_reject(err_msg: str) -> bool:
+    if not err_msg:
+        return False
+    return any(code in err_msg for code in OKX_POSITION_REJECT_CODES)
+
+
 class ContractExecutor:
     """合约执行器"""
 
@@ -54,6 +64,12 @@ class ContractExecutor:
         if testnet:
             self.exchange.set_sandbox_mode(True)
             self.logger.info(f"使用 {exchange_id} 测试网")
+
+        # OKX posMode 探测：live 失败 fail-closed
+        self._okx_pos_mode: Optional[str] = None
+        self._okx_pos_mode_source: str = "n/a"
+        if exchange_id == 'okx':
+            self._detect_okx_pos_mode()
 
         # 风控管理器（统一从 config_loader 读，避免硬编码默认值）
         try:
@@ -128,6 +144,318 @@ class ContractExecutor:
 
         self.logger.info(f"杠杆设置: {leverage}x")
 
+    def _detect_okx_pos_mode(self) -> None:
+        """启动时探测 OKX 账户 posMode，并 fail-closed 处理失败。
+
+        - live (testnet=False)：必须从 GET /api/v5/account/config 拿到合法值，否则禁止开新仓。
+        - testnet/paper：允许 OKX_POS_MODE_OVERRIDE env 覆盖；若 API 探测失败但有 override，
+          使用 override 并在日志明确标记非真实返回。
+        """
+        override = os.getenv('OKX_POS_MODE_OVERRIDE', '').strip().lower() or None
+        if override and override not in ('net_mode', 'long_short_mode'):
+            self.logger.warning(f"[OKX posMode] override 值非法（忽略）: {override}")
+            override = None
+
+        try:
+            raw = self.exchange.private_get_account_config()
+            data = (raw or {}).get('data') or []
+            mode = (data[0].get('posMode') if data else '') or ''
+            mode = mode.strip().lower()
+            if mode in ('net_mode', 'long_short_mode'):
+                self._okx_pos_mode = mode
+                self._okx_pos_mode_source = 'okx_api'
+                self.logger.info(f"[OKX posMode] 探测成功: {mode} (testnet={self.testnet})")
+                return
+            self.logger.error(f"[OKX posMode] 非预期返回: {raw}")
+        except Exception as e:
+            self.logger.error(f"[OKX posMode] private_get_account_config 失败: {e}")
+
+        # 探测失败的降级路径
+        if self.testnet:
+            if override:
+                self._okx_pos_mode = override
+                self._okx_pos_mode_source = 'env_override_testnet'
+                self.logger.warning(
+                    f"[OKX posMode] testnet 使用 env override={override}（不是交易所真实返回）"
+                )
+            else:
+                # testnet 默认 net_mode（仅用于本地/CI 跑通），日志标记
+                self._okx_pos_mode = 'net_mode'
+                self._okx_pos_mode_source = 'default_testnet'
+                self.logger.warning(
+                    "[OKX posMode] testnet 未拿到真实 posMode，默认 net_mode（不是交易所真实返回）"
+                )
+        else:
+            # live：fail-closed，禁止开新仓
+            self._okx_pos_mode = None
+            self._okx_pos_mode_source = 'unknown_live_fail_closed'
+            self.logger.critical(
+                "[OKX posMode] live 探测失败，FAIL-CLOSED：禁止开新仓直至人工介入"
+            )
+
+    def _require_okx_pos_mode(self) -> Optional[str]:
+        """OKX 路径取 posMode；非 OKX 返回 None。"""
+        if self.exchange_id != 'okx':
+            return None
+        return self._okx_pos_mode
+
+    def can_open_new_okx(self) -> bool:
+        """OKX：posMode 已知才允许开新仓；非 OKX 总是允许。"""
+        if self.exchange_id != 'okx':
+            return True
+        return self._okx_pos_mode in ('net_mode', 'long_short_mode')
+
+    # ------------------------------------------------------------------
+    # OKX 参数构造器（唯一允许写 reduceOnly/posSide 的入口）
+    # ------------------------------------------------------------------
+    def _okx_pos_side_for(self, side: str) -> str:
+        """side('long'/'short') → OKX posSide，按当前账户模式。"""
+        if self._okx_pos_mode == 'long_short_mode':
+            return 'long' if side == 'long' else 'short'
+        return 'net'
+
+    def _build_okx_open_params(self, side: str, *, clord_id: Optional[str] = None,
+                               attach_algo: Optional[list] = None) -> dict:
+        """开仓/加仓参数：不传 reduceOnly。"""
+        params: dict = {'posSide': self._okx_pos_side_for(side)}
+        if clord_id:
+            params['clOrdId'] = clord_id
+        if attach_algo:
+            params['attachAlgoOrds'] = attach_algo
+        return params
+
+    def _build_okx_close_params(self, position: dict, *, clord_id: Optional[str] = None) -> dict:
+        """减仓/平仓参数：
+        - net_mode: posSide=net + reduceOnly=True
+        - long_short_mode: posSide=被保护方向，不传 reduceOnly
+        """
+        side = position.get('side', 'long')
+        params: dict = {'posSide': self._okx_pos_side_for(side)}
+        if self._okx_pos_mode == 'net_mode':
+            params['reduceOnly'] = True
+        if clord_id:
+            params['clOrdId'] = clord_id
+        return params
+
+    def _build_okx_algo_params(self, position: dict, *, sl_trigger=None, sl_ord_px='-1',
+                                tp_trigger=None, tp_ord_px='-1') -> dict:
+        """独立 SL/TP algo 参数：
+        - 反向 side
+        - posSide: net_mode → net；long_short_mode → 被保护仓位方向
+        - 不传 reduceOnly
+        """
+        side = position.get('side', 'long')
+        algo_side = 'sell' if side == 'long' else 'buy'
+        params: dict = {
+            'side': algo_side,
+            'posSide': self._okx_pos_side_for(side),
+        }
+        if sl_trigger is not None:
+            params['slTriggerPx'] = str(sl_trigger)
+            params['slOrdPx'] = str(sl_ord_px)
+        if tp_trigger is not None:
+            params['tpTriggerPx'] = str(tp_trigger)
+            params['tpOrdPx'] = str(tp_ord_px)
+        return params
+
+    def _build_okx_attach_algo(self, stop_loss: Optional[float],
+                                take_profit: Optional[float]) -> Optional[list]:
+        """开仓附带 TP/SL 的 attachAlgoOrds 列表（不写 reduceOnly）。"""
+        if not stop_loss and not take_profit:
+            return None
+        algo: dict = {}
+        if stop_loss:
+            algo['slTriggerPx'] = str(stop_loss)
+            algo['slOrdPx'] = '-1'
+        if take_profit:
+            algo['tpTriggerPx'] = str(take_profit)
+            algo['tpOrdPx'] = '-1'
+        return [algo] if algo else None
+
+    # ------------------------------------------------------------------
+    # OKX 仓位归一化（用于减/平仓前的真实仓位复核）
+    # ------------------------------------------------------------------
+    def _normalize_okx_position(self, raw_pos: dict) -> Optional[dict]:
+        """把 ccxt fetch_positions() 单条返回归一化为 OKXPositionState。"""
+        if not raw_pos:
+            return None
+        info = raw_pos.get('info') or {}
+        contracts = raw_pos.get('contracts') or 0
+        try:
+            contracts_f = abs(float(contracts))
+        except (TypeError, ValueError):
+            contracts_f = 0.0
+        if contracts_f <= 0:
+            try:
+                contracts_f = abs(float(info.get('pos') or 0))
+            except (TypeError, ValueError):
+                contracts_f = 0.0
+        if contracts_f <= 0:
+            return None
+
+        # available_contracts：优先 info.availPos
+        avail = info.get('availPos')
+        try:
+            avail_f = abs(float(avail)) if avail not in (None, '') else contracts_f
+        except (TypeError, ValueError):
+            avail_f = contracts_f
+        if avail_f <= 0:
+            avail_f = contracts_f
+
+        side = raw_pos.get('side')
+        if side not in ('long', 'short'):
+            try:
+                pos_signed = float(info.get('pos') or 0)
+            except (TypeError, ValueError):
+                pos_signed = 0.0
+            side = 'long' if pos_signed >= 0 else 'short'
+
+        pos_side = (info.get('posSide') or '').lower() or self._okx_pos_side_for(side)
+
+        try:
+            entry = float(raw_pos.get('entryPrice') or info.get('avgPx') or 0)
+        except (TypeError, ValueError):
+            entry = 0.0
+        try:
+            lev = int(float(raw_pos.get('leverage') or info.get('lever') or 1))
+        except (TypeError, ValueError):
+            lev = 1
+
+        raw_sym = raw_pos.get('symbol') or info.get('instId') or ''
+        if '/' in raw_sym and ':' in raw_sym:
+            base = raw_sym.split('/')[0]
+            unified_sym = f"{base}-USDT-SWAP"
+        else:
+            unified_sym = raw_sym
+
+        return {
+            'symbol': unified_sym,
+            'side': side,
+            'pos_side': pos_side,
+            'contracts': contracts_f,
+            'available_contracts': avail_f,
+            'entry_price': entry,
+            'leverage': lev or 1,
+            'inst_id': info.get('instId') or unified_sym,
+        }
+
+    def _fetch_okx_position_state(self, symbol: str) -> Optional[dict]:
+        """从 OKX 拉取指定 symbol 的归一化仓位（找不到返回 None）。"""
+        if self.exchange_id != 'okx':
+            return None
+        try:
+            try:
+                positions = self.exchange.fetch_positions([symbol])
+            except Exception:
+                positions = self.exchange.fetch_positions()
+        except Exception as e:
+            self.logger.warning(f"[OKX 仓位复核] fetch_positions 失败: {e}")
+            return None
+
+        for raw in positions or []:
+            norm = self._normalize_okx_position(raw)
+            if not norm:
+                continue
+            if norm['symbol'] == symbol or norm['inst_id'] == symbol:
+                return norm
+            # 兼容 ccxt unified symbol（BTC/USDT:USDT）和内部 BTC-USDT-SWAP
+            if symbol.endswith('-SWAP'):
+                base = symbol.split('-')[0]
+                if norm['symbol'].startswith(f"{base}-USDT"):
+                    return norm
+        return None
+
+    # ------------------------------------------------------------------
+    # OKX 拒单复核：51169/51205/51112/51333
+    # ------------------------------------------------------------------
+    def _handle_okx_close_reject(self, symbol: str, error_msg: str,
+                                  *, action: str) -> dict:
+        """收到 close/reduce 拒单时的状态复核。
+
+        Returns dict:
+          - status: 'already_flat' / 'external_closed' / 'still_open' / 'direction_conflict' / 'unknown'
+          - position: 归一化仓位（still_open / direction_conflict 时存在）
+          - exchange_silent: True 表示交易所未返回数据
+        """
+        result = {'status': 'unknown', 'position': None, 'exchange_silent': False}
+        if self.exchange_id != 'okx':
+            return result
+
+        local = self.positions.get(symbol)
+        ex_pos = self._fetch_okx_position_state(symbol)
+
+        if ex_pos is None:
+            # 交易所确认无仓
+            if local:
+                self._mark_external_closed(symbol, reason=f"reject_{action}", error_msg=error_msg)
+                result['status'] = 'external_closed'
+            else:
+                result['status'] = 'already_flat'
+            return result
+
+        result['position'] = ex_pos
+        # 交易所仍有仓位
+        if local and local.get('side') and ex_pos['side'] != local['side']:
+            result['status'] = 'direction_conflict'
+            self.logger.error(
+                f"[OKX 拒单复核] {symbol} 方向冲突: 本地{local.get('side')} vs 交易所{ex_pos['side']}; "
+                f"err={error_msg}; 暂停自动 close/reduce，等待人工"
+            )
+            self._halt_symbol(symbol, reason=f"direction_conflict_{action}")
+        else:
+            result['status'] = 'still_open'
+            self.logger.error(
+                f"[OKX 拒单复核] {symbol} 交易所仍有仓位 contracts={ex_pos['contracts']} "
+                f"available={ex_pos['available_contracts']}; err={error_msg}; 暂停自动 close/reduce"
+            )
+            self._halt_symbol(symbol, reason=f"reject_{action}")
+        return result
+
+    def _mark_external_closed(self, symbol: str, *, reason: str, error_msg: str = '') -> None:
+        """交易所确认无仓：清理本地、记录 external_closed，让上层走通知路径。"""
+        if symbol not in self.positions:
+            return
+        if not hasattr(self, '_removed_positions_data'):
+            self._removed_positions_data = []
+        if not hasattr(self, '_last_removed_symbols'):
+            self._last_removed_symbols = []
+        pos_data = self.positions[symbol].copy()
+        pos_data['symbol'] = symbol
+        pos_data['_external_close_reason'] = reason
+        if error_msg:
+            pos_data['_external_close_error'] = error_msg
+        self._removed_positions_data.append(pos_data)
+        self._last_removed_symbols.append(symbol)
+        del self.positions[symbol]
+        self._save_positions()
+        if not hasattr(self, '_close_cooldown'):
+            self._close_cooldown = {}
+        self._close_cooldown[symbol] = time.time() + 60
+        if self.idempotency:
+            for s in ('long', 'short'):
+                try:
+                    self.idempotency.clear(symbol, s)
+                except Exception:
+                    pass
+        self.logger.warning(f"[OKX 拒单复核] {symbol} 交易所确认无仓，本地清理 ({reason})")
+
+    def _halt_symbol(self, symbol: str, *, reason: str) -> None:
+        """对单 symbol 触发执行级 halt，避免 51169/51205 后继续无限重提。"""
+        if not hasattr(self, '_halted_symbols'):
+            self._halted_symbols = {}
+        self._halted_symbols[symbol] = {
+            'reason': reason,
+            'halted_at': time.time(),
+        }
+        try:
+            from utils.halt_state import get_halt_state
+            get_halt_state().halt(reason=f"okx_{reason}:{symbol}", triggered_by="executor")
+        except Exception:
+            pass
+
+    def is_symbol_halted(self, symbol: str) -> bool:
+        return symbol in getattr(self, '_halted_symbols', {})
+
     def get_balance(self) -> float:
         """获取USDT余额（total，含持仓保证金，用于回撤计算）"""
         if self.balance_adapter:
@@ -156,6 +484,14 @@ class ContractExecutor:
     def _open_position(self, symbol: str, side: str, amount_usdt: float) -> Optional[Dict]:
         """开仓"""
         symbol = self._normalize_symbol(symbol)
+        # OKX：posMode 未知则禁止开新仓
+        if self.exchange_id == 'okx' and not self.can_open_new_okx():
+            self.logger.error(f"[OKX posMode] 未知，禁止开新仓: {symbol}")
+            return None
+        # 单 symbol halt：拒单复核进入 halt 后不再继续提交
+        if self.is_symbol_halted(symbol):
+            self.logger.warning(f"[Halt] {symbol} 已 halt，拒绝开新仓")
+            return None
         # P1-M: 幂等防护——10s 内同 (symbol, side) 重复请求直接拒
         if self.idempotency:
             is_dup, prior = self.idempotency.is_duplicate(symbol, side)
@@ -207,12 +543,11 @@ class ContractExecutor:
 
             # 创建合约订单
             order_side = 'buy' if side == 'long' else 'sell'
-            order_params = {'reduceOnly': False}
             # P1-M: 为 OKX 附加 clOrdId 实现交易所端幂等
             clord_id = None
             if self.idempotency and self.exchange_id == 'okx':
                 clord_id = self.idempotency.gen_client_order_id(symbol, side)
-                order_params['clOrdId'] = clord_id
+            order_params = self._build_open_order_params(side, clord_id=clord_id)
             order = self.exchange.create_order(
                 symbol=symbol,
                 type='market',
@@ -240,24 +575,10 @@ class ContractExecutor:
             stop_loss = self.risk_manager.calculate_stop_loss(fill_price, side)
             take_profit = self.risk_manager.calculate_take_profit(fill_price, side)
 
-            # 在交易所设置SL条件单
-            sl_order_id = None
-            try:
-                sl_side = 'sell' if side == 'long' else 'buy'
-                sl_order = self.exchange.create_order(
-                    symbol=symbol,
-                    type='market',
-                    side=sl_side,
-                    amount=amount,
-                    params={
-                        'reduceOnly': True,
-                        'stopLossPrice': stop_loss,
-                    }
-                )
-                sl_order_id = sl_order['id']
-                self.logger.info(f"SL条件单设置成功: {stop_loss:.6f}")
-            except Exception as e:
-                self.logger.warning(f"设置SL条件单失败（本地兜底）: {e}")
+            # 在交易所设置 SL 条件单（OKX 走独立 algo；非 OKX 走旧路径）
+            sl_order_id = self._place_protective_sl(
+                symbol=symbol, side=side, stop_price=stop_loss, amount=amount,
+            )
 
             # 记录持仓
             position = {
@@ -283,6 +604,66 @@ class ContractExecutor:
             self.logger.error(f"开仓失败: {e}")
             return None
 
+    def _build_open_order_params(self, side: str, *, clord_id: Optional[str] = None,
+                                 attach_algo: Optional[list] = None) -> dict:
+        """非 OKX 走原 reduceOnly=False；OKX 走构造器。"""
+        if self.exchange_id == 'okx':
+            return self._build_okx_open_params(side, clord_id=clord_id, attach_algo=attach_algo)
+        params: dict = {'reduceOnly': False}
+        if attach_algo:
+            params['attachAlgoOrds'] = attach_algo
+        if clord_id:
+            params['clOrdId'] = clord_id
+        return params
+
+    def _build_close_order_params(self, position: dict, *, clord_id: Optional[str] = None) -> dict:
+        """非 OKX 走原 reduceOnly=True；OKX 走构造器。"""
+        if self.exchange_id == 'okx':
+            return self._build_okx_close_params(position, clord_id=clord_id)
+        params: dict = {'reduceOnly': True}
+        if clord_id:
+            params['clOrdId'] = clord_id
+        return params
+
+    def _place_protective_sl(self, *, symbol: str, side: str, stop_price: float,
+                              amount: float) -> Optional[str]:
+        """挂独立保护单 SL：
+        - OKX：走 algo (slTriggerPx + posSide)，反向 side，不传 reduceOnly
+        - 其他：走原 stopLossPrice + reduceOnly=True
+        """
+        if not stop_price or amount <= 0:
+            return None
+        if self.exchange_id == 'okx':
+            try:
+                params = self._build_okx_algo_params(
+                    {'side': side},
+                    sl_trigger=stop_price, sl_ord_px='-1',
+                )
+                algo_side = params.pop('side')
+                algo_order = self.exchange.create_order(
+                    symbol=symbol,
+                    type='conditional',
+                    side=algo_side,
+                    amount=amount,
+                    params=params,
+                )
+                self.logger.info(f"[OKX algo] SL 条件单设置成功: {symbol} @ {stop_price}")
+                return algo_order.get('id')
+            except Exception as e:
+                self.logger.warning(f"[OKX algo] SL 设置失败（本地兜底）: {e}")
+                return None
+        try:
+            sl_side = 'sell' if side == 'long' else 'buy'
+            sl_order = self.exchange.create_order(
+                symbol=symbol, type='market', side=sl_side, amount=amount,
+                params={'reduceOnly': True, 'stopLossPrice': stop_price},
+            )
+            self.logger.info(f"SL 条件单设置成功: {stop_price:.6f}")
+            return sl_order.get('id')
+        except Exception as e:
+            self.logger.warning(f"设置SL条件单失败（本地兜底）: {e}")
+            return None
+
     def close_position(self, symbol: str) -> Optional[Dict]:
         """平仓"""
         if symbol not in self.positions:
@@ -296,14 +677,39 @@ class ContractExecutor:
             ticker = self.exchange.fetch_ticker(symbol)
             exit_price = ticker['last']
 
-            # 平仓（使用reduceOnly）
+            # OKX：close 前以交易所真实仓位为准，限制 amount<=available_contracts
+            close_amount = position['amount']
+            if self.exchange_id == 'okx':
+                ex_pos = self._fetch_okx_position_state(symbol)
+                if ex_pos is None:
+                    # 交易所已无仓：本地清理 + already_flat
+                    self._mark_external_closed(symbol, reason='close_already_flat')
+                    return None
+                if ex_pos['side'] != position['side']:
+                    self.logger.error(
+                        f"[OKX close] {symbol} 方向冲突: 本地{position['side']} vs 交易所{ex_pos['side']}, 暂停"
+                    )
+                    self._halt_symbol(symbol, reason='direction_conflict_close')
+                    return None
+                if close_amount > ex_pos['available_contracts']:
+                    self.logger.warning(
+                        f"[OKX close] {symbol} 数量超出可平 {close_amount} > {ex_pos['available_contracts']}, 收敛"
+                    )
+                    close_amount = ex_pos['available_contracts']
+                # 通过 amount_to_precision 处理精度
+                try:
+                    close_amount = float(self.exchange.amount_to_precision(symbol, close_amount))
+                except Exception:
+                    pass
+
             order_side = 'sell' if position['side'] == 'long' else 'buy'
+            close_params = self._build_close_order_params(position)
             order = self.exchange.create_order(
                 symbol=symbol,
                 type='market',
                 side=order_side,
-                amount=position['amount'],
-                params={'reduceOnly': True}
+                amount=close_amount,
+                params=close_params,
             )
 
             # 取消独立 SL 条件单（_open_position 路径会设置；attachAlgoOrds 路径由 OKX 自动取消）
@@ -364,12 +770,10 @@ class ContractExecutor:
 
         except Exception as e:
             error_msg = str(e)
-            # 51205: Reduce Only不可用 = 持仓已不存在
-            if '51205' in error_msg or 'Reduce Only' in error_msg:
-                self.logger.warning(f"持仓已不存在，清理本地记录: {symbol}")
-                if symbol in self.positions:
-                    del self.positions[symbol]
-                    self._save_positions()
+            # OKX 拒单复核：51169/51205/51112/51333 必须状态复核
+            if self.exchange_id == 'okx' and _is_okx_position_reject(error_msg):
+                review = self._handle_okx_close_reject(symbol, error_msg, action='close')
+                self.logger.warning(f"[OKX close 拒单复核] {symbol} → {review['status']}")
                 return None
             self.logger.error(f"平仓失败: {e}")
             return None
@@ -622,6 +1026,13 @@ class ContractExecutor:
     def open_position_with_plan(self, symbol: str, side: str, plan: dict) -> Optional[Dict]:
         """基于Judge plan的智能开仓"""
         symbol = self._normalize_symbol(symbol)
+        # OKX：posMode 未知禁止开新仓
+        if self.exchange_id == 'okx' and not self.can_open_new_okx():
+            self.logger.error(f"[OKX posMode] 未知，禁止智能开仓: {symbol}")
+            return None
+        if self.is_symbol_halted(symbol):
+            self.logger.warning(f"[Halt] {symbol} 已 halt，拒绝智能开仓")
+            return None
         # P1-M: 幂等防护——10s 内同 (symbol, side) 重复请求直接拒
         if self.idempotency:
             is_dup, prior = self.idempotency.is_duplicate(symbol, side)
@@ -747,10 +1158,10 @@ class ContractExecutor:
                         return None
 
                     order_side = 'buy' if side == 'long' else 'sell'
-                    params = {'reduceOnly': False}
-                    params.update(tp_sl_params)
-                    if self.idempotency and 'clord_id' in dir():
-                        params['clOrdId'] = clord_id
+                    attach_algo = self._build_attach_algo_from_tp_sl(tp_sl_params)
+                    params = self._build_open_order_params(
+                        side, clord_id=clord_id, attach_algo=attach_algo,
+                    )
                     plan_order = self.exchange.create_order(
                         symbol=symbol, type='market', side=order_side,
                         amount=amount, params=params
@@ -811,17 +1222,19 @@ class ContractExecutor:
             return None
 
     def _build_tp_sl_params(self, side: str, stop_loss: float, take_profit: float) -> dict:
-        """构建OKX附带止盈止损的下单参数（OCO条件单，触发后市价平仓）"""
-        if not stop_loss and not take_profit:
-            return {}
-        algo_ord = {}
-        if stop_loss:
-            algo_ord['slTriggerPx'] = str(stop_loss)
-            algo_ord['slOrdPx'] = '-1'
-        if take_profit:
-            algo_ord['tpTriggerPx'] = str(take_profit)
-            algo_ord['tpOrdPx'] = '-1'
-        return {'attachAlgoOrds': [algo_ord]}
+        """开仓附带 TP/SL 的 attachAlgoOrds 包装。
+
+        返回 `{'attachAlgoOrds': [...]}` 或 `{}`。OKX 与非 OKX 共用，但仅 OKX 路径会真正
+        把它加进 create_order 参数；reduceOnly/posSide 仍由 _build_open_order_params 决定。
+        """
+        attach = self._build_okx_attach_algo(stop_loss, take_profit)
+        return {'attachAlgoOrds': attach} if attach else {}
+
+    def _build_attach_algo_from_tp_sl(self, tp_sl_params: dict) -> Optional[list]:
+        """从 _build_tp_sl_params 的输出还原 attachAlgoOrds 列表。"""
+        if not tp_sl_params:
+            return None
+        return tp_sl_params.get('attachAlgoOrds')
 
     def _execute_limit_order(self, symbol: str, side: str, size_usdt: float,
                              current_price: float, entry_zone: dict,
@@ -866,11 +1279,10 @@ class ContractExecutor:
                 return None
             amount = norm.get('amount', amount)
 
-        params = {'reduceOnly': False}
-        if tp_sl_params:
-            params.update(tp_sl_params)
-        if clord_id:
-            params['clOrdId'] = clord_id
+        attach_algo = self._build_attach_algo_from_tp_sl(tp_sl_params)
+        params = self._build_open_order_params(
+            side, clord_id=clord_id, attach_algo=attach_algo,
+        )
 
         order = self.exchange.create_order(
             symbol=symbol, type='limit', side=order_side,
@@ -919,11 +1331,10 @@ class ContractExecutor:
                 self.logger.warning(f"限价单fallback预检失败: {reason}")
                 return None
             amount = norm.get('amount', amount)
-        fallback_params = {'reduceOnly': False}
-        if tp_sl_params:
-            fallback_params.update(tp_sl_params)
-        if clord_id:
-            fallback_params['clOrdId'] = clord_id
+        fallback_attach = self._build_attach_algo_from_tp_sl(tp_sl_params)
+        fallback_params = self._build_open_order_params(
+            side, clord_id=clord_id, attach_algo=fallback_attach,
+        )
         fallback_order = self.exchange.create_order(
             symbol=symbol, type='market', side=order_side,
             amount=amount, params=fallback_params
@@ -964,7 +1375,15 @@ class ContractExecutor:
 
     def place_stop_loss_order(self, symbol: str, side: str, stop_price: float,
                               amount: float) -> Optional[str]:
-        """挂交易所止损条件单"""
+        """挂交易所止损条件单。
+
+        - OKX：走独立 algo（conditional + posSide），反向 side，不传 reduceOnly。
+        - 其他：保留原 stop + reduceOnly=True 路径。
+        """
+        if self.exchange_id == 'okx':
+            return self._place_protective_sl(
+                symbol=symbol, side=side, stop_price=stop_price, amount=amount,
+            )
         try:
             close_side = 'sell' if side == 'long' else 'buy'
             order = self.exchange.create_order(
@@ -1119,6 +1538,30 @@ class ContractExecutor:
             if reduce_amount <= 0:
                 return None
 
+            # OKX：减仓前以交易所真实仓位为准
+            if self.exchange_id == 'okx':
+                ex_pos = self._fetch_okx_position_state(symbol)
+                if ex_pos is None:
+                    self._mark_external_closed(symbol, reason='reduce_already_flat')
+                    return None
+                if ex_pos['side'] != position['side']:
+                    self.logger.error(
+                        f"[OKX reduce] {symbol} 方向冲突: 本地{position['side']} vs 交易所{ex_pos['side']}, 暂停"
+                    )
+                    self._halt_symbol(symbol, reason='direction_conflict_reduce')
+                    return None
+                if reduce_amount > ex_pos['available_contracts']:
+                    self.logger.warning(
+                        f"[OKX reduce] {symbol} 数量超出可平 {reduce_amount} > {ex_pos['available_contracts']}, 收敛"
+                    )
+                    reduce_amount = ex_pos['available_contracts']
+                    try:
+                        reduce_amount = float(self.exchange.amount_to_precision(symbol, reduce_amount))
+                    except Exception:
+                        pass
+                    if reduce_amount <= 0:
+                        return None
+
             # 减仓前取消旧SL条件单（数量变化后旧单无效）
             if position.get('sl_order_id'):
                 try:
@@ -1129,9 +1572,10 @@ class ContractExecutor:
                 position['sl_order_id'] = None
 
             order_side = 'sell' if position['side'] == 'long' else 'buy'
+            reduce_params = self._build_close_order_params(position)
             order = self.exchange.create_order(
                 symbol=symbol, type='market', side=order_side,
-                amount=reduce_amount, params={'reduceOnly': True}
+                amount=reduce_amount, params=reduce_params,
             )
 
             # 真实成交 PnL：通过 ledger 记录减仓
@@ -1168,6 +1612,11 @@ class ContractExecutor:
             return {'symbol': symbol, 'reduced_pct': pct, 'order': order, 'realized_pnl': realized_pnl, 'entry_request_id': position.get('request_id', '')}
 
         except Exception as e:
+            error_msg = str(e)
+            if self.exchange_id == 'okx' and _is_okx_position_reject(error_msg):
+                review = self._handle_okx_close_reject(symbol, error_msg, action='reduce')
+                self.logger.warning(f"[OKX reduce 拒单复核] {symbol} → {review['status']}")
+                return None
             self.logger.error(f"减仓失败: {e}")
             return None
 
@@ -1183,6 +1632,12 @@ class ContractExecutor:
         加仓后重新计算SL/TP以反映新均价
         """
         symbol = self._normalize_symbol(symbol)
+        if self.exchange_id == 'okx' and not self.can_open_new_okx():
+            self.logger.error(f"[OKX posMode] 未知，禁止加仓: {symbol}")
+            return None
+        if self.is_symbol_halted(symbol):
+            self.logger.warning(f"[Halt] {symbol} 已 halt，拒绝加仓")
+            return None
         if symbol not in self.positions:
             self.logger.warning(f"加仓失败: {symbol} 无持仓")
             return None
@@ -1250,10 +1705,10 @@ class ContractExecutor:
                 return None
 
             order_side = 'buy' if side == 'long' else 'sell'
-            add_params = {'reduceOnly': False}
+            add_clord = None
             if self.idempotency and self.exchange_id == 'okx':
                 add_clord = self.idempotency.gen_client_order_id(symbol, f'add_{side}')
-                add_params['clOrdId'] = add_clord
+            add_params = self._build_open_order_params(side, clord_id=add_clord)
             order = self.exchange.create_order(
                 symbol=symbol, type='market', side=order_side,
                 amount=amount, params=add_params

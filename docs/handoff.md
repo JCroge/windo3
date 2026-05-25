@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：回撤基准修正完成（2026-05-23），469 tests 全通过；live Executor 不再因历史 peak 误判回撤
-**下一阶段**：恢复 live 小额验证（EFFECTIVE_BALANCE_CAP=300），OKX testnet 端到端矩阵验证
+**当前阶段**：2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收（10 case PASS）；自动化基线 `531 passed / 4 deselected / 1 warning`（含 38 个 posMode 单测）；OS 层重启已上线新代码（21:32 真账户探测 `posMode=net_mode`）
+**下一阶段**：在 OKX demo/testnet 跑完 `docs/okx_posmode_execution_acceptance.md` T0-T9 矩阵，记录 raw response / final position / algo orders 到 `docs/generated_reports/OKX执行语义testnet验收报告_*.md`；完成前小额 live 灰度可继续观察，但 live 扩容仍 NO-GO
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -85,7 +85,7 @@
    - 基于CCXT的统一交易接口
    - 支持Binance和OKX
    - 杠杆设置（set_leverage）
-   - 开仓/平仓（reduceOnly参数）
+   - OKX posMode-aware 参数构造（2026-05-25 完成）：启动期探测 posMode + `_build_okx_open_params` / `_build_okx_close_params` / `_build_okx_algo_params` 三入口构造器 + close/reduce 前 `availPos` 钳制 + 51169/51205/51112/51333 拒单状态复核
    - 止损止盈自动检查
    - 盈亏计算含杠杆倍数
    - 持仓持久化（`data/positions.json`）
@@ -508,7 +508,7 @@
    - `conftest.py:5` `collect_ignore = ["test_kline.py"]`：collect 阶段跳过依赖 websockets 且只含 `async def test()` 的非测试文件
    - `pytest.ini:5` `addopts = -m "not network"`：默认排除 network 标记的测试
    - `test_backtest.py` / `test_indicators.py` / `test_strategy.py`：加 `@pytest.mark.network`（依赖 `data/klines.db`，被 conftest tmp_path 隔离）
-   - 默认 `python3 -m pytest -q` → 184 passed / 3 deselected / 169s
+   - 历史基线：默认 `python3 -m pytest -q` → 184 passed / 3 deselected / 169s
 
 3. **留尾（非阻塞）**
    - `_get_balance()` 对 MagicMock 经 `float()` 得 1.0：仅测试替身松散，生产路径走 `BalanceAdapter.get_total()` 返回真实 float
@@ -546,7 +546,7 @@
 4. **test_p2p3_grid_search.py 消除 PytestReturnNotNoneWarning**（`test_p2p3_grid_search.py`）
    - 问题：`test_grid_search_trending` / `test_grid_search_choppy` / `test_grid_search_robustness` 三个测试函数返回 dict，pytest 报 `PytestReturnNotNoneWarning`
    - 修复：删除三处 `return` 语句（assert 已足够，返回值无意义）
-   - 结果：`python3 -m pytest -q` → 184 passed / 4 deselected / 264 warnings / 229s
+   - 历史结果：`python3 -m pytest -q` → 184 passed / 4 deselected / 264 warnings / 229s
 
 ### ✅ 最终审计收尾（2026-05-20）
 
@@ -594,7 +594,7 @@
    - 偏差或 API 失败时发布 `risk_alert`（type: reconciliation_mismatch），Telegram 和 RiskGuard 自动接收
 
 5. **验证结果**
-   - `python3 -m pytest -q` → 373 passed / 4 deselected / 1 warning / ~186s
+   - 历史结果：`python3 -m pytest -q` → 373 passed / 4 deselected / 1 warning / ~186s
    - 1 flaky（test_phase_c.py MessageBus 单例状态泄漏，单独运行通过）
    - 系统已重启（PID 11132）
 

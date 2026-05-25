@@ -2,7 +2,7 @@
 
 日期：2026-05-22  
 状态：mock 通过，testnet 待执行  
-关联待解决事项：`docs/待解决事项.md`  
+关联待解决事项：`docs/to-do-list.md`  
 关联脚本：`verify_okx_testnet_semantics.py`
 
 ## 1. 验收目的
@@ -45,7 +45,8 @@ Case 1-8: 待执行
 
 - Mock exchange 8 case 全部通过
 - OKX testnet 未执行
-- 是否允许小额 live 灰度：否（需 testnet 验证）
+- 是否允许小额 live 灰度：否，需先完成 OKX posMode 执行兼容并通过目标账户模式 smoke test
+- 是否允许 live 扩容：否（需 testnet 验证）
 - 是否允许 paper/mock 继续：是
 - 残余风险：mock 无法验证网络延迟、真实撮合、条件单触发时序
 - 后续动作：连接 OKX testnet 执行真实验证后方可进入 live 灰度评审

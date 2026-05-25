@@ -2,7 +2,7 @@
 
 加密货币趋势交易系统，基于技术分析、合约执行、风控闭环和多 Agent 协作决策。
 
-**系统状态（2026-05-24）**：审计整改 FR-001~FR-010 全部完成，493 tests 通过，系统已进入小额 live 灰度运行。OKX testnet 手工验收待执行。
+**系统状态（2026-05-25）**：OKX posMode 执行兼容代码已落地（基线 `531 passed / 4 deselected / 1 warning`，含 38 个 posMode 单测；mock 验收 10 case PASS）。系统可继续 paper/mock 和既有小额 live 灰度观察；OKX 真实 testnet 端到端验收（T0-T9）未执行，阻断 live 扩容。
 
 ## 快速开始
 
@@ -85,6 +85,9 @@ python3 test_full_verification.py
 - [系统架构](docs/architecture.md) - 技术架构和模块设计
 - [运维手册](docs/runbook.md) - 部署和故障排查
 - [集成指南](docs/integration-guide.md) - API和扩展开发
+- [系统性审计报告](docs/generated_reports/系统性审计报告_20260524.md) - 2026-05-24 全链路审计结论
+- [OKX posMode 执行兼容 PRD](docs/okx_posmode_execution_prd.md) / [验收文档](docs/okx_posmode_execution_acceptance.md) - 51169/51205 修复方案与 testnet 验收矩阵
+- [To-Do List](docs/to-do-list.md) - 当前阻断项、后续优化和已关闭事项
 - [AI协作指南](CLAUDE.md) - AI开发协作规范
 
 ## 开发约束

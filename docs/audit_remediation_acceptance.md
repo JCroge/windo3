@@ -1,8 +1,8 @@
 # 审计整改验收文档
 
-更新日期：2026-05-23  
+更新日期：2026-05-24  
 关联 PRD：`docs/audit_remediation_prd.md`  
-关联审计报告：`docs/generated_reports/系统性审计报告_20260523.md`  
+关联审计报告：`docs/generated_reports/系统性审计报告_20260524.md`  
 
 ## 1. 验收结论规则
 
@@ -12,7 +12,14 @@
 | CONDITIONAL PASS | P0/P1 全过，仅 P2 遗留，且有 owner、风险说明和回归保护 |
 | FAIL | 任一 P0 失败；或任一 P1 失败且无明确豁免；或 OKX testnet 未执行/失败且影响交易安全 |
 
-当前状态：FAIL。原因：审计 P0 尚未修复，新增 P1 中 exchange sandbox、对账恢复、contractSize、依赖锁定和旧入口收敛尚未完成。
+当前状态：AUTOMATION PASS / FAIL FOR EXPANSION。上一轮审计 P0/P1 自动化整改已完成并通过全量回归；OKX 真实 testnet 语义验收仍未执行，因此按本验收规则 live 扩容保持 FAIL/NO-GO。
+
+2026-05-24 验收记录：
+
+- 编译检查：`env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q .` 通过。
+- 全量回归：`python3 -m pytest -q` → `493 passed / 4 deselected / 1 warning`。
+- OKX mock 语义验收：`python3 verify_okx_testnet_semantics.py` → 8 case PASS。
+- 新增审计遗留：BehavioralCritic 字段契约不一致，已进入 `docs/to-do-list.md`。
 
 ## 2. 验收前置条件
 
@@ -28,7 +35,7 @@
 基础编译：
 
 ```bash
-python3 -m py_compile run_agents.py agents/*.py agents/research/*.py agents/trading/*.py utils/*.py core/*.py *.py
+env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q .
 ```
 
 全量回归：
@@ -81,7 +88,7 @@ rg -n 'publish\\("execution_result"' agents/trading/executor.py
 通过标准：
 
 - 编译无错误。
-- 全量 pytest 无失败。
+- 全量 pytest 无失败；2026-05-24 基线为 `493 passed / 4 deselected / 1 warning`。
 - `start.sh` 不再启动 `main.py`。
 - 所有 execution_result 发布点要么在 helper 内部，要么调用 helper 生成 payload。
 
@@ -134,7 +141,7 @@ P1 Go 标准：AC-P1-001 至 AC-P1-016 全部通过，或有项目负责人签�
 | AC-P2-003 | FR-010 | Telegram 发送不阻塞 command polling | mock 高频告警 + `/status` | 命令响应不被长时间阻塞 |
 | AC-P2-004 | FR-010 | 日志有轮转或清理策略 | 检查 logger 配置/清理脚本 | 有 max size/days 或定时清理 |
 | AC-P2-005 | FR-010 | LLM audit 有脱敏/保留策略 | 检查配置和写入内容 | 敏感字段不直接长期保留 |
-| AC-P2-006 | FR-006 | 文档同步 | rg 旧入口和旧测试数 | 不再把 `main.py/live_trading.py` 作为生产入口 |
+| AC-P2-006 | FR-006 | 文档同步 | rg 旧入口和旧测试数 | 不再把 `main.py/live_trading.py` 作为生产入口；当前待办统一在 `docs/to-do-list.md` |
 
 P2 不阻断小额 live 灰度，但必须在验收结论中列明剩余风险。
 
@@ -155,7 +162,7 @@ P2 不阻断小额 live 灰度，但必须在验收结论中列明剩余风险�
 | OKX-02 | limit open timeout | limit create raw、fetch_order raw、cancel raw | 超时后无残留挂单，系统输出 rejected/expired |
 | OKX-03 | insufficient balance | error raw、normalized result | 不重试无限下单，输出 rejected/error 且 reason 清楚 |
 | OKX-04 | min amount | precheck result、exchange error raw | 本地 precheck 能挡住或交易所错误被规范化 |
-| OKX-05 | reduceOnly close | close raw、position after close | 不反向开仓，position 降低或归零 |
+| OKX-05 | posMode-aware close/reduce | close/reduce raw、posMode、position after close | `posSide`/`reduceOnly` 符合当前 OKX `posMode`，不反向开仓，position 降低或归零 |
 | OKX-06 | move SL / trailing | old algo state、new algo state | 旧保护单取消/失效，新保护单唯一有效，或明确使用本地兜底 |
 | OKX-07 | add/reduce 后 SL/TP 生命周期 | before/after algo orders | 本地 positions 与交易所保护条件一致 |
 | OKX-08 | duplicate clOrdId | 两次 create raw、final position | 不产生重复仓位，第二次有可解释终态 |
@@ -183,7 +190,8 @@ OKX Go 标准：OKX-01 至 OKX-09 全部 PASS，或失败项明确为 testnet �
 - `docs/development.md`
 - `docs/architecture.md`
 - `docs/handoff.md`
-- `docs/待解决事项.md`
+- `docs/to-do-list.md`
+- `docs/待解决事项.md`（兼容旧链接，指向 `docs/to-do-list.md`）
 - `CLAUDE.md`
 
 验收命令：
@@ -196,7 +204,7 @@ rg -n "python3 main.py|live_trading.py.*生产|373 passed|444 passed|184 passed|
 
 - 不再把 `main.py` 或 `live_trading.py` 描述为生产入口。
 - 旧测试数只出现在历史记录上下文，不作为当前状态。
-- `docs/待解决事项.md` 不再保留已修复但标为 blocked 的配置问题。
+- `docs/to-do-list.md` 不再保留已修复但标为 blocked 的配置问题。
 - 当前主入口明确为 `python3 run_agents.py`。
 
 ## 10. 最终 Go/No-Go 表
@@ -204,13 +212,13 @@ rg -n "python3 main.py|live_trading.py.*生产|373 passed|444 passed|184 passed|
 | 条件 | Go 标准 |
 |---|---|
 | P0 | 全部 AC-P0 通过 |
-| P1 | 全部 AC-P1 通过，或仅有非阻断豁免 |
+| P1 | 自动化 AC-P1 通过；OKX 真实 testnet 单独作为扩容阻断门 |
 | 全量测试 | `python3 -m pytest -q` 无失败 |
-| OKX testnet | OKX-01 至 OKX-09 通过 |
+| OKX testnet | OKX-01 至 OKX-09 通过；未执行时不得扩容 |
 | 状态迁移 | STATE-01 至 STATE-06 通过 |
 | 入口安全 | `start.sh` 和 docs 均指向 `run_agents.py` |
 | live 安全 | `USE_TESTNET=true` 无路径读 live exchange |
-| 文档 | 待解决事项无 P0/P1 BLOCKED |
+| 文档 | `docs/to-do-list.md` 无除 OKX testnet 以外的 P1 BLOCKED |
 
 结论规则：
 
