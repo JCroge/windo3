@@ -7,6 +7,7 @@
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
 - 2026-05-25 自动化基线：`531 passed / 4 deselected / 1 warning`（含 `test_okx_posmode_executor.py` 38）。
 - 2026-05-26 自动化基线：`551 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 新增 20 个 case）。
+- 2026-05-26 Long Entry Position Guard 上线后基线：`575 passed / 4 deselected / 1 warning`（含 `test_long_entry_position_guard.py` 新增 23 case）。
 - OKX mock 执行语义验收 10 case PASS（含 posMode close 矩阵 + 拒单状态复核）；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。
 - R:R Floor Policy 修复已上线（2026-05-26）：单一 `Judge._select_rr_floor` 函数，主路径与 deferred 路径共用，新增 `long_aligned_low_rr` 分支允许 mixed/choppy 下趋势强一致多头按 1.30 floor 进入 low_rr_extra slot。详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
 - 当前待办统一看 `docs/to-do-list.md`，审计报告看 `docs/generated_reports/系统性审计报告_20260524.md`。
@@ -112,6 +113,7 @@ Reviewer / RiskGuard
 - close/reduce 不应被开仓风控阻断；open/add 必须经过余额、回撤、slot、订单能力预检。
 - 修改 Judge / 策略公式必须同步事件回测或补同构测试，不能只看 mock 单测。
 - 修改 R:R floor 必须改 `Judge._select_rr_floor` 单一函数，主路径与 `_apply_regime_policy` 共用；不能在调用点重新写 if/else 分支。`probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` 五种 policy 标签由该函数返回。
+- 修改 Long Entry Position Guard 必须改 `Judge._check_entry_position_policy` 单一函数，主开仓路径与三条 deferred 路径（15m / pullback / chase）必须都调用它；不能在 deferred helper 中再写一遍 overheat 判定。新增字段必须同步到 `_build_attribution` 与 `_rejection_attribution`，并在 `event_backtest.py` 中同步。详见 `docs/long_entry_position_guard_prd.md`。
 
 ## Exchange 规则
 

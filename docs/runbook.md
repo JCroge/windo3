@@ -97,7 +97,7 @@ python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/T
 python3 -m pytest test_drawdown_baseline.py  # 回撤基准修正验收（14 tests）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 551 passed / 4 deselected / 1 warning（2026-05-26，含 R:R Floor Policy 20 case + OKX posMode 38 case）
+python3 -m pytest -q              # 575 passed / 4 deselected / 1 warning（2026-05-26，含 Long Entry Position Guard 23 case + R:R Floor Policy 20 case + OKX posMode 38 case）
 python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
 ```
 
@@ -164,6 +164,16 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 | LOW_RR_MAX_LEVERAGE | 低 R:R 多头最大杠杆 | 5 | 否 |
 | LOW_RR_MAX_POSITION_PCT | 低 R:R 多头最大仓位比例 | 0.5 | 否 |
 | LOW_RR_EXTRA_SLOT | 低 R:R 多头额外槽数 | 1 | 否 |
+| LONG_LIVE_POSITION_GUARD_ENABLED | 多头入场位置保护总开关（2026-05-26 新增，防 NEAR 类山顶接货） | true | 否 |
+| LONG_LIVE_MAX_RANGE_POS | 24h 区间位置阈值，>= 此值视为接近短期高位 | 0.82 | 否 |
+| LONG_LIVE_MAX_PRE_MOVE | 12h 前置涨幅阈值，>= 此值且 range_pos>=`LONG_LIVE_DAILY_GAIN_RANGE_POS` 视为前置过热 | 0.05 | 否 |
+| LONG_LIVE_MAX_DAILY_GAIN | 上一根已完成日线涨幅阈值，>= 此值且 range_pos>=`LONG_LIVE_DAILY_GAIN_RANGE_POS` 视为日线过热 | 0.10 | 否 |
+| LONG_LIVE_DAILY_GAIN_RANGE_POS | pre_12h / prev_daily 联合判定的辅助 range_pos 阈值 | 0.75 | 否 |
+| LONG_LIVE_PULLBACK_MIN_PCT | overheat 触发后等待回调的最小幅度（与 ATR% 取大） | 0.025 | 否 |
+| LONG_LIVE_PULLBACK_TIMEOUT_HOURS | `deferred_pullback_overheat` 最大等待小时 | 4 | 否 |
+| LONG_LIVE_OVERHEAT_DISABLE_CHASE | overheat deferred 期间禁止 chase 入场 | true | 否 |
+| EV_BUCKET_MIN_TRADES | bucket 提高 p_win 所需最小样本数（低于此值视为稀疏 bucket） | 10 | 否 |
+| EV_BUCKET_SPARSE_ALLOW_UPLIFT | 是否允许稀疏 bucket 抬高 p_win（默认禁止，仅允许降低/缩仓） | false | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
@@ -186,6 +196,38 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 - 修改任何 R:R floor 必须改 `Judge._select_rr_floor` 单一函数；事件回测 `event_backtest.py` 同步同构验证。
 
 详见 `docs/rr_floor_policy_prd.md` 与 `docs/rr_floor_policy_acceptance.md`。
+
+## Long Entry Position Guard
+
+`Judge._check_entry_position_policy(symbol, action, plan, tech, score, context)` 是入场位置保护的**唯一入口**。主开仓路径与三条 deferred 路径（`deferred_15m_confirmation`、`deferred_pullback`、`deferred_chase`）必须共用该函数，禁止在 deferred helper 里再写一份 overheat 判定。
+
+**触发条件**（`action=open_long` 且 `LONG_LIVE_POSITION_GUARD_ENABLED=true`）：
+
+| 标记 | 触发条件 |
+|---|---|
+| `long_overheat_range_pos` | `position_in_24h_range >= LONG_LIVE_MAX_RANGE_POS` |
+| `long_overheat_pre_move` | `pre_12h_return_pct >= LONG_LIVE_MAX_PRE_MOVE` AND `position_in_24h_range >= LONG_LIVE_DAILY_GAIN_RANGE_POS` |
+| `long_overheat_daily_gain` | `prev_daily_return_pct >= LONG_LIVE_MAX_DAILY_GAIN` AND `position_in_24h_range >= LONG_LIVE_DAILY_GAIN_RANGE_POS` |
+
+**处理策略**：
+- 命中后不允许即时 `open_long`。
+- 若 `target_price = max(stop_loss * 1.005, signal_price * (1 - max(LONG_LIVE_PULLBACK_MIN_PCT, atr_pct)))` 满足 `stop_loss < target_price < signal_price`，则创建 `deferred_pullback_overheat`（`chase_eligible=false`，timeout `LONG_LIVE_PULLBACK_TIMEOUT_HOURS`）。
+- target 无效（数据缺失或区间冲突）时直接 hold/reject，`blocked_by=long_overheat_no_valid_pullback_target`。
+- deferred 触发后必须重新执行：HTF 二次确认、15m 二次确认、R:R floor、EV gate、Entry Position Guard、slot gate/ranking；任一环节失败发布 hold/reject。
+
+**Short side guard**：`open_short` 路径同样走 `_check_entry_position_policy`，复用现有 `SHORT_LIVE_*` 阈值（`range_position_too_low` / `pre_move_too_deep` / `rsi_too_low_for_short`）。
+
+**EV bucket sparse-sample 保护**：
+- `plan.entry_type` 在 EV gate 之前写入，避免 `unknown` bucket key。
+- 当 bucket `trade_count < EV_BUCKET_MIN_TRADES` 时视为稀疏 bucket。`EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`（默认）禁止稀疏 bucket 把 `p_win_used` 抬到当前值之上；可降低 p_win 或缩仓 60%。
+- attribution 写入 `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse`。
+
+**约束**：
+- 修改任何 entry position 阈值必须改 `Judge._check_entry_position_policy` 单一函数。
+- `event_backtest.py` 同步同构验证（`long_live_position_guard_enabled` 默认 true）。
+- attribution 字段 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy` / `deferred_target_price` / `deferred_reason` 落到 `trade_decision.attribution` 与 `data/journal/events_*.jsonl`。
+
+详见 `docs/long_entry_position_guard_prd.md` 与 `docs/long_entry_position_guard_acceptance.md`。
 
 ## 配置文件
 

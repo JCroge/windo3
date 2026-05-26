@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-05-26 R:R Floor Policy 修复完成（531→551 passed，新增 20 case AC-RR-01..09 全 PASS）；2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收（10 case PASS）；OS 层已重启新进程加载 R:R floor 新逻辑
+**当前阶段**：2026-05-26 Long Entry Position Guard 上线完成（551→575 passed，新增 23 case AC-LONGPOS-01..17 全 PASS）；2026-05-26 R:R Floor Policy 修复完成（531→551 passed，新增 20 case AC-RR-01..09 全 PASS）；2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收（10 case PASS）；OS 层已重启新进程加载 R:R floor 新逻辑（Long Entry Position Guard 同样需 OS 层重启才能生效）
 **下一阶段**：在 OKX demo/testnet 跑完 `docs/okx_posmode_execution_acceptance.md` T0-T9 矩阵，记录 raw response / final position / algo orders 到 `docs/generated_reports/OKX执行语义testnet验收报告_*.md`；完成前小额 live 灰度可继续观察，但 live 扩容仍 NO-GO
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -629,6 +629,26 @@
 **验证**：551 passed / 4 deselected / 0 failed（531 → 551，新增 20 个 R:R floor 单测）。
 
 详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
+
+### ✅ Long Entry Position Guard（2026-05-26 完成）
+
+**问题**：NEAR-USDT 2026-05-26 14:47:47 CST 通过 `long_bullish_low_rr` 在 range_pos=0.838、prev_daily=+15.66%、pre_12h=+0.33%、`effective_rr=1.36`、`rr_floor_used=1.30` 的山顶位置直接 `open_long`（`request_id=20260526-NEAR-5ead4ff9`，成交 2.778）。事后复算确认这不是 RSI 极端意义上的追高（RSI≈54），但价格已处在短期高位的趋势追多。当前系统对这种"位置过高但 RSI 中性"的多头入场缺少独立风控：`pending_pullback` 要求 RSI≥70，`deferred_15m_confirmation` 仅在 15m 过滤失败触发，`long_bullish_low_rr` 没有检查标的位置/前置涨幅。同时 EV bucket 在主路径中发生于 `plan.entry_type` 写入之前，bucket key 退化为 `unknown`，稀疏样本可能把负 EV 抬成正 EV。
+
+**解决方案**：
+1. **TechAnalyst 输入**（`agents/trading/tech_analyst.py`）：新增 `entry_context.{position_in_24h_range, pre_12h_return_pct, prev_daily_return_pct}`，保留 `short_context` 兼容；`prev_daily_return_pct` 取 `klines_1d[-2]` 的 `(close-open)/open`。
+2. **统一函数**（`agents/trading/judge.py: _check_entry_position_policy(symbol, action, plan, tech, score, context)`）：long overheat 与 short side guard 的唯一入口，主开仓路径与 `deferred_15m_confirmation` / `deferred_pullback` / `deferred_chase` 三条 deferred 路径共用。修改任何 entry position 阈值 **必须改这一处**。
+3. **触发阈值**：`range_pos>=0.82` → `long_overheat_range_pos`；`pre_12h>=0.05 ∧ range_pos>=0.75` → `long_overheat_pre_move`；`prev_daily>=0.10 ∧ range_pos>=0.75` → `long_overheat_daily_gain`。NEAR 案例命中 daily_gain（也命中 range_pos，因为 0.838≥0.82），优先返回 range_pos 标签。
+4. **处理策略**：有效 target（`stop_loss < target < signal_price`，target = `max(stop_loss*1.005, signal*(1-max(LONG_LIVE_PULLBACK_MIN_PCT, atr_pct)))`）→ 创建 `deferred_pullback_overheat`（`chase_eligible=false`，timeout `LONG_LIVE_PULLBACK_TIMEOUT_HOURS=4`），等待回调后必须重新执行 HTF/15m/RR/EV/Entry Position Guard/slot gate 全套二次确认；target 无效 → 直拒 `long_overheat_no_valid_pullback_target`。
+5. **Short side guard 主路径生效**：`open_short` 的 `range_position_too_low` / `pre_move_too_deep` / `rsi_too_low_for_short` 也由该函数返回，避免只在 `_apply_regime_policy` 中生效。
+6. **EV bucket 修正**：`plan.entry_type` 前移到 `_check_expected_value` 之前，消除 `unknown` bucket key；新增 `EV_BUCKET_MIN_TRADES=10` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`，sparse bucket 禁止抬高 `p_win`，可降仓 / 缩仓（保留 phase2 EPIC D 强信号缩仓 60% 行为）。
+7. **配置化**（`utils/config_loader.py`）：新增 9 项 `LONG_LIVE_*` 与 2 项 `EV_BUCKET_*` env，全部进 HARD_LIMITS + env_map + banner。
+8. **Attribution 全链路**：`trade_decision.attribution` 新增 12 个 optional 字段：`entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy=long_overheat_v1` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse`；被拒决策同样带，落 `data/journal/events_*.jsonl`。
+9. **回测同构**（`event_backtest.py`）：新增 `long_live_*` 构造参数与 `_check_entry_with_regime` overheat 检查；`prev_daily_return_pct` 列由 `close.pct_change(24)` 预计算。
+10. **测试**：新增 `test_long_entry_position_guard.py` 23 case，覆盖 AC-LONGPOS-01..17（NEAR 复现、三组阈值触发、target 无效拒绝、chase 禁用、四路径一致性、short side guard 主路径生效、bucket key 真实、稀疏 bucket 不 uplift、trade_decision.v2 兼容、回测同构、配置 + banner、审计字段）。
+
+**验证**：575 passed / 4 deselected / 0 failed（551 → 575，新增 23 个 Long Entry Position Guard 单测；phase2 sparse 缩仓回归用例同步保留）。
+
+详见 `docs/long_entry_position_guard_prd.md` / `docs/long_entry_position_guard_acceptance.md`。
 
 ## 技术债务
 

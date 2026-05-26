@@ -89,13 +89,26 @@ class MultiTechAnalyst(BaseAgent):
         latest = df.iloc[-2]
         current_price = float(latest['close'])
 
-        # Short-side context: position in 24h range + pre-12h return
+        # Entry-side context: 24h range position + 12h pre-move + prior daily return.
+        # Used by both short side guard and Long Entry Position Guard.
         high_24h = float(df['high'].tail(24).max())
         low_24h = float(df['low'].tail(24).min())
         range_24h = high_24h - low_24h
         position_in_24h_range = (current_price - low_24h) / range_24h if range_24h > 0 else 0.5
         price_12h_ago = float(df.iloc[-14]['close']) if len(df) >= 14 else current_price
         pre_12h_return_pct = (current_price - price_12h_ago) / price_12h_ago if price_12h_ago > 0 else 0.0
+
+        # 最近一根已完成日线涨跌幅
+        prev_daily_return_pct = 0.0
+        klines_1d = payload.get('klines_1d') or []
+        if len(klines_1d) >= 2:
+            try:
+                prev_close = float(klines_1d[-2][4])
+                prev_open = float(klines_1d[-2][1])
+                if prev_open > 0:
+                    prev_daily_return_pct = (prev_close - prev_open) / prev_open
+            except (IndexError, ValueError, TypeError):
+                prev_daily_return_pct = 0.0
 
         # MA alignment持续信号：MA fast/slow已对齐≥2根K线（含follow-through bar）
         ma_aligned_long = (df['ma_fast'] > df['ma_slow']).iloc[-3:-1].all() if len(df) >= 3 else False
@@ -135,6 +148,11 @@ class MultiTechAnalyst(BaseAgent):
             "short_context": {
                 "position_in_24h_range": round(position_in_24h_range, 4),
                 "pre_12h_return_pct": round(pre_12h_return_pct, 4),
+            },
+            "entry_context": {
+                "position_in_24h_range": round(position_in_24h_range, 4),
+                "pre_12h_return_pct": round(pre_12h_return_pct, 4),
+                "prev_daily_return_pct": round(prev_daily_return_pct, 4),
             },
             "llm_analysis": llm_analysis,
             # 透传数据质量信息给下游 Judge 做降级判断

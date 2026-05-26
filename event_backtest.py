@@ -90,6 +90,17 @@ class EventBacktest:
                  probe_short_position_pct: float = 0.3,
                  probe_short_max_leverage: int = 3,
                  probe_short_cooldown_bars: int = 24,
+                 # Long Entry Position Guard (与 live 同构)
+                 long_live_position_guard_enabled: bool = True,
+                 long_live_max_range_pos: float = 0.82,
+                 long_live_max_pre_move: float = 0.05,
+                 long_live_max_daily_gain: float = 0.10,
+                 long_live_daily_gain_range_pos: float = 0.75,
+                 long_live_pullback_min_pct: float = 0.025,
+                 long_live_pullback_timeout_bars: int = 4,
+                 # EV bucket sparse-sample protection (与 live 同构)
+                 ev_bucket_min_trades: int = 10,
+                 ev_bucket_sparse_allow_uplift: bool = False,
                  verbose: bool = False):
         self.initial_capital = initial_capital
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -124,6 +135,17 @@ class EventBacktest:
         self.probe_short_position_pct = probe_short_position_pct
         self.probe_short_max_leverage = probe_short_max_leverage
         self.probe_short_cooldown_bars = probe_short_cooldown_bars
+        # Long Entry Position Guard
+        self.long_live_position_guard_enabled = long_live_position_guard_enabled
+        self.long_live_max_range_pos = long_live_max_range_pos
+        self.long_live_max_pre_move = long_live_max_pre_move
+        self.long_live_max_daily_gain = long_live_max_daily_gain
+        self.long_live_daily_gain_range_pos = long_live_daily_gain_range_pos
+        self.long_live_pullback_min_pct = long_live_pullback_min_pct
+        self.long_live_pullback_timeout_bars = long_live_pullback_timeout_bars
+        # EV bucket sparse
+        self.ev_bucket_min_trades = ev_bucket_min_trades
+        self.ev_bucket_sparse_allow_uplift = ev_bucket_sparse_allow_uplift
         self.verbose = verbose
 
         self.cm = _COST_MODEL
@@ -137,13 +159,15 @@ class EventBacktest:
         df = df.copy().reset_index(drop=True)
         self._validate_input(df)
 
-        # Pre-compute short-side context columns
+        # Pre-compute entry-side context columns (long overheat + short guard 共用)
         high_24 = df['high'].rolling(24, min_periods=1).max()
         low_24 = df['low'].rolling(24, min_periods=1).min()
         range_24 = high_24 - low_24
         df['position_in_24h_range'] = ((df['close'] - low_24) / range_24).fillna(0.5)
         df.loc[range_24 == 0, 'position_in_24h_range'] = 0.5
         df['pre_12h_return_pct'] = df['close'].pct_change(12).fillna(0)
+        # 已完成日线涨跌幅（按 24h 视为一个交易日近似），与 live `prev_daily_return_pct` 同语义。
+        df['prev_daily_return_pct'] = df['close'].pct_change(24).fillna(0)
 
         equity = self.initial_capital
         position: Optional[Dict] = None
@@ -350,6 +374,22 @@ class EventBacktest:
         abs_score = abs(score)
 
         if score >= self.entry_threshold:
+            # AC-LONGPOS-15: Long Entry Position Guard 与 live 同构。
+            if self.long_live_position_guard_enabled:
+                range_pos = float(row.get('position_in_24h_range', 0.5))
+                pre_move_long = float(row.get('pre_12h_return_pct', 0.0))
+                prev_daily = float(row.get('prev_daily_return_pct', 0.0))
+                overheat_reason = None
+                if range_pos >= self.long_live_max_range_pos:
+                    overheat_reason = 'long_overheat_range_pos'
+                elif (pre_move_long >= self.long_live_max_pre_move
+                      and range_pos >= self.long_live_daily_gain_range_pos):
+                    overheat_reason = 'long_overheat_pre_move'
+                elif (prev_daily >= self.long_live_max_daily_gain
+                      and range_pos >= self.long_live_daily_gain_range_pos):
+                    overheat_reason = 'long_overheat_daily_gain'
+                if overheat_reason:
+                    return None  # 回测保守拒入；live 走 deferred_pullback_overheat
             return {'direction': 'long', 'score': score}
 
         if score <= -self.entry_threshold:

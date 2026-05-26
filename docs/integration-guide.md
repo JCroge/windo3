@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-05-26）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `551 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 20 case + OKX posMode 38 case）；R:R floor 选择已统一收敛到 `Judge._select_rr_floor`，attribution 新增 `rr_floor_used`/`rr_floor_reason`/`symbol_trend`/`symbol_higher_tf_bias`/`symbol_daily_bias`；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
+**系统状态（2026-05-26）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `575 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case）；R:R floor 选择已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，attribution 新增 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse` 等可选字段；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
 
 ## 核心模块接口
 
@@ -241,6 +241,18 @@ class MyAgent(BaseAgent):
 | `symbol_trend` | str | TechAnalyst 给出的标的自身趋势方向（`bullish`/`bearish`/`neutral`） |
 | `symbol_higher_tf_bias` | str | 4h HTF bias |
 | `symbol_daily_bias` | str | 日线 bias |
+| `entry_position_status` | str | Long Entry Position Guard 输出：`normal` / `overheated` / `oversold` |
+| `entry_position_block_reason` | str | overheat 原因，机器可读：`long_overheat_range_pos` / `long_overheat_pre_move` / `long_overheat_daily_gain` / `long_overheat_no_valid_pullback_target` / `range_position_too_low` / `pre_move_too_deep` |
+| `entry_range_pos_24h` | float | 入场时 24h 区间位置（0-1） |
+| `entry_pre_12h_return_pct` | float | 入场前 12h 涨跌幅（decimal ratio） |
+| `entry_prev_daily_return_pct` | float | 上一根已完成日线涨跌幅（decimal ratio） |
+| `entry_position_policy` | str | Entry Position Guard 策略版本，当前为 `long_overheat_v1` |
+| `deferred_target_price` | float | 进入 `deferred_pullback_overheat` 时等待回调的目标价 |
+| `deferred_reason` | str | deferred 创建原因 |
+| `ev_bucket_key` | str | 分桶 EV 命中的 bucket key，例如 `long_bullish_ma_aligned_low_rr_extra`（`plan.entry_type` 必须在 EV gate 之前写入，避免 `unknown`） |
+| `ev_bucket_trade_count` | int | bucket 样本数 |
+| `ev_bucket_min_trades` | int | bucket 提高 p_win 所需最小样本数（默认 10） |
+| `ev_bucket_sparse` | bool | 是否稀疏 bucket（trade_count < min_trades）；为 true 时不允许把 p_win 抬高于 bayesian/global |
 | `rejection_reason` | str | 仅被拒决策出现，配合 `data/journal/events_*.jsonl` 复盘 |
 
 下游消费这些字段做策略复盘 / 分桶胜率 / 反事实账本时，必须按 `attribution.rr_policy` 区分槽位与 floor 来源；不能仅凭 `regime + side` 反推。

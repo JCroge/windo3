@@ -4,7 +4,7 @@
 
 ## 系统状态
 
-- 最新基线（2026-05-26）：`551 passed / 4 deselected / 1 warning`，含 R:R Floor Policy 修复 20 个新 case 与 OKX posMode 38 个 case。
+- 最新基线（2026-05-26）：`575 passed / 4 deselected / 1 warning`，含 Long Entry Position Guard 23 个新 case、R:R Floor Policy 修复 20 个 case 与 OKX posMode 38 个 case。
 - live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。
 - 阻断 live 扩容的唯一项：OKX 真实 testnet 端到端验收（T0-T9）未执行；详见 [OKX posMode 验收](docs/okx_posmode_execution_acceptance.md) 和 [docs/to-do-list.md](docs/to-do-list.md)。
 
@@ -43,13 +43,15 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 | 仓位 | `MAX_TRADE_AMOUNT` / `LEVERAGE` / `EFFECTIVE_BALANCE_CAP` | 单笔保证金 / 默认杠杆 / 逻辑账户拆分 |
 | 风控 | `MAX_DRAWDOWN_PCT` / `MAX_DAILY_LOSS` / `DAILY_PNL_HARD_STOP` | 回撤上限 / 每日硬熔断 |
 | R:R | `RR_FLOOR_DEFAULT` / `RR_FLOOR_LONG_BULLISH` / `RR_FLOOR_LONG_ALIGNED_CHOPPY` / `RR_FLOOR_SHORT_BULLISH` / `PROBE_RR_FLOOR` | R:R floor 五分支阈值 |
+| 多头位置保护 | `LONG_LIVE_POSITION_GUARD_ENABLED` / `LONG_LIVE_MAX_RANGE_POS` / `LONG_LIVE_MAX_PRE_MOVE` / `LONG_LIVE_MAX_DAILY_GAIN` | 山顶接货防护，命中走 `deferred_pullback_overheat`（2026-05-26） |
+| EV 分桶 | `EV_BUCKET_MIN_TRADES` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT` | 稀疏 bucket 不抬 p_win（2026-05-26） |
 
 完整列表与默认值见 `utils/config_loader.py` 的 `DEFAULTS` 与 `HARD_LIMITS`。
 
 ## 常用验证
 
 ```bash
-python3 -m pytest -q                       # 默认回归（基线 551 passed）
+python3 -m pytest -q                       # 默认回归（基线 575 passed）
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 ```
@@ -69,6 +71,7 @@ python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 | [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档（最新 2026-05-24） |
 | [docs/okx_posmode_execution_*.md](docs/) | OKX posMode 执行兼容 PRD + 验收 |
 | [docs/rr_floor_policy_*.md](docs/) | R:R Floor Policy 修复 PRD + 验收（2026-05-26） |
+| [docs/long_entry_position_guard_*.md](docs/) | Long Entry Position Guard PRD + 验收（2026-05-26） |
 | [docs/drawdown_baseline_*.md](docs/) | 回撤基准 PRD + 验收 |
 | [docs/live_readiness_*.md](docs/) | live 准备度 PRD + 验收 |
 | [docs/audit_remediation_*.md](docs/) | 审计整改 PRD + 验收 |

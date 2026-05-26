@@ -55,6 +55,15 @@ HARD_LIMITS = {
     "short_live_min_range_pos": (0.0, 1.0),
     "short_live_min_htf_votes": (1, 3),
     "short_live_max_pre_move": (-0.20, 0.0),
+    # Long Entry Position Guard
+    "long_live_max_range_pos": (0.0, 1.0),
+    "long_live_max_pre_move": (0.0, 0.30),
+    "long_live_max_daily_gain": (0.0, 0.50),
+    "long_live_daily_gain_range_pos": (0.0, 1.0),
+    "long_live_pullback_min_pct": (0.005, 0.20),
+    "long_live_pullback_timeout_hours": (0.5, 24),
+    # EV bucket
+    "ev_bucket_min_trades": (1, 200),
 }
 
 
@@ -126,6 +135,18 @@ DEFAULTS = {
     "short_live_require_daily_bearish": True,
     "short_live_min_htf_votes": 2,
     "short_live_max_pre_move": -0.01,
+    # Long Entry Position Guard (PRD long_entry_position_guard_prd.md)
+    "long_live_position_guard_enabled": True,
+    "long_live_max_range_pos": 0.82,
+    "long_live_max_pre_move": 0.05,
+    "long_live_max_daily_gain": 0.10,
+    "long_live_daily_gain_range_pos": 0.75,
+    "long_live_pullback_min_pct": 0.025,
+    "long_live_pullback_timeout_hours": 4,
+    "long_live_overheat_disable_chase": True,
+    # EV bucket sparse-sample protection
+    "ev_bucket_min_trades": 10,
+    "ev_bucket_sparse_allow_uplift": False,
     # Phase 2: 决策语义拆分 + 开仓解冻
     "phase2_signal_confidence_split_enabled": True,
     "phase2_momentum_probe_long_enabled": True,
@@ -236,6 +257,18 @@ def _read_env_overrides() -> dict:
         "SHORT_LIVE_REQUIRE_DAILY_BEARISH": ("short_live_require_daily_bearish", _to_bool),
         "SHORT_LIVE_MIN_HTF_VOTES": ("short_live_min_htf_votes", int),
         "SHORT_LIVE_MAX_PRE_MOVE": ("short_live_max_pre_move", float),
+        # Long Entry Position Guard
+        "LONG_LIVE_POSITION_GUARD_ENABLED": ("long_live_position_guard_enabled", _to_bool),
+        "LONG_LIVE_MAX_RANGE_POS": ("long_live_max_range_pos", float),
+        "LONG_LIVE_MAX_PRE_MOVE": ("long_live_max_pre_move", float),
+        "LONG_LIVE_MAX_DAILY_GAIN": ("long_live_max_daily_gain", float),
+        "LONG_LIVE_DAILY_GAIN_RANGE_POS": ("long_live_daily_gain_range_pos", float),
+        "LONG_LIVE_PULLBACK_MIN_PCT": ("long_live_pullback_min_pct", float),
+        "LONG_LIVE_PULLBACK_TIMEOUT_HOURS": ("long_live_pullback_timeout_hours", int),
+        "LONG_LIVE_OVERHEAT_DISABLE_CHASE": ("long_live_overheat_disable_chase", _to_bool),
+        # EV bucket
+        "EV_BUCKET_MIN_TRADES": ("ev_bucket_min_trades", int),
+        "EV_BUCKET_SPARSE_ALLOW_UPLIFT": ("ev_bucket_sparse_allow_uplift", _to_bool),
         # Phase 2: 决策语义拆分 + 开仓解冻
         "PHASE2_SIGNAL_CONFIDENCE_SPLIT_ENABLED": ("phase2_signal_confidence_split_enabled", _to_bool),
         "PHASE2_MOMENTUM_PROBE_LONG_ENABLED": ("phase2_momentum_probe_long_enabled", _to_bool),
@@ -337,6 +370,9 @@ def format_banner(cfg: dict) -> str:
     momentum_probe = "开启" if cfg.get("phase2_momentum_probe_long_enabled") else "关闭"
     trend_sat = "开启" if cfg.get("phase2_trend_saturation_enabled") else "关闭"
     bucketed_ev = "开启" if cfg.get("phase2_bucketed_ev_enabled") else "关闭"
+    long_pos_guard = "开启" if cfg.get("long_live_position_guard_enabled", True) else "关闭"
+    overheat_chase = "禁止" if cfg.get("long_live_overheat_disable_chase", True) else "允许"
+    bucket_uplift = "允许" if cfg.get("ev_bucket_sparse_allow_uplift", False) else "禁止"
     lines = [
         "=" * 60,
         f"配置摘要（{mode}）",
@@ -368,6 +404,12 @@ def format_banner(cfg: dict) -> str:
         f"  Phase2 Momentum Probe Long: {momentum_probe}",
         f"  Phase2 Trend Saturation: {trend_sat}",
         f"  Phase2 Bucketed EV: {bucketed_ev}",
+        f"  Long Entry Position Guard: {long_pos_guard} (range_pos≥{cfg.get('long_live_max_range_pos', 0.82)}, "
+        f"pre_12h≥{cfg.get('long_live_max_pre_move', 0.05)}, "
+        f"daily_gain≥{cfg.get('long_live_max_daily_gain', 0.10)}, "
+        f"pullback_min={cfg.get('long_live_pullback_min_pct', 0.025)}, "
+        f"timeout={cfg.get('long_live_pullback_timeout_hours', 4)}h, chase={overheat_chase})",
+        f"  EV Bucket Sparse:      min_trades={cfg.get('ev_bucket_min_trades', 10)} sparse_uplift={bucket_uplift}",
         "=" * 60,
     ]
     return "\n".join(lines)

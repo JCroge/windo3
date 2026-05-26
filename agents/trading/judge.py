@@ -165,6 +165,29 @@ class MultiJudge(BaseAgent):
         self._probe_short_sl_count = 0
         self._probe_short_cooldown_until = 0
 
+        # ═══ Side guard live thresholds (short + long) ═══
+        # 这些字段在 Judge 主路径与 deferred 路径都需要，统一从 config 读取。
+        self._short_live_min_score = config.get('short_live_min_score', 55) if config else 55
+        self._short_live_min_rsi = config.get('short_live_min_rsi', 40) if config else 40
+        self._short_live_min_range_pos = config.get('short_live_min_range_pos', 0.45) if config else 0.45
+        self._short_live_require_daily_bearish = config.get('short_live_require_daily_bearish', True) if config else True
+        self._short_live_min_htf_votes = config.get('short_live_min_htf_votes', 2) if config else 2
+        self._short_live_max_pre_move = config.get('short_live_max_pre_move', -0.01) if config else -0.01
+
+        # ═══ Long Entry Position Guard ═══
+        self._long_live_position_guard_enabled = config.get('long_live_position_guard_enabled', True) if config else True
+        self._long_live_max_range_pos = config.get('long_live_max_range_pos', 0.82) if config else 0.82
+        self._long_live_max_pre_move = config.get('long_live_max_pre_move', 0.05) if config else 0.05
+        self._long_live_max_daily_gain = config.get('long_live_max_daily_gain', 0.10) if config else 0.10
+        self._long_live_daily_gain_range_pos = config.get('long_live_daily_gain_range_pos', 0.75) if config else 0.75
+        self._long_live_pullback_min_pct = config.get('long_live_pullback_min_pct', 0.025) if config else 0.025
+        self._long_live_pullback_timeout_hours = config.get('long_live_pullback_timeout_hours', 4) if config else 4
+        self._long_live_overheat_disable_chase = config.get('long_live_overheat_disable_chase', True) if config else True
+
+        # ═══ EV bucket sparse-sample protection ═══
+        self._ev_bucket_min_trades = config.get('ev_bucket_min_trades', 10) if config else 10
+        self._ev_bucket_sparse_allow_uplift = config.get('ev_bucket_sparse_allow_uplift', False) if config else False
+
         # ═══ Phase 2 Feature Flags ═══
         self._confidence_split_enabled = config.get('phase2_signal_confidence_split_enabled', False) if config else False
         self._momentum_probe_long_enabled = config.get('phase2_momentum_probe_long_enabled', False) if config else False
@@ -634,6 +657,19 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
+                # ═══ Entry Position Guard (AC-LONGPOS-09 一致性) ═══
+                pos_policy = self._check_entry_position_policy(
+                    symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                    context='deferred_15m_confirmation'
+                )
+                if not pos_policy['allowed']:
+                    block_reason = pos_policy['block_reason']
+                    self.logger.info(
+                        f"[Judge] {symbol} 15m确认入场被 entry_position_guard 拦截: {block_reason}"
+                    )
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, block_reason, [block_reason])
+                    return
                 # P1-2: 统一走 open quality gate
                 reject_reason = self._open_quality_rejection(
                     symbol, tech, def_action, deferred.get('signal_score', 50),
@@ -734,11 +770,30 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
+                # ═══ Entry Position Guard（AC-LONGPOS-08：deferred 二次入场必须重过 guard） ═══
+                pos_policy = self._check_entry_position_policy(
+                    symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                    context='deferred_pullback'
+                )
+                if not pos_policy['allowed']:
+                    block_reason = pos_policy['block_reason']
+                    self.logger.info(
+                        f"[Judge] {symbol} 回调入场被 entry_position_guard 拦截: {block_reason}"
+                    )
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, block_reason, [block_reason])
+                    return
                 plan['order_type'] = 'limit'
-                plan['entry_type'] = 'deferred_pullback'
+                # Carry overheat tag through if this was an overheat-triggered deferred.
+                if deferred.get('entry_type') == 'deferred_pullback_overheat':
+                    plan['entry_type'] = 'deferred_pullback_overheat'
+                    attribution_label = 'deferred_pullback_overheat'
+                else:
+                    plan['entry_type'] = 'deferred_pullback'
+                    attribution_label = 'deferred_pullback'
                 attribution = self._build_attribution(
                     tech, def_action, deferred.get('signal_score', 50),
-                    plan, None, 'deferred_pullback'
+                    plan, None, attribution_label
                 )
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
@@ -749,7 +804,7 @@ class MultiJudge(BaseAgent):
                     "reasoning": f"回调入场触发：目标价{target:.4f}达到，R:R={new_rr:.2f}",
                     "key_factors": ["deferred_pullback_filled"],
                     "risk_warnings": [],
-                    "entry_type": "deferred_pullback",
+                    "entry_type": attribution_label,
                     "attribution": attribution,
                 }
                 published = await self._gate_and_publish_open(symbol, decision, state)
@@ -819,6 +874,19 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} 追价入场被regime policy拦截: {regime_reject}")
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
+                    return
+                # ═══ Entry Position Guard (AC-LONGPOS-09 一致性) ═══
+                pos_policy = self._check_entry_position_policy(
+                    symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                    context='deferred_chase'
+                )
+                if not pos_policy['allowed']:
+                    block_reason = pos_policy['block_reason']
+                    self.logger.info(
+                        f"[Judge] {symbol} 追价入场被 entry_position_guard 拦截: {block_reason}"
+                    )
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, block_reason, [block_reason])
                     return
                 # RQ-02: chase 有效 RR 约束
                 chase_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
@@ -1259,6 +1327,16 @@ class MultiJudge(BaseAgent):
                             return
                         self.logger.info(f"[{symbol}] 调整仓位: {plan['size_usdt']} USDT (余额{self._available_balance:.2f})")
 
+                    # ═══ AC-LONGPOS-11: entry_type must be set BEFORE EV gate ═══
+                    # 让 bucket EV 拿到真实 entry_type，避免出现 "unknown" bucket key。
+                    if rule.get('entry_long') or rule.get('entry_short'):
+                        entry_type = 'rule_signal'
+                    elif rule.get('ma_aligned_long') or rule.get('ma_aligned_short'):
+                        entry_type = 'ma_aligned'
+                    else:
+                        entry_type = 'llm_driven'
+                    plan['entry_type'] = entry_type
+
                     # ═══ P2-N: 期望值门（在所有开仓决策前的最后闸门）═══
                     # 历史交易不足时使用降级胜率（不会过严）；rolling 胜率生效时严格执行
                     if not self._check_expected_value(symbol, plan, score):
@@ -1284,14 +1362,86 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
-                    # RQ-07: 确定 entry_type
-                    if rule.get('entry_long') or rule.get('entry_short'):
-                        entry_type = 'rule_signal'
-                    elif rule.get('ma_aligned_long') or rule.get('ma_aligned_short'):
-                        entry_type = 'ma_aligned'
-                    else:
-                        entry_type = 'llm_driven'
-                    plan['entry_type'] = entry_type
+                    # ═══ Long Entry Position Guard (AC-LONGPOS-01..06) ═══
+                    pos_policy = self._check_entry_position_policy(
+                        symbol, final_action, plan, tech, score, context='main'
+                    )
+                    if not pos_policy['allowed']:
+                        block_reason = pos_policy['block_reason']
+                        if pos_policy['should_defer']:
+                            target = pos_policy['target_price']
+                            state['deferred_entry'] = {
+                                'action': final_action,
+                                'signal_price': price,
+                                'signal_score': score,
+                                'target_price': target,
+                                'created_at': time.time(),
+                                'entry_type': 'deferred_pullback_overheat',
+                                'timeout_hours': self._long_live_pullback_timeout_hours,
+                                'expiry_bars': 999,
+                                'chase_eligible': False,
+                                'highest_since': price,
+                                'lowest_since': price,
+                                'entry_position_status': pos_policy['entry_position_status'],
+                                'entry_position_block_reason': block_reason,
+                            }
+                            self.logger.info(
+                                f"[Judge] {symbol} long overheat -> deferred_pullback_overheat "
+                                f"reason={block_reason} target={target:.6f} (signal={price:.6f})"
+                            )
+                            self._record_rejected_plan(
+                                symbol, final_action, plan, score, final_conf, block_reason
+                            )
+                            attr = self._rejection_attribution(
+                                final_action, plan, block_reason, tech=tech
+                            )
+                            attr['entry_position_status'] = pos_policy['entry_position_status']
+                            attr['entry_position_block_reason'] = block_reason
+                            attr['entry_range_pos_24h'] = pos_policy['metrics']['position_in_24h_range']
+                            attr['entry_pre_12h_return_pct'] = pos_policy['metrics']['pre_12h_return_pct']
+                            attr['entry_prev_daily_return_pct'] = pos_policy['metrics']['prev_daily_return_pct']
+                            attr['entry_position_policy'] = 'long_overheat_v1'
+                            attr['deferred_target_price'] = target
+                            attr['deferred_reason'] = block_reason
+                            decision = {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": (
+                                    f"Long overheat: {block_reason} (range_pos="
+                                    f"{pos_policy['metrics']['position_in_24h_range']:.2f}, "
+                                    f"prev_daily={pos_policy['metrics']['prev_daily_return_pct']:+.2%}), "
+                                    f"等待回调至 {target:.6f}"
+                                ),
+                                "key_factors": [f"deferred_pullback_overheat={block_reason}"],
+                                "risk_warnings": ["long_overheat"],
+                                "attribution": attr,
+                            }
+                            await self.publish("trade_decision", decision, symbol=symbol)
+                            return
+                        self._record_rejected_plan(
+                            symbol, final_action, plan, score, final_conf, block_reason
+                        )
+                        attr = self._rejection_attribution(
+                            final_action, plan, block_reason, tech=tech
+                        )
+                        attr['entry_position_status'] = pos_policy['entry_position_status']
+                        attr['entry_position_block_reason'] = block_reason
+                        attr['entry_range_pos_24h'] = pos_policy['metrics']['position_in_24h_range']
+                        attr['entry_pre_12h_return_pct'] = pos_policy['metrics']['pre_12h_return_pct']
+                        attr['entry_prev_daily_return_pct'] = pos_policy['metrics']['prev_daily_return_pct']
+                        attr['entry_position_policy'] = 'long_overheat_v1'
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"Entry position guard blocked: {block_reason}",
+                            "key_factors": [f"blocked_by={block_reason}"],
+                            "risk_warnings": [block_reason],
+                            "attribution": attr,
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
 
                     # ═══ RQ-15M-03/04: 15m 入场时机过滤（在确定开仓意图后、发布前）═══
                     timing_allowed, timing_reason, timing_defer = self._check_15m_entry_timing(
@@ -1987,6 +2137,25 @@ class MultiJudge(BaseAgent):
             'probe_evidence': (plan or {}).get('probe_evidence', {}),
             'blocked_by': '',
             'request_id': str(uuid.uuid4())[:12],
+            # ═══ Long Entry Position Guard attribution ═══
+            'entry_position_status': 'normal',
+            'entry_position_block_reason': '',
+            'entry_range_pos_24h': float((tech.get('entry_context')
+                                          or tech.get('short_context')
+                                          or {}).get('position_in_24h_range', 0.5) or 0.5),
+            'entry_pre_12h_return_pct': float((tech.get('entry_context')
+                                               or tech.get('short_context')
+                                               or {}).get('pre_12h_return_pct', 0.0) or 0.0),
+            'entry_prev_daily_return_pct': float((tech.get('entry_context')
+                                                  or {}).get('prev_daily_return_pct', 0.0) or 0.0),
+            'entry_position_policy': 'long_overheat_v1',
+            'deferred_target_price': (plan or {}).get('deferred_target_price', 0.0),
+            'deferred_reason': (plan or {}).get('deferred_reason', ''),
+            'ev_bucket_key': (plan or {}).get('ev_bucket_key', ''),
+            'ev_bucket_trade_count': (plan or {}).get('ev_bucket_trade_count', 0),
+            'ev_bucket_min_trades': (plan or {}).get('ev_bucket_min_trades',
+                                                     getattr(self, '_ev_bucket_min_trades', 10)),
+            'ev_bucket_sparse': (plan or {}).get('ev_bucket_sparse', False),
         }
 
     def _is_htf_aligned(self, tech: dict, action: str) -> bool:
@@ -2232,6 +2401,130 @@ class MultiJudge(BaseAgent):
         plan['probe_trigger_reason'] = 'rsi_overbought_momentum'
         plan['probe_evidence'] = {'type': 'momentum_probe_long', 'slot_type': 'probe_long'}
 
+    def _check_entry_position_policy(self, symbol: str, action: str, plan: dict,
+                                     tech: dict, score: float, context: str = 'main') -> dict:
+        """Long Entry Position Guard + Short side guard 的统一入口。
+
+        返回字典:
+            {
+                'allowed': bool,             # False 表示拒绝主动 open
+                'should_defer': bool,         # True 表示应转 deferred_pullback_overheat
+                'reason': str,
+                'entry_position_status': str, # normal | overheated | oversold
+                'target_price': float,        # deferred 目标价
+                'block_reason': str,          # 同 reason，机器可读
+                'metrics': {...}
+            }
+
+        主路径与 deferred 路径必须共用同一份判定，避免漂移。
+        """
+        result = {
+            'allowed': True,
+            'should_defer': False,
+            'reason': '',
+            'block_reason': '',
+            'entry_position_status': 'normal',
+            'target_price': 0.0,
+            'metrics': {},
+        }
+
+        plan = plan or {}
+        tech = tech or {}
+        is_long = ('long' in (action or ''))
+
+        ctx = tech.get('entry_context') or tech.get('short_context') or {}
+        range_pos = float(ctx.get('position_in_24h_range', 0.5) or 0.5)
+        pre_move = float(ctx.get('pre_12h_return_pct', 0.0) or 0.0)
+        prev_daily = float(ctx.get('prev_daily_return_pct', 0.0) or 0.0)
+        result['metrics'] = {
+            'position_in_24h_range': round(range_pos, 4),
+            'pre_12h_return_pct': round(pre_move, 4),
+            'prev_daily_return_pct': round(prev_daily, 4),
+        }
+
+        # Long overheat guard
+        if (is_long and self._long_live_position_guard_enabled
+                and not plan.get('is_probe')):
+            max_range = self._long_live_max_range_pos
+            max_pre = self._long_live_max_pre_move
+            max_daily = self._long_live_max_daily_gain
+            daily_gain_range_pos = self._long_live_daily_gain_range_pos
+
+            block_reason = ''
+            if range_pos >= max_range:
+                block_reason = 'long_overheat_range_pos'
+            elif pre_move >= max_pre and range_pos >= daily_gain_range_pos:
+                block_reason = 'long_overheat_pre_move'
+            elif prev_daily >= max_daily and range_pos >= daily_gain_range_pos:
+                block_reason = 'long_overheat_daily_gain'
+
+            if block_reason:
+                result['entry_position_status'] = 'overheated'
+                result['allowed'] = False
+                result['reason'] = block_reason
+                result['block_reason'] = block_reason
+
+                signal_price = plan.get('entry_zone', [None])[0] or tech.get('indicators', {}).get('price', 0)
+                stop_loss = plan.get('stop_loss')
+                atr_pct = tech.get('momentum', {}).get('atr_pct', 0.02) or 0.02
+                pullback_pct = max(self._long_live_pullback_min_pct, float(atr_pct))
+                target_price = 0.0
+                target_valid = False
+
+                if signal_price and stop_loss and signal_price > 0:
+                    raw_target = signal_price * (1 - pullback_pct)
+                    floor_target = stop_loss * 1.005
+                    target_price = max(floor_target, raw_target)
+                    if (target_price < signal_price and target_price > stop_loss):
+                        target_valid = True
+
+                if target_valid:
+                    result['should_defer'] = True
+                    result['target_price'] = round(target_price, 6)
+                else:
+                    result['should_defer'] = False
+                    result['reason'] = 'long_overheat_no_valid_pullback_target'
+                    result['block_reason'] = 'long_overheat_no_valid_pullback_target'
+                return result
+
+        # Short side guard (与 _apply_regime_policy 中保持一致语义；不通过则拒绝主动 open)
+        if (not is_long and self._short_regime_guard_enabled
+                and not plan.get('is_probe')):
+            trend = tech.get('trend', {}) or {}
+            entry_timing = tech.get('entry_timing', {}) or {}
+            indicators = tech.get('indicators', {}) or {}
+
+            daily_bias = trend.get('daily_bias', 'neutral')
+            if self._short_live_require_daily_bearish and daily_bias != 'bearish':
+                # 留给 _apply_regime_policy 决定是否走 probe；此处仅打 attribution。
+                result['entry_position_status'] = 'normal'
+                return result
+
+            if range_pos < self._short_live_min_range_pos:
+                result['entry_position_status'] = 'overheated'
+                result['allowed'] = False
+                result['reason'] = 'range_position_too_low'
+                result['block_reason'] = 'range_position_too_low'
+                return result
+
+            max_pre_short = self._short_live_max_pre_move
+            if pre_move <= max_pre_short:
+                result['entry_position_status'] = 'overheated'
+                result['allowed'] = False
+                result['reason'] = 'pre_move_too_deep'
+                result['block_reason'] = 'pre_move_too_deep'
+                return result
+
+            rsi_val = indicators.get('rsi', tech.get('momentum', {}).get('rsi', 50))
+            if rsi_val < self._short_live_min_rsi:
+                result['entry_position_status'] = 'oversold'
+                result['allowed'] = False
+                result['reason'] = 'rsi_too_low_for_short'
+                result['block_reason'] = 'rsi_too_low_for_short'
+                return result
+
+        return result
+
     def _apply_regime_policy(self, symbol: str, action: str, plan: dict,
                              score: float, tech: dict):
         """Apply short guard + dynamic R:R floor + low R:R scaling to a plan.
@@ -2440,6 +2733,20 @@ class MultiJudge(BaseAgent):
             'probe_block_reason': blocked_by if plan_dict.get('is_probe') else '',
             'blocked_by': blocked_by,
             'dispatch_path': dispatch_path,
+            # ═══ Long Entry Position Guard attribution ═══
+            'entry_position_status': plan_dict.get('entry_position_status', 'normal'),
+            'entry_position_block_reason': plan_dict.get('entry_position_block_reason', ''),
+            'entry_range_pos_24h': plan_dict.get('entry_range_pos_24h', 0.0),
+            'entry_pre_12h_return_pct': plan_dict.get('entry_pre_12h_return_pct', 0.0),
+            'entry_prev_daily_return_pct': plan_dict.get('entry_prev_daily_return_pct', 0.0),
+            'entry_position_policy': plan_dict.get('entry_position_policy', 'long_overheat_v1'),
+            'deferred_target_price': plan_dict.get('deferred_target_price', 0.0),
+            'deferred_reason': plan_dict.get('deferred_reason', ''),
+            'ev_bucket_key': plan_dict.get('ev_bucket_key', ''),
+            'ev_bucket_trade_count': plan_dict.get('ev_bucket_trade_count', 0),
+            'ev_bucket_min_trades': plan_dict.get('ev_bucket_min_trades',
+                                                  getattr(self, '_ev_bucket_min_trades', 10)),
+            'ev_bucket_sparse': plan_dict.get('ev_bucket_sparse', False),
         }
 
     def _record_sl_hit(self, state: dict, direction: str = None):
@@ -2783,6 +3090,8 @@ class MultiJudge(BaseAgent):
         Phase 2 EPIC D: 分桶 EV 门
         - 按 side/regime/entry_type/slot_type 分桶查找胜率
         - 样本不足时缩仓不冻结（position_scale降低，不直接拒绝强信号）
+        - AC-LONGPOS-12: 稀疏 bucket（trade_count < ev_bucket_min_trades）不得抬高 p_win，
+          只允许降低 p_win 或缩仓。可由 EV_BUCKET_SPARSE_ALLOW_UPLIFT 显式开关。
         """
         ev = plan.get('expected_value', 0.0)
         p_win = plan.get('p_win_used', 0.5)
@@ -2792,21 +3101,42 @@ class MultiJudge(BaseAgent):
         if getattr(self, '_bucketed_ev_enabled', False):
             bucket_info = self._get_bucketed_ev_info(plan, score)
             if bucket_info:
-                p_win = bucket_info['p_win']
-                p_win_source = bucket_info['source']
-                # Recalculate EV with bucketed p_win
-                net_profit = plan.get('net_profit_usdt', 0)
-                net_loss = plan.get('net_loss_usdt', 0)
-                ev = p_win * net_profit - (1 - p_win) * net_loss
-                plan['expected_value'] = round(ev, 4)
-                plan['p_win_used'] = round(p_win, 3)
-                plan['p_win_source'] = p_win_source
-                # 样本不足时缩仓而非冻结
-                if bucket_info.get('insufficient_sample') and abs(score) >= self._ev_strong_signal_threshold:
+                bucket_p_win = bucket_info['p_win']
+                bucket_min = getattr(self, '_ev_bucket_min_trades', 10)
+                allow_uplift = getattr(self, '_ev_bucket_sparse_allow_uplift', False)
+                trade_count = bucket_info.get('trade_count', 0)
+                is_sparse = trade_count < bucket_min
+                plan['ev_bucket_key'] = bucket_info['bucket_key']
+                plan['ev_bucket_trade_count'] = trade_count
+                plan['ev_bucket_min_trades'] = bucket_min
+                plan['ev_bucket_sparse'] = is_sparse
+                # AC-LONGPOS-12: sparse bucket 不能把 p_win 抬到当前值之上
+                if is_sparse and (not allow_uplift) and bucket_p_win > p_win:
+                    plan['p_win_source'] = (
+                        f"{p_win_source}+sparse_bucket_capped:{bucket_info['bucket_key']}"
+                    )
+                    self.logger.info(
+                        f"[Judge] {symbol} sparse bucket "
+                        f"({bucket_info['bucket_key']}, n={trade_count}/{bucket_min}) "
+                        f"would uplift p_win {p_win:.3f}->{bucket_p_win:.3f}; capping per "
+                        f"EV_BUCKET_SPARSE_ALLOW_UPLIFT=False"
+                    )
+                else:
+                    p_win = bucket_p_win
+                    p_win_source = bucket_info['source']
+                    # Recalculate EV with bucketed p_win
+                    net_profit = plan.get('net_profit_usdt', 0)
+                    net_loss = plan.get('net_loss_usdt', 0)
+                    ev = p_win * net_profit - (1 - p_win) * net_loss
+                    plan['expected_value'] = round(ev, 4)
+                    plan['p_win_used'] = round(p_win, 3)
+                    plan['p_win_source'] = p_win_source
+                # 样本不足时强信号缩仓不冻结，保持 phase2 EPIC D 既有行为。
+                if is_sparse and abs(score) >= self._ev_strong_signal_threshold:
                     plan['size_usdt'] = round(plan['size_usdt'] * 0.6, 2)
                     self.logger.info(
                         f"[Judge] {symbol} bucketed EV insufficient sample, "
-                        f"缩仓60% (bucket={bucket_info['bucket_key']})"
+                        f"缩仓60% (bucket={bucket_info['bucket_key']}, n={trade_count})"
                     )
                     return True
 
@@ -2870,7 +3200,9 @@ class MultiJudge(BaseAgent):
             return None
 
         trade_count = bucket.get('trade_count', 0)
-        insufficient = trade_count < 5
+        bucket_min = getattr(self, '_ev_bucket_min_trades', 10)
+        # 兼容旧实现的 5 阈值；若启用新阈值则按其判定 sparse
+        insufficient = trade_count < bucket_min
         p_win = bucket.get('win_rate', self._fallback_win_rate)
         return {
             'p_win': p_win,

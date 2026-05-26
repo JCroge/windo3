@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-05-26）**：主入口为 `run_agents.py`，全量回归 `551 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 20 case + OKX posMode 38 case）。R:R Floor 选择已统一收敛到 `Judge._select_rr_floor` 单一函数（主路径与 `_apply_regime_policy` 共用），新增 `long_aligned_low_rr` 策略允许 mixed/choppy 下趋势强一致多头按 1.30 floor 进入 low_rr_extra slot。OKX posMode 执行兼容代码已落地（启动期探测 + 三入口参数构造器 + 拒单状态复核），mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-05-26）**：主入口为 `run_agents.py`，全量回归 `575 passed / 4 deselected / 1 warning`（含 Long Entry Position Guard 23 case + R:R Floor Policy 20 case + OKX posMode 38 case）。R:R Floor 选择已统一收敛到 `Judge._select_rr_floor` 单一函数（主路径与 `_apply_regime_policy` 共用），新增 `long_aligned_low_rr` 策略允许 mixed/choppy 下趋势强一致多头按 1.30 floor 进入 low_rr_extra slot。Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`（主路径与三条 deferred 路径共用），命中 range_pos≥0.82 / pre_12h≥0.05 ∧ range_pos≥0.75 / prev_daily≥0.10 ∧ range_pos≥0.75 时进入 `deferred_pullback_overheat` 或直拒。OKX posMode 执行兼容代码已落地（启动期探测 + 三入口参数构造器 + 拒单状态复核），mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
@@ -59,6 +59,7 @@
 - 2026-05-25：OKX posMode 执行兼容代码完成（executor.py）：启动期 `private_get_account_config` 探测 posMode，live fail-closed；新增 `_build_okx_open_params` / `_build_okx_close_params` / `_build_okx_algo_params` 三入口构造器，业务路径全部接入；close/reduce 前 `_fetch_okx_position_state` 拉真实仓位并按 `availPos` 钳制；51169/51205/51112/51333 拒单触发 `_handle_okx_close_reject` 状态复核（already_flat/external_closed/still_open/direction_conflict），不再无脑重试或错删本地仓位。新增 `test_okx_posmode_executor.py` 38 PASS，`verify_okx_testnet_semantics.py` 扩展为 10 case（posMode close 矩阵 + 拒单复核）；基线 493 → 531。OKX 真实 testnet T0-T9 仍待执行。
 - 2026-05-25：发现 `/restart`（Telegram 远程重启）走的是 `run_agents.py` 的同进程 `while True: Orchestrator()` 循环，不 fork 不 exec，Python `sys.modules` 缓存旧 `executor.py`，**新代码不会被加载**。要让代码热更新生效必须 OS 层 `kill -TERM` 后 `nohup python3 run_agents.py` 重启进程。
 - 2026-05-26：R:R Floor Policy 修复（judge.py + config_loader.py）：抽出 `_select_rr_floor(action, plan, tech, score)` 单一函数，主路径与 `_apply_regime_policy` 共用，返回 `(min_rr, rr_policy, rr_floor_reason)`；新增 `long_aligned_low_rr` 策略允许 mixed/choppy 下 trend bullish AND (htf bullish OR daily bullish) 多头按 1.30 floor 进 low_rr_extra slot；新增 `RR_FLOOR_LONG_ALIGNED_CHOPPY=1.30` / `PROBE_RR_FLOOR=1.30` / `LOW_RR_LONG_ALIGNED_ENABLED=true` 配置；attribution 新增 `rr_floor_used` / `rr_floor_reason` / `symbol_trend` / `symbol_higher_tf_bias` / `symbol_daily_bias` 五字段；新增 `test_rr_floor_policy.py` 20 case，基线 531→551 passed。详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
+- 2026-05-26：Long Entry Position Guard 上线（tech_analyst.py + judge.py + config_loader.py + event_backtest.py）：tech_analyst 新增 `entry_context`（`position_in_24h_range` / `pre_12h_return_pct` / `prev_daily_return_pct`），保留 `short_context` 兼容；judge 抽出 `_check_entry_position_policy(symbol, action, plan, tech, score, context)` 单一函数，主开仓路径与 `deferred_15m_confirmation` / `deferred_pullback` / `deferred_chase` 三条 deferred 路径共用；触发阈值 `range_pos>=0.82` / `pre_12h>=0.05 ∧ range_pos>=0.75` / `prev_daily>=0.10 ∧ range_pos>=0.75`，命中后创建 `deferred_pullback_overheat`（`chase_eligible=false`，4h 超时）或直拒 `long_overheat_no_valid_pullback_target`；short side guard 也走该函数（`range_position_too_low` / `pre_move_too_deep` / `rsi_too_low_for_short`）。`plan.entry_type` 前移到 EV gate 之前，消除 `unknown` bucket key；新增 `EV_BUCKET_MIN_TRADES=10` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`，sparse bucket 禁止抬高 `p_win`，可降仓 / 缩仓。attribution 新增 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy=long_overheat_v1` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse` 共 12 个 optional 字段。event_backtest 同步 `long_live_*` 参数与 overheat 检查。新增 `test_long_entry_position_guard.py` 23 case，基线 551→575 passed。详见 `docs/long_entry_position_guard_prd.md` / `docs/long_entry_position_guard_acceptance.md`。
 
 ## 架构图
 
@@ -587,6 +588,20 @@ CREATE TABLE klines (
 - **测试**：新增 `test_rr_floor_policy.py` 20 个 case，覆盖 AC-RR-01..09。
 - **验证**：551 passed / 4 deselected / 0 failed
 - 详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
+
+### ✅ Long Entry Position Guard（2026-05-26 完成）
+- **背景**：NEAR-USDT 2026-05-26 14:47 通过 `long_bullish_low_rr` 在 range_pos=0.838 / prev_daily=+15.66% 山顶位置追多。`pending_pullback`（RSI ≥ 70）和 `deferred_15m_confirmation` 都无法覆盖这种"位置过高但 RSI 中性"的多头入场。
+- **TechAnalyst 输入**（`agents/trading/tech_analyst.py`）：新增 `entry_context.{position_in_24h_range, pre_12h_return_pct, prev_daily_return_pct}`，保留 `short_context` 兼容旧消费方。
+- **统一函数**（`agents/trading/judge.py: _check_entry_position_policy(symbol, action, plan, tech, score, context)`）：long overheat 与 short side guard 的唯一入口，主开仓路径与 `deferred_15m_confirmation` / `deferred_pullback` / `deferred_chase` 三条 deferred 路径共用。**禁止**在 deferred helper 内重写 overheat 判定。
+- **触发阈值**：`range_pos>=0.82` 或 `pre_12h>=0.05 ∧ range_pos>=0.75` 或 `prev_daily>=0.10 ∧ range_pos>=0.75`，分别返回 `long_overheat_range_pos` / `long_overheat_pre_move` / `long_overheat_daily_gain`。
+- **处理策略**：有效 target（`stop_loss < target < signal_price`，target = `max(stop_loss*1.005, signal*(1-max(LONG_LIVE_PULLBACK_MIN_PCT, atr_pct)))`）→ 创建 `deferred_pullback_overheat`（`chase_eligible=false`，timeout `LONG_LIVE_PULLBACK_TIMEOUT_HOURS`）；target 无效 → 直拒 `long_overheat_no_valid_pullback_target`。deferred 触发后必须重新执行 HTF/15m/RR/EV/Entry Position Guard/slot gate 全套二次确认。
+- **EV bucket 修正**：`plan.entry_type` 前移到 `_check_expected_value` 之前，消除 `unknown` bucket key；新增 `EV_BUCKET_MIN_TRADES=10` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`，sparse bucket 禁止抬高 `p_win`，可降仓 / 缩仓。
+- **配置化阈值**（`utils/config_loader.py`）：`LONG_LIVE_POSITION_GUARD_ENABLED=true` / `LONG_LIVE_MAX_RANGE_POS=0.82` / `LONG_LIVE_MAX_PRE_MOVE=0.05` / `LONG_LIVE_MAX_DAILY_GAIN=0.10` / `LONG_LIVE_DAILY_GAIN_RANGE_POS=0.75` / `LONG_LIVE_PULLBACK_MIN_PCT=0.025` / `LONG_LIVE_PULLBACK_TIMEOUT_HOURS=4` / `LONG_LIVE_OVERHEAT_DISABLE_CHASE=true` / `EV_BUCKET_MIN_TRADES=10` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`，全部进 HARD_LIMITS + env_map + banner。
+- **Attribution 全链路**：`trade_decision.attribution` 新增 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy=long_overheat_v1` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse` 共 12 个 optional 字段；被拒决策同样带，落 `data/journal/events_*.jsonl`。
+- **回测同构**（`event_backtest.py`）：新增 `long_live_*` 构造参数与 `_check_entry_with_regime` overheat 检查；`prev_daily_return_pct` 列由 `close.pct_change(24)` 预计算。
+- **测试**：新增 `test_long_entry_position_guard.py` 23 个 case，覆盖 AC-LONGPOS-01..17（NEAR 复现、三组阈值触发、target 无效拒绝、chase 禁用、四路径一致性、short side guard 主路径生效、bucket key 真实、稀疏 bucket 不 uplift、trade_decision.v2 兼容、回测同构、配置 + banner、审计字段）。
+- **验证**：575 passed / 4 deselected / 0 failed
+- 详见 `docs/long_entry_position_guard_prd.md` / `docs/long_entry_position_guard_acceptance.md`。
 
 ### Phase 9: 待开发
 - Predictor（趋势预测Agent）

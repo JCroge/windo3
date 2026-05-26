@@ -12,7 +12,7 @@ python3 run_agents.py
 
 `live_trading.py` 已标记为 deprecated，只保留给单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
 
-当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`（基线 551 passed，含 R:R Floor 20 case + OKX posMode 38 case），但 OKX 真实 testnet 语义验收仍未执行，阻断 live 扩容。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
+当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 已统一收敛到 `Judge._check_entry_position_policy`（基线 575 passed，含 R:R Floor 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case），但 OKX 真实 testnet 语义验收仍未执行，阻断 live 扩容。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
 
 **热更新陷阱**：Telegram `/restart` 走的是 `run_agents.py` 内 `while True: Orchestrator()` 同进程循环，**不会重新 import** 已修改的模块。要让代码改动生效必须 OS 层重启进程：`kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。`/restart` 适合复位状态、不适合发版。
 
@@ -159,11 +159,20 @@ CCXT 的 `params` 是交易所相关扩展。`reduceOnly`、`clOrdId`、OKX atta
 - 不要放宽空头：`mixed/choppy` 空头默认仍 `RR_FLOOR_DEFAULT`；`bullish` 空头仍 `RR_FLOOR_SHORT_BULLISH`。
 - attribution 必须带 `rr_floor_used` / `rr_floor_reason` / `rr_policy` / `symbol_trend` / `symbol_higher_tf_bias` / `symbol_daily_bias`，被拒决策也必须带，否则事后无法复盘。
 
+**Long Entry Position Guard 改动专项约束**：
+- 修改 long overheat / short side guard 阈值或处理策略必须改 `Judge._check_entry_position_policy(symbol, action, plan, tech, score, context)` 单一函数，**禁止**在 deferred helper（`_handle_pending` / `_apply_regime_policy`）里再写一份 overheat 判定。
+- 该函数是主开仓路径与三条 deferred 路径（`deferred_15m_confirmation` / `deferred_pullback` / `deferred_chase`）的唯一入口；触发后若有有效回调目标进入 `deferred_pullback_overheat`（`chase_eligible=false`），否则直拒 `long_overheat_no_valid_pullback_target`。
+- 新增阈值必须同步：`utils/config_loader.py` 的 DEFAULTS / HARD_LIMITS / env_map / banner、`event_backtest.py` 的同构实现、`test_long_entry_position_guard.py` 的 AC 覆盖、`docs/long_entry_position_guard_prd.md` / `docs/long_entry_position_guard_acceptance.md` 的 PRD 与验收。
+- `plan.entry_type` 必须在 `_check_expected_value` 之前写入，避免 EV bucket key 退化为 `unknown`。
+- 稀疏 bucket（`trade_count < EV_BUCKET_MIN_TRADES`）默认禁止抬高 `p_win`（`EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`），降仓 / 缩仓仍允许。
+- attribution 必须带 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse`，被拒决策也必须带。
+
 必须验证：
 ```bash
 python3 test_risk_budget.py
 python3 test_ev_gate.py
 python3 -m pytest test_rr_floor_policy.py -q
+python3 -m pytest test_long_entry_position_guard.py -q
 python3 test_event_backtest.py
 python3 test_event_backtest_real_data.py
 ```
