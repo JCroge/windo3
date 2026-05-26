@@ -2401,6 +2401,29 @@ class MultiJudge(BaseAgent):
                                               trend.get('higher_tf_bias', 'neutral'))
         symbol_daily_bias = plan_dict.get('symbol_daily_bias',
                                           trend.get('daily_bias', 'neutral'))
+
+        # Sanity: 防止 rr_floor_reason 字符串与 symbol_* 字段漂移
+        if rr_floor_reason and 'sym_trend=' in rr_floor_reason:
+            try:
+                tagged = dict(
+                    kv.split('=', 1) for kv in rr_floor_reason.split(',')
+                    if '=' in kv
+                )
+                expected_pairs = (
+                    ('sym_trend', symbol_trend),
+                    ('htf', symbol_higher_tf_bias),
+                    ('daily', symbol_daily_bias),
+                )
+                for tag_key, field_val in expected_pairs:
+                    tag_val = tagged.get(tag_key)
+                    if tag_val and tag_val != field_val:
+                        self.logger.warning(
+                            f"[Attribution] rr_floor_reason {tag_key}={tag_val} "
+                            f"!= field={field_val} (rr_policy={rr_policy})"
+                        )
+                        break
+            except Exception:
+                pass
         return {
             'entry_regime': regime_snap['effective_regime'],
             'raw_regime': regime_snap.get('raw_regime', regime_snap['effective_regime']),
