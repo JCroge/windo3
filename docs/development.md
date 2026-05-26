@@ -14,7 +14,7 @@ python3 run_agents.py
 
 当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 已统一收敛到 `Judge._check_entry_position_policy`（基线 575 passed，含 R:R Floor 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case），但 OKX 真实 testnet 语义验收仍未执行，阻断 live 扩容。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
 
-**热更新陷阱**：Telegram `/restart` 走的是 `run_agents.py` 内 `while True: Orchestrator()` 同进程循环，**不会重新 import** 已修改的模块。要让代码改动生效必须 OS 层重启进程：`kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。`/restart` 适合复位状态、不适合发版。
+**热更新语义**：Telegram `/restart` 现在会让 `run_agents.py` 在优雅停机后执行 `os.execv(...)`，重新拉起 Python 解释器并重新 import 已修改的模块。`execv` 后 PID 可能不变，这是正常现象；判断是否换上新代码，应看启动日志和新行为。若变更的是 Python/venv/系统级依赖，仍建议 `kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。
 
 ## 目录职责
 

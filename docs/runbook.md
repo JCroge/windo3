@@ -53,10 +53,10 @@ kill -SIGINT $(pgrep -f run_agents.py)
 **远程重启**：
 ```bash
 # 通过Telegram发送 /restart 命令
-# 系统写入 data/.restart_flag 后优雅退出，run_agents.py 检测标记后自动重启
+# 系统写入 data/.restart_flag 后优雅退出，run_agents.py 检测标记后通过 execv 重启解释器
 ```
 
-> ⚠️ `/restart` 走的是 `run_agents.py` 的 `while True: Orchestrator()` 同进程循环，不 fork 不 exec，**Python `sys.modules` 缓存的旧代码不会被替换**。改了 `executor.py` 等模块要让新代码生效，必须 OS 层重启进程：
+> `/restart` 现在会在优雅停机后执行 `os.execv(sys.executable, [sys.executable] + sys.argv)`，重新加载磁盘上的源码。`execv` 置换的是当前进程镜像，所以 **PID 可能保持不变**，这是正常现象；关键是 Python 解释器和 `sys.modules` 会被重建。若变更的是 Python/venv/系统级依赖，仍建议外部重启进程：
 > ```bash
 > kill -TERM $(pgrep -f run_agents.py) && sleep 5
 > nohup python3 run_agents.py > logs/launcher_$(date +%Y%m%d_%H%M%S).log 2>&1 &

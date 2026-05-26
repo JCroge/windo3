@@ -338,7 +338,7 @@
    - 7个命令：/status、/positions、/stop、/restart、/halt、/resume、/log
    - /stop和/restart通过消息总线发送system_command→Orchestrator触发优雅退出
    - /halt和/resume通过system_command→Executor切换熔断状态
-   - /restart写入`data/.restart_flag`，run_agents.py检测后自动重启
+   - /restart写入`data/.restart_flag`，run_agents.py检测后通过 `execv` 置换解释器镜像
 
 4. **Orchestrator远程控制**（`agents/orchestrator.py`）
    - 注册system_command订阅 + _command_listener协程
@@ -349,7 +349,7 @@
 
 6. **run_agents.py重启循环**
    - while循环包裹Orchestrator.start()
-   - 退出后检测`data/.restart_flag`决定是否重启
+   - 退出后检测`data/.restart_flag`，命中时执行 `os.execv(...)` 重新加载代码
 
 ### ✅ Phase 6k: 回调入场 + Censor超时修复 + Executor margin修复（2026-05-14完成）
 

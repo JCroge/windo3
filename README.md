@@ -84,7 +84,7 @@ python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 - open 主链路必须走 `trade_decision.v2`（带 `request_id` / `attribution` / `dispatch_path`）；Executor 终态发 `execution_result.v2`。
 - LLM 只作为辅助信号，不能绕过规则、R:R、EV、余额、熔断和下单预检。
 - 修改 Judge / 策略公式必须同步 `event_backtest.py` 同构验证，不能只看 mock 单测。
-- 配置或代码变更后必须 OS 层重启进程；Telegram `/restart` 是同进程 loop，不会重新 import 新代码。
+- 配置或代码变更后可直接使用 Telegram `/restart`；launcher 会在优雅停机后 `os.execv(...)` 置换解释器镜像并重新 import 模块。若升级 Python/venv/系统级依赖，仍建议外部 supervisor 或 OS 层重启。
 - 关键状态 JSON 使用原子写；不要删除或覆盖用户已有 `data/` 和 `logs/`。
 
 ## 套利系统归档
