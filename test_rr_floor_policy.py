@@ -359,3 +359,24 @@ class TestAC09AttributionLogging:
         assert attr['rr_policy'] == 'long_aligned_low_rr'
         assert attr['symbol_trend'] == 'bullish'
         assert attr['symbol_higher_tf_bias'] == 'bullish'
+
+    def test_rejection_attribution_no_tech_uses_plan_snapshot(self):
+        """生产中 _gate_and_publish_open 调用 _rejection_attribution 时不带 tech。
+        plan 已携带 symbol_trend/htf/daily 快照，attribution 必须读 plan，
+        不能 fallback 到 neutral 与 rr_floor_reason 字符串自相矛盾。"""
+        judge = _make_judge('choppy')
+        plan = {'size_usdt': 10, 'leverage': 5, 'risk_reward_ratio': 1.45,
+                'effective_risk_reward_ratio': 1.45}
+        tech = _tech('bullish', 'bullish', 'bullish')
+
+        judge._apply_regime_policy('INJ-USDT', 'open_long', plan, 50, tech)
+        # 模拟 slot gate 阶段：tech 已不在调用栈中
+        attr_no_tech = judge._rejection_attribution(
+            'open_long', plan, 'low_rr_slot_full'
+        )
+        assert attr_no_tech['rr_policy'] == 'long_aligned_low_rr'
+        assert attr_no_tech['rr_floor_used'] == 1.30
+        assert attr_no_tech['symbol_trend'] == 'bullish'
+        assert attr_no_tech['symbol_higher_tf_bias'] == 'bullish'
+        assert attr_no_tech['symbol_daily_bias'] == 'bullish'
+        assert 'sym_trend=bullish' in attr_no_tech['rr_floor_reason']

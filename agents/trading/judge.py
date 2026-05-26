@@ -1062,7 +1062,7 @@ class MultiJudge(BaseAgent):
                             "reasoning": reject_reason,
                             "key_factors": llm_result.get('key_factors', []),
                             "risk_warnings": [reject_reason],
-                            "attribution": self._rejection_attribution(final_action, plan, f"quality_gate:{reject_reason}"),
+                            "attribution": self._rejection_attribution(final_action, plan, f"quality_gate:{reject_reason}", tech=tech),
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
@@ -1202,6 +1202,10 @@ class MultiJudge(BaseAgent):
                     plan['rr_floor_used'] = min_rr
                     plan['rr_floor_reason'] = rr_reason
                     plan['rr_policy'] = rr_policy
+                    _trend_snap = (tech or {}).get('trend', {}) or {}
+                    plan['symbol_trend'] = _trend_snap.get('direction', 'neutral')
+                    plan['symbol_higher_tf_bias'] = _trend_snap.get('higher_tf_bias', 'neutral')
+                    plan['symbol_daily_bias'] = _trend_snap.get('daily_bias', 'neutral')
 
                     if rr < min_rr:
                         self.logger.info(
@@ -1275,7 +1279,7 @@ class MultiJudge(BaseAgent):
                                 f"net_loss={plan['net_loss_usdt']:.2f}",
                             ],
                             "risk_warnings": [f"negative_ev:{plan['expected_value']:.3f}"],
-                            "attribution": self._rejection_attribution(final_action, plan, f"ev_gate:EV={plan['expected_value']:.3f}"),
+                            "attribution": self._rejection_attribution(final_action, plan, f"ev_gate:EV={plan['expected_value']:.3f}", tech=tech),
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
@@ -1331,7 +1335,7 @@ class MultiJudge(BaseAgent):
                             "tf_15m_entry_status": "blocked",
                             "tf_15m_block_reason": timing_reason,
                         }
-                        _15m_attr.update(self._rejection_attribution(final_action, plan, f"15m_blocked:{timing_reason}"))
+                        _15m_attr.update(self._rejection_attribution(final_action, plan, f"15m_blocked:{timing_reason}", tech=tech))
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
@@ -1388,7 +1392,7 @@ class MultiJudge(BaseAgent):
                         all_slots = {**self._position_slots, **self._pending_open_slots}
                         main_count = sum(1 for s in occupied if all_slots.get(s, 'main') == 'main')
                         if main_count >= self._max_concurrent_positions:
-                            gate_attr = self._rejection_attribution(final_action, plan, "main_slot_full")
+                            gate_attr = self._rejection_attribution(final_action, plan, "main_slot_full", tech=tech)
                             self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "main_slot_full", gate_attr)
                             await self.publish("trade_decision", {
                                 "symbol": symbol, "timestamp": time.time(),
@@ -1406,7 +1410,7 @@ class MultiJudge(BaseAgent):
                         low_rr_count = sum(1 for s in occupied if all_slots.get(s) == 'low_rr_extra')
                         low_rr_cap = self._candidate_ranker.low_rr_extra_slot if hasattr(self, '_candidate_ranker') else 1
                         if low_rr_count >= low_rr_cap:
-                            gate_attr = self._rejection_attribution(final_action, plan, "low_rr_slot_full")
+                            gate_attr = self._rejection_attribution(final_action, plan, "low_rr_slot_full", tech=tech)
                             self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "low_rr_slot_full", gate_attr)
                             await self.publish("trade_decision", {
                                 "symbol": symbol, "timestamp": time.time(),
@@ -1423,7 +1427,7 @@ class MultiJudge(BaseAgent):
                         all_slots = {**self._position_slots, **self._pending_open_slots}
                         probe_count = sum(1 for s in occupied if all_slots.get(s) == 'probe_short')
                         if probe_count >= self._probe_short_max_concurrent:
-                            gate_attr = self._rejection_attribution(final_action, plan, "probe_slot_full")
+                            gate_attr = self._rejection_attribution(final_action, plan, "probe_slot_full", tech=tech)
                             self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "probe_slot_full", gate_attr)
                             await self.publish("trade_decision", {
                                 "symbol": symbol, "timestamp": time.time(),
@@ -1441,7 +1445,7 @@ class MultiJudge(BaseAgent):
                         probe_long_count = sum(1 for s in occupied if all_slots.get(s) == 'probe_long')
                         max_pl = getattr(self, '_probe_long_max_concurrent', 1)
                         if probe_long_count >= max_pl:
-                            gate_attr = self._rejection_attribution(final_action, plan, "probe_long_slot_full")
+                            gate_attr = self._rejection_attribution(final_action, plan, "probe_long_slot_full", tech=tech)
                             self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "probe_long_slot_full", gate_attr)
                             await self.publish("trade_decision", {
                                 "symbol": symbol, "timestamp": time.time(),
@@ -1970,9 +1974,12 @@ class MultiJudge(BaseAgent):
             'rr_policy': self._get_rr_policy_label(action, plan),
             'rr_floor_used': (plan or {}).get('rr_floor_used'),
             'rr_floor_reason': (plan or {}).get('rr_floor_reason', ''),
-            'symbol_trend': trend.get('direction', 'neutral'),
-            'symbol_higher_tf_bias': trend.get('higher_tf_bias', 'neutral'),
-            'symbol_daily_bias': trend.get('daily_bias', 'neutral'),
+            'symbol_trend': (plan or {}).get('symbol_trend',
+                                             trend.get('direction', 'neutral')),
+            'symbol_higher_tf_bias': (plan or {}).get('symbol_higher_tf_bias',
+                                                     trend.get('higher_tf_bias', 'neutral')),
+            'symbol_daily_bias': (plan or {}).get('symbol_daily_bias',
+                                                  trend.get('daily_bias', 'neutral')),
             'slot_type': (plan or {}).get('slot_type', 'main'),
             'is_low_rr': (plan or {}).get('is_low_rr', False),
             'is_probe': (plan or {}).get('is_probe', False),
@@ -2330,6 +2337,10 @@ class MultiJudge(BaseAgent):
         plan['rr_floor_used'] = min_rr
         plan['rr_floor_reason'] = rr_reason
         plan['rr_policy'] = rr_policy
+        _trend_snap = (tech or {}).get('trend', {}) or {}
+        plan['symbol_trend'] = _trend_snap.get('direction', 'neutral')
+        plan['symbol_higher_tf_bias'] = _trend_snap.get('higher_tf_bias', 'neutral')
+        plan['symbol_daily_bias'] = _trend_snap.get('daily_bias', 'neutral')
 
         if rr < min_rr:
             self._record_rejected_plan(symbol, action, plan, score, 60,
@@ -2385,6 +2396,11 @@ class MultiJudge(BaseAgent):
                 rr_policy = derived_policy
 
         trend = (tech or {}).get('trend', {}) if tech else {}
+        symbol_trend = plan_dict.get('symbol_trend', trend.get('direction', 'neutral'))
+        symbol_higher_tf_bias = plan_dict.get('symbol_higher_tf_bias',
+                                              trend.get('higher_tf_bias', 'neutral'))
+        symbol_daily_bias = plan_dict.get('symbol_daily_bias',
+                                          trend.get('daily_bias', 'neutral'))
         return {
             'entry_regime': regime_snap['effective_regime'],
             'raw_regime': regime_snap.get('raw_regime', regime_snap['effective_regime']),
@@ -2392,9 +2408,9 @@ class MultiJudge(BaseAgent):
             'rr_policy': rr_policy,
             'rr_floor_used': rr_floor_used,
             'rr_floor_reason': rr_floor_reason,
-            'symbol_trend': trend.get('direction', 'neutral'),
-            'symbol_higher_tf_bias': trend.get('higher_tf_bias', 'neutral'),
-            'symbol_daily_bias': trend.get('daily_bias', 'neutral'),
+            'symbol_trend': symbol_trend,
+            'symbol_higher_tf_bias': symbol_higher_tf_bias,
+            'symbol_daily_bias': symbol_daily_bias,
             'slot_type': slot_type,
             'is_low_rr': plan_dict.get('is_low_rr', False),
             'is_probe': plan_dict.get('is_probe', False),
