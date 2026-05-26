@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-05-25）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `531 passed / 4 deselected / 1 warning`（含 OKX posMode 38 单测）；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
+**系统状态（2026-05-26）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `551 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 20 case + OKX posMode 38 case）；R:R floor 选择已统一收敛到 `Judge._select_rr_floor`，attribution 新增 `rr_floor_used`/`rr_floor_reason`/`symbol_trend`/`symbol_higher_tf_bias`/`symbol_daily_bias`；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
 
 ## 核心模块接口
 
@@ -224,6 +224,26 @@ class MyAgent(BaseAgent):
 - schema_version, request_id, action, confidence, reasoning, key_factors[], risk_warnings[]
 - dispatch_path, signal_score, execution_confidence, position_scale, attribution
 - plan: {side, entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt(=margin), order_type, risk_reward_ratio, effective_risk_reward_ratio, funding_cost, est_hold_hours, expected_value, p_win_used, p_win_source}
+
+**`attribution` 字段表（2026-05-26 起）**：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `dispatch_path` | str | 触发路径：`main_direct` / `main_ranking` / `deferred_15m` / `deferred_pullback` / `deferred_chase` / `probe_short` / `probe_long` |
+| `signal_score` | int | 规则信号原始分数（含正负方向） |
+| `execution_confidence` | int | LLM/规则综合置信度（0-100） |
+| `position_scale` | float | 仓位缩放因子（0.0-1.0） |
+| `slot_type` | str | 槽位归属：`main` / `low_rr_extra` / `probe` |
+| `regime` | str | 市场 regime：`bullish` / `bearish` / `mixed` / `choppy` |
+| `rr_policy` | str | R:R floor 策略标签：`probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` |
+| `rr_floor_used` | float | 本次开仓实际套用的 R:R floor 值 |
+| `rr_floor_reason` | str | floor 选择原因，机器可读（如 `long_aligned:choppy`、`probe:bullish`、`default:mixed`） |
+| `symbol_trend` | str | TechAnalyst 给出的标的自身趋势方向（`bullish`/`bearish`/`neutral`） |
+| `symbol_higher_tf_bias` | str | 4h HTF bias |
+| `symbol_daily_bias` | str | 日线 bias |
+| `rejection_reason` | str | 仅被拒决策出现，配合 `data/journal/events_*.jsonl` 复盘 |
+
+下游消费这些字段做策略复盘 / 分桶胜率 / 反事实账本时，必须按 `attribution.rr_policy` 区分槽位与 floor 来源；不能仅凭 `regime + side` 反推。
 
 `execution_result:{symbol}` — Executor发布，统一为 `execution_result.v2`：
 - schema_version, status, action, symbol, source, request_id, correlation_id, reason, result, timestamp

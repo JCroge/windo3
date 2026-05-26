@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收（10 case PASS）；自动化基线 `531 passed / 4 deselected / 1 warning`（含 38 个 posMode 单测）；OS 层重启已上线新代码（21:32 真账户探测 `posMode=net_mode`）
+**当前阶段**：2026-05-26 R:R Floor Policy 修复完成（531→551 passed，新增 20 case AC-RR-01..09 全 PASS）；2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收（10 case PASS）；OS 层已重启新进程加载 R:R floor 新逻辑
 **下一阶段**：在 OKX demo/testnet 跑完 `docs/okx_posmode_execution_acceptance.md` T0-T9 矩阵，记录 raw response / final position / algo orders 到 `docs/generated_reports/OKX执行语义testnet验收报告_*.md`；完成前小额 live 灰度可继续观察，但 live 扩容仍 NO-GO
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -612,6 +612,23 @@
 7. **全部 feature-flagged**：5 个 env 开关，关闭即回退原行为
 
 **验证**：293 passed / 4 deselected / 0 failed
+
+### ✅ R:R Floor Policy 修复（2026-05-26 完成）
+
+**问题**：INJ-USDT 类信号（`effective_rr=1.45`, `score=45`, regime=choppy/mixed, trend=bullish, daily=bullish）被默认 `min_rr=1.50` 拦截。Judge 主开仓路径直接对比 `min_rr_threshold=1.5`，`_apply_regime_policy`（deferred 路径）又重写了一份 if/else，两边随时漂移；probe 路径硬编码 `1.30`；attribution 不带 R:R floor 来源，事后无法复盘"为什么这次走 1.50 而不是 1.30"。
+
+**解决方案**：
+1. **统一函数**（`agents/trading/judge.py: _select_rr_floor(action, plan, tech, score)`）：唯一入口，主路径与 `_apply_regime_policy` 共用，按顺序匹配 `probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` 五个分支并返回 `(min_rr, rr_policy, rr_floor_reason)`。修改 R:R floor **必须改这一处**。
+2. **新策略 `long_aligned_low_rr`**：mixed/choppy regime 下，仅当 `trend.direction=bullish` AND (`htf_bias=bullish` OR `daily_bias=bullish`) AND 未 `block_long` AND `|score|≥min_deferred_signal_score` 时使用 `RR_FLOOR_LONG_ALIGNED_CHOPPY=1.30`，进 low_rr_extra slot。
+3. **不放宽空头**：mixed/choppy 空头默认仍 `RR_FLOOR_DEFAULT=1.50`；bullish 空头仍 `RR_FLOOR_SHORT_BULLISH=1.80`。
+4. **probe 路径配置化**：`PROBE_RR_FLOOR=1.30` 替换硬编码，`_can_route_probe_short` / 主路径 / deferred 路径全部从同一函数取值。
+5. **Attribution 全链路**：`trade_decision.attribution` 新增 `rr_floor_used` / `rr_floor_reason` / `symbol_trend` / `symbol_higher_tf_bias` / `symbol_daily_bias`；被拒决策同样带这五个字段，落 `data/journal/events_*.jsonl`。
+6. **配置化**（`utils/config_loader.py`）：新增 `RR_FLOOR_LONG_ALIGNED_CHOPPY` / `PROBE_RR_FLOOR` / `LOW_RR_LONG_ALIGNED_ENABLED`，全部进 HARD_LIMITS + env_map + banner（启动 banner 显式打印五个 floor 当前值）。
+7. **测试**：新增 `test_rr_floor_policy.py` 20 case，覆盖 AC-RR-01..09（config 默认、bullish 多头、choppy aligned 多头、choppy 非 aligned 拒绝、空头不放宽、bullish 强空头、probe 一致性、主路径 = deferred 路径、attribution 完整）。
+
+**验证**：551 passed / 4 deselected / 0 failed（531 → 551，新增 20 个 R:R floor 单测）。
+
+详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
 
 ## 技术债务
 

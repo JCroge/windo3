@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-05-25）**：主入口为 `run_agents.py`，全量回归 `531 passed / 4 deselected / 1 warning`（含 38 个 OKX posMode 单测）。OKX posMode 执行兼容代码已落地（启动期探测 + 三入口参数构造器 + 拒单状态复核），mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-05-26）**：主入口为 `run_agents.py`，全量回归 `551 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 20 case + OKX posMode 38 case）。R:R Floor 选择已统一收敛到 `Judge._select_rr_floor` 单一函数（主路径与 `_apply_regime_policy` 共用），新增 `long_aligned_low_rr` 策略允许 mixed/choppy 下趋势强一致多头按 1.30 floor 进入 low_rr_extra slot。OKX posMode 执行兼容代码已落地（启动期探测 + 三入口参数构造器 + 拒单状态复核），mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
@@ -58,6 +58,7 @@
 - 2026-05-24：审计整改自动化验收通过，验证 493 passed / 4 deselected / 1 warning；OKX 真实 testnet 仍待执行。
 - 2026-05-25：OKX posMode 执行兼容代码完成（executor.py）：启动期 `private_get_account_config` 探测 posMode，live fail-closed；新增 `_build_okx_open_params` / `_build_okx_close_params` / `_build_okx_algo_params` 三入口构造器，业务路径全部接入；close/reduce 前 `_fetch_okx_position_state` 拉真实仓位并按 `availPos` 钳制；51169/51205/51112/51333 拒单触发 `_handle_okx_close_reject` 状态复核（already_flat/external_closed/still_open/direction_conflict），不再无脑重试或错删本地仓位。新增 `test_okx_posmode_executor.py` 38 PASS，`verify_okx_testnet_semantics.py` 扩展为 10 case（posMode close 矩阵 + 拒单复核）；基线 493 → 531。OKX 真实 testnet T0-T9 仍待执行。
 - 2026-05-25：发现 `/restart`（Telegram 远程重启）走的是 `run_agents.py` 的同进程 `while True: Orchestrator()` 循环，不 fork 不 exec，Python `sys.modules` 缓存旧 `executor.py`，**新代码不会被加载**。要让代码热更新生效必须 OS 层 `kill -TERM` 后 `nohup python3 run_agents.py` 重启进程。
+- 2026-05-26：R:R Floor Policy 修复（judge.py + config_loader.py）：抽出 `_select_rr_floor(action, plan, tech, score)` 单一函数，主路径与 `_apply_regime_policy` 共用，返回 `(min_rr, rr_policy, rr_floor_reason)`；新增 `long_aligned_low_rr` 策略允许 mixed/choppy 下 trend bullish AND (htf bullish OR daily bullish) 多头按 1.30 floor 进 low_rr_extra slot；新增 `RR_FLOOR_LONG_ALIGNED_CHOPPY=1.30` / `PROBE_RR_FLOOR=1.30` / `LOW_RR_LONG_ALIGNED_ENABLED=true` 配置；attribution 新增 `rr_floor_used` / `rr_floor_reason` / `symbol_trend` / `symbol_higher_tf_bias` / `symbol_daily_bias` 五字段；新增 `test_rr_floor_policy.py` 20 case，基线 531→551 passed。详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
 
 ## 架构图
 
@@ -575,6 +576,17 @@ CREATE TABLE klines (
 - **Probe Short**：牛市中允许小仓位探针做空（30% position, 3x leverage, 24h cooldown），同时要求 pending probe 与流动性检查
 - **Low R:R Extra Slot**（`utils/candidate_ranker.py`）：低 R:R 多头使用独立额外槽位，不挤占主槽位，rank score 打 70% 折扣
 - **验证**：329 passed / 4 deselected / 0 failed
+
+### ✅ R:R Floor Policy 修复（2026-05-26完成）
+- **背景**：INJ-USDT 类信号（R:R≈1.45, score=45, choppy regime, trend bullish, daily bullish）被默认 1.50 floor 拦截。Judge 主路径直接对比 `min_rr_threshold`，`_apply_regime_policy` 又重写一份 if/else，两边可能漂移。
+- **统一函数**（`agents/trading/judge.py: _select_rr_floor(action, plan, tech, score)`）：唯一入口，主路径与 deferred 路径共用，按顺序匹配 `probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` 五个分支并返回 `(min_rr, rr_policy, rr_floor_reason)`。修改 R:R floor **必须改这一处**。
+- **新策略 `long_aligned_low_rr`**：mixed/choppy regime 下，仅当 `trend.direction=bullish` AND (`htf_bias=bullish` OR `daily_bias=bullish`) AND 未 `block_long` AND `|score|≥min_deferred_signal_score` 时使用 `RR_FLOOR_LONG_ALIGNED_CHOPPY=1.30`，进 low_rr_extra slot；不放宽空头。
+- **配置化阈值**（`utils/config_loader.py`）：`RR_FLOOR_DEFAULT=1.5` / `RR_FLOOR_LONG_BULLISH=1.30` / `RR_FLOOR_LONG_ALIGNED_CHOPPY=1.30` / `RR_FLOOR_SHORT_BULLISH=1.80` / `PROBE_RR_FLOOR=1.30` / `LOW_RR_LONG_ALIGNED_ENABLED=true`，全部进 HARD_LIMITS + env_map + banner。
+- **probe 路径**：`PROBE_RR_FLOOR` 替换硬编码 `1.30`，`_can_route_probe_short` / 主路径 / deferred 路径全部从同一函数取值。
+- **Attribution 全链路**：`trade_decision.attribution` 新增 `rr_floor_used` / `rr_floor_reason` / `symbol_trend` / `symbol_higher_tf_bias` / `symbol_daily_bias`；被拒决策同样带这五个字段，落 `data/journal/events_*.jsonl`。
+- **测试**：新增 `test_rr_floor_policy.py` 20 个 case，覆盖 AC-RR-01..09。
+- **验证**：551 passed / 4 deselected / 0 failed
+- 详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
 
 ### Phase 9: 待开发
 - Predictor（趋势预测Agent）

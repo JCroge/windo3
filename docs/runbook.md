@@ -97,7 +97,7 @@ python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/T
 python3 -m pytest test_drawdown_baseline.py  # 回撤基准修正验收（14 tests）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 531 passed / 4 deselected / 1 warning（2026-05-25，含 38 个 OKX posMode 单测）
+python3 -m pytest -q              # 551 passed / 4 deselected / 1 warning（2026-05-26，含 R:R Floor Policy 20 case + OKX posMode 38 case）
 python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
 ```
 
@@ -154,12 +154,40 @@ python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db �
 | PHASE2_MOMENTUM_PROBE_LONG_ENABLED | Momentum Probe Long：RSI 70-85 强趋势追踪小仓位 | true | 否 |
 | PHASE2_TREND_SATURATION_ENABLED | Trend Saturation：strength>90 cap + 4h RSI 动态衰减 | true | 否 |
 | PHASE2_BUCKETED_EV_ENABLED | Bucketed EV：per side×regime×entry_type 分桶胜率 | true | 否 |
+| RR_FLOOR_DEFAULT | R:R 默认 floor（任何不触发其他分支的路径） | 1.5 | 否 |
+| RR_FLOOR_LONG_BULLISH | 牛市低 R:R 多头 floor（low_rr_extra 槽） | 1.30 | 否 |
+| RR_FLOOR_LONG_ALIGNED_CHOPPY | mixed/choppy 下趋势强一致多头 floor（2026-05-26 新增） | 1.30 | 否 |
+| RR_FLOOR_SHORT_BULLISH | 牛市做空 floor（强 guard） | 1.80 | 否 |
+| PROBE_RR_FLOOR | probe_short / probe_long 路径专用 floor，主路径与 deferred 路径一致 | 1.30 | 否 |
+| LOW_RR_SLOT_ENABLED | 是否启用低 R:R 多头额外槽位（牛市 1.30-1.50 多头） | true | 否 |
+| LOW_RR_LONG_ALIGNED_ENABLED | mixed/choppy 下趋势强一致多头是否使用低 R:R floor（2026-05-26 新增） | true | 否 |
+| LOW_RR_MAX_LEVERAGE | 低 R:R 多头最大杠杆 | 5 | 否 |
+| LOW_RR_MAX_POSITION_PCT | 低 R:R 多头最大仓位比例 | 0.5 | 否 |
+| LOW_RR_EXTRA_SLOT | 低 R:R 多头额外槽数 | 1 | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
-## 配置文件
+## R:R Floor 策略
 
-### config.yaml
+`Judge._select_rr_floor(action, plan, tech, score)` 是 R:R floor 的**唯一入口**，主开仓路径与 `_apply_regime_policy`（deferred 路径）共用，禁止在调用点重新写 if/else 分支。函数返回 `(min_rr, rr_policy, rr_floor_reason)` 三元组，按以下顺序匹配第一个命中的分支：
+
+| rr_policy | 触发条件 | min_rr 来源 | 备注 |
+|---|---|---|---|
+| `probe` | `plan['is_probe']` 为真（probe_short / probe_long） | `PROBE_RR_FLOOR` | 主路径与 deferred 路径一致 |
+| `long_bullish_low_rr` | `eff_regime=bullish` AND 多头 AND `LOW_RR_SLOT_ENABLED=true` | `RR_FLOOR_LONG_BULLISH` | 进 low_rr_extra slot，杠杆/仓位受限 |
+| `long_aligned_low_rr` | `eff_regime∈{mixed, choppy}` AND 多头 AND `LOW_RR_SLOT_ENABLED=true` AND `LOW_RR_LONG_ALIGNED_ENABLED=true` AND `trend.direction=bullish` AND (`htf_bias=bullish` OR `daily_bias=bullish`) AND 未 `block_long` AND `|score|≥min_deferred_signal_score` | `RR_FLOOR_LONG_ALIGNED_CHOPPY` | 2026-05-26 新增，进 low_rr_extra slot |
+| `short_bullish_strong` | `eff_regime=bullish` AND 空头 AND `SHORT_REGIME_GUARD_ENABLED=true` | `RR_FLOOR_SHORT_BULLISH` | 牛市强 guard，仅放行高质量空头 |
+| `default` | 不匹配以上任何分支 | `RR_FLOOR_DEFAULT` | mixed/choppy 空头默认仍 1.50；bullish 空头 1.80 |
+
+**约束**：
+- `low_rr_extra` 槽位（`long_bullish_low_rr` / `long_aligned_low_rr`）仓位与杠杆受 `LOW_RR_MAX_POSITION_PCT` / `LOW_RR_MAX_LEVERAGE` 双重压缩；并发额外槽数受 `LOW_RR_EXTRA_SLOT` 限制。
+- 不放宽空头：`mixed/choppy` 下空头默认仍是 `RR_FLOOR_DEFAULT`；`bullish` 空头是 `RR_FLOOR_SHORT_BULLISH`。
+- attribution 字段 `rr_floor_used` / `rr_floor_reason` / `rr_policy` 写入 `trade_decision.attribution`，被拒决策也会落到 `data/journal/events_*.jsonl` 用于复盘。
+- 修改任何 R:R floor 必须改 `Judge._select_rr_floor` 单一函数；事件回测 `event_backtest.py` 同步同构验证。
+
+详见 `docs/rr_floor_policy_prd.md` 与 `docs/rr_floor_policy_acceptance.md`。
+
+## 配置文件
 
 `load_config()` 优先级为 `.env` > `config.yaml` > 内置默认值。生产风险参数以 `.env` 为准，`config.yaml` 主要用于历史兼容和离线脚本。
 

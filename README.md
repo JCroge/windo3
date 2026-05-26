@@ -2,103 +2,88 @@
 
 加密货币趋势交易系统，基于技术分析、合约执行、风控闭环和多 Agent 协作决策。
 
-**系统状态（2026-05-25）**：OKX posMode 执行兼容代码已落地（基线 `531 passed / 4 deselected / 1 warning`，含 38 个 posMode 单测；mock 验收 10 case PASS）。系统可继续 paper/mock 和既有小额 live 灰度观察；OKX 真实 testnet 端到端验收（T0-T9）未执行，阻断 live 扩容。
+## 系统状态
+
+- 最新基线（2026-05-26）：`551 passed / 4 deselected / 1 warning`，含 R:R Floor Policy 修复 20 个新 case 与 OKX posMode 38 个 case。
+- live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。
+- 阻断 live 扩容的唯一项：OKX 真实 testnet 端到端验收（T0-T9）未执行；详见 [OKX posMode 验收](docs/okx_posmode_execution_acceptance.md) 和 [docs/to-do-list.md](docs/to-do-list.md)。
+
+具体阈值与开关以启动 banner 为准（启动后看 `logs/launcher_*.log` 第一段），不要从 README 硬抄数字。
 
 ## 快速开始
 
-### 1. 安装依赖
 ```bash
 cd crypto-arbitrage
 pip install -r requirements.txt
+cp .env.example .env          # 按注释填 OKX / Anthropic 凭证与风控参数
+python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都走这个）
 ```
 
-### 2. 配置API密钥
-```bash
-cp .env.example .env
-# 编辑 .env，填入 OKX_API_KEY / OKX_SECRET / OKX_PASSWORD
-# 多Agent系统还需填入 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
-```
-
-### 3. 启动系统
-
-**多 Agent 交易系统（主入口）**：
-```bash
-python3 run_agents.py
-```
-
-`live_trading.py` 已标记为 deprecated，只保留作单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
+`live_trading.py` 与 `main.py` 已 deprecated，仅保留作单策略调试参考。
 
 ## 系统能力
 
-✅ 多 Agent 两层架构（研判层 + 交易层）  
-✅ 研判层定时扫描全市场选币，并支持空闲提前研判  
-✅ 交易层 9 维度数据采集 + 规则/LLM 综合研判 + 精确交易计划  
-✅ 动态杠杆 1-20x + R:R / EV 门 + RSI 极端值保护  
-✅ PositionAnalyst 持仓管理：7因子评分 + 行为偏差检测 + 裁决引擎  
-✅ PaperExecutor 影子账户，与实盘信号并行但不下真单  
-✅ Telegram远程命令：/status /positions /stop /restart /halt /resume /log  
-✅ 风控：Daily Hard Stop + 组合级RiskGuard + Telegram实时告警  
-✅ LLM不可用时自动降级为规则引擎  
+- 多 Agent 两层架构（研判层 6 + 交易层 10）
+- 研判层：定时全市场扫描 + 情绪 / 新闻 / 言官 / 标的路由
+- 交易层：9 维度数据采集 → 规则+LLM 综合研判 → 精确开仓计划 → CCXT 合约执行
+- 风控闭环：动态杠杆 + 动态 R:R floor + EV 门 + RSI 极端值保护 + Daily Hard Stop + 组合级 RiskGuard
+- 持仓管理：PositionAnalyst 7 因子 + BehavioralCritic 偏差检测 + 裁决引擎
+- PaperExecutor 影子账户与 live 信号并行（不下真单，独立 topic 隔离）
+- Telegram 远程命令：`/status` `/positions` `/stop` `/restart` `/halt` `/resume` `/log`
+- LLM 不可用时自动降级为规则引擎；事件 journal + LLM audit 可观测
+
+## 配置入口
+
+所有可调参数都在 [`.env.example`](.env.example) 注释里描述。常用：
+
+| 类别 | 关键变量 | 说明 |
+|---|---|---|
+| 凭证 | `OKX_API_KEY` / `OKX_SECRET` / `OKX_PASSWORD` / `ANTHROPIC_API_KEY` | live 模式下缺失会 fail-closed |
+| 模式 | `USE_TESTNET` | `false=live`，`true=testnet` |
+| 仓位 | `MAX_TRADE_AMOUNT` / `LEVERAGE` / `EFFECTIVE_BALANCE_CAP` | 单笔保证金 / 默认杠杆 / 逻辑账户拆分 |
+| 风控 | `MAX_DRAWDOWN_PCT` / `MAX_DAILY_LOSS` / `DAILY_PNL_HARD_STOP` | 回撤上限 / 每日硬熔断 |
+| R:R | `RR_FLOOR_DEFAULT` / `RR_FLOOR_LONG_BULLISH` / `RR_FLOOR_LONG_ALIGNED_CHOPPY` / `RR_FLOOR_SHORT_BULLISH` / `PROBE_RR_FLOOR` | R:R floor 五分支阈值 |
+
+完整列表与默认值见 `utils/config_loader.py` 的 `DEFAULTS` 与 `HARD_LIMITS`。
 
 ## 常用验证
 
-默认回归：
 ```bash
-python3 -m pytest -q
+python3 -m pytest -q                       # 默认回归（基线 551 passed）
+python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
+python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 ```
 
-核心链路：
-```bash
-python3 test_full_pipeline.py
-python3 test_executor_upgrade.py
-python3 test_p1m_order_caps.py
-python3 test_llm_schema.py
-python3 test_paper_executor.py
-python3 test_risk_budget.py
-```
-
-收益验证：
-```bash
-python3 test_event_backtest.py
-python3 test_event_backtest_real_data.py
-python3 test_p2p3_grid_search.py
-```
-
-真实环境冒烟：
-```bash
-python3 test_full_verification.py
-```
-
-说明：默认 pytest 排除 `network` 标记的外部依赖测试；真实 OKX/Telegram 冒烟依赖本机网络和凭证。
-
-## 风控参数（当前实盘配置）
-
-- 单笔最大保证金：30 USDT（`MAX_TRADE_AMOUNT=30`）
-- 逻辑账户拆分：300 USDT（`EFFECTIVE_BALANCE_CAP=300`）
-- 最大回撤：20%
-- 每日最大亏损：300 USDT（`daily_pnl_hard_stop=-300`）
+更细的核心链路 / 收益验证 / 真实环境冒烟命令见 [docs/runbook.md](docs/runbook.md)。
 
 ## 文档
 
-- [系统开发文档](docs/development.md) - 后续修改规范、链路契约、验证矩阵
-- [项目交接文档](docs/handoff.md) - 项目状态和决策记录
-- [系统架构](docs/architecture.md) - 技术架构和模块设计
-- [运维手册](docs/runbook.md) - 部署和故障排查
-- [集成指南](docs/integration-guide.md) - API和扩展开发
-- [系统性审计报告](docs/generated_reports/系统性审计报告_20260524.md) - 2026-05-24 全链路审计结论
-- [OKX posMode 执行兼容 PRD](docs/okx_posmode_execution_prd.md) / [验收文档](docs/okx_posmode_execution_acceptance.md) - 51169/51205 修复方案与 testnet 验收矩阵
-- [To-Do List](docs/to-do-list.md) - 当前阻断项、后续优化和已关闭事项
-- [AI协作指南](CLAUDE.md) - AI开发协作规范
+| 文档 | 用途 |
+|---|---|
+| [docs/development.md](docs/development.md) | 修改规范、链路契约、验证矩阵 |
+| [docs/architecture.md](docs/architecture.md) | 技术架构与模块设计 |
+| [docs/runbook.md](docs/runbook.md) | 部署、环境变量、故障排查 |
+| [docs/integration-guide.md](docs/integration-guide.md) | 消息契约与下游接入 |
+| [docs/handoff.md](docs/handoff.md) | 项目交接与决策记录 |
+| [docs/to-do-list.md](docs/to-do-list.md) | 当前阻断项、后续优化、已关闭事项 |
+| [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档（最新 2026-05-24） |
+| [docs/okx_posmode_execution_*.md](docs/) | OKX posMode 执行兼容 PRD + 验收 |
+| [docs/rr_floor_policy_*.md](docs/) | R:R Floor Policy 修复 PRD + 验收（2026-05-26） |
+| [docs/drawdown_baseline_*.md](docs/) | 回撤基准 PRD + 验收 |
+| [docs/live_readiness_*.md](docs/) | live 准备度 PRD + 验收 |
+| [docs/audit_remediation_*.md](docs/) | 审计整改 PRD + 验收 |
+| [CLAUDE.md](CLAUDE.md) | AI 协作指南、当前事实、目录职责、消息契约红线 |
 
 ## 开发约束
 
 - 跨 Agent 消息里的 symbol 使用内部格式 `BASE-USDT`；交易所 API 调用现场转换。
 - `trade_decision.plan.size_usdt` 表示保证金，名义价值为 `size_usdt * leverage`。
-- 所有下单路径必须经过订单能力预检、幂等防护和风控检查。
-- LLM 只作为辅助信号，不能绕过规则、EV、余额、熔断和下单预检。
-- 修改 Judge / 策略公式必须同步事件回测，不能只看 mock 单测。
+- open 主链路必须走 `trade_decision.v2`（带 `request_id` / `attribution` / `dispatch_path`）；Executor 终态发 `execution_result.v2`。
+- LLM 只作为辅助信号，不能绕过规则、R:R、EV、余额、熔断和下单预检。
+- 修改 Judge / 策略公式必须同步 `event_backtest.py` 同构验证，不能只看 mock 单测。
+- 配置或代码变更后必须 OS 层重启进程；Telegram `/restart` 是同进程 loop，不会重新 import 新代码。
 - 关键状态 JSON 使用原子写；不要删除或覆盖用户已有 `data/` 和 `logs/`。
 
 ## 套利系统归档
 
-原套利系统代码保留作为参考，但已验证不可行（2026-05-06全面测试，0次机会）。
+原 CEX 套利代码保留作参考，但已验证不可行（2026-05-06 全面测试 0 次机会）；当前系统是趋势交易，不是套利。

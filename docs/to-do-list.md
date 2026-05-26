@@ -1,8 +1,8 @@
 # To-Do List
 
-更新日期：2026-05-25  
-来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地  
-当前基线：`531 passed / 4 deselected / 1 warning`，`verify_okx_testnet_semantics.py` mock 10 case PASS（含 posMode close 矩阵 + 拒单状态复核）。
+更新日期：2026-05-26  
+来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复  
+当前基线：`551 passed / 4 deselected / 1 warning`，`verify_okx_testnet_semantics.py` mock 10 case PASS（含 posMode close 矩阵 + 拒单状态复核），`test_rr_floor_policy.py` 20 case PASS（覆盖 AC-RR-01..09）。
 
 ## 当前 Go/No-Go
 
@@ -46,6 +46,7 @@
 | 旧入口误跑 | `start.sh` 启动 `run_agents.py`；`main.py` deprecated 后退出 |
 | 依赖不可复现 | `requirements.lock` 和 `docs/dependency_upgrade_runbook.md` 已存在 |
 | Phase 2 配置缺口 | `config_loader.py` 默认值/env map/banner/runbook 已补齐 |
+| R:R Floor Policy 修复 | `Judge._select_rr_floor` 单一函数收敛主路径与 `_apply_regime_policy`；`long_aligned_low_rr` 策略允许 mixed/choppy 趋势强一致多头按 1.30 floor 入场；`test_rr_floor_policy.py` 20 case PASS（AC-RR-01..09 覆盖）；attribution 新增 `rr_floor_used`/`rr_floor_reason`/`symbol_trend`/`symbol_higher_tf_bias`/`symbol_daily_bias`；详见 `docs/rr_floor_policy_acceptance.md` |
 
 ## 常用验证命令
 

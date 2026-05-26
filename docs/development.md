@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-05-25，系统主入口是多 Agent 交易系统：
+截至 2026-05-26，系统主入口是多 Agent 交易系统：
 
 ```bash
 python3 run_agents.py
@@ -12,7 +12,7 @@ python3 run_agents.py
 
 `live_trading.py` 已标记为 deprecated，只保留给单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
 
-当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地（基线 531 passed），但 OKX 真实 testnet 语义验收仍未执行，阻断 live 扩容。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
+当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`（基线 551 passed，含 R:R Floor 20 case + OKX posMode 38 case），但 OKX 真实 testnet 语义验收仍未执行，阻断 live 扩容。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
 
 **热更新陷阱**：Telegram `/restart` 走的是 `run_agents.py` 内 `while True: Orchestrator()` 同进程循环，**不会重新 import** 已修改的模块。要让代码改动生效必须 OS 层重启进程：`kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。`/restart` 适合复位状态、不适合发版。
 
@@ -152,10 +152,18 @@ CCXT 的 `params` 是交易所相关扩展。`reduceOnly`、`clOrdId`、OKX atta
 - 对 long 和 short 是否对称。
 - 对极端 RSI、HTF 反向、数据 degraded 的处理是否仍保守。
 
+**R:R floor 改动专项约束**：
+- 修改任何 R:R floor 必须改 `Judge._select_rr_floor(action, plan, tech, score)` 单一函数，**禁止**在调用点重新写 if/else 分支。
+- `_select_rr_floor` 是主路径与 `_apply_regime_policy`（deferred 路径）的唯一入口，按顺序匹配 `probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` 五个分支并返回 `(min_rr, rr_policy, rr_floor_reason)`。
+- 新增分支必须同步：`utils/config_loader.py` 的 DEFAULTS / HARD_LIMITS / env_map / banner、`event_backtest.py` 的同构实现、`test_rr_floor_policy.py` 的 AC 覆盖、`docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md` 的 PRD 与验收。
+- 不要放宽空头：`mixed/choppy` 空头默认仍 `RR_FLOOR_DEFAULT`；`bullish` 空头仍 `RR_FLOOR_SHORT_BULLISH`。
+- attribution 必须带 `rr_floor_used` / `rr_floor_reason` / `rr_policy` / `symbol_trend` / `symbol_higher_tf_bias` / `symbol_daily_bias`，被拒决策也必须带，否则事后无法复盘。
+
 必须验证：
 ```bash
 python3 test_risk_budget.py
 python3 test_ev_gate.py
+python3 -m pytest test_rr_floor_policy.py -q
 python3 test_event_backtest.py
 python3 test_event_backtest_real_data.py
 ```

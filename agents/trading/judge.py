@@ -149,9 +149,12 @@ class MultiJudge(BaseAgent):
         self._short_regime_guard_enabled = config.get('short_regime_guard_enabled', True) if config else True
         self._probe_short_enabled = config.get('probe_short_enabled', True) if config else True
         self._low_rr_slot_enabled = config.get('low_rr_slot_enabled', True) if config else True
-        self._rr_floor_default = config.get('rr_floor_default', 1.30) if config else 1.30
+        self._rr_floor_default = config.get('rr_floor_default', 1.50) if config else 1.50
         self._rr_floor_long_bullish = config.get('rr_floor_long_bullish', 1.30) if config else 1.30
+        self._rr_floor_long_aligned_choppy = config.get('rr_floor_long_aligned_choppy', 1.30) if config else 1.30
         self._rr_floor_short_bullish = config.get('rr_floor_short_bullish', 1.80) if config else 1.80
+        self._probe_rr_floor = config.get('probe_rr_floor', 1.30) if config else 1.30
+        self._low_rr_long_aligned_enabled = config.get('low_rr_long_aligned_enabled', True) if config else True
         self._low_rr_max_leverage = config.get('low_rr_max_leverage', 5) if config else 5
         self._low_rr_max_position_pct = config.get('low_rr_max_position_pct', 0.5) if config else 0.5
         self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
@@ -302,8 +305,12 @@ class MultiJudge(BaseAgent):
         )
         self.logger.info(
             f"[Judge Config] regime_guard={self._short_regime_guard_enabled} "
+            f"rr_default={self._rr_floor_default} "
             f"rr_floor_long_bull={self._rr_floor_long_bullish} "
+            f"rr_floor_long_aligned_choppy={self._rr_floor_long_aligned_choppy} "
             f"rr_floor_short_bull={self._rr_floor_short_bullish} "
+            f"probe_rr_floor={self._probe_rr_floor} "
+            f"low_rr_long_aligned={self._low_rr_long_aligned_enabled} "
             f"low_rr_slot={self._low_rr_slot_enabled} "
             f"probe_short={self._probe_short_enabled} "
             f"counterfactual={self._counterfactual_ledger._enabled}"
@@ -1186,21 +1193,21 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
-                    # R:R分级响应：动态门槛基于 regime + 方向
+                    # R:R分级响应：统一通过 _select_rr_floor 选择 floor
                     rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
                     is_long = (final_action == 'open_long')
-                    regime_snap = regime_snap if 'regime_snap' in dir() else self._regime_manager.snapshot()
-                    eff_regime = regime_snap.get('effective_regime', 'mixed')
-
-                    if is_long and eff_regime == 'bullish' and self._low_rr_slot_enabled:
-                        min_rr = self._rr_floor_long_bullish
-                    elif not is_long and eff_regime == 'bullish' and self._short_regime_guard_enabled:
-                        min_rr = self._rr_floor_short_bullish
-                    else:
-                        min_rr = self._rr_floor_default
+                    min_rr, rr_policy, rr_reason = self._select_rr_floor(
+                        final_action, plan, tech, score
+                    )
+                    plan['rr_floor_used'] = min_rr
+                    plan['rr_floor_reason'] = rr_reason
+                    plan['rr_policy'] = rr_policy
 
                     if rr < min_rr:
-                        self.logger.info(f"[Judge] {symbol} R:R={rr:.2f}<{min_rr:.2f}，低于动态地板")
+                        self.logger.info(
+                            f"[Judge] {symbol} R:R={rr:.2f}<{min_rr:.2f}，低于动态地板 "
+                            f"policy={rr_policy} reason={rr_reason}"
+                        )
                         self._record_rejected_plan(symbol, final_action, plan, score, final_conf, f"rr_below_floor:{rr:.2f}<{min_rr:.2f}")
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
@@ -1208,15 +1215,16 @@ class MultiJudge(BaseAgent):
                             "plan": None, "size_pct": 0,
                             "reasoning": f"R:R={rr:.2f}<{min_rr:.2f}(动态地板)，赔率不足",
                             "key_factors": [], "risk_warnings": [f"R:R={rr:.2f}"],
-                            "attribution": self._rejection_attribution(final_action, plan, f"rr_below_floor:{rr:.2f}"),
+                            "attribution": self._rejection_attribution(final_action, plan, f"rr_below_floor:{rr:.2f}", tech=tech),
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
                     # ═══ Low R:R position scaling (Phase 1C) ═══
-                    # If R:R passed dynamic threshold but is below default 1.5, scale down
-                    if (rr < 1.5 and is_long and eff_regime == 'bullish'
-                            and self._low_rr_slot_enabled and not plan.get('is_probe')):
+                    # 通过动态门槛但 R:R 仍低于默认 1.5 时，缩仓 + 进入 low_rr_extra slot
+                    low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr'}
+                    if (rr < 1.5 and is_long and rr_policy in low_rr_policies
+                            and not plan.get('is_probe')):
                         rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
                         plan['size_usdt'] = round(
                             plan['size_usdt'] * rr_scale * self._low_rr_max_position_pct, 2
@@ -1225,7 +1233,8 @@ class MultiJudge(BaseAgent):
                         plan['is_low_rr'] = True
                         plan['slot_type'] = 'low_rr_extra'
                         self.logger.info(
-                            f"[Judge] {symbol} low_rr_long: R:R={rr:.2f} scale={rr_scale:.0%} "
+                            f"[Judge] {symbol} low_rr_long policy={rr_policy} "
+                            f"R:R={rr:.2f} scale={rr_scale:.0%} "
                             f"size={plan['size_usdt']} lev={plan['leverage']}x"
                         )
 
@@ -1959,6 +1968,11 @@ class MultiJudge(BaseAgent):
             'raw_regime': self._regime_manager._raw_regime,
             'regime_confidence': self._regime_manager._confidence,
             'rr_policy': self._get_rr_policy_label(action, plan),
+            'rr_floor_used': (plan or {}).get('rr_floor_used'),
+            'rr_floor_reason': (plan or {}).get('rr_floor_reason', ''),
+            'symbol_trend': trend.get('direction', 'neutral'),
+            'symbol_higher_tf_bias': trend.get('higher_tf_bias', 'neutral'),
+            'symbol_daily_bias': trend.get('daily_bias', 'neutral'),
             'slot_type': (plan or {}).get('slot_type', 'main'),
             'is_low_rr': (plan or {}).get('is_low_rr', False),
             'is_probe': (plan or {}).get('is_probe', False),
@@ -2033,12 +2047,99 @@ class MultiJudge(BaseAgent):
             return "多空信号对冲，净得分接近零，观望"
         return "信号强度不足，观望"
 
+    def _select_rr_floor(self, action: str, plan: dict, tech: dict,
+                         score: float) -> tuple:
+        """统一 R:R floor 选择，主路径和 deferred 路径必须共用。
+
+        返回 (min_rr, rr_policy, rr_floor_reason)。
+
+        优先级：
+        1. is_probe → probe_rr_floor
+        2. open_long + bullish + low_rr_slot_enabled → rr_floor_long_bullish
+        3. open_long + (mixed|choppy) + 趋势强一致 + low_rr_long_aligned_enabled
+           → rr_floor_long_aligned_choppy
+        4. open_short + bullish + short_regime_guard → rr_floor_short_bullish
+        5. 默认 → rr_floor_default
+        """
+        plan = plan or {}
+        is_long = ('long' in (action or ''))
+        regime_snap = self._regime_manager.snapshot()
+        eff_regime = regime_snap.get('effective_regime', 'mixed')
+
+        rr_floor_default = getattr(self, '_rr_floor_default', 1.50)
+        rr_floor_long_bullish = getattr(self, '_rr_floor_long_bullish', 1.30)
+        rr_floor_long_aligned = getattr(self, '_rr_floor_long_aligned_choppy', 1.30)
+        rr_floor_short_bullish = getattr(self, '_rr_floor_short_bullish', 1.80)
+        probe_rr_floor = getattr(self, '_probe_rr_floor', 1.30)
+        low_rr_slot_enabled = getattr(self, '_low_rr_slot_enabled', True)
+        low_rr_long_aligned_enabled = getattr(self, '_low_rr_long_aligned_enabled', True)
+        short_regime_guard_enabled = getattr(self, '_short_regime_guard_enabled', True)
+        min_deferred_score = getattr(self, '_min_deferred_signal_score', 45)
+
+        if plan.get('is_probe'):
+            return (
+                probe_rr_floor,
+                'probe',
+                f'probe:{eff_regime}',
+            )
+
+        if is_long and eff_regime == 'bullish' and low_rr_slot_enabled:
+            return (
+                rr_floor_long_bullish,
+                'long_bullish_low_rr',
+                f'long_bullish:regime={eff_regime}',
+            )
+
+        if (is_long and eff_regime in ('mixed', 'choppy')
+                and low_rr_slot_enabled
+                and low_rr_long_aligned_enabled):
+            trend = (tech or {}).get('trend', {}) or {}
+            entry_timing = (tech or {}).get('entry_timing', {}) or {}
+            sym_dir = trend.get('direction', 'neutral')
+            htf_bias = trend.get('higher_tf_bias', 'neutral')
+            daily_bias = trend.get('daily_bias', 'neutral')
+            block_long = entry_timing.get('tf_15m_block_long', False)
+            aligned = (sym_dir == 'bullish'
+                       and (htf_bias == 'bullish' or daily_bias == 'bullish')
+                       and not block_long
+                       and abs(score) >= min_deferred_score)
+            if aligned:
+                return (
+                    rr_floor_long_aligned,
+                    'long_aligned_low_rr',
+                    f'long_aligned:regime={eff_regime},'
+                    f'sym_trend={sym_dir},htf={htf_bias},daily={daily_bias}',
+                )
+
+        if (not is_long and eff_regime == 'bullish'
+                and short_regime_guard_enabled):
+            return (
+                rr_floor_short_bullish,
+                'short_bullish_strong',
+                f'short_bullish:regime={eff_regime}',
+            )
+
+        return (
+            rr_floor_default,
+            'default',
+            f'default:regime={eff_regime}',
+        )
+
     def _get_rr_policy_label(self, action: str, plan: dict) -> str:
         if not plan:
             return 'default'
+        cached = plan.get('rr_policy')
+        if cached:
+            return cached
         if plan.get('is_probe'):
-            return 'probe_short'
+            return 'probe'
         if plan.get('is_low_rr'):
+            slot = plan.get('slot_type', '')
+            if slot == 'low_rr_extra':
+                regime = self._regime_manager._effective_regime
+                if regime == 'bullish':
+                    return 'long_bullish_low_rr'
+                return 'long_aligned_low_rr'
             return 'long_bullish_low_rr'
         regime = self._regime_manager._effective_regime
         if action == 'open_short' and regime == 'bullish':
@@ -2063,7 +2164,7 @@ class MultiJudge(BaseAgent):
             return (False, 'score_too_low')
         if not confirm_15m_short:
             return (False, '15m_not_confirmed')
-        if rr < 1.3:
+        if rr < getattr(self, '_probe_rr_floor', 1.30):
             return (False, 'rr_too_low')
         sym_tech = self._symbol_tech_cache.get(symbol, {})
         liquidity_score = sym_tech.get('risk', {}).get('liquidity_score', 0)
@@ -2225,14 +2326,10 @@ class MultiJudge(BaseAgent):
 
         # ── Dynamic R:R Floor ──
         rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
-        if plan.get('is_probe'):
-            min_rr = 1.3
-        elif is_long and eff_regime == 'bullish' and self._low_rr_slot_enabled:
-            min_rr = self._rr_floor_long_bullish
-        elif not is_long and eff_regime == 'bullish' and self._short_regime_guard_enabled:
-            min_rr = self._rr_floor_short_bullish
-        else:
-            min_rr = self._rr_floor_default
+        min_rr, rr_policy, rr_reason = self._select_rr_floor(action, plan, tech, score)
+        plan['rr_floor_used'] = min_rr
+        plan['rr_floor_reason'] = rr_reason
+        plan['rr_policy'] = rr_policy
 
         if rr < min_rr:
             self._record_rejected_plan(symbol, action, plan, score, 60,
@@ -2240,8 +2337,9 @@ class MultiJudge(BaseAgent):
             return f"rr_below_floor:{rr:.2f}<{min_rr:.2f}"
 
         # ── Low R:R Scaling ──
-        if (rr < 1.5 and is_long and eff_regime == 'bullish'
-                and self._low_rr_slot_enabled and not plan.get('is_probe')):
+        low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr'}
+        if (rr < 1.5 and is_long and rr_policy in low_rr_policies
+                and not plan.get('is_probe')):
             rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
             plan['size_usdt'] = round(plan['size_usdt'] * rr_scale * self._low_rr_max_position_pct, 2)
             plan['leverage'] = min(plan.get('leverage', 5), self._low_rr_max_leverage)
@@ -2265,7 +2363,7 @@ class MultiJudge(BaseAgent):
         )
 
     def _rejection_attribution(self, action: str, plan: dict, blocked_by: str,
-                               dispatch_path: str = '') -> dict:
+                               dispatch_path: str = '', tech: dict = None) -> dict:
         """Build minimal attribution for rejected decisions."""
         regime_snap = self._regime_manager.snapshot()
         slot_type = (plan or {}).get('slot_type', 'main')
@@ -2274,15 +2372,33 @@ class MultiJudge(BaseAgent):
                 dispatch_path = f"main_{'ranking' if 'ranked' in blocked_by else 'direct'}"
             else:
                 dispatch_path = 'main_direct'
+
+        plan_dict = plan or {}
+        rr_floor_used = plan_dict.get('rr_floor_used')
+        rr_floor_reason = plan_dict.get('rr_floor_reason', '')
+        rr_policy = plan_dict.get('rr_policy') or self._get_rr_policy_label(action, plan_dict)
+        if rr_floor_used is None and tech is not None:
+            rr_floor_used, derived_policy, rr_floor_reason = self._select_rr_floor(
+                action, plan_dict, tech, 0
+            )
+            if not plan_dict.get('rr_policy'):
+                rr_policy = derived_policy
+
+        trend = (tech or {}).get('trend', {}) if tech else {}
         return {
             'entry_regime': regime_snap['effective_regime'],
             'raw_regime': regime_snap.get('raw_regime', regime_snap['effective_regime']),
             'regime_confidence': regime_snap.get('confidence', 0),
-            'rr_policy': self._get_rr_policy_label(action, plan),
+            'rr_policy': rr_policy,
+            'rr_floor_used': rr_floor_used,
+            'rr_floor_reason': rr_floor_reason,
+            'symbol_trend': trend.get('direction', 'neutral'),
+            'symbol_higher_tf_bias': trend.get('higher_tf_bias', 'neutral'),
+            'symbol_daily_bias': trend.get('daily_bias', 'neutral'),
             'slot_type': slot_type,
-            'is_low_rr': (plan or {}).get('is_low_rr', False),
-            'is_probe': (plan or {}).get('is_probe', False),
-            'probe_block_reason': blocked_by if (plan or {}).get('is_probe') else '',
+            'is_low_rr': plan_dict.get('is_low_rr', False),
+            'is_probe': plan_dict.get('is_probe', False),
+            'probe_block_reason': blocked_by if plan_dict.get('is_probe') else '',
             'blocked_by': blocked_by,
             'dispatch_path': dispatch_path,
         }
