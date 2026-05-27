@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-05-26，系统主入口是多 Agent 交易系统：
+截至 2026-05-27，系统主入口是多 Agent 交易系统：
 
 ```bash
 python3 run_agents.py
@@ -12,7 +12,7 @@ python3 run_agents.py
 
 `live_trading.py` 已标记为 deprecated，只保留给单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
 
-当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 已统一收敛到 `Judge._check_entry_position_policy`（基线 575 passed，含 R:R Floor 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case），但 OKX 真实 testnet 语义验收仍未执行，阻断 live 扩容。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
+当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 已统一收敛到 `Judge._check_entry_position_policy`，分批止盈生命周期收敛阶段 1+2+3 已上线（基线 618 passed，含 partial TP lifecycle 32 case + R:R Floor 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case）。OKX 真实 testnet 语义验收 2026-05-27 完成（T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP=账户为 long_short_mode、T7 SKIP=mock_only），**live 扩容前置阻断已解除**；下一步进入小额 24h 灰度观察 segmented metrics。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效——`_cancel_protective_sl` 50002 bug 就是 mock 测试无法覆盖、必须真实 testnet 才能暴露的典型案例。
 
 **热更新语义**：Telegram `/restart` 现在会让 `run_agents.py` 在优雅停机后执行 `os.execv(...)`，重新拉起 Python 解释器并重新 import 已修改的模块。`execv` 后 PID 可能不变，这是正常现象；判断是否换上新代码，应看启动日志和新行为。若变更的是 Python/venv/系统级依赖，仍建议 `kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。
 
@@ -315,8 +315,8 @@ Live 模式缺少交易所凭证应拒绝启动。测试场景可使用 `load_co
 1. 收益目标尚未被真实回测证明  
 工程链路可跑通不代表日化 1%~5% 已达成。策略放大前必须有真实数据和 paper/testnet 证据。
 
-2. OKX attached TP/SL 仍需 testnet 矩阵验收  
-mock 测试只能证明参数被传递，不能证明交易所接受。
+2. OKX attached TP/SL testnet 矩阵已 PASS（2026-05-27）  
+真实 testnet 7 PASS / 3 SKIP，covered SL 替换 / algo 迁移 / attachAlgoClOrdId 回查 / 51169 拒单 / reduceOnly close。后续如改动 attached TP/SL / algo 迁移 / cancel_orders 路径仍需重跑 `verify_okx_testnet_real.py`。mock 仍是必要前置（`verify_okx_testnet_semantics.py`），但**不能**单独证明交易所接受。
 
 3. 进程内 MessageBus 不做持久化  
 关键事件依赖日志和状态文件恢复。后续如进入长期实盘，应考虑事件 ledger。

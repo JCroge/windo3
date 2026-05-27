@@ -12,7 +12,7 @@
 | CONDITIONAL PASS | P0/P1 全过，仅 P2 遗留，且有 owner、风险说明和回归保护 |
 | FAIL | 任一 P0 失败；或任一 P1 失败且无明确豁免；或 OKX testnet 未执行/失败且影响交易安全 |
 
-当前状态：AUTOMATION PASS / FAIL FOR EXPANSION。上一轮审计 P0/P1 自动化整改已完成并通过全量回归；OKX 真实 testnet 语义验收仍未执行，因此按本验收规则 live 扩容保持 FAIL/NO-GO。
+当前状态：PASS（CONDITIONAL）。上一轮审计 P0/P1 自动化整改已完成并通过全量回归（基线 618 passed）；OKX 真实 testnet 语义验收 2026-05-27 完成（7 PASS / 3 SKIP，详见 `docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`）。**Live 扩容前置阻断已解除**，仅剩 P2 优化项（详见 `docs/to-do-list.md`）。
 
 2026-05-24 验收记录：
 

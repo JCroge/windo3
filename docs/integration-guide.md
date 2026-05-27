@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-05-26）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `575 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case）；R:R floor 选择已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，attribution 新增 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse` 等可选字段；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
+**系统状态（2026-05-27）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `618 passed / 4 deselected / 1 warning`（含 partial TP lifecycle 32 case + R:R Floor Policy 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case）；R:R floor 选择已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，attribution 新增 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse` 等可选字段；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收 2026-05-27 完成（T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP=账户为 long_short_mode、T7 SKIP=mock_only），live 扩容前置阻断已解除。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
 
 ## 核心模块接口
 

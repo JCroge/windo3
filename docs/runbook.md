@@ -97,8 +97,12 @@ python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/T
 python3 -m pytest test_drawdown_baseline.py  # 回撤基准修正验收（14 tests）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 575 passed / 4 deselected / 1 warning（2026-05-26，含 Long Entry Position Guard 23 case + R:R Floor Policy 20 case + OKX posMode 38 case）
+python3 -m pytest -q              # 618 passed / 4 deselected / 1 warning（2026-05-27，含 partial TP lifecycle 32 case + Long Entry Position Guard 23 case + R:R Floor Policy 20 case + OKX posMode 38 case）
 python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
+
+# OKX 真实 testnet 端到端语义验收（需 .env.testnet 隔离凭证）
+python3 verify_okx_testnet_semantics.py   # mock 矩阵 10 case，CI 一定要先过这个
+python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T9，2026-05-27 7 PASS / 3 SKIP
 ```
 
 > conftest.py 通过 `monkeypatch.chdir(tmp_path)` 把 `data/` 和 `logs/` 隔离到临时目录，每个测试独立。

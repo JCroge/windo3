@@ -8,7 +8,7 @@
 - 2026-05-25 自动化基线：`531 passed / 4 deselected / 1 warning`（含 `test_okx_posmode_executor.py` 38）。
 - 2026-05-26 自动化基线：`551 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 新增 20 个 case）。
 - 2026-05-26 Long Entry Position Guard 上线后基线：`575 passed / 4 deselected / 1 warning`（含 `test_long_entry_position_guard.py` 新增 23 case）。
-- OKX mock 执行语义验收 10 case PASS（含 posMode close 矩阵 + 拒单状态复核）；OKX 真实 testnet 语义验收未执行，阻断 live 扩容。
+- OKX mock 执行语义验收 10 case PASS（含 posMode close 矩阵 + 拒单状态复核）；OKX 真实 testnet 语义验收 2026-05-27 完成：T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP（账户为 long_short_mode），T7 SKIP（mock_only，已在 mock 矩阵 PASS）。报告：`docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`。修复关键 bug：`_cancel_protective_sl` / `_cancel_algo_by_id` 改走 `cancel_orders([id], symbol, params={'trigger': True})`（直接 `private_post_trade_cancel_algos` 传 dict/list 都被 OKX 拒成 50002）。Live 扩容前置阻断已解除。
 - R:R Floor Policy 修复已上线（2026-05-26）：单一 `Judge._select_rr_floor` 函数，主路径与 deferred 路径共用，新增 `long_aligned_low_rr` 分支允许 mixed/choppy 下趋势强一致多头按 1.30 floor 进入 low_rr_extra slot。详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
 - 当前待办统一看 `docs/to-do-list.md`，审计报告看 `docs/generated_reports/系统性审计报告_20260524.md`。
 

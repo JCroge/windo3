@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-05-26 Long Entry Position Guard 上线完成（551→575 passed，新增 23 case AC-LONGPOS-01..17 全 PASS）；2026-05-26 R:R Floor Policy 修复完成（531→551 passed，新增 20 case AC-RR-01..09 全 PASS）；2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收（10 case PASS）；OS 层已重启新进程加载 R:R floor 新逻辑（Long Entry Position Guard 同样需 OS 层重启才能生效）
-**下一阶段**：在 OKX demo/testnet 跑完 `docs/okx_posmode_execution_acceptance.md` T0-T9 矩阵，记录 raw response / final position / algo orders 到 `docs/generated_reports/OKX执行语义testnet验收报告_*.md`；完成前小额 live 灰度可继续观察，但 live 扩容仍 NO-GO
+**当前阶段**：2026-05-27 OKX 真实 testnet T0-T9 语义验收完成（7 PASS / 3 SKIP），关键 bug `_cancel_protective_sl` / `_cancel_algo_by_id` 50002 已修；2026-05-27 分批止盈生命周期收敛阶段 1+2+3 完成（575→618 passed，新增 32 case `test_partial_tp_lifecycle.py` 含 AC-A2/A3/A6/A9/A7 + FR-04/FR-05）；2026-05-26 Long Entry Position Guard 上线完成（551→575 passed）；2026-05-26 R:R Floor Policy 修复完成（531→551 passed）；2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收。**Live 扩容前置阻断已解除。**
+**下一阶段**：小额 24h 灰度观察 segmented metrics（按 `attribution.regime` / `attribution.rr_policy` / `slot_type` 分桶查看胜率、EV、回撤），如 metrics 健康再考虑扩容；可选项是把 testnet 账户切到 net_mode 后补跑 T2/T3，但当前不是阻断项
 
 ## 重大决策：放弃套利策略（2026-05-06）
 

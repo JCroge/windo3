@@ -691,10 +691,13 @@ class MultiExecutor(BaseAgent):
 
             elif trigger in ('partial_tp_1', 'partial_tp_2'):
                 pct = 0.5 if trigger == 'partial_tp_1' else 0.25
+                tp_advance = 1 if trigger == 'partial_tp_1' else 2
                 self.logger.info(f"[Trailing] {symbol} {trigger}，减仓{int(pct*100)}%")
                 pos = self.executor.positions.get(symbol)
                 entry_req_id = (pos or {}).get('request_id', '')
-                result = await asyncio.to_thread(self.executor.reduce_position, symbol, pct)
+                result = await asyncio.to_thread(
+                    self.executor.reduce_position, symbol, pct, tp_advance
+                )
                 if result:
                     result['entry_request_id'] = entry_req_id
                     payload = self._build_execution_result(

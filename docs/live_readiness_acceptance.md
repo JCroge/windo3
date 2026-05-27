@@ -1,6 +1,6 @@
 # Live 准入验收文档
 
-更新日期：2026-05-25  
+更新日期：2026-05-27  
 关联 PRD：`docs/live_readiness_prd.md`
 
 ## 1. 验收结论规则
@@ -11,7 +11,7 @@
 | CONDITIONAL PASS | 仅 P2 存在非阻断遗留，且有明确 owner 和回归保护 |
 | FAIL | 任一 P1 验收项失败，或 OKX testnet 未执行/失败且无合理豁免 |
 
-当前状态：FAIL。自动化 P1 验收已通过，Phase 2 配置已接入，非 open `execution_result` 契约已完成回归；但 OKX posMode 执行兼容未完成，且真实 testnet 未执行。修复和目标账户模式 smoke test 通过前，自动开新仓、小额 live 灰度和 live 扩容均为 NO-GO。
+当前状态：PASS。自动化 P1 验收已通过，Phase 2 配置已接入，非 open `execution_result` 契约已完成回归；OKX posMode 执行兼容代码已上线，OKX 真实 testnet T0-T9 语义验收 2026-05-27 完成（7 PASS / 3 SKIP，详见 `docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`）。**Live 扩容前置阻断已解除**，下一步小额 24h 灰度观察 segmented metrics。
 
 ## 2. 验收前置条件
 

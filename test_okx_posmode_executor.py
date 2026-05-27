@@ -148,12 +148,17 @@ class TestAlgoParams:
         assert p['posSide'] == 'short'
 
     def test_attach_algo_payload(self):
+        # partial TP lifecycle: OKX 开仓 attach 只允许 SL,不允许 TP
         ex = _make_executor('net_mode')
         attach = ex._build_okx_attach_algo(99, 110)
         assert attach == [{
             'slTriggerPx': '99', 'slOrdPx': '-1',
-            'tpTriggerPx': '110', 'tpOrdPx': '-1',
         }]
+        # 传入 tp 也必须被忽略,不得出现任何 tp 字段
+        only_sl = ex._build_okx_attach_algo(99, None)
+        assert only_sl == [{'slTriggerPx': '99', 'slOrdPx': '-1'}]
+        # 只传 tp 不传 sl: 无可挂保护单,返回 None
+        assert ex._build_okx_attach_algo(None, 110) is None
         assert ex._build_okx_attach_algo(None, None) is None
 
 
@@ -393,10 +398,11 @@ class TestReducePositionFlow:
         ex.exchange.create_order = MagicMock(return_value={'id': 'r-1'})
         # 50%=5，但 available=4，应收敛
         ex.reduce_position('INJ-USDT-SWAP', 0.5)
-        call = ex.exchange.create_order.call_args
-        assert call.kwargs['amount'] == 4.0
-        assert call.kwargs['params']['posSide'] == 'net'
-        assert call.kwargs['params']['reduceOnly'] is True
+        # FR-05: 普通减仓后会再调一次 create_order 重挂 SL,reduce 是第一次
+        reduce_call = ex.exchange.create_order.call_args_list[0]
+        assert reduce_call.kwargs['amount'] == 4.0
+        assert reduce_call.kwargs['params']['posSide'] == 'net'
+        assert reduce_call.kwargs['params']['reduceOnly'] is True
 
     def test_reduce_already_flat(self):
         ex = self._seed('net_mode')

@@ -46,7 +46,8 @@ SYNTHESIS_PROMPT = """你是一个加密货币研究分析师。你的任务是�
         }
     ],
     "market_regime": "trending/ranging/volatile/quiet",
-    "overall_assessment": "整体市场判断（1-2句）"
+    "overall_assessment": "整体市场判断（1-2句）",
+    "reasoning": "本轮初选的整体推理过程（中文，2-4句）"
 }"""
 
 FINAL_DECISION_PROMPT = """你是一个加密货币研究分析师的主管。你之前选出了一批候选标的，现在"言官"（Devil's Advocate）对你的选择提出了质疑和风险警告。

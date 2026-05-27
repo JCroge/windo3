@@ -4,9 +4,9 @@
 
 ## 系统状态
 
-- 最新基线（2026-05-26）：`575 passed / 4 deselected / 1 warning`，含 Long Entry Position Guard 23 个新 case、R:R Floor Policy 修复 20 个 case 与 OKX posMode 38 个 case。
+- 最新基线（2026-05-27）：`618 passed / 4 deselected / 1 warning`，含 partial TP lifecycle 32 个、Long Entry Position Guard 23 个、R:R Floor Policy 20 个、OKX posMode 38 个 case。
 - live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。
-- 阻断 live 扩容的唯一项：OKX 真实 testnet 端到端验收（T0-T9）未执行；详见 [OKX posMode 验收](docs/okx_posmode_execution_acceptance.md) 和 [docs/to-do-list.md](docs/to-do-list.md)。
+- OKX 真实 testnet T0-T9 语义验收 2026-05-27 完成（7 PASS / 3 SKIP），live 扩容前置阻断已解除；最终报告 [OKX执行语义testnet验收报告_20260527_150518.md](docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md)。下一步进入小额 24h 灰度观察 segmented metrics。
 
 具体阈值与开关以启动 banner 为准（启动后看 `logs/launcher_*.log` 第一段），不要从 README 硬抄数字。
 
@@ -51,9 +51,10 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 ## 常用验证
 
 ```bash
-python3 -m pytest -q                       # 默认回归（基线 575 passed）
+python3 -m pytest -q                       # 默认回归（基线 618 passed）
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
+python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T9 验收（需 .env.testnet）
 ```
 
 更细的核心链路 / 收益验证 / 真实环境冒烟命令见 [docs/runbook.md](docs/runbook.md)。
@@ -68,7 +69,7 @@ python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 | [docs/integration-guide.md](docs/integration-guide.md) | 消息契约与下游接入 |
 | [docs/handoff.md](docs/handoff.md) | 项目交接与决策记录 |
 | [docs/to-do-list.md](docs/to-do-list.md) | 当前阻断项、后续优化、已关闭事项 |
-| [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档（最新 2026-05-24） |
+| [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档（最新 2026-05-24）+ OKX testnet 验收（2026-05-27 PASS） |
 | [docs/okx_posmode_execution_*.md](docs/) | OKX posMode 执行兼容 PRD + 验收 |
 | [docs/rr_floor_policy_*.md](docs/) | R:R Floor Policy 修复 PRD + 验收（2026-05-26） |
 | [docs/long_entry_position_guard_*.md](docs/) | Long Entry Position Guard PRD + 验收（2026-05-26） |

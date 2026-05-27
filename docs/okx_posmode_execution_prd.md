@@ -1,8 +1,8 @@
 # OKX PosMode 执行兼容需求文档
 
-更新日期：2026-05-25  
-状态：P1，阻断 live 扩容  
-关联验收：`docs/okx_posmode_execution_acceptance.md`
+更新日期：2026-05-27  
+状态：CLOSED（代码完成 2026-05-25 + mock 验收 PASS + 真实 testnet T0-T9 验收 PASS 2026-05-27）  
+关联验收：`docs/okx_posmode_execution_acceptance.md`、`docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`
 
 ## 1. 背景
 
