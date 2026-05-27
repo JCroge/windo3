@@ -5,6 +5,7 @@
 2. 终选：收到言官谏言后，综合考虑风险，做出最终决策 → 发给SymbolRouter
 """
 
+import asyncio
 import time
 from agents.base import BaseAgent
 
@@ -91,17 +92,72 @@ class ResearchSynthesizer(BaseAgent):
         self._preliminary_result = None
         self._market_context = ""
         self._barrier_event = None
+        self._barrier_task = None
+        self._barrier_cycle_id = None
         self._barrier_timeout = 20
         self._current_cycle_id = None
         self._pending_by_cycle = {}  # {cycle_id: {msg_type: payload}}
+        self._max_cycle_buckets = 2
 
     async def setup(self):
         self.init_llm()
         self.logger.info("研判综合Agent就绪（两阶段决策）")
 
-    def _all_research_data_ready(self) -> bool:
-        return all(k in self._pending_data for k in
+    def _all_research_data_ready(self, data: dict = None) -> bool:
+        data = data if data is not None else self._pending_data
+        return all(k in data for k in
                    ('research_market_data', 'research_sentiment_data', 'research_news_data'))
+
+    def _cache_cycle_payload(self, cycle_id: str, msg_type: str, payload: dict):
+        """按真实到达顺序缓存 cycle 数据；cycle_id 是随机 UUID 前缀，不能排序判断新旧。"""
+        if cycle_id not in self._pending_by_cycle:
+            self._pending_by_cycle[cycle_id] = {}
+        self._pending_by_cycle[cycle_id][msg_type] = payload
+        self._trim_cycle_buckets(protect={cycle_id, self._current_cycle_id})
+
+    def _trim_cycle_buckets(self, protect: set = None):
+        protect = {c for c in (protect or set()) if c}
+        while len(self._pending_by_cycle) > self._max_cycle_buckets:
+            removable = None
+            for cycle_id in list(self._pending_by_cycle.keys()):
+                if cycle_id not in protect:
+                    removable = cycle_id
+                    break
+            if removable is None:
+                return
+            del self._pending_by_cycle[removable]
+
+    def _start_barrier(self, cycle_id: str):
+        self._barrier_cycle_id = cycle_id
+        self._barrier_event = asyncio.Event()
+        self._barrier_task = asyncio.create_task(
+            self._wait_and_synthesize(cycle_id, self._barrier_event)
+        )
+        self._barrier_task.add_done_callback(self._on_barrier_task_done)
+
+    def _clear_barrier(self, event=None):
+        if event is None or self._barrier_event is event:
+            self._barrier_event = None
+            self._barrier_task = None
+            self._barrier_cycle_id = None
+
+    def _cancel_stale_barrier(self, new_cycle_id: str):
+        if not self._barrier_event or self._barrier_cycle_id == new_cycle_id:
+            return
+        self.logger.warning(
+            f"[研判] 取消过期barrier cycle={self._barrier_cycle_id}，新cycle={new_cycle_id}"
+        )
+        if self._barrier_task and not self._barrier_task.done():
+            self._barrier_task.cancel()
+        self._clear_barrier()
+
+    def _on_barrier_task_done(self, task):
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            self.logger.error(f"[研判] barrier任务异常: {exc}")
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'research_challenge':
@@ -117,17 +173,11 @@ class ResearchSynthesizer(BaseAgent):
 
         if incoming_cycle:
             # 按 cycle_id 分桶缓存，任何一路都可以初始化桶
-            if incoming_cycle not in self._pending_by_cycle:
-                self._pending_by_cycle[incoming_cycle] = {}
-            self._pending_by_cycle[incoming_cycle][msg['type']] = payload
-
-            # 清理过期桶（只保留最新2个）
-            if len(self._pending_by_cycle) > 2:
-                oldest = sorted(self._pending_by_cycle.keys())[0]
-                del self._pending_by_cycle[oldest]
+            self._cache_cycle_payload(incoming_cycle, msg['type'], payload)
 
         # research_market_data 到达时激活该 cycle
         if msg['type'] == 'research_market_data' and incoming_cycle:
+            self._cancel_stale_barrier(incoming_cycle)
             if self._current_cycle_id and incoming_cycle != self._current_cycle_id:
                 self.logger.info(f"[研判] 新cycle激活: {incoming_cycle} (旧={self._current_cycle_id})")
             self._current_cycle_id = incoming_cycle
@@ -135,7 +185,7 @@ class ResearchSynthesizer(BaseAgent):
             bucket = self._pending_by_cycle.get(incoming_cycle, {})
             self._pending_data = dict(bucket)
         elif incoming_cycle and incoming_cycle == self._current_cycle_id:
-            self._pending_data[msg['type']] = payload
+            self._pending_data = dict(self._pending_by_cycle.get(incoming_cycle, {}))
         elif not incoming_cycle:
             # 无 cycle_id 的消息直接存入当前 pending
             self._pending_data[msg['type']] = payload
@@ -145,53 +195,87 @@ class ResearchSynthesizer(BaseAgent):
             return
 
         if 'research_market_data' not in self._pending_data:
+            bucket_keys = []
+            if self._current_cycle_id:
+                bucket_keys = list(self._pending_by_cycle.get(self._current_cycle_id, {}).keys())
+            log_waiting_market = self.logger.warning if self._current_cycle_id else self.logger.debug
+            log_waiting_market(
+                f"[研判] 等待market_data，cycle={self._current_cycle_id} "
+                f"pending={list(self._pending_data.keys())} bucket={bucket_keys}"
+            )
             return
 
         if self._all_research_data_ready():
-            if self._barrier_event:
+            barrier_alive = (
+                self._barrier_event
+                and self._barrier_cycle_id == self._current_cycle_id
+                and self._barrier_task
+                and not self._barrier_task.done()
+            )
+            if barrier_alive:
                 self._barrier_event.set()
             else:
-                await self._preliminary_synthesis()
+                if self._barrier_event:
+                    self.logger.warning(
+                        f"[研判] barrier无活跃等待任务，直接初选 cycle={self._current_cycle_id}"
+                    )
+                    self._clear_barrier()
+                await self._preliminary_synthesis(self._current_cycle_id)
         elif not self._barrier_event:
-            import asyncio
-            self._barrier_event = asyncio.Event()
-            asyncio.create_task(self._wait_and_synthesize())
+            self._start_barrier(self._current_cycle_id)
+        elif self._barrier_cycle_id != self._current_cycle_id:
+            self._cancel_stale_barrier(self._current_cycle_id)
+            self._start_barrier(self._current_cycle_id)
 
-    async def _wait_and_synthesize(self):
+    async def _wait_and_synthesize(self, cycle_id: str = None, event=None):
         """等待三路数据到齐或超时后触发初选"""
-        import asyncio
+        event = event or self._barrier_event
         try:
-            await asyncio.wait_for(self._barrier_event.wait(), timeout=self._barrier_timeout)
+            await asyncio.wait_for(event.wait(), timeout=self._barrier_timeout)
         except asyncio.TimeoutError:
+            data = self._pending_by_cycle.get(cycle_id, self._pending_data)
             missing = [k.replace('research_', '') for k in
                        ('research_market_data', 'research_sentiment_data', 'research_news_data')
-                       if k not in self._pending_data]
-            self.logger.warning(f"[研判] 等待{self._barrier_timeout}s超时，缺失: {missing}，降级初选")
+                       if k not in data]
+            self.logger.warning(
+                f"[研判] 等待{self._barrier_timeout}s超时，cycle={cycle_id} 缺失: {missing}，降级初选"
+            )
         finally:
-            self._barrier_event = None
-        await self._preliminary_synthesis()
+            self._clear_barrier(event)
+        await self._preliminary_synthesis(cycle_id)
 
-    async def _preliminary_synthesis(self):
+    async def _preliminary_synthesis(self, cycle_id: str = None):
         """第一阶段：初选"""
-        market_data = self._pending_data.get('research_market_data', {})
-        sentiment_data = self._pending_data.get('research_sentiment_data', {})
-        news_data = self._pending_data.get('research_news_data', {})
-        self._pending_data.clear()
+        if cycle_id and self._current_cycle_id and cycle_id != self._current_cycle_id:
+            self.logger.info(f"[研判] 丢弃过期初选 cycle={cycle_id} (当前={self._current_cycle_id})")
+            self._pending_by_cycle.pop(cycle_id, None)
+            return
+
+        if cycle_id:
+            data = dict(self._pending_by_cycle.get(cycle_id) or self._pending_data)
+            self._pending_by_cycle.pop(cycle_id, None)
+            self._pending_data.clear()
+        else:
+            data = dict(self._pending_data)
+            self._pending_data.clear()
+
+        market_data = data.get('research_market_data', {})
+        sentiment_data = data.get('research_sentiment_data', {})
+        news_data = data.get('research_news_data', {})
 
         candidates = market_data.get('candidates', [])
         if not candidates:
-            self.logger.warning("[研判] 无候选标的数据")
+            self.logger.warning(f"[研判] 无候选标的数据 cycle={cycle_id}")
             return
 
-        self._market_context = self._build_research_summary(candidates, sentiment_data, news_data)
-
         try:
+            self._market_context = self._build_research_summary(candidates, sentiment_data, news_data)
             from agents.llm_client import SYNTHESIS_SCHEMA
             result = await self.ask_claude_json(SYNTHESIS_PROMPT, self._market_context, schema=SYNTHESIS_SCHEMA)
             selected = result.get('selected_symbols', [])[:self._max_symbols]
             market_regime = result.get('market_regime', 'unknown')
         except Exception as e:
-            self.logger.warning(f"LLM研判失败，规则降级: {e}")
+            self.logger.warning(f"LLM研判失败或上下文构造失败，规则降级: {e}")
             selected = self._rule_fallback(candidates)
             market_regime = 'unknown'
 
@@ -216,7 +300,7 @@ class ResearchSynthesizer(BaseAgent):
             "selected": selected,
             "market_regime": market_regime,
             "market_context": self._market_context,
-            "cycle_id": self._current_cycle_id,
+            "cycle_id": cycle_id or self._current_cycle_id,
         })
 
     async def _final_decision(self, challenge: dict):

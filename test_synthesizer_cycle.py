@@ -21,7 +21,10 @@ def synth():
         s._preliminary_result = None
         s._market_context = ""
         s._barrier_event = None
+        s._barrier_task = None
+        s._barrier_cycle_id = None
         s._barrier_timeout = 20
+        s._max_cycle_buckets = 2
         s.logger = MagicMock()
         s.publish = AsyncMock()
         s.ask_claude_json = AsyncMock(return_value={
@@ -105,3 +108,61 @@ async def test_bucket_cleanup_keeps_latest_two(synth):
     # 最新的两个应该保留
     assert 'cycle_003' in synth._pending_by_cycle
     assert 'cycle_002' in synth._pending_by_cycle
+
+
+@pytest.mark.asyncio
+async def test_random_cycle_id_cleanup_does_not_delete_incoming_cycle(synth):
+    """随机 UUID 前缀不能按字典序清理，否则会误删当前新 cycle。"""
+    synth._current_cycle_id = "d55e7816"
+    synth._pending_by_cycle = {
+        "b768c215": {"research_market_data": {"cycle_id": "b768c215", "candidates": []}},
+        "d55e7816": {"research_market_data": {"cycle_id": "d55e7816", "candidates": []}},
+    }
+
+    await synth.on_message({
+        'type': 'research_news_data',
+        'payload': {'cycle_id': '52f5a592', 'headlines': []},
+    })
+    await synth.on_message({
+        'type': 'research_sentiment_data',
+        'payload': {'cycle_id': '52f5a592', 'fear_greed': {'value': 50, 'classification': 'neutral'}},
+    })
+    await synth.on_message({
+        'type': 'research_market_data',
+        'payload': {'cycle_id': '52f5a592', 'candidates': [
+            {'symbol': 'BTC-USDT', 'price': 100000, 'volume_24h': 1e9,
+             'volatility_pct': 5, 'change_24h_pct': 3}
+        ]},
+    })
+
+    assert synth._current_cycle_id == '52f5a592'
+    assert synth.publish.called
+    payload = synth.publish.call_args.args[1]
+    assert payload['cycle_id'] == '52f5a592'
+
+
+@pytest.mark.asyncio
+async def test_ready_cycle_with_stale_barrier_event_synthesizes(synth):
+    """barrier event 残留但没有活跃 task 时，ready cycle 不能只 set event 后吞掉。"""
+    synth._current_cycle_id = "cycle_stale"
+    synth._barrier_event = asyncio.Event()
+    synth._barrier_task = None
+    synth._barrier_cycle_id = "cycle_stale"
+
+    await synth.on_message({
+        'type': 'research_news_data',
+        'payload': {'cycle_id': 'cycle_stale', 'headlines': []},
+    })
+    await synth.on_message({
+        'type': 'research_sentiment_data',
+        'payload': {'cycle_id': 'cycle_stale', 'fear_greed': {'value': 50, 'classification': 'neutral'}},
+    })
+    await synth.on_message({
+        'type': 'research_market_data',
+        'payload': {'cycle_id': 'cycle_stale', 'candidates': [
+            {'symbol': 'BTC-USDT', 'price': 100000, 'volume_24h': 1e9,
+             'volatility_pct': 5, 'change_24h_pct': 3}
+        ]},
+    })
+
+    assert synth.publish.called
