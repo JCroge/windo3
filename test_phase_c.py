@@ -23,7 +23,13 @@ async def test_research_to_trading_pipeline():
     MessageBus.reset()
     bus = MessageBus.get_instance()
 
-    config = {"exchange": "okx", "interval": "1h", "leverage": 3, "max_trade_amount": 10}
+    config = {
+        "exchange": "okx",
+        "interval": "1h",
+        "leverage": 3,
+        "max_trade_amount": 10,
+        "max_active_symbols": 3,
+    }
 
     synthesizer = ResearchSynthesizer(config)
     router = SymbolRouter(config)
@@ -31,6 +37,11 @@ async def test_research_to_trading_pipeline():
     tech_analyst = MultiTechAnalyst(config)
     judge = MultiJudge(config)
     risk_guard = PortfolioRiskGuard(config)
+
+    async def mock_llm_fail(*args, **kwargs):
+        raise Exception("LLM mocked: force deterministic rule fallback")
+
+    synthesizer.ask_claude_json = mock_llm_fail
 
     print("\n[1] 模拟MarketScanner发布研判数据...")
     mock_candidates = [

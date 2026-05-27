@@ -1,6 +1,9 @@
 """市场扫描 Agent - 采集Top永续合约的多维度指标"""
 
+import asyncio
+import copy
 import os
+import time
 import ccxt
 import aiohttp
 from dotenv import load_dotenv
@@ -19,6 +22,10 @@ class MarketScanner(BaseAgent):
         self.top_n = 50
         self.min_volume_24h = 5_000_000
         self._current_cycle_id = None
+        self._last_good_candidates = []
+        self._last_good_total_scanned = 0
+        self._last_good_filtered = 0
+        self._last_good_ts = None
 
     async def setup(self):
         from utils.exchange_factory import create_exchange
@@ -34,9 +41,7 @@ class MarketScanner(BaseAgent):
     async def _scan_market(self):
         try:
             self.logger.info("[扫描] 开始采集市场数据...")
-            import asyncio
-            loop = asyncio.get_event_loop()
-            tickers = await loop.run_in_executor(None, self.exchange.fetch_tickers)
+            tickers = await self._fetch_tickers_with_retry()
 
             candidates = []
             # 非加密资产黑名单：与 multi_data_collector.py 保持一致，避免研判选了交易层会过滤
@@ -94,8 +99,6 @@ class MarketScanner(BaseAgent):
             for c in top_candidates:
                 del c['_rank_score']
 
-            import asyncio
-
             # 上线时间过滤：排除OKX上线不足1年的标的（月K线<12根）
             async def _check_age(c):
                 inst_id = c['raw_symbol'].replace('/USDT:USDT', '-USDT-SWAP').replace('/', '-')
@@ -118,6 +121,8 @@ class MarketScanner(BaseAgent):
 
             await asyncio.gather(*[_enrich(c) for c in top_candidates])
 
+            self._remember_last_good(top_candidates, len(tickers), len(candidates))
+
             await self.publish("research_market_data", {
                 "candidates": top_candidates,
                 "total_scanned": len(tickers),
@@ -129,6 +134,72 @@ class MarketScanner(BaseAgent):
 
         except Exception as e:
             self.logger.error(f"市场扫描失败: {e}")
+            await self._publish_degraded_market_data(e)
+
+    async def _fetch_tickers_with_retry(self):
+        attempts = max(1, int(self.config.get('market_scan_retries', 3)))
+        delay = max(0.0, float(self.config.get('market_scan_retry_delay', 1.0)))
+        last_error = None
+        loop = asyncio.get_event_loop()
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return await loop.run_in_executor(None, self.exchange.fetch_tickers)
+            except Exception as e:
+                last_error = e
+                if attempt >= attempts:
+                    break
+                self.logger.warning(
+                    f"[扫描] fetch_tickers失败({attempt}/{attempts})，{delay:.1f}s后重试: {e}"
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+
+        raise last_error
+
+    def _remember_last_good(self, candidates: list, total_scanned: int, filtered: int):
+        if not candidates:
+            return
+        self._last_good_candidates = copy.deepcopy(candidates)
+        self._last_good_total_scanned = total_scanned
+        self._last_good_filtered = filtered
+        self._last_good_ts = time.time()
+
+    async def _publish_degraded_market_data(self, error: Exception):
+        if self._last_good_candidates:
+            candidates = copy.deepcopy(self._last_good_candidates)
+            total_scanned = self._last_good_total_scanned
+            filtered = self._last_good_filtered
+            fallback_source = "last_good"
+            stale = True
+            last_good_age_sec = round(time.time() - self._last_good_ts, 1) if self._last_good_ts else None
+        else:
+            candidates = []
+            total_scanned = 0
+            filtered = 0
+            fallback_source = "empty"
+            stale = False
+            last_good_age_sec = None
+
+        payload = {
+            "candidates": candidates,
+            "total_scanned": total_scanned,
+            "filtered": filtered,
+            "cycle_id": self._current_cycle_id,
+            "degraded": True,
+            "stale": stale,
+            "fallback_source": fallback_source,
+            "error": str(error),
+        }
+        if last_good_age_sec is not None:
+            payload["last_good_age_sec"] = last_good_age_sec
+
+        await self.publish("research_market_data", payload)
+        self.logger.warning(
+            f"[扫描] 发布降级市场数据: cycle={self._current_cycle_id} "
+            f"source={fallback_source} candidates={len(candidates)}"
+        )
 
     async def _fetch_funding(self, symbol: str):
         try:

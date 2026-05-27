@@ -30,6 +30,11 @@ class Orchestrator:
         self._last_research_time = 0.0
         self._shutdown_event = None
         self.bus = None
+        self._research_watchdog_timeout = self.config.get('research_watchdog_timeout', 90)
+        self._research_watchdog_max_retries = self.config.get('research_watchdog_max_retries', 1)
+        self._research_watchdogs = {}
+        self._research_cycle_completed = set()
+        self._research_cycle_retries = {}
 
     def _default_config(self) -> dict:
         try:
@@ -104,7 +109,10 @@ class Orchestrator:
         loop.add_signal_handler(signal.SIGTERM, lambda: self._shutdown_event.set())
         loop.add_signal_handler(signal.SIGINT, lambda: self._shutdown_event.set())
 
-        self.bus.register("orchestrator", ["system_command", "trade_decision:*"])
+        self.bus.register(
+            "orchestrator",
+            ["system_command", "trade_decision:*", "research_preliminary", "research_result"]
+        )
 
         self._tasks = [asyncio.create_task(agent.run()) for agent in all_agents]
         research_task = asyncio.create_task(self._research_loop())
@@ -121,14 +129,95 @@ class Orchestrator:
         finally:
             await self._graceful_shutdown(all_agents)
 
+    async def _publish_research_trigger(self, bus=None, reason: str = "scheduled", retry_of: str = None):
+        """发布研判触发并登记 watchdog，防止上游无声失败让 cycle 卡死。"""
+        bus = bus or self.bus or MessageBus.get_instance()
+        cycle_id = str(uuid.uuid4())[:8]
+        retry_count = self._research_cycle_retries.get(retry_of, 0) + 1 if retry_of else 0
+        payload = {"cycle_id": cycle_id}
+        if retry_of:
+            payload["retry_of"] = retry_of
+            payload["retry_count"] = retry_count
+
+        await bus.publish("orchestrator", "research_trigger", payload, "broadcast")
+        self._last_research_time = time.time()
+        self._research_cycle_retries[cycle_id] = retry_count
+        self._start_research_watchdog(cycle_id, retry_count, reason)
+        return cycle_id
+
+    def _start_research_watchdog(self, cycle_id: str, retry_count: int, reason: str):
+        timeout = float(self._research_watchdog_timeout)
+        if timeout <= 0:
+            return
+
+        existing = self._research_watchdogs.pop(cycle_id, None)
+        if existing and not existing.done():
+            existing.cancel()
+
+        task = asyncio.create_task(self._watch_research_cycle(cycle_id, retry_count))
+        self._research_watchdogs[cycle_id] = task
+        self._tasks.append(task)
+        task.add_done_callback(lambda t, cid=cycle_id: self._on_research_watchdog_done(cid, t))
+        self.logger.debug(
+            f"[编排] 研判watchdog已启动: cycle={cycle_id} timeout={timeout:g}s "
+            f"retry={retry_count} reason={reason}"
+        )
+
+    def _on_research_watchdog_done(self, cycle_id: str, task: asyncio.Task):
+        if self._research_watchdogs.get(cycle_id) is task:
+            self._research_watchdogs.pop(cycle_id, None)
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            self.logger.error(f"[编排] 研判watchdog异常 cycle={cycle_id}: {exc}")
+
+    async def _watch_research_cycle(self, cycle_id: str, retry_count: int):
+        timeout = float(self._research_watchdog_timeout)
+        await asyncio.sleep(timeout)
+        if cycle_id in self._research_cycle_completed:
+            return
+        if self._shutdown_event and self._shutdown_event.is_set():
+            return
+
+        self.logger.error(
+            f"[编排] 研判cycle={cycle_id} {timeout:g}s内未产出"
+            f"research_preliminary/research_result"
+        )
+
+        if retry_count < int(self._research_watchdog_max_retries):
+            self.logger.warning(
+                f"[编排] 强制重发研判: retry={retry_count + 1}/"
+                f"{self._research_watchdog_max_retries} old_cycle={cycle_id}"
+            )
+            await self._publish_research_trigger(reason="watchdog_retry", retry_of=cycle_id)
+            return
+
+        bus = self.bus or MessageBus.get_instance()
+        await bus.publish("orchestrator", "telegram_alert", {
+            "level": "error",
+            "message": f"研判cycle={cycle_id} 超时且重试耗尽，请检查 market_scanner/synthesizer",
+            "cycle_id": cycle_id,
+        }, "broadcast")
+
+    def _mark_research_cycle_completed(self, cycle_id: str, msg_type: str):
+        if not cycle_id:
+            return
+        if cycle_id not in self._research_cycle_completed:
+            self.logger.info(f"[编排] 研判cycle={cycle_id} 已产出 {msg_type}")
+        self._research_cycle_completed.add(cycle_id)
+        task = self._research_watchdogs.pop(cycle_id, None)
+        if task and not task.done():
+            task.cancel()
+
     async def _research_loop(self):
         """定期触发研判层运行（含空闲提前触发：连续 idle_trigger_seconds 全 hold → 提前换标的）"""
         bus = MessageBus.get_instance()
 
         await asyncio.sleep(5)
         self.logger.info("[编排] 首次研判触发...")
-        await bus.publish("orchestrator", "research_trigger", {"cycle_id": str(uuid.uuid4())[:8]}, "broadcast")
-        self._last_research_time = time.time()
+        await self._publish_research_trigger(bus, reason="startup")
 
         check_interval = 300  # 每 5 min 检查一次状态
         while True:
@@ -140,8 +229,7 @@ class Orchestrator:
             # 触发条件1：定时周期到了
             if elapsed_since_research >= self._research_interval:
                 self.logger.info(f"[编排] 定时研判触发（每{self._research_interval//3600}h）")
-                await bus.publish("orchestrator", "research_trigger", {"cycle_id": str(uuid.uuid4())[:8]}, "broadcast")
-                self._last_research_time = now
+                await self._publish_research_trigger(bus, reason="scheduled")
                 continue
 
             # 触发条件2：连续 idle 太久 + 距上次研判已超冷却（防止刚换完又被空闲触发）
@@ -150,8 +238,7 @@ class Orchestrator:
                 self.logger.info(
                     f"[编排] 空闲提前触发研判（连续{elapsed_since_active//60:.0f}min无开/平仓决策）"
                 )
-                await bus.publish("orchestrator", "research_trigger", {"cycle_id": str(uuid.uuid4())[:8]}, "broadcast")
-                self._last_research_time = now
+                await self._publish_research_trigger(bus, reason="idle")
                 # 重置 idle 计时，避免立即重复触发
                 self._last_active_time = now
 
@@ -172,6 +259,9 @@ class Orchestrator:
                 action = msg.get('payload', {}).get('action', 'hold')
                 if action and action != 'hold':
                     self._last_active_time = time.time()
+            elif mtype in ('research_preliminary', 'research_result'):
+                cycle_id = msg.get('payload', {}).get('cycle_id')
+                self._mark_research_cycle_completed(cycle_id, mtype)
 
     async def _graceful_shutdown(self, all_agents):
         """优雅停机流程"""
