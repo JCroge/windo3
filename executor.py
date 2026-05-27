@@ -331,6 +331,11 @@ class ContractExecutor:
 
         返回归一化的 dict 列表,每条含 algoId / algoClOrdId / ordType / sl_trigger /
         tp_trigger / side / posSide 等关键字段。仅 OKX 路径有效;其他交易所返回空。
+
+        同时拉 conditional 与 oco 两类:
+          - conditional 是新版独立 SL/TP algo
+          - oco 是旧版 _build_okx_attach_algo 同时挂 SL+TP 的一体单(2026-05-27 前)
+            重启迁移必须能识别 OCO 才能把它转成纯 SL 由本地接管 TP。
         """
         if self.exchange_id != 'okx':
             return []
@@ -340,28 +345,46 @@ class ContractExecutor:
                 self.exchange, 'private_get_trade_orders_algo_pending', None,
             )
             if fetcher is not None:
-                resp = fetcher({'ordType': 'conditional'})
-                rows = resp.get('data') if isinstance(resp, dict) else []
-                rows = rows or []
+                for ord_type in ('conditional', 'oco'):
+                    try:
+                        resp = fetcher({'ordType': ord_type})
+                        chunk = resp.get('data') if isinstance(resp, dict) else []
+                        rows.extend(chunk or [])
+                    except Exception as e:
+                        self.logger.warning(
+                            f"[Migrate] {symbol} 拉 pending algo (ordType={ord_type}) 失败: {e}"
+                        )
             else:
-                orders = self.exchange.fetch_open_orders(
-                    symbol, params={'ordType': 'conditional'},
-                ) or []
-                rows = [(o or {}).get('info') or {} for o in orders]
+                for ord_type in ('conditional', 'oco'):
+                    try:
+                        orders = self.exchange.fetch_open_orders(
+                            symbol, params={'ordType': ord_type},
+                        ) or []
+                        rows.extend([(o or {}).get('info') or {} for o in orders])
+                    except Exception as e:
+                        self.logger.warning(
+                            f"[Migrate] {symbol} fetch_open_orders (ordType={ord_type}) 失败: {e}"
+                        )
         except Exception as e:
             self.logger.warning(f"[Migrate] {symbol} 拉 pending algo 失败: {e}")
             return []
 
         inst_id = symbol.replace('/', '-').replace(':USDT', '')
         out: list = []
+        seen_ids: set = set()
         for row in rows:
             if not isinstance(row, dict):
                 continue
             row_inst = row.get('instId') or row.get('inst_id')
             if row_inst and row_inst != inst_id:
                 continue
+            algo_id = row.get('algoId')
+            if algo_id and algo_id in seen_ids:
+                continue
+            if algo_id:
+                seen_ids.add(algo_id)
             out.append({
-                'algoId': row.get('algoId'),
+                'algoId': algo_id,
                 'algoClOrdId': row.get('algoClOrdId'),
                 'ordType': row.get('ordType'),
                 'side': row.get('side'),
@@ -400,15 +423,17 @@ class ContractExecutor:
         """FR-07: 启动期/sync 时清理本 symbol 的 OKX 存量 algo。
 
         步骤:
-          1. 列 pending algo
-          2. 任何 TP algo 一律撤掉(本系统 exit_owner=local_partial_tp_exchange_sl)
-          3. SL algo 尝试归属本地 position;归属成功 → 写 sl_algo_id,
+          1. 列 pending algo (含 conditional + oco)
+          2. 任何纯 TP algo 一律撤掉(本系统 exit_owner=local_partial_tp_exchange_sl)
+          3. OCO algo (旧版 SL+TP 一体单) 视为 SL,但必须 _replace_protective_sl
+             转成纯 conditional SL,这样本地 partial TP 才能独立运行
+          4. 纯 SL algo 尝试归属本地 position;归属成功 → 写 sl_algo_id,
              protection_state=protected;无法归属(无对应仓位 / 多个 SL / 方向冲突)
              → halt symbol 并撤掉残留
-          4. 本地有仓位但 pending 中无 SL → live halt,testnet 重挂
+          5. 本地有仓位但 pending 中无 SL → live halt,testnet 重挂
 
         返回 dict 摘要,包含 cancelled_tp / matched_sl / orphan_sl /
-        missing_sl / halted。
+        missing_sl / halted / oco_replaced。
         """
         summary = {
             'symbol': symbol,
@@ -417,6 +442,7 @@ class ContractExecutor:
             'orphan_sl': 0,
             'missing_sl': False,
             'halted': False,
+            'oco_replaced': 0,
         }
         if self.exchange_id != 'okx':
             return summary
@@ -425,6 +451,7 @@ class ContractExecutor:
         position = self.positions.get(symbol)
 
         sl_algos: list = []
+        oco_algos: list = []
         for algo in algos:
             algo_id = algo.get('algoId')
             if not algo_id:
@@ -441,21 +468,99 @@ class ContractExecutor:
                         f"[Migrate] {symbol} 取消存量 TP algo {algo_id}"
                     )
                 continue
+            if has_sl and has_tp:
+                # OCO 一体单(旧版 _build_okx_attach_algo): SL 部分要保留,但 TP
+                # 必须由本地 partial TP 接管,无法部分撤,只能整撤后重挂纯 SL
+                oco_algos.append(algo)
+                continue
             if has_sl:
                 sl_algos.append(algo)
 
         if position is None:
-            # 本地无仓位,所有残留 SL 全撤
-            for algo in sl_algos:
+            # 本地无仓位,所有残留 SL/OCO 全撤
+            for algo in sl_algos + oco_algos:
                 if self._cancel_algo_by_id(symbol, algo['algoId']):
                     summary['orphan_sl'] += 1
                     self.logger.info(
-                        f"[Migrate] {symbol} 无本地仓位,撤残留 SL algo "
-                        f"{algo['algoId']}"
+                        f"[Migrate] {symbol} 无本地仓位,撤残留 algo "
+                        f"{algo['algoId']} (ordType={algo.get('ordType')})"
                     )
             return summary
 
-        # 本地有仓位:归属唯一 SL,多余 / 方向冲突一律 halt
+        # 本地有仓位:OCO 一律转成纯 SL conditional;然后归属唯一 SL
+        if oco_algos:
+            if len(oco_algos) > 1 or sl_algos:
+                self.logger.error(
+                    f"[Migrate] {symbol} 发现 {len(oco_algos)} 条 OCO + "
+                    f"{len(sl_algos)} 条 SL,无法归属,全撤并 halt"
+                )
+                for algo in oco_algos + sl_algos:
+                    self._cancel_algo_by_id(symbol, algo['algoId'])
+                position['sl_algo_id'] = None
+                position['sl_algo_clord_id'] = None
+                position['sl_sync_state'] = 'failed'
+                position['protection_state'] = 'unknown'
+                self._halt_symbol(symbol, reason='migrate_multiple_sl')
+                summary['halted'] = True
+                self._save_positions()
+                return summary
+
+            algo = oco_algos[0]
+            side = position.get('side')
+            algo_side = (algo.get('side') or '').lower()
+            expected_side = 'sell' if side == 'long' else 'buy'
+            if algo_side and algo_side != expected_side:
+                self.logger.error(
+                    f"[Migrate] {symbol} OCO algo side={algo_side} 与本地 "
+                    f"side={side} 不匹配,撤单 + halt"
+                )
+                self._cancel_algo_by_id(symbol, algo['algoId'])
+                position['sl_algo_id'] = None
+                position['sl_algo_clord_id'] = None
+                position['sl_sync_state'] = 'failed'
+                position['protection_state'] = 'unknown'
+                self._halt_symbol(symbol, reason='migrate_sl_side_conflict')
+                summary['halted'] = True
+                self._save_positions()
+                return summary
+
+            try:
+                sl_trigger = float(algo.get('sl_trigger') or 0)
+            except (TypeError, ValueError):
+                sl_trigger = 0.0
+            target_sl = sl_trigger if sl_trigger > 0 else float(position.get('stop_loss') or 0)
+            if target_sl <= 0:
+                self.logger.error(
+                    f"[Migrate] {symbol} OCO algo 无有效 slTriggerPx,撤单 + halt"
+                )
+                self._cancel_algo_by_id(symbol, algo['algoId'])
+                position['sl_algo_id'] = None
+                position['sl_algo_clord_id'] = None
+                position['sl_sync_state'] = 'failed'
+                position['protection_state'] = 'unknown'
+                self._halt_symbol(symbol, reason='migrate_missing_sl')
+                summary['halted'] = True
+                self._save_positions()
+                return summary
+
+            # 占位字段,让 _replace_protective_sl 走 cancel(走 cancel_orders+trigger)
+            position['sl_algo_id'] = algo['algoId']
+            position['sl_order_id'] = algo['algoId']
+            ok = self._replace_protective_sl(symbol, position, target_sl)
+            if ok:
+                summary['oco_replaced'] += 1
+                summary['matched_sl'] = position.get('sl_algo_id')
+                self.logger.info(
+                    f"[Migrate] {symbol} OCO {algo['algoId']} 转成纯 SL "
+                    f"{position.get('sl_algo_id')} @ {target_sl}"
+                )
+                self._save_positions()
+            else:
+                # _replace_protective_sl 失败时已 halt + 写 protection_state
+                summary['halted'] = True
+                self._save_positions()
+            return summary
+
         if not sl_algos:
             summary['missing_sl'] = True
             self.logger.error(
@@ -537,18 +642,26 @@ class ContractExecutor:
         if self.exchange_id != 'okx':
             return {}
         # 收集 symbol 候选: 本地全部 + 全局 pending algo 中出现的 instId
+        # 同时拉 conditional + oco,否则旧版 OCO 一体单的 symbol 不在本地仓位时
+        # 会被漏掉
         candidates = set(self.positions.keys())
         try:
             fetcher = getattr(
                 self.exchange, 'private_get_trade_orders_algo_pending', None,
             )
             if fetcher is not None:
-                resp = fetcher({'ordType': 'conditional'})
-                rows = resp.get('data') if isinstance(resp, dict) else []
-                for row in (rows or []):
-                    inst = (row or {}).get('instId')
-                    if inst:
-                        candidates.add(inst)
+                for ord_type in ('conditional', 'oco'):
+                    try:
+                        resp = fetcher({'ordType': ord_type})
+                        rows = resp.get('data') if isinstance(resp, dict) else []
+                        for row in (rows or []):
+                            inst = (row or {}).get('instId')
+                            if inst:
+                                candidates.add(inst)
+                    except Exception as e:
+                        self.logger.warning(
+                            f"[Migrate] 列全局 pending algo (ordType={ord_type}) 失败: {e}"
+                        )
         except Exception as e:
             self.logger.warning(f"[Migrate] 列全局 pending algo 失败: {e}")
 

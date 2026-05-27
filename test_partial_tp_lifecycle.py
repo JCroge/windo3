@@ -741,6 +741,68 @@ class TestAlgoMigration:
             'orphan_sl': 0,
             'missing_sl': False,
             'halted': False,
+            'oco_replaced': 0,
         }
+
+    def test_legacy_oco_replaced_with_pure_sl(self):
+        """旧版 _build_okx_attach_algo 留下的 OCO 一体单(SL+TP)必须转成纯 SL。
+
+        这是 2026-05-27 之前开仓的存量场景:OCO algo 同时带 slTriggerPx 和
+        tpTriggerPx,新版 partial TP owner 必须接管 TP,所以 OCO 整撤后
+        重挂纯 conditional SL,position.sl_algo_id 指向新 SL,
+        protection_state=protected。
+        """
+        ex = _make_executor()
+        ex.testnet = False
+        self._local_long(ex)
+        ex._save_positions = MagicMock()
+        ex._halt_symbol = MagicMock()
+        # 拉 conditional 返回空,oco 返回一条 OCO 一体单
+        def _pending(params):
+            ord_type = (params or {}).get('ordType')
+            if ord_type == 'oco':
+                return {'data': [
+                    {'algoId': 'oco-old', 'algoClOrdId': 'oco-clord',
+                     'instId': 'BTC-USDT-SWAP',
+                     'side': 'sell', 'posSide': 'net',
+                     'tpTriggerPx': '110', 'slTriggerPx': '94',
+                     'ordType': 'oco'},
+                ]}
+            return {'data': []}
+        ex.exchange.private_get_trade_orders_algo_pending = MagicMock(
+            side_effect=_pending,
+        )
+        cancelled = []
+        ex.exchange.cancel_orders = MagicMock(
+            side_effect=lambda ids, symbol, params=None: cancelled.append(
+                {'ids': list(ids), 'symbol': symbol, 'params': params or {}}
+            ) or [{'id': i, 'status': 'canceled'} for i in ids]
+        )
+        # 新 SL 下单 mock:_replace_protective_sl 内部会调 create_order
+        created = []
+        ex.exchange.create_order = MagicMock(
+            side_effect=lambda *args, **kwargs: created.append(
+                {'args': args, 'kwargs': kwargs}
+            ) or {'id': 'sl-new', 'info': {'algoId': 'sl-new',
+                                            'algoClOrdId': 'sl-new-clord'}}
+        )
+        summary = ex._migrate_okx_algos_for_symbol('BTC-USDT-SWAP')
+        assert summary['oco_replaced'] == 1, summary
+        assert summary['halted'] is False
+        ex._halt_symbol.assert_not_called()
+        # 旧 OCO 必须被撤
+        cancelled_ids = {i for entry in cancelled for i in entry['ids']}
+        assert 'oco-old' in cancelled_ids
+        # 撤单走 trigger=True
+        assert any(
+            entry['params'].get('trigger') is True for entry in cancelled
+        )
+        # 新 SL create_order 被调过
+        ex.exchange.create_order.assert_called()
+        # position.sl_algo_id 指向新 SL,protection_state=protected
+        pos = ex.positions['BTC-USDT-SWAP']
+        assert pos['sl_algo_id'] == 'sl-new'
+        assert pos['protection_state'] == 'protected'
+        assert pos['sl_sync_state'] == 'active'
 
 
