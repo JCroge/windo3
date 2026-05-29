@@ -526,7 +526,10 @@ class TestProtectiveSlSingleEntry:
         kwargs = ex._place_protective_sl.call_args.kwargs
         assert kwargs['stop_price'] == 96.0
         assert kwargs['side'] == 'long'
-        assert kwargs['clord_id'] is not None and kwargs['clord_id'].startswith('sl')
+        # F4-003: 新挂 SL 走 _make_owner_tag_clord_id,clord_id 必须通过 owner 判定。
+        from executor import ContractExecutor
+        assert kwargs['clord_id'] is not None
+        assert ContractExecutor._is_owner_clord_id(kwargs['clord_id'])
         pos = ex.positions['BTC-USDT']
         assert pos['sl_algo_id'] == 'new-algo'
         assert pos['sl_algo_clord_id'] == kwargs['clord_id']
