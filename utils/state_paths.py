@@ -84,7 +84,8 @@ class StatePaths:
 
     def as_banner_lines(self) -> list:
         """供启动 banner 使用的展示行。"""
-        return [
+        bot_id = (os.getenv("BOT_INSTANCE_ID") or "").strip()
+        lines = [
             f'  状态命名空间:          {self.namespace.upper()}',
             f'    positions          → {self.positions}',
             f'    risk_state         → {self.risk_state}',
@@ -92,7 +93,14 @@ class StatePaths:
             f'    halt_state         → {self.halt_state}',
             f'    live_order_events  → {self.live_order_events}',
             f'    live_position_life → {self.live_position_lifecycle}',
+            f'    BOT_INSTANCE_ID    → {bot_id or "<empty>"}',
         ]
+        if self.namespace == "live" and not bot_id:
+            lines.append(
+                "    WARNING: BOT_INSTANCE_ID not configured; "
+                "cross-bot SL ownership cannot be proven by clOrdId."
+            )
+        return lines
 
 
 _singleton: Optional[StatePaths] = None

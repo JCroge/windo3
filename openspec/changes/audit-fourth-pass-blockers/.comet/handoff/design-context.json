@@ -1,0 +1,16 @@
+{
+  "change": "audit-fourth-pass-blockers",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "5c5bf5d5c7843ef770cd996866359a2b22d17b2701488254e1edabf0f84768b0",
+  "files": [
+    { "path": "openspec/changes/audit-fourth-pass-blockers/proposal.md", "sha256": "f883ff61b1d738d19b965c1533124bef2ecff104e9c27526ce70580f430fe84c" },
+    { "path": "openspec/changes/audit-fourth-pass-blockers/design.md", "sha256": "8d0f1ff293f3b1944e287f8ed967204dc0d578595f3a1d6179c87dc9baa28132" },
+    { "path": "openspec/changes/audit-fourth-pass-blockers/tasks.md", "sha256": "bcf1822bcdd5ca3fabec973956a4a3bee438f6f6abfc8f9026338b25535e26ef" },
+    { "path": "openspec/changes/audit-fourth-pass-blockers/specs/pnl-resolution-bus-events/spec.md", "sha256": "9c36a5401eb1186d429f79550a9abb5d5823491e026bc2fc439d14dd42be8d54" },
+    { "path": "openspec/changes/audit-fourth-pass-blockers/specs/protective-sl-owner-tag/spec.md", "sha256": "678415fe3bfbc81593f17446f4d3181c1c3ce0ebff841ac3a56b02c726e30af3" },
+    { "path": "openspec/changes/audit-fourth-pass-blockers/specs/reduce-result-propagation/spec.md", "sha256": "796d4f6c9bf63fa5d29cf9b855373f2c0887c2f5f829a16bc82e4cc7fcda35f6" }
+  ]
+}
