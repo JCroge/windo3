@@ -1185,22 +1185,7 @@ class MultiExecutor(BaseAgent):
                     await self.publish("execution_result", payload, symbol=symbol)
 
             elif trigger in ('partial_tp_1', 'partial_tp_2'):
-                pct = 0.5 if trigger == 'partial_tp_1' else 0.25
-                tp_advance = 1 if trigger == 'partial_tp_1' else 2
-                self.logger.info(f"[Trailing] {symbol} {trigger}，减仓{int(pct*100)}%")
-                pos = self.executor.positions.get(symbol)
-                entry_req_id = (pos or {}).get('request_id', '')
-                result = await asyncio.to_thread(
-                    self.executor.reduce_position, symbol, pct, tp_advance
-                )
-                if result:
-                    result['entry_request_id'] = entry_req_id
-                    payload = self._build_execution_result(
-                        status="risk_reduced", action="close", symbol=symbol,
-                        source="partial_tp", reason=trigger, result=result,
-                        request_id=entry_req_id, reduce_pct=pct,
-                    )
-                    await self.publish("execution_result", payload, symbol=symbol)
+                await self._handle_partial_tp_trigger(symbol, trigger)
 
             else:
                 self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
@@ -1216,6 +1201,53 @@ class MultiExecutor(BaseAgent):
                         request_id=entry_req_id,
                     )
                     await self.publish("execution_result", payload, symbol=symbol)
+
+    async def _handle_partial_tp_trigger(self, symbol: str, trigger: str):
+        """F4-001: partial TP 锁利路径分流。trigger ∈ {partial_tp_1, partial_tp_2}。
+
+        减仓结果经 _classify_reduce_outcome 分流，actual reduce_pct 写入 payload，
+        protection_failed=True 时下游可见。partial_tp 默认 action='close'（与原逻辑一致）。
+        """
+        pct = 0.5 if trigger == 'partial_tp_1' else 0.25
+        tp_advance = 1 if trigger == 'partial_tp_1' else 2
+        self.logger.info(f"[Trailing] {symbol} {trigger}，减仓{int(pct*100)}%")
+        pos = self.executor.positions.get(symbol)
+        entry_req_id = (pos or {}).get('request_id', '')
+        result = await asyncio.to_thread(
+            self.executor.reduce_position, symbol, pct, tp_advance
+        )
+        classification = self._classify_reduce_outcome(result, pct)
+        override_action = classification["action_override"] or "close"
+
+        if isinstance(result, dict):
+            result['entry_request_id'] = entry_req_id
+
+        payload = self._build_execution_result(
+            status=classification["status"],
+            action=override_action,
+            symbol=symbol,
+            source="partial_tp",
+            reason=trigger if classification["reason"] in ("ok", "", None) else classification["reason"],
+            result=result if isinstance(result, dict) else {},
+            request_id=entry_req_id,
+        )
+        if classification["status"] == "risk_reduced":
+            payload["reduce_pct"] = classification["actual_reduce_pct"]
+            payload["protection_state"] = classification["protection_state"]
+            payload["protective_update_state"] = classification["protective_update_state"]
+            if classification["protection_failed"]:
+                payload["protection_failed"] = True
+        elif classification["status"] == "executed" and override_action == "close":
+            payload["protection_state"] = classification["protection_state"]
+            payload["protective_update_state"] = classification["protective_update_state"]
+            payload["reduce_origin"] = True
+
+        await self.publish("execution_result", payload, symbol=symbol)
+        self.logger.info(
+            f"[Trailing] {symbol} {trigger} {classification['status']} "
+            f"reason={classification['reason']} "
+            f"actual_pct={classification['actual_reduce_pct']:.4f}"
+        )
 
     async def _early_review(self, symbol: str, pos: dict, minutes_held: float) -> bool:
         """RQ-04: 早期持仓复核（入场后30分钟内）。

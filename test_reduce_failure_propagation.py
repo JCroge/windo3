@@ -297,3 +297,91 @@ class TestPortfolioExposureReduce:
         assert risk_reduced[0].get("protection_failed") in (None, False)
         assert risk_reduced[0]["reduce_pct"] == pytest.approx(0.25)
 
+
+class TestPartialTpReduce:
+    def _make_ex(self):
+        from agents.trading.executor import MultiExecutor
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.logger = MagicMock()
+        ex.executor = MagicMock()
+        ex.executor.positions = {
+            "BTC-USDT": {"side": "long", "request_id": "r"},
+        }
+        return ex
+
+    @pytest.mark.asyncio
+    async def test_partial_tp_replace_failed_protection_failed(self):
+        """partial_tp_1 + replace_failed → risk_reduced, protection_failed=True, actual pct."""
+        ex = self._make_ex()
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex.publish = fake_publish
+        ex.executor.reduce_position = MagicMock(return_value={
+            "reduce_ok": True, "ok": False,
+            "protective_update_state": "replace_failed",
+            "protection_state": "unknown",
+            "actual_reduce_amount": 50.0,
+            "requested_reduce_amount": 100.0,
+        })
+
+        await ex._handle_partial_tp_trigger("BTC-USDT", "partial_tp_1")
+
+        risk_reduced = [p for t, p in published if p.get("status") == "risk_reduced"]
+        assert len(risk_reduced) == 1
+        assert risk_reduced[0]["protection_failed"] is True
+        # actual = (50/100) * 0.5 = 0.25
+        assert risk_reduced[0]["reduce_pct"] == pytest.approx(0.25)
+
+    @pytest.mark.asyncio
+    async def test_partial_tp_clean_ok_emits_risk_reduced(self):
+        """partial_tp_2 + clean ok → risk_reduced, no protection_failed, actual pct."""
+        ex = self._make_ex()
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex.publish = fake_publish
+        ex.executor.reduce_position = MagicMock(return_value={
+            "reduce_ok": True, "ok": True,
+            "protective_update_state": "protected",
+            "protection_state": "protected",
+            "actual_reduce_amount": 50.0,
+            "requested_reduce_amount": 100.0,
+        })
+
+        await ex._handle_partial_tp_trigger("BTC-USDT", "partial_tp_2")  # 25%
+
+        risk_reduced = [p for t, p in published if p.get("status") == "risk_reduced"]
+        assert len(risk_reduced) == 1
+        # partial_tp_2 → pct=0.25; actual = (50/100)*0.25 = 0.125
+        assert risk_reduced[0]["reduce_pct"] == pytest.approx(0.125)
+        assert risk_reduced[0].get("protection_failed") in (None, False)
+
+    @pytest.mark.asyncio
+    async def test_partial_tp_reduce_rejected_no_risk_reduced(self):
+        """partial_tp_1 + reduce_rejected → reduce_failed, no risk_reduced."""
+        ex = self._make_ex()
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex.publish = fake_publish
+        ex.executor.reduce_position = MagicMock(return_value={
+            "reduce_ok": False, "reason": "reduce_rejected",
+            "protective_update_state": "restored_old_sl",
+        })
+
+        await ex._handle_partial_tp_trigger("BTC-USDT", "partial_tp_1")
+
+        statuses = [p.get("status") for t, p in published]
+        assert "reduce_failed" in statuses
+        assert "risk_reduced" not in statuses
+

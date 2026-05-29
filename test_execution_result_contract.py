@@ -103,13 +103,21 @@ async def test_risk_alert_portfolio_reduce_v2():
         'BTC-USDT': {'amount_usdt': 500, 'request_id': 'req-btc'},
         'ETH-USDT': {'amount_usdt': 200, 'request_id': 'req-eth'},
     })
+    # F4-001: reduce_position must return structured result with reduce_ok=True
+    ex.executor.reduce_position = MagicMock(return_value={
+        'reduce_ok': True, 'ok': True,
+        'protective_update_state': 'protected',
+        'protection_state': 'protected',
+        'actual_reduce_amount': 250.0,
+        'requested_reduce_amount': 500.0,
+    })
 
     await ex._handle_risk_alert({'type': 'portfolio_exposure'})
 
     payload = ex.publish.call_args[0][1]
     _assert_v2(payload, expected_source='risk_alert', expected_status='risk_reduced')
     assert payload['action'] == 'reduce'
-    assert payload['reduce_pct'] == 0.5
+    assert payload['reduce_pct'] == pytest.approx(0.25)  # (250/500)*0.5
     assert payload['symbol'] == 'BTC-USDT'
 
 
@@ -198,14 +206,22 @@ async def test_partial_tp_v2():
     ex.executor.get_all_positions = MagicMock(return_value={'BTC-USDT': {'request_id': 'req-tp'}})
     ex.executor.positions = {'BTC-USDT': {'request_id': 'req-tp'}}
     ex.executor.check_stop_loss_take_profit = MagicMock(return_value='partial_tp_1')
-    ex.executor.reduce_position = MagicMock(return_value={'realized_pnl': 5.0})
+    # F4-001: reduce_position must return structured result with reduce_ok=True
+    ex.executor.reduce_position = MagicMock(return_value={
+        'reduce_ok': True, 'ok': True,
+        'protective_update_state': 'protected',
+        'protection_state': 'protected',
+        'actual_reduce_amount': 50.0,
+        'requested_reduce_amount': 100.0,
+        'realized_pnl': 5.0,
+    })
     ex.config = {'early_review_enabled': False}
 
     await ex._check_all_positions()
 
     payload = ex.publish.call_args[0][1]
     _assert_v2(payload, expected_source='partial_tp', expected_status='risk_reduced')
-    assert payload['reduce_pct'] == 0.5
+    assert payload['reduce_pct'] == pytest.approx(0.25)  # (50/100)*0.5
     assert payload['reason'] == 'partial_tp_1'
 
 
