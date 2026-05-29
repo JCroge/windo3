@@ -2,6 +2,8 @@
 comet_change: audit-fourth-pass-blockers
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-05-29-audit-fourth-pass-blockers
+status: final
 ---
 
 # Audit Fourth Pass Blockers — Technical Design

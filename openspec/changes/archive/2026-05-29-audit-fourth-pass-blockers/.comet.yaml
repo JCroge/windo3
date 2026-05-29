@@ -13,6 +13,6 @@ verification_report: docs/superpowers/reports/2026-05-29-audit-fourth-pass-block
 branch_status: handled
 created_at: 2026-05-29
 verified_at: 2026-05-29
-archived: false
+archived: true
 handoff_context: openspec/changes/audit-fourth-pass-blockers/.comet/handoff/design-context.json
 handoff_hash: 5c5bf5d5c7843ef770cd996866359a2b22d17b2701488254e1edabf0f84768b0

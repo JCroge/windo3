@@ -2,6 +2,7 @@
 change: audit-fourth-pass-blockers
 design-doc: docs/superpowers/specs/2026-05-29-audit-fourth-pass-blockers-design.md
 base-ref: a11f892c6d57cb0e787e8e83530dccd9f6d3ff46
+archived-with: 2026-05-29-audit-fourth-pass-blockers
 ---
 
 # Audit Fourth Pass Blockers Implementation Plan
