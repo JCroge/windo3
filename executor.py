@@ -295,9 +295,13 @@ class ContractExecutor:
     def _make_sl_clord_id(symbol: str) -> str:
         """[DEPRECATED] 历史兼容标识器,新挂单 MUST 使用 _make_owner_tag_clord_id。
 
-        保留原因: cleanup 路径 _is_owner_clord_id 仍按 sl_algo_clord_id 字段做 exact 匹配,
-        存量 positions.json 中的历史 sl... 前缀 algoClOrdId 仍能被识别为本系统所有,
-        避免误清扫。预计 1-2 个月后跑全量 positions.json 审计确认无遗留再删除。
+        保留原因:
+          - cleanup 路径 (_cleanup_sl_algo 等) 按 position['sl_algo_clord_id']
+            做 exact 字符串匹配,存量 positions.json 中的历史 sl... 前缀仍能被
+            识别为本系统所有,避免误清扫。
+          - _is_owner_clord_id 只对 owner-tag prefix (ca+ns+bot) 做匹配,
+            历史 sl... 前缀不会通过该函数,但 exact 匹配兜底保留 ownership。
+          - 预计 1-2 个月后跑全量 positions.json 审计确认无遗留再删除。
 
         FR-3B 兼容: 历史 sl... 前缀只能通过 exact sl_algo_clord_id 匹配证明 owner,
         不能用 'sl' 前缀做泛化 sweep。
