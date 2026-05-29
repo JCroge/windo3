@@ -872,7 +872,6 @@ class MultiExecutor(BaseAgent):
             )
             return
 
-        status = resolution.get("pnl_status", "")
         if status == PNL_STATUS_FINAL:
             topic = "pnl_resolved"
         elif status == "mismatch":

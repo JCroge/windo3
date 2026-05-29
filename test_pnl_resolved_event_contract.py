@@ -266,3 +266,54 @@ class TestResolveExternalCloseAsyncPublish:
         assert "pnl_resolved" not in topics
         assert "pnl_mismatch" not in topics
         ex.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_ledger_returns_none_correction_for_pending(self):
+        """ledger 存在但 apply_pnl_resolution 返回 None (pending 路径) 时跳过发布。"""
+        from agents.trading.executor import MultiExecutor
+        from unittest.mock import MagicMock
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.publish = fake_publish
+        ex.logger = MagicMock()
+        # 复用与 test_skips_publish_when_no_correction_and_pending 相同的 resolver
+        # 但这次 ledger 存在,只是不写 correction(典型 pending/pending_fx 路径)
+        ex._pnl_resolver = MagicMock()
+        ex._pnl_resolver.resolve_external_close.return_value = {
+            "pnl_status": "pending",
+            "symbol": "BTC-USDT", "side": "long",
+            "position_id": "pos-1", "entry_request_id": "req-1",
+            "realized_pnl_net_usdt": None,
+            "close_cause": "external_unknown",
+            "final_close_cause": "external_unknown",
+            "is_strategy_stop": False,
+            "close_evidence": {},
+            "order_ids": [], "warnings": ["pending"],
+            "match_confidence": 0,
+            "estimated_pnl": -5.0, "pnl_source": "",
+            "pos_side": "long", "opened_at": 0, "closed_at": 0,
+            "gross_close_pnl_usdt": 0, "fee_usdt": 0, "funding_usdt": 0,
+            "bill_ids": [],
+            "exchange_pnl_usdt": None, "fills_pnl_usdt": None,
+            "sl_algo_id": "", "sl_algo_clord_id": "",
+            "tp_algo_id": "", "tp_algo_clord_id": "",
+            "entry_attribution": {},
+        }
+        ex.executor = MagicMock()
+        ex.executor.ledger = MagicMock()
+        ex.executor.ledger.apply_pnl_resolution.return_value = None  # ← 关键
+        ex.executor.ledger.update_pending_resolution_attempt.return_value = None
+
+        snapshot = {"side": "long", "request_id": "req-1"}
+        await ex._resolve_external_close_async(snapshot, {"closed_at": 1000}, "req-1")
+
+        topics = [t for t, _ in published]
+        assert "pnl_resolved" not in topics
+        assert "pnl_mismatch" not in topics
+        ex.logger.warning.assert_called()
+
