@@ -1461,7 +1461,7 @@ class ContractExecutor:
                 self._halt_symbol(symbol, reason='sl_cancel_failed')
             return False
 
-        new_clord = self._make_sl_clord_id(symbol) if self.exchange_id == 'okx' else None
+        new_clord = self._make_owner_tag_clord_id(symbol) if self.exchange_id == 'okx' else None
         new_id = self._place_protective_sl(
             symbol=symbol, side=side, stop_price=new_sl, amount=amount,
             clord_id=new_clord,
@@ -1947,7 +1947,7 @@ class ContractExecutor:
                     self.logger.warning(f"TP方向修正(long): TP={tp_first:.4f} > entry={current_price:.4f}")
 
             # 构建附带TP/SL的下单参数
-            sl_clord_id = self._make_sl_clord_id(symbol) if self.exchange_id == 'okx' and stop_loss else None
+            sl_clord_id = self._make_owner_tag_clord_id(symbol) if self.exchange_id == 'okx' and stop_loss else None
             tp_sl_params = self._build_tp_sl_params(side, stop_loss, tp_first, sl_clord_id=sl_clord_id)
 
             if order_type == 'limit' and entry_zone:
