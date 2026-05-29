@@ -1,8 +1,8 @@
 # To-Do List
 
-更新日期：2026-05-28  
-来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-28 第四次审计发现 reduce 失败回参误广播、pnl_resolved final cause 证据透传不完整、owner tag 未用于真实 SL 下单。  
-当前基线：第四次审计验证 `807 passed / 4 deselected / 1 warning`，`pytest -q -m network` 为 `4 passed / 807 deselected / 1 warning`；但测试绿不等于扩容安全。当前 live 扩容结论以 `docs/generated_reports/系统性审计报告_20260528_第四次.md` 为准：live 扩容 NO-GO。
+更新日期：2026-05-29  
+来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-28 第四次审计发现 reduce 失败回参误广播、pnl_resolved final cause 证据透传不完整、owner tag 未用于真实 SL 下单；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-05-29 ALGO 手动 PnL correction 暴露 `/pnl` 运维命令缺口。  
+当前基线：`860 passed / 4 deselected / 1 warning`，`pytest -q -m network` 为 `4 passed / 860 deselected / 1 warning`；OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容 NO-GO 已解除前置；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置。
 
 最新整改文档：
 
@@ -10,22 +10,23 @@
 - `docs/audit_remediation_20260528_acceptance.md`
 - `docs/audit_remediation_third_pass_20260528_prd.md`
 - `docs/audit_remediation_third_pass_20260528_acceptance.md`
+- `docs/audit_remediation_fourth_pass_20260528_acceptance.md`
 - `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go
 
 - 本地开发：GO。
 - Paper/mock：GO。
-- 小额 live 灰度：CONDITIONAL GO（仅限现有额度、人工可接管）。
-- live 扩容：NO-GO。第四次审计 F4-001/F4-002/F4-003 未闭环前不得扩大额度。
+- 小额 live 灰度：GO（保持现有 cap，运维可接管）。
+- live 扩容：CONDITIONAL GO（解除 NO-GO 前置已完成；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置）。
 
-## 第四次审计新增阻断
+## 第四次审计阻断（已闭环 2026-05-29）
 
-| 状态 | 优先级 | 事项 | 下一步 | 验收标准 |
+| 状态 | 优先级 | 事项 | 落地 | 验收证据 |
 |---|---|---|---|---|
-| OPEN | P0 | reduce 失败回参被误当成功 `risk_reduced` 广播 | Agent 层按 `reduce_ok/ok/protective_update_state` 分支；`reduce_ok=false` 不发布 `risk_reduced`；protection failed 必须显式告警 | 新增测试覆盖 cancel_failed/reduce_rejected 不触发 `risk_reduced`，RiskGuard 不缩减 exposure |
-| OPEN | P1 | `pnl_resolved` final cause evidence 未完整透传 | Reconciler summary 与 Executor publish 透传 `close_cause/final_close_cause/is_strategy_stop/close_evidence/resolution_id` | mock Reconciler 返回 `exchange_sl` evidence 时，发布 payload 带 evidence，Judge 幂等补计一次 SL |
-| OPEN | P1 | 新 owner tag 未用于真实 OKX SL 下单 | attach SL、replace SL、legacy open 独立 SL 统一使用 `_make_owner_tag_clord_id()`；live 要求 `BOT_INSTANCE_ID` | 新开仓与 replace 的 `algoClOrdId/attachAlgoClOrdId` 均匹配当前 owner prefix |
+| DONE 2026-05-29 | P0 | F4-001 reduce 失败回参 Agent 误广播为 `risk_reduced` | `agents/trading/executor.py` 新增 `_classify_reduce_outcome` 6 分支单点契约（None/pre-trade fail → rejected；exchange reject → reduce_failed；dust_closed → executed+close+reduce_origin；reduce_ok=True && ok=False → risk_reduced + protection_failed=True；干净 ok → risk_reduced），PositionAnalyst 部分平 / portfolio_exposure / partial_tp_1/2 三路径共用；PortfolioRiskGuard rejected/reduce_failed 不缩、protection_failed 缩 + 发独立 `risk_alert{type='protection_failed'}`；Telegram 文案按 protection_failed 分流 + critical_types 加 protection_failed | `test_reduce_failure_propagation.py` 25 case PASS（`TestClassifyReduceOutcome` 7 / `TestPositionAnalystPartialClose` 3 / `TestPortfolioExposureReduce` 3 / `TestPartialTpReduce` 3 / `TestPortfolioRiskGuardReduceHandling` 5 / `TestTelegramReduceMessages` 4） |
+| DONE 2026-05-29 | P1 | F4-002 `pnl_resolved` final cause / 幂等键透传 | `utils/realized_pnl_resolver.py:make_resolution_id` 4 级幂等链（corr → sup → key → pos）；`Reconciler.auto_resolve_pending` summary + `_resolve_external_close_async` + `_run_reconciliation` 三发布点透传 `final_close_cause / close_evidence / resolution_id`；`correction is None` 且 status 非 final/mismatch 跳过发布 + warning；Judge / Reviewer dedup fall-back 优先按 resolution_id；Telegram 保留 60s window 不强制 resolution_id 去重 | `test_pnl_resolved_event_contract.py` 19 case PASS（`TestMakeResolutionId` 8 / `TestReconcilerSummaryFields` 1 / `TestResolveExternalCloseAsyncPublish` 3 / `TestRunReconciliationPublish` 1 / `TestSubscriberDeduplication` 6） |
+| DONE 2026-05-29 | P1 | F4-003 OKX 真实新 SL owner-tag clOrdId | `_replace_protective_sl` / `open_position_with_plan` / legacy `_open_position` 三处真实新挂 SL 改用 `_make_owner_tag_clord_id`；legacy `_make_sl_clord_id` 保留并标 `[DEPRECATED]`（cleanup 仍按 exact 匹配兼容历史）；`utils/state_paths.py:as_banner_lines` 加 `BOT_INSTANCE_ID` 行，live 缺时打 WARNING（testnet/paper 不打） | `test_owner_tag_clord_id_callsites.py` 8 case PASS；OKX 真实 testnet T1 回包 `algoClOrdId="catestneaudit5BTCUSD..."` 含 owner-tag prefix（报告：`docs/generated_reports/OKX执行语义testnet验收报告_20260529_112117.md`） |
 
 ## 第三次审计阻断（已闭环）
 
@@ -54,6 +55,7 @@
 | 状态 | 事项 | 下一步 | 验收标准 |
 |---|---|---|---|
 | OPEN | 真实已实现 PnL 账本 Phase 4 testnet 矩阵 | OKX testnet 跑 T0..T6（fills 直达 / bills 兜底 / mismatch / pending_fx / ambiguous / external SL / 异步资源对账） | 6 case 真实 testnet 全过 + 报告 `docs/generated_reports/realized_pnl_ledger_testnet_*.md` |
+| OPEN | Telegram `/pnl` 手动 PnL correction 命令 | 新增 `/pnl SYMBOL AMOUNT [reason]` 或 `/pnl POSITION_ID AMOUNT [reason]`，只允许解析未 supersede 的 pending external close，并调用 `LiveLedger.apply_pnl_resolution()` 写 final correction | 写入幂等 `external_close_correction`，更新 lifecycle/reviewer 或发布 `pnl_resolved`；重复提交不重复累计；未知/已 final/多候选必须拒绝并提示人工确认 |
 | OPEN | Paper 结果独立复盘 | 为 `paper_execution_result` 增加 version 或单独 paper reviewer/dashboard | 可查看 paper vs live 胜率、EV、回撤，不污染 live Reviewer |
 | OPEN | LLM audit 脱敏和保留策略 | 增加 `LLM_AUDIT_RETENTION_DAYS`、原始 prompt 记录开关、敏感字段脱敏 | 日志保留可配置，默认不长期保留敏感输入/响应 |
 | OPEN | `ContractExecutor` exchange 创建统一 | 将根 `executor.py` 的 ccxt 创建收敛到 `utils/exchange_factory.py` 或共享 helper | 所有 exchange client 的 sandbox/live 语义由单一入口控制 |
