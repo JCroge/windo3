@@ -19,6 +19,13 @@ class PortfolioRiskGuard(BaseAgent):
         self._alert_cooldown = 60
         self._last_alert_times = {}
         self._account_balance = 0.0
+        self._effective_balance_cap = None
+        if config:
+            try:
+                cap = config.get('effective_balance_cap')
+                self._effective_balance_cap = float(cap) if cap is not None else None
+            except (TypeError, ValueError):
+                self._effective_balance_cap = None
         self._trading_halted = False
         self._halt_state = get_halt_state()
         from utils.state_paths import get_state_paths
@@ -76,10 +83,10 @@ class PortfolioRiskGuard(BaseAgent):
                 self._update_price(to_internal(symbol), price)
 
         elif msg['type'] == 'execution_result':
-            self._handle_execution_result(msg['payload'])
+            await self._handle_execution_result(msg['payload'])
             self._save_state()
 
-    def _handle_execution_result(self, payload: dict):
+    async def _handle_execution_result(self, payload: dict):
         result = payload.get('result', {})
         # 优先使用result中的ccxt格式symbol，保持与positions.json一致
         symbol = result.get('symbol') or payload.get('symbol')
@@ -133,18 +140,34 @@ class PortfolioRiskGuard(BaseAgent):
                     }
                     self.logger.info(f"[风控] 记录持仓: {symbol} {side} lev={result.get('leverage')}x")
             elif action == 'close':
+                if payload.get('reduce_origin'):
+                    self.logger.info(f"[风控] {symbol} dust_closed,移除追踪 (来源 reduce 路径)")
+                else:
+                    self.logger.info(f"[风控] 移除持仓: {symbol}")
                 self._positions.pop(symbol, None)
-                self.logger.info(f"[风控] 移除持仓: {symbol}")
 
         elif status in ('force_closed', 'closed_externally'):
             if symbol in self._positions:
                 self.logger.info(f"[风控] {symbol} 外部平仓，移除追踪")
             self._positions.pop(symbol, None)
 
+        # F4-001: rejected / reduce_failed 显式不缩敞口(防御性 early-return,无副作用)
+        elif status in ('rejected', 'reduce_failed'):
+            self.logger.debug(f"[风控] {symbol} reduce {status},不缩敞口 reason={payload.get('reason', '')}")
+            return
+
         elif status == 'risk_reduced':
             if symbol in self._positions:
                 reduce_pct = payload.get('reduce_pct', 0.5)
                 self._positions[symbol]['amount_usdt'] *= (1 - reduce_pct)
+            # F4-001: 减仓已成交但保护单异常 → 发独立 protection_failed risk_alert
+            if payload.get('protection_failed'):
+                await self.publish('risk_alert', {
+                    'type': 'protection_failed',
+                    'symbol': symbol,
+                    'protective_update_state': payload.get('protective_update_state', ''),
+                    'request_id': payload.get('request_id', ''),
+                })
 
     def _update_price(self, symbol: str, price: float):
         self._prices[symbol] = price
@@ -261,10 +284,13 @@ class PortfolioRiskGuard(BaseAgent):
             margin = pos['amount_usdt']
             total_pnl_usdt += margin * pnl_pct / 100
 
-        # 余额未初始化时用持仓保证金总和兜底
-        balance = self._account_balance if self._account_balance > 0 else (
-            sum(pos['amount_usdt'] for pos in self._positions.values()) or 20.0
-        )
+        # 组合回撤按逻辑账户 cap 衡量；没有 cap 时才退回账户余额/保证金兜底。
+        if self._effective_balance_cap and self._effective_balance_cap > 0:
+            balance = self._effective_balance_cap
+        elif self._account_balance > 0:
+            balance = self._account_balance
+        else:
+            balance = sum(pos['amount_usdt'] for pos in self._positions.values()) or 20.0
         drawdown_pct = abs(total_pnl_usdt) / balance * 100
         if total_pnl_usdt < 0 and drawdown_pct > self._max_portfolio_drawdown_pct:
             if self._can_alert("max_drawdown"):

@@ -385,3 +385,102 @@ class TestPartialTpReduce:
         assert "reduce_failed" in statuses
         assert "risk_reduced" not in statuses
 
+
+class TestPortfolioRiskGuardReduceHandling:
+    def _make_guard(self):
+        from agents.trading.portfolio_risk_guard import PortfolioRiskGuard
+        g = PortfolioRiskGuard.__new__(PortfolioRiskGuard)
+        g._positions = {}
+        g._prices = {}
+        g._price_history = {}
+        g._account_balance = 1000.0
+        g.logger = MagicMock()
+        g._save_state = MagicMock()
+        return g
+
+    @pytest.mark.asyncio
+    async def test_rejected_does_not_shrink_exposure(self):
+        g = self._make_guard()
+        g._positions["BTC-USDT"] = {"amount_usdt": 100.0, "side": "long"}
+        g.publish = AsyncMock()
+        payload = {
+            "status": "rejected",
+            "action": "close",
+            "symbol": "BTC-USDT",
+            "reason": "sl_cancel_failed",
+        }
+        await g._handle_execution_result(payload)
+        assert g._positions["BTC-USDT"]["amount_usdt"] == 100.0
+        # rejected 不应触发 risk_alert
+        g.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reduce_failed_does_not_shrink_exposure(self):
+        g = self._make_guard()
+        g._positions["BTC-USDT"] = {"amount_usdt": 100.0, "side": "long"}
+        g.publish = AsyncMock()
+        payload = {
+            "status": "reduce_failed",
+            "action": "reduce",
+            "symbol": "BTC-USDT",
+            "reason": "reduce_rejected",
+        }
+        await g._handle_execution_result(payload)
+        assert g._positions["BTC-USDT"]["amount_usdt"] == 100.0
+        g.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_protection_failed_still_shrinks_and_emits_alert(self):
+        g = self._make_guard()
+        g._positions["BTC-USDT"] = {"amount_usdt": 100.0, "side": "long"}
+        published = []
+
+        async def fake_publish(topic, payload):
+            published.append((topic, payload))
+
+        g.publish = fake_publish
+        payload = {
+            "status": "risk_reduced",
+            "action": "close",
+            "symbol": "BTC-USDT",
+            "reduce_pct": 0.25,
+            "protection_failed": True,
+            "protective_update_state": "replace_failed",
+            "request_id": "r-9",
+        }
+        await g._handle_execution_result(payload)
+        assert g._positions["BTC-USDT"]["amount_usdt"] == pytest.approx(75.0)
+        types = [p.get("type") for t, p in published if t == "risk_alert"]
+        assert "protection_failed" in types
+
+    @pytest.mark.asyncio
+    async def test_clean_risk_reduced_shrinks_no_alert(self):
+        g = self._make_guard()
+        g._positions["BTC-USDT"] = {"amount_usdt": 100.0, "side": "long"}
+        g.publish = AsyncMock()
+        payload = {
+            "status": "risk_reduced",
+            "action": "close",
+            "symbol": "BTC-USDT",
+            "reduce_pct": 0.5,
+            # protection_failed 缺失 → 不发 alert
+        }
+        await g._handle_execution_result(payload)
+        assert g._positions["BTC-USDT"]["amount_usdt"] == pytest.approx(50.0)
+        g.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dust_closed_removes_symbol(self):
+        g = self._make_guard()
+        g._positions["BTC-USDT"] = {"amount_usdt": 100.0, "side": "long"}
+        g.publish = AsyncMock()
+        payload = {
+            "status": "executed",
+            "action": "close",
+            "symbol": "BTC-USDT",
+            "reduce_origin": True,
+            "protection_state": "closed",
+        }
+        await g._handle_execution_result(payload)
+        assert "BTC-USDT" not in g._positions
+
