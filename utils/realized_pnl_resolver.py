@@ -29,7 +29,7 @@ DEFAULT_LOOKBACK_MS = 30 * 60 * 1000  # 30 分钟
 
 
 def make_resolution_id(resolution: Dict[str, Any],
-                        correction: Optional[Dict[str, Any]] = None) -> str:
+                       correction: Optional[Dict[str, Any]] = None) -> str:
     """生成 pnl_resolved/pnl_mismatch 事件的幂等键。
 
     优先级链:

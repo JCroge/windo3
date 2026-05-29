@@ -38,3 +38,17 @@ class TestMakeResolutionId:
         a = make_resolution_id(resolution, correction)
         b = make_resolution_id(resolution, correction)
         assert a == b
+
+    def test_empty_correction_dict_falls_through(self):
+        """correction={} (falsy) 应当 fall through 到 close_match_key/pos 兜底。"""
+        resolution = {"position_id": "p1", "close_match_key": "K-7"}
+        rid = make_resolution_id(resolution, {})
+        assert rid == "key:K-7"
+
+    def test_pos_fallback_idempotent_under_order_shuffle(self):
+        """order_ids 顺序变化不应改变 resolution_id (基于 sort)。"""
+        a = make_resolution_id(
+            {"position_id": "p1", "order_ids": ["o3", "o1", "o2"]}, None)
+        b = make_resolution_id(
+            {"position_id": "p1", "order_ids": ["o1", "o2", "o3"]}, None)
+        assert a == b == "pos:p1|orders:o1,o2,o3"
