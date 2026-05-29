@@ -68,10 +68,6 @@ class TestReplaceProtectiveSlOwnerTag:
         # 捕获 _place_protective_sl 收到的 clord_id
         captured = {}
 
-        def fake_place(self_inner, *, symbol, side, stop_price, amount, clord_id=None, **kw):
-            captured["clord_id"] = clord_id
-            return "fake-algo-id"
-
         ex = MagicMock(spec=ContractExecutor)
         ex.exchange_id = "okx"
         ex.testnet = False
