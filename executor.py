@@ -293,10 +293,14 @@ class ContractExecutor:
 
     @staticmethod
     def _make_sl_clord_id(symbol: str) -> str:
-        """生成符合 OKX algoClOrdId 字母数字限制的 32 字符以内 client id。
+        """[DEPRECATED] 历史兼容标识器,新挂单 MUST 使用 _make_owner_tag_clord_id。
+
+        保留原因: cleanup 路径 _is_owner_clord_id 仍按 sl_algo_clord_id 字段做 exact 匹配,
+        存量 positions.json 中的历史 sl... 前缀 algoClOrdId 仍能被识别为本系统所有,
+        避免误清扫。预计 1-2 个月后跑全量 positions.json 审计确认无遗留再删除。
 
         FR-3B 兼容: 历史 sl... 前缀只能通过 exact sl_algo_clord_id 匹配证明 owner,
-        不能用 'sl' 前缀做泛化 sweep。新发的 owner-tag 前缀用 _make_owner_tag_clord_id。
+        不能用 'sl' 前缀做泛化 sweep。
         """
         base = symbol.replace('-', '').replace('/', '').replace(':', '').upper()[:8]
         return f"sl{base}{uuid.uuid4().hex[:18]}"
@@ -1066,8 +1070,10 @@ class ContractExecutor:
             take_profit = self.risk_manager.calculate_take_profit(fill_price, side)
 
             # 在交易所设置 SL 条件单（OKX 走独立 algo；非 OKX 走旧路径）
+            sl_clord_id = self._make_owner_tag_clord_id(symbol) if self.exchange_id == 'okx' and stop_loss else None
             sl_order_id = self._place_protective_sl(
                 symbol=symbol, side=side, stop_price=stop_loss, amount=amount,
+                clord_id=sl_clord_id,
             )
 
             # 记录持仓
@@ -1086,7 +1092,7 @@ class ContractExecutor:
                 # 成功时 sl_order_id 即为 OKX algoId,可视为已 protected。
                 'exit_owner': 'local_partial_tp_exchange_sl',
                 'sl_algo_id': sl_order_id if self.exchange_id == 'okx' else None,
-                'sl_algo_clord_id': None,
+                'sl_algo_clord_id': sl_clord_id,
                 'sl_sync_state': 'active' if sl_order_id else 'failed',
                 'protection_state': 'protected' if sl_order_id else 'unprotected',
                 'open_time': time.time(),

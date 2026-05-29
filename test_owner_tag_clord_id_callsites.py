@@ -103,3 +103,25 @@ class TestAttachedSlOwnerTag:
         assert "_make_owner_tag_clord_id" in src
         # 旧工厂仍存在但不再被新挂单调用
         assert "_make_sl_clord_id(symbol)" not in src or "DEPRECATED" in src
+
+
+class TestLegacyOpenPositionOwnerTag:
+    def test_legacy_open_writes_sl_algo_clord_id(self):
+        """legacy _open_position 调用 _place_protective_sl 时必须传 owner-tag clord_id,
+        并把它写入 position['sl_algo_clord_id']。"""
+        from executor import ContractExecutor
+        import inspect
+        src = inspect.getsource(ContractExecutor._open_position)
+        # 必须在调用 _place_protective_sl 之前生成 owner-tag clord_id
+        assert "_make_owner_tag_clord_id" in src
+        # position dict 写入字段
+        assert "'sl_algo_clord_id':" in src or '"sl_algo_clord_id":' in src
+        # 旧 None 占位应已被替换为变量名
+        assert "'sl_algo_clord_id': None" not in src
+
+    def test_legacy_make_sl_clord_id_still_callable_for_cleanup(self):
+        """旧 _make_sl_clord_id 必须保留(用于历史 sl_algo_clord_id 字符串识别)。"""
+        from executor import ContractExecutor
+        clord = ContractExecutor._make_sl_clord_id("BTC-USDT")
+        assert clord.startswith("sl")
+        assert len(clord) <= 32
