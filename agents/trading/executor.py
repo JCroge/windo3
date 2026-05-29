@@ -634,6 +634,101 @@ class MultiExecutor(BaseAgent):
             out['exit_reason'] = 'manual_close'
         return out
 
+    @staticmethod
+    def _classify_reduce_outcome(result, requested_pct):
+        """F4-001: 把 root reduce_position() 返回的结构化 dict 折成 Agent 终态分类。
+
+        输出字段:
+            status: 'rejected' | 'reduce_failed' | 'risk_reduced' | 'executed'
+            reason: 来自 result.reason 或派生
+            actual_reduce_pct: 实际成交占请求的百分比(用于 RiskGuard 缩敞口)
+            protection_failed: 是否需要 risk_alert{type=protection_failed}
+            protection_state: 'protected' | 'unknown' | 'closed' | 'no_op'
+            protective_update_state: 透传 result['protective_update_state']
+            action_override: 'close' (dust_closed 路径) 或 None
+            warnings: list,透传 result['warnings']
+
+        分支:
+          1. result is None  → rejected, reason=executor_returned_none
+          2. reduce_ok=False, reason in {sl_cancel_failed, sl_restore_failed}
+                              → rejected (pre-trade)
+          3. reduce_ok=False, 其他 reason → reduce_failed (exchange reject)
+          4. protective_update_state=dust_closed → executed, action_override=close
+          5. reduce_ok=True, ok=False → risk_reduced + protection_failed=True
+          6. ok=True → 干净 risk_reduced
+        """
+        if result is None:
+            return {
+                "status": "rejected", "reason": "executor_returned_none",
+                "actual_reduce_pct": 0.0, "protection_failed": False,
+                "protection_state": "unknown",
+                "protective_update_state": "no_op",
+                "action_override": None, "warnings": [],
+            }
+
+        reduce_ok = bool(result.get("reduce_ok", False))
+        ok = bool(result.get("ok", False))
+        reason = result.get("reason", "") or ""
+        pus = result.get("protective_update_state", "") or ""
+        actual_amt = float(result.get("actual_reduce_amount") or 0.0)
+        requested_amt = float(result.get("requested_reduce_amount") or 0.0)
+        if requested_amt > 0 and actual_amt >= 0:
+            actual_pct = (actual_amt / requested_amt) * float(requested_pct)
+        else:
+            actual_pct = float(requested_pct) if reduce_ok else 0.0
+        warnings = list(result.get("warnings") or [])
+
+        # 分支 2: pre-trade 失败
+        if not reduce_ok and reason in ("sl_cancel_failed", "sl_restore_failed"):
+            return {
+                "status": "rejected", "reason": reason,
+                "actual_reduce_pct": 0.0, "protection_failed": False,
+                "protection_state": result.get("protection_state", "unknown"),
+                "protective_update_state": pus,
+                "action_override": None, "warnings": warnings,
+            }
+
+        # 分支 3: 交易所 reject
+        if not reduce_ok:
+            return {
+                "status": "reduce_failed", "reason": reason or "reduce_rejected",
+                "actual_reduce_pct": 0.0, "protection_failed": False,
+                "protection_state": result.get("protection_state", "unknown"),
+                "protective_update_state": pus,
+                "action_override": None, "warnings": warnings,
+            }
+
+        # 分支 4: dust_closed 视为平仓
+        if pus == "dust_closed":
+            return {
+                "status": "executed", "reason": reason or "dust_closed",
+                "actual_reduce_pct": actual_pct,
+                "protection_failed": False,
+                "protection_state": "closed",
+                "protective_update_state": pus,
+                "action_override": "close", "warnings": warnings,
+            }
+
+        # 分支 5: reduce 成交但 SL 重挂失败
+        if reduce_ok and not ok:
+            return {
+                "status": "risk_reduced", "reason": reason or "protection_failed",
+                "actual_reduce_pct": actual_pct,
+                "protection_failed": True,
+                "protection_state": "unknown",
+                "protective_update_state": pus,
+                "action_override": None, "warnings": warnings,
+            }
+
+        # 分支 6: 干净 risk_reduced
+        return {
+            "status": "risk_reduced", "reason": "ok",
+            "actual_reduce_pct": actual_pct,
+            "protection_failed": False,
+            "protection_state": result.get("protection_state", "protected"),
+            "protective_update_state": pus,
+            "action_override": None, "warnings": warnings,
+        }
 
     @staticmethod
     def _inject_pnl_quality(inner: dict, source: str) -> None:
