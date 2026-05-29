@@ -137,3 +137,132 @@ class TestReconcilerSummaryFields:
         assert s["is_strategy_stop"] is True
         assert s["close_evidence"]["match_rule"] == "sl_algo_id_exact"
         assert s["resolution_id"] == "corr:CORR-1"
+
+
+class TestResolveExternalCloseAsyncPublish:
+    @pytest.mark.asyncio
+    async def test_publishes_final_cause_and_resolution_id(self):
+        """_resolve_external_close_async 发布 pnl_resolved 时必须含
+        final_close_cause / close_evidence / resolution_id。"""
+        from agents.trading.executor import MultiExecutor
+        from unittest.mock import MagicMock, AsyncMock
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.publish = fake_publish
+        ex.logger = MagicMock()
+
+        # _pnl_resolver is the actual attribute name
+        resolver_mock = MagicMock()
+        resolver_mock.resolve_external_close.return_value = {
+            "pnl_status": "final",
+            "symbol": "BTC-USDT",
+            "side": "long",
+            "position_id": "pos-1",
+            "entry_request_id": "req-1",
+            "realized_pnl_net_usdt": -9.5,
+            "close_cause": "exchange_sl",
+            "final_close_cause": "exchange_sl",
+            "is_strategy_stop": True,
+            "close_evidence": {"match_rule": "sl_algo_id_exact", "confidence": 1.0},
+            "order_ids": ["ord-1"],
+            "close_match_key": "K-1",
+            "warnings": [],
+            "match_confidence": 1.0,
+            "estimated_pnl": -10.0,
+            "exchange_pnl_usdt": -9.5,
+            "fills_pnl_usdt": -10.0,
+            "sl_algo_id": "algo-1",
+            "sl_algo_clord_id": "casllivebot42",
+            "tp_algo_id": "",
+            "tp_algo_clord_id": "",
+            "entry_attribution": {},
+            "pos_side": "long",
+            "opened_at": 0,
+            "closed_at": 0,
+            "gross_close_pnl_usdt": -10,
+            "fee_usdt": -0.5,
+            "funding_usdt": 0,
+            "bill_ids": [],
+            "pnl_source": "okx_fills",
+        }
+        ex._pnl_resolver = resolver_mock
+
+        # ledger is accessed via self.executor.ledger
+        ledger_mock = MagicMock()
+        ledger_mock.apply_pnl_resolution.return_value = {
+            "event_id": "CORR-9", "supersedes_event_id": "PEND-9"
+        }
+        executor_mock = MagicMock()
+        executor_mock.ledger = ledger_mock
+        ex.executor = executor_mock
+
+        snapshot = {"symbol": "BTC-USDT", "side": "long", "request_id": "req-1"}
+        await ex._resolve_external_close_async(snapshot, {"closed_at": 1000}, "req-1")
+
+        topics = [t for t, _ in published]
+        assert "pnl_resolved" in topics
+        payload = next(p for t, p in published if t == "pnl_resolved")
+        assert payload["final_close_cause"] == "exchange_sl"
+        assert payload["close_evidence"]["match_rule"] == "sl_algo_id_exact"
+        assert payload["resolution_id"] == "corr:CORR-9"
+
+    @pytest.mark.asyncio
+    async def test_skips_publish_when_no_correction_and_pending(self):
+        """correction=None 且 status=pending 时跳过发布并打 warning。"""
+        from agents.trading.executor import MultiExecutor
+        from unittest.mock import MagicMock
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.publish = fake_publish
+        ex.logger = MagicMock()
+
+        resolver_mock = MagicMock()
+        resolver_mock.resolve_external_close.return_value = {
+            "pnl_status": "pending",
+            "symbol": "BTC-USDT",
+            "side": "long",
+            "position_id": "pos-1",
+            "entry_request_id": "req-1",
+            "realized_pnl_net_usdt": None,
+            "close_cause": "external_unknown",
+            "final_close_cause": "external_unknown",
+            "is_strategy_stop": False,
+            "close_evidence": {},
+            "order_ids": [],
+            "warnings": ["pending"],
+            "match_confidence": 0,
+            "estimated_pnl": -5.0,
+            "pnl_source": "",
+            "pos_side": "long",
+            "opened_at": 0, "closed_at": 0,
+            "gross_close_pnl_usdt": 0, "fee_usdt": 0, "funding_usdt": 0,
+            "bill_ids": [],
+            "exchange_pnl_usdt": None, "fills_pnl_usdt": None,
+            "sl_algo_id": "", "sl_algo_clord_id": "",
+            "tp_algo_id": "", "tp_algo_clord_id": "",
+            "entry_attribution": {},
+        }
+        ex._pnl_resolver = resolver_mock
+
+        # No ledger → correction stays None
+        executor_mock = MagicMock()
+        executor_mock.ledger = None
+        ex.executor = executor_mock
+
+        snapshot = {"symbol": "BTC-USDT", "side": "long", "request_id": "req-1"}
+        await ex._resolve_external_close_async(snapshot, {"closed_at": 1000}, "req-1")
+
+        topics = [t for t, _ in published]
+        assert "pnl_resolved" not in topics
+        assert "pnl_mismatch" not in topics
+        ex.logger.warning.assert_called()

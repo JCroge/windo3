@@ -17,6 +17,7 @@ from utils.realized_pnl_resolver import (
     PNL_STATUS_PENDING,
     PNL_STATUS_PENDING_FX,
     PNL_STATUS_MISMATCH,
+    make_resolution_id,
 )
 
 load_dotenv()
@@ -861,6 +862,16 @@ class MultiExecutor(BaseAgent):
             except Exception as e:
                 self.logger.warning(f"[Ledger] apply_pnl_resolution 失败: {e}")
 
+        # F4-002: correction=None 且非 final/mismatch 时跳过发布,避免脏事件
+        status = resolution.get("pnl_status", "")
+        if correction is None and status not in (PNL_STATUS_FINAL, PNL_STATUS_MISMATCH):
+            self.logger.warning(
+                f"[Resolver] {symbol} 跳过 pnl_resolved 发布: "
+                f"correction=None status={status} "
+                f"position_id={resolution.get('position_id', '')}"
+            )
+            return
+
         status = resolution.get("pnl_status", "")
         if status == PNL_STATUS_FINAL:
             topic = "pnl_resolved"
@@ -917,6 +928,9 @@ class MultiExecutor(BaseAgent):
             "fills_pnl_usdt": resolution.get("fills_pnl_usdt"),
             "supersedes_event_id": (correction or {}).get("supersedes_event_id", ""),
             "correction_event_id": (correction or {}).get("event_id", ""),
+            "final_close_cause": resolution.get("final_close_cause", close_cause),
+            "close_evidence": resolution.get("close_evidence", {}),
+            "resolution_id": make_resolution_id(resolution, correction),
             "timestamp": time.time(),
         }, symbol=symbol)
         if resolution.get("pnl_status") == PNL_STATUS_FINAL:
