@@ -17,6 +17,7 @@ import feedparser
 from dotenv import load_dotenv
 from agents.base import BaseAgent
 from utils.symbol import to_internal
+from utils.symbol_mentions import filter_relevant_headlines
 
 load_dotenv()
 
@@ -104,7 +105,8 @@ class MultiDataCollector(BaseAgent):
         """读取持仓标的列表（统一为内部规范 BASE-USDT）"""
         import json
         import os
-        positions_file = 'data/positions.json'
+        from utils.state_paths import get_state_paths
+        positions_file = get_state_paths().positions
         if not os.path.exists(positions_file):
             return []
         try:
@@ -221,14 +223,12 @@ class MultiDataCollector(BaseAgent):
             return
 
         # 按标的分组，只保留相关新闻
+        # FR-3D: 走 utils.symbol_mentions.filter_relevant_headlines,严格边界匹配,
+        # 短 ticker 不再被 substring 误命中(OP/options、INJ/injection 等)
         now = time.time()
         symbol_news = {}
         for base in active_bases:
-            relevant = []
-            for h in all_headlines:
-                text = (h['title'] + ' ' + h.get('summary', '')).upper()
-                if base in text or f"${base}" in text:
-                    relevant.append(h)
+            relevant = filter_relevant_headlines(all_headlines, base, now_ts=now)
             if relevant:
                 symbol_news[base] = relevant
 

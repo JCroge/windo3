@@ -11,6 +11,13 @@ from agents.base import BaseAgent
 from executor import ContractExecutor
 from utils.halt_state import get_halt_state
 from utils.reconciliation import Reconciler
+from utils.realized_pnl_resolver import (
+    RealizedPnlResolver,
+    PNL_STATUS_FINAL,
+    PNL_STATUS_PENDING,
+    PNL_STATUS_PENDING_FX,
+    PNL_STATUS_MISMATCH,
+)
 
 load_dotenv()
 
@@ -27,6 +34,8 @@ class MultiExecutor(BaseAgent):
         self._trading_halted = False
         self._open_fail_cooldown = {}  # {symbol: expire_timestamp}
         self._halt_state = get_halt_state()
+        self._reconciler = None
+        self._pnl_resolver = None
 
     async def setup(self):
         exchange_id = self.config.get('exchange', 'okx')
@@ -41,9 +50,17 @@ class MultiExecutor(BaseAgent):
             leverage=leverage
         )
         self._reconciler = None
+        self._pnl_resolver = None
+        try:
+            self._pnl_resolver = RealizedPnlResolver(
+                self.executor.exchange, logger=self.logger,
+            )
+        except Exception as e:
+            self.logger.warning(f"[Executor] RealizedPnlResolver 初始化失败: {e}")
         if self.executor.ledger:
             self._reconciler = Reconciler(
-                self.executor.exchange, self.executor.ledger, logger=self.logger
+                self.executor.exchange, self.executor.ledger,
+                logger=self.logger, resolver=self._pnl_resolver,
             )
         self.logger.info(f"智能执行Agent就绪: {exchange_id}, 默认杠杆{leverage}x")
 
@@ -215,9 +232,8 @@ class MultiExecutor(BaseAgent):
                     if result:
                         self.logger.info(f"[执行] {symbol} 减仓{int(size_pct*100)}%")
                 else:
-                    # 全平
-                    if position.get('sl_order_id'):
-                        self.executor.cancel_order(norm_symbol, position['sl_order_id'])
+                    # 全平 — FR-003: close_position() 内部清理保护单,
+                    # Agent 不再直接撤 sl_order_id
                     result = self.executor.close_position(norm_symbol)
                     if result:
                         self.logger.info(f"[执行] {symbol} 平仓 PnL={result.get('pnl', 0):.2f}")
@@ -364,9 +380,8 @@ class MultiExecutor(BaseAgent):
                 return
             self.logger.critical(f"[风控兜底平仓] {norm_sym} 因 {reason}")
             pos = self.executor.positions.get(norm_sym)
-            if pos and pos.get('sl_order_id'):
-                self.executor.cancel_order(norm_sym, pos['sl_order_id'])
             entry_req_id = (pos or {}).get('request_id', '')
+            # FR-003: close_position() 内部撤保护单,Agent 不再直接 cancel
             result = self.executor.close_position(norm_sym)
             if result:
                 result['entry_request_id'] = entry_req_id
@@ -387,9 +402,8 @@ class MultiExecutor(BaseAgent):
             if norm_sym and self.executor.get_position(norm_sym):
                 self.logger.warning(f"[风控平仓] {norm_sym} 因闪崩警报")
                 pos = self.executor.positions.get(norm_sym)
-                if pos and pos.get('sl_order_id'):
-                    self.executor.cancel_order(norm_sym, pos['sl_order_id'])
                 entry_req_id = (pos or {}).get('request_id', '')
+                # FR-003: close_position() 内部撤保护单,Agent 不再直接 cancel
                 result = self.executor.close_position(norm_sym)
                 if result:
                     result['entry_request_id'] = entry_req_id
@@ -409,9 +423,8 @@ class MultiExecutor(BaseAgent):
             if norm_sym and self.executor.get_position(norm_sym):
                 self.logger.warning(f"[风控] {alert_type}: 平仓 {norm_sym}")
                 pos = self.executor.positions.get(norm_sym)
-                if pos and pos.get('sl_order_id'):
-                    self.executor.cancel_order(norm_sym, pos['sl_order_id'])
                 entry_req_id = (pos or {}).get('request_id', '')
+                # FR-003: close_position() 内部撤保护单,Agent 不再直接 cancel
                 result = self.executor.close_position(norm_sym)
                 if result:
                     result['entry_request_id'] = entry_req_id
@@ -461,9 +474,8 @@ class MultiExecutor(BaseAgent):
 
         async def close_one(symbol: str, pos: dict):
             try:
-                if pos.get('sl_order_id'):
-                    await asyncio.to_thread(self.executor.cancel_order, symbol, pos['sl_order_id'])
                 entry_req_id = pos.get('request_id', '')
+                # FR-003: close_position() 内部撤保护单,Agent 不再直接 cancel
                 result = await asyncio.to_thread(self.executor.close_position, symbol)
                 if result:
                     self.logger.warning(f"[全平] {symbol} 已平仓, PnL={result.get('pnl', 0):.2f}")
@@ -531,8 +543,135 @@ class MultiExecutor(BaseAgent):
         }
         if reduce_pct is not None:
             payload["reduce_pct"] = reduce_pct
+        # FR-004: 任何 close 类终态必须带 close cause 字段,Judge/Reviewer/Telegram
+        # 据此判断是否计 SL hit / 是否进入策略冷却 / 文案展示
+        if action == 'close' or status in ('force_closed', 'closed_externally'):
+            cause = self._classify_close_cause(source, reason)
+            payload['exit_reason'] = cause['exit_reason']
+            payload['close_cause'] = cause['close_cause']
+            payload['is_strategy_stop'] = cause['is_strategy_stop']
+            payload['is_risk_forced'] = cause['is_risk_forced']
+            inner = payload['result']
+            if isinstance(inner, dict):
+                inner.setdefault('exit_reason', cause['exit_reason'])
+                inner.setdefault('close_cause', cause['close_cause'])
+                inner.setdefault('is_strategy_stop', cause['is_strategy_stop'])
+                inner.setdefault('is_risk_forced', cause['is_risk_forced'])
+                inner.setdefault('protective_cleanup_state',
+                                 inner.get('protective_cleanup_state', 'unknown'))
+                self._inject_pnl_quality(inner, source)
+        # close 之外的 risk_reduced (reduce) 也带 PnL 质量字段——partial reduce 由本地
+        # 平仓单产生,默认 final;tp_advance 走相同 reduce 路径
+        elif status == 'risk_reduced' and isinstance(payload.get('result'), dict):
+            self._inject_pnl_quality(payload['result'], source)
         payload.update(extra)
         return payload
+
+    @staticmethod
+    def _classify_close_cause(source: str, reason: str) -> dict:
+        """FR-004: source/reason → (exit_reason, close_cause, is_strategy_stop,
+        is_risk_forced) 单一映射。Judge SL hit cooldown 只对 is_strategy_stop=True
+        生效,is_risk_forced=True 不污染策略 SL 统计。"""
+        src = source or ''
+        rsn = reason or ''
+        # 默认值
+        out = {
+            'exit_reason': rsn or 'unknown',
+            'close_cause': rsn or src,
+            'is_strategy_stop': False,
+            'is_risk_forced': False,
+        }
+        if src == 'local_stop':
+            if rsn == 'stop_loss':
+                out['exit_reason'] = 'local_stop_loss'
+                out['is_strategy_stop'] = True
+            elif rsn == 'take_profit':
+                out['exit_reason'] = 'local_take_profit'
+            elif rsn == 'price_fetch_failed':
+                out['exit_reason'] = 'price_fetch_failed'
+                out['is_risk_forced'] = True
+            elif rsn in ('partial_tp_1', 'partial_tp_2'):
+                out['exit_reason'] = 'partial_tp'
+        elif src == 'risk_alert':
+            out['is_risk_forced'] = True
+            if rsn == 'emergency_close':
+                out['exit_reason'] = 'risk_emergency'
+            elif rsn == 'flash_move':
+                out['exit_reason'] = 'risk_flash_move'
+            elif rsn in ('position_danger', 'high_leverage_danger', 'trailing_stop'):
+                out['exit_reason'] = f'risk_{rsn}'
+            else:
+                out['exit_reason'] = f'risk_{rsn or "unknown"}'
+        elif src == 'close_all':
+            out['exit_reason'] = 'system_close_all'
+            out['is_risk_forced'] = True
+        elif src == 'partial_tp':
+            out['exit_reason'] = 'partial_tp'
+        elif src == 'external_close':
+            # 外部平仓:PRD §6.2 #5 + §6.8 P1-d 双载荷契约
+            # - external_pending(待 Resolver 升级):exchange_unknown_pending,绝不计 SL hit
+            # - exchange_sl(Resolver final 后明确归因到本 owner SL):算 SL hit
+            # - exchange_tp / external_unknown(final 但非 SL):不计 SL hit
+            # 历史 reason='exchange_sl_tp_triggered' 因 pending 阶段无法判别,
+            # 已废弃,fail-safe 同 external_pending(不计 SL hit)
+            if rsn == 'external_pending' or rsn == 'exchange_sl_tp_triggered':
+                out['exit_reason'] = 'external_pending'
+                out['close_cause'] = 'exchange_unknown_pending'
+                out['is_strategy_stop'] = False
+            elif rsn == 'exchange_sl':
+                out['exit_reason'] = 'exchange_sl'
+                out['close_cause'] = 'exchange_sl'
+                out['is_strategy_stop'] = True
+            elif rsn == 'exchange_tp':
+                out['exit_reason'] = 'exchange_tp'
+                out['close_cause'] = 'exchange_tp'
+                out['is_strategy_stop'] = False
+            else:
+                out['exit_reason'] = 'external_unknown'
+                out['is_strategy_stop'] = False
+        elif src == 'executor_close':
+            out['exit_reason'] = 'manual_close'
+        return out
+
+
+    @staticmethod
+    def _inject_pnl_quality(inner: dict, source: str) -> None:
+        """注入 PnL 质量字段(PRD §7.3)。Reviewer/Judge/RiskGuard 只在 pnl_is_final=true
+        时把 result.pnl 当作真实 PnL 进入策略学习/最终账本。
+
+        默认策略:
+        - external_close:默认 pending(本地拿不到 final,等 Resolver 异步回写)
+        - 其他 close 路径:默认 final(本地平仓单已通过 _calc_realized_pnl 算出净 PnL)
+        - 调用方可通过预填字段覆盖默认值(例如 Resolver 已 resolve 的事件)
+        """
+        if 'pnl_status' in inner:
+            # 调用方已显式标注(Resolver 输出/pending 升级 final)
+            pass
+        elif source == 'external_close':
+            inner['pnl_status'] = 'pending'
+            inner.setdefault('pnl_pending_reason', 'awaiting_exchange_resolution')
+        else:
+            inner['pnl_status'] = 'final'
+
+        is_final = inner['pnl_status'] == 'final'
+        inner['pnl_is_final'] = is_final
+        inner.setdefault('pnl_source',
+                         'okx_fill' if is_final else 'estimated_local')
+
+        # final:realized_pnl_net_usdt 镜像 result.pnl;pending:pnl 置空,值挂到 estimated_pnl
+        if is_final:
+            pnl_val = inner.get('pnl', inner.get('realized_pnl', 0))
+            inner.setdefault('realized_pnl_net_usdt', pnl_val)
+        else:
+            existing_pnl = inner.get('pnl')
+            if existing_pnl not in (None, 0, 0.0):
+                inner.setdefault('estimated_pnl', existing_pnl)
+            inner['pnl'] = None
+            inner.setdefault('realized_pnl_net_usdt', None)
+
+        inner.setdefault('position_id', inner.get('position_id', ''))
+        inner.setdefault('entry_request_id',
+                         inner.get('entry_request_id', inner.get('request_id', '')))
 
     async def tick(self):
         await asyncio.sleep(5)
@@ -549,7 +688,48 @@ class MultiExecutor(BaseAgent):
         await self._check_all_positions()
 
     async def _run_reconciliation(self):
-        """定时 PnL 对账：本地账本 vs 交易所账单"""
+        """定时 PnL 对账 + pending 自动升级 (PRD §6.1)"""
+        # Step 1: 升级 pending external_close
+        try:
+            summaries = await asyncio.to_thread(self._reconciler.auto_resolve_pending)
+        except Exception as e:
+            self.logger.warning(f"[Reconciler] auto_resolve_pending 异常: {e}")
+            summaries = []
+        for s in summaries:
+            topic = "pnl_resolved" if s.get("pnl_status") == PNL_STATUS_FINAL \
+                else "pnl_mismatch"
+            await self.publish(topic, {
+                "schema_version": 1,
+                "symbol": s.get("symbol", ""),
+                "request_id": s.get("entry_request_id", ""),
+                "correlation_id": s.get("entry_request_id", ""),
+                "position_id": s.get("position_id", ""),
+                "entry_request_id": s.get("entry_request_id", ""),
+                "pnl_status": s.get("pnl_status", ""),
+                "pnl_is_final": s.get("pnl_status") == PNL_STATUS_FINAL,
+                "pnl_source": s.get("pnl_source", ""),
+                "realized_pnl_net_usdt": s.get("realized_pnl_net_usdt"),
+                "pnl": s.get("realized_pnl_net_usdt"),
+                "estimated_pnl": s.get("estimated_pnl"),
+                "exchange_pnl_usdt": s.get("exchange_pnl_usdt"),
+                "fills_pnl_usdt": s.get("fills_pnl_usdt"),
+                "gross_close_pnl_usdt": s.get("gross_close_pnl_usdt", 0),
+                "fee_usdt": s.get("fee_usdt", 0),
+                "funding_usdt": s.get("funding_usdt", 0),
+                "order_ids": s.get("order_ids", []),
+                "bill_ids": s.get("bill_ids", []),
+                "match_confidence": s.get("match_confidence", 0),
+                "warnings": s.get("warnings", []),
+                "sl_algo_id": s.get("sl_algo_id", ""),
+                "sl_algo_clord_id": s.get("sl_algo_clord_id", ""),
+                "tp_algo_id": s.get("tp_algo_id", ""),
+                "tp_algo_clord_id": s.get("tp_algo_clord_id", ""),
+                "attribution": s.get("entry_attribution", {}),
+                "supersedes_event_id": s.get("supersedes_event_id", ""),
+                "correction_event_id": s.get("correction_event_id", ""),
+                "timestamp": time.time(),
+            }, symbol=s.get("symbol", ""))
+        # Step 2: 全局账单 vs 本地账本 advisory 对账
         try:
             report = await asyncio.to_thread(self._reconciler.run_and_report)
             if report:
@@ -575,51 +755,184 @@ class MultiExecutor(BaseAgent):
             await self.publish("execution_result", payload, symbol=symbol)
 
     async def _notify_removed_positions(self):
-        """通知下游：持仓已被交易所平仓（SL/TP触发），含真实PnL"""
+        """通知下游：持仓已被交易所平仓（SL/TP触发），PRD §6.2 双载荷:
+        1. 立即发 closed_externally(pending),携带 estimated_pnl 仅做监控
+        2. 后台异步调 RealizedPnlResolver,拿到 final 后发 pnl_resolved 升级
+        """
         removed = self.executor.get_removed_symbols()
         removed_data = self.executor.get_removed_positions_data()
         data_map = {d['symbol']: d for d in removed_data}
 
         for symbol in removed:
             pos_data = data_map.get(symbol, {})
-            pnl = self._get_external_close_pnl(symbol, pos_data)
+            estimated_pnl = self._estimate_close_pnl(pos_data)
             entry_req_id = pos_data.get('request_id', '')
-            self.logger.info(f"[执行] {symbol} 被交易所平仓，PnL={pnl:+.3f} USDT")
+            position_id = pos_data.get('position_id', '')
+
+            # Step 1: 立即写 pending 账本(不再调 fetch_orders 兜底)
+            ledger = getattr(self.executor, 'ledger', None)
+            pending_event = None
+            if ledger:
+                try:
+                    pending_event = ledger.record_pending_external_close(
+                        symbol=symbol,
+                        side=pos_data.get('side', 'long'),
+                        entry_price=pos_data.get('entry_price', 0),
+                        amount_usdt=pos_data.get('amount_usdt', 0),
+                        leverage=pos_data.get('leverage', 1) or 1,
+                        estimated_pnl=estimated_pnl,
+                        position_id=position_id or None,
+                        entry_request_id=entry_req_id or None,
+                        opened_at=pos_data.get('opened_at', pos_data.get('open_time', 0)) or None,
+                        sl_algo_id=pos_data.get('sl_order_id', '') or pos_data.get('sl_algo_id', ''),
+                        sl_algo_clord_id=pos_data.get('sl_algo_clord_id', ''),
+                        tp_algo_id=pos_data.get('tp_order_id', '') or pos_data.get('tp_algo_id', ''),
+                        tp_algo_clord_id=pos_data.get('tp_algo_clord_id', ''),
+                        entry_attribution=pos_data.get('attribution', {}),
+                    )
+                except Exception as e:
+                    self.logger.warning(f"[Ledger] pending external_close 写入失败: {e}")
+
+            self.logger.info(
+                f"[执行] {symbol} 被交易所平仓(pending),estimated_pnl={estimated_pnl:+.3f} USDT")
             result = {
-                "pnl": pnl, "symbol": symbol,
+                "pnl": None,
+                "estimated_pnl": estimated_pnl,
+                "realized_pnl_net_usdt": None,
+                "symbol": symbol,
                 "side": pos_data.get('side', ''),
                 "entry_price": pos_data.get('entry_price', 0),
                 "amount_usdt": pos_data.get('amount_usdt', 0),
                 "attribution": pos_data.get('attribution', {}),
                 "entry_request_id": entry_req_id,
+                "position_id": position_id,
+                "pnl_status": PNL_STATUS_PENDING,
+                "pnl_is_final": False,
+                "pnl_source": "estimated_local",
+                "pnl_pending_reason": "awaiting_exchange_resolution",
+                "pending_event_id": (pending_event or {}).get("event_id", ""),
             }
             payload = self._build_execution_result(
                 status="closed_externally", action="close", symbol=symbol,
-                source="external_close", reason="exchange_sl_tp_triggered",
+                source="external_close", reason="external_pending",
                 result=result, request_id=entry_req_id,
             )
             await self.publish("execution_result", payload, symbol=symbol)
 
-    def _get_external_close_pnl(self, symbol: str, pos_data: dict) -> float:
-        """外部平仓 PnL：优先通过 ledger 查询交易所真实数据"""
-        if not pos_data:
-            return 0.0
+            # Step 2: 后台异步解析并发布 pnl_resolved
+            if self._pnl_resolver:
+                snapshot = dict(pos_data)
+                snapshot.setdefault('symbol', symbol)
+                snapshot.setdefault('position_id', position_id)
+                snapshot.setdefault('entry_request_id', entry_req_id)
+                close_window = {
+                    'closed_at': time.time(),
+                }
+                asyncio.create_task(self._resolve_external_close_async(
+                    snapshot, close_window, entry_req_id))
+
+    async def _resolve_external_close_async(self, snapshot: dict,
+                                              close_window: dict,
+                                              entry_req_id: str):
+        """后台异步:调 Resolver → apply 到账本 → 发 pnl_resolved/pnl_mismatch
+
+        PRD §6.8 P0-c:apply_pnl_resolution 内部按 status 严格分流:
+        final → 写 correction;pending/pending_fx → 只更新 retry metadata;
+        mismatch → 写独立告警事件。这里只对 final/mismatch 发布总线事件,
+        pending 不广播(下一轮 Reconciler 重试)。
+        """
+        symbol = snapshot.get('symbol', '')
+        try:
+            resolution = await asyncio.to_thread(
+                self._pnl_resolver.resolve_external_close,
+                snapshot, close_window,
+            )
+        except Exception as e:
+            self.logger.warning(f"[Resolver] {symbol} 解析失败: {e}")
+            return
 
         ledger = getattr(self.executor, 'ledger', None)
+        correction = None
         if ledger:
             try:
-                event = ledger.record_external_close(
-                    symbol=symbol,
-                    side=pos_data.get('side', 'long'),
-                    entry_price=pos_data.get('entry_price', 0),
-                    amount_usdt=pos_data.get('amount_usdt', 0),
-                    leverage=pos_data.get('leverage', 1) or 1,
+                correction = await asyncio.to_thread(
+                    ledger.apply_pnl_resolution, resolution,
                 )
-                if event.get('source') != 'estimated':
-                    return event['realized_pnl']
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning(f"[Ledger] apply_pnl_resolution 失败: {e}")
 
+        status = resolution.get("pnl_status", "")
+        if status == PNL_STATUS_FINAL:
+            topic = "pnl_resolved"
+        elif status == "mismatch":
+            topic = "pnl_mismatch"
+        else:
+            # pending/pending_fx:不广播,Reconciler 下一轮重试
+            self.logger.info(
+                f"[Resolver] {symbol} status={status},pending 重试中,不广播总线事件")
+            return
+        # PRD §6.2 #5: final 升级后,close_cause 取自 resolver(若有)。
+        # 当前 resolver 不区分 exchange_sl/exchange_tp,默认 external_unknown,
+        # is_strategy_stop=False(fail-safe,Judge 不会误计 SL hit)。
+        close_cause = resolution.get("close_cause", "external_unknown")
+        is_strategy_stop = bool(resolution.get("is_strategy_stop",
+                                                close_cause == "exchange_sl"))
+        await self.publish(topic, {
+            "schema_version": 1,
+            "symbol": symbol,
+            "request_id": entry_req_id,
+            "correlation_id": entry_req_id,
+            "position_id": resolution.get("position_id", ""),
+            "entry_request_id": resolution.get("entry_request_id", entry_req_id),
+            "side": snapshot.get("side", ""),
+            "direction": snapshot.get("side", ""),
+            "pnl_status": resolution.get("pnl_status", ""),
+            "pnl_is_final": resolution.get("pnl_status") == PNL_STATUS_FINAL,
+            "pnl_source": resolution.get("pnl_source", ""),
+            "realized_pnl_net_usdt": resolution.get("realized_pnl_net_usdt"),
+            "pnl": resolution.get("realized_pnl_net_usdt"),
+            "estimated_pnl": resolution.get("estimated_pnl"),
+            "gross_close_pnl_usdt": resolution.get("gross_close_pnl_usdt", 0),
+            "fee_usdt": resolution.get("fee_usdt", 0),
+            "funding_usdt": resolution.get("funding_usdt", 0),
+            "order_ids": resolution.get("order_ids", []),
+            "bill_ids": resolution.get("bill_ids", []),
+            "match_confidence": resolution.get("match_confidence", 0),
+            "warnings": resolution.get("warnings", []),
+            "close_cause": close_cause,
+            "is_strategy_stop": is_strategy_stop,
+            "attribution": resolution.get("entry_attribution",
+                                            snapshot.get("attribution", {})),
+            "sl_algo_id": resolution.get("sl_algo_id",
+                                           snapshot.get("sl_algo_id", "")),
+            "sl_algo_clord_id": resolution.get("sl_algo_clord_id",
+                                                  snapshot.get("sl_algo_clord_id", "")),
+            "tp_algo_id": resolution.get("tp_algo_id",
+                                           snapshot.get("tp_algo_id", "")),
+            "tp_algo_clord_id": resolution.get("tp_algo_clord_id",
+                                                  snapshot.get("tp_algo_clord_id", "")),
+            "estimated_pnl": resolution.get("estimated_pnl",
+                                              snapshot.get("unrealized_pnl")),
+            "exchange_pnl_usdt": resolution.get("exchange_pnl_usdt"),
+            "fills_pnl_usdt": resolution.get("fills_pnl_usdt"),
+            "supersedes_event_id": (correction or {}).get("supersedes_event_id", ""),
+            "correction_event_id": (correction or {}).get("event_id", ""),
+            "timestamp": time.time(),
+        }, symbol=symbol)
+        if resolution.get("pnl_status") == PNL_STATUS_FINAL:
+            net = resolution.get("realized_pnl_net_usdt", 0) or 0
+            self.logger.info(
+                f"[Resolver] {symbol} 升级 final: net_pnl={net:+.4f} USDT "
+                f"(fills={resolution.get('gross_close_pnl_usdt', 0):+.4f}, "
+                f"fee={resolution.get('fee_usdt', 0):+.4f}, "
+                f"funding={resolution.get('funding_usdt', 0):+.4f})")
+        else:
+            self.logger.warning(
+                f"[Resolver] {symbol} 升级失败: status={resolution.get('pnl_status')} "
+                f"warnings={resolution.get('warnings', [])}")
+
+    def _get_external_close_pnl(self, symbol: str, pos_data: dict) -> float:
+        """[Deprecated] 保留兼容,仅返回 estimated;新代码走 dual-payload。"""
         return self._estimate_close_pnl(pos_data)
 
     def _estimate_close_pnl(self, pos_data: dict) -> float:
@@ -676,9 +989,8 @@ class MultiExecutor(BaseAgent):
             if trigger == 'price_fetch_failed':
                 self.logger.error(f"[兜底] {symbol} 价格获取连续失败，强制平仓保护资金!")
                 pos = self.executor.positions.get(symbol)
-                if pos and pos.get('sl_order_id'):
-                    self.executor.cancel_order(symbol, pos['sl_order_id'])
                 entry_req_id = (pos or {}).get('request_id', '')
+                # FR-003: close_position() 内部撤保护单,Agent 不再直接 cancel
                 result = self.executor.close_position(symbol)
                 if result:
                     result['entry_request_id'] = entry_req_id
@@ -710,9 +1022,8 @@ class MultiExecutor(BaseAgent):
             else:
                 self.logger.info(f"[兜底] {symbol} 触发{trigger}，本地平仓")
                 pos = self.executor.positions.get(symbol)
-                if pos and pos.get('sl_order_id'):
-                    self.executor.cancel_order(symbol, pos['sl_order_id'])
                 entry_req_id = (pos or {}).get('request_id', '')
+                # FR-003: close_position() 内部撤保护单,Agent 不再直接 cancel
                 result = self.executor.close_position(symbol)
                 if result:
                     result['entry_request_id'] = entry_req_id
@@ -756,28 +1067,36 @@ class MultiExecutor(BaseAgent):
         r_multiple = pnl_dist / sl_dist
 
         # 20min+: 达到 -0.5R → 收紧止损到 -0.7R 位置
+        # FR-001: 必须通过 root executor.move_protective_sl 单一入口替换交易所
+        # 保护单,替换成功后由 root executor 同步更新本地 stop_loss/sl_algo_id;
+        # 不得直接写 pos['stop_loss'] + _save_positions(),否则本地显示已收紧
+        # 但交易所仍是旧 SL,行情真把价格打到旧 SL 之外时无保护。
         if minutes_held >= 20 and r_multiple <= -0.5:
             tighter_sl_dist = sl_dist * 0.7
             if side == 'long':
                 new_sl = entry_price - tighter_sl_dist
-                if new_sl > pos['stop_loss']:
-                    self.logger.info(
-                        f"[EarlyReview] {symbol} {minutes_held:.0f}min R={r_multiple:.2f}, "
-                        f"收紧SL → {new_sl:.4f}"
-                    )
-                    pos['stop_loss'] = new_sl
-                    self.executor.positions[symbol] = pos
-                    self.executor._save_positions()
+                tighter = new_sl > pos['stop_loss']
             else:
                 new_sl = entry_price + tighter_sl_dist
-                if new_sl < pos['stop_loss']:
+                tighter = new_sl < pos['stop_loss']
+
+            if tighter:
+                result = self.executor.move_protective_sl(
+                    symbol, new_sl,
+                    reason=f'early_review_tighten_{minutes_held:.0f}min_R{r_multiple:.2f}',
+                )
+                if result.get('ok'):
                     self.logger.info(
-                        f"[EarlyReview] {symbol} {minutes_held:.0f}min R={r_multiple:.2f}, "
-                        f"收紧SL → {new_sl:.4f}"
+                        f"[EarlyReview] {symbol} {minutes_held:.0f}min "
+                        f"R={r_multiple:.2f}, 收紧SL → {new_sl:.4f}"
                     )
-                    pos['stop_loss'] = new_sl
-                    self.executor.positions[symbol] = pos
-                    self.executor._save_positions()
+                else:
+                    self.logger.warning(
+                        f"[EarlyReview] {symbol} {minutes_held:.0f}min "
+                        f"R={r_multiple:.2f}, 收紧SL失败 "
+                        f"reason={result.get('reason')} "
+                        f"state={result.get('protection_state')}"
+                    )
 
             self._early_review_times[review_key] = time.time()
 

@@ -134,8 +134,9 @@ async def test_risk_alert_flash_move():
     alert_symbol = {"type": "flash_move", "scope": "symbol", "symbol": "SOL-USDT"}
     await executor_agent._handle_risk_alert(alert_symbol)
     assert mock_exec.close_position.call_count == 1
-    mock_exec.cancel_order.assert_called_once_with("SOL-USDT", "sl_123")
-    print("  ✓ scope=symbol: 只平 SOL-USDT，止损单已撤")
+    # FR-003: close_position() 内部撤保护单,Agent 层不再直接 cancel_order
+    mock_exec.cancel_order.assert_not_called()
+    print("  ✓ scope=symbol: 只平 SOL-USDT，保护单清理由 close_position 内部完成")
 
     # 3b: scope=market 全平所有持仓
     MessageBus.reset()

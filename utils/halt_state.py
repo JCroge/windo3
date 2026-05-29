@@ -1,7 +1,8 @@
 """统一全局熔断状态管理
 
 所有 Agent 通过此模块读写熔断状态，确保一致性。
-状态持久化到 data/halt_state.json，重启后自动恢复。
+状态持久化到 data/halt_state.json（live 默认）；testnet / paper 由 STATE_NAMESPACE 切到独立文件。
+重启后自动恢复。
 """
 
 import json
@@ -9,8 +10,15 @@ import os
 import time
 from typing import Optional
 
+from utils.state_paths import get_state_paths
 
-HALT_STATE_FILE = "data/halt_state.json"
+
+# 模块级覆盖入口：测试可通过 monkeypatch 设置 HALT_STATE_FILE 来重定向状态文件路径
+HALT_STATE_FILE: Optional[str] = None
+
+
+def _halt_state_file() -> str:
+    return HALT_STATE_FILE or get_state_paths().halt_state
 
 
 class HaltState:
@@ -93,22 +101,24 @@ class HaltState:
         }
 
     def _save(self):
+        path = _halt_state_file()
         try:
-            os.makedirs(os.path.dirname(HALT_STATE_FILE) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
             from utils.atomic_io import atomic_write_json
-            atomic_write_json(HALT_STATE_FILE, self.to_dict())
+            atomic_write_json(path, self.to_dict())
         except Exception:
             try:
-                with open(HALT_STATE_FILE, 'w') as f:
+                with open(path, 'w') as f:
                     json.dump(self.to_dict(), f)
             except Exception:
                 pass
 
     def _load(self):
-        if not os.path.exists(HALT_STATE_FILE):
+        path = _halt_state_file()
+        if not os.path.exists(path):
             return
         try:
-            with open(HALT_STATE_FILE, 'r') as f:
+            with open(path, 'r') as f:
                 state = json.load(f)
             self.halted = state.get("halted", False)
             self.reason = state.get("reason", "")

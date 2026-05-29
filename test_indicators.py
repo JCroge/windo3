@@ -28,14 +28,13 @@ def load_klines(symbol='BTCUSDT', interval='1m', limit=100):
 import pytest
 
 @pytest.mark.network
-def test_indicators():
-    """测试所有技术指标"""
+def test_indicators(klines_db):
+    """测试所有技术指标（依赖 data/klines.db；缺则 skip）"""
     print("加载K线数据...")
     df = load_klines('BTCUSDT', '1m', 100)
 
     if len(df) == 0:
-        print("❌ 数据库中没有K线数据，请先运行 test_kline.py 采集数据")
-        return
+        pytest.skip("klines.db 没有 BTCUSDT 1m 数据，请先运行 `python3 test_kline.py` 采集")
 
     print(f"✅ 加载了 {len(df)} 条K线数据")
     print(f"时间范围: {df['open_time'].min()} - {df['open_time'].max()}")

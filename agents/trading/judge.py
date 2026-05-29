@@ -54,7 +54,7 @@ JUDGE_PROMPT = """你是加密货币合约交易的裁判。基于技术分析�
 
 class MultiJudge(BaseAgent):
     name = "judge"
-    subscriptions = ["tech_analysis:*", "price_tick:*", "symbol_update", "execution_result:*", "news_snapshot", "strategy_review"]
+    subscriptions = ["tech_analysis:*", "price_tick:*", "symbol_update", "execution_result:*", "news_snapshot", "strategy_review", "pnl_resolved", "pnl_mismatch"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -164,6 +164,11 @@ class MultiJudge(BaseAgent):
         self._probe_short_active = None
         self._probe_short_sl_count = 0
         self._probe_short_cooldown_until = 0
+
+        # FR-3C: pnl_resolved 幂等去重(按 correction_event_id/resolution_id),
+        # 防止 Resolver 重发同一升级事件导致重复计 SL hit / 重复推 probe_short。
+        self._processed_resolution_ids: set = set()
+        self._processed_resolution_max = 1024  # 简单 LRU 上限
 
         # ═══ Side guard live thresholds (short + long) ═══
         # 这些字段在 Judge 主路径与 deferred 路径都需要，统一从 config 读取。
@@ -287,7 +292,8 @@ class MultiJudge(BaseAgent):
         # 从 positions.json 恢复 _open_positions，防止重启后突破并发上限
         try:
             import json
-            with open('data/positions.json', 'r') as f:
+            from utils.state_paths import get_state_paths
+            with open(get_state_paths().positions, 'r') as f:
                 saved_positions = json.load(f)
             if saved_positions:
                 for sym in saved_positions:
@@ -370,6 +376,70 @@ class MultiJudge(BaseAgent):
             self._news_snapshot = msg['payload'].get('symbol_news', {})
             return
 
+        if msg['type'] in ('pnl_resolved', 'pnl_mismatch'):
+            payload = msg.get('payload', {})
+            symbol = msg.get('symbol') or payload.get('symbol')
+            if not symbol:
+                return
+            symbol = to_internal(symbol)
+            status = payload.get('pnl_status', '')
+            if status != 'final':
+                self.logger.info(
+                    f"[Judge] {symbol} pnl_resolution status={status} 不计 archetype/probe")
+                return
+            # FR-3C: 按 correction_event_id/resolution_id/supersedes_event_id 幂等
+            resolution_key = (payload.get('correction_event_id')
+                              or payload.get('resolution_id')
+                              or payload.get('supersedes_event_id') or '')
+            if resolution_key:
+                pos_id = payload.get('position_id', '')
+                idem_key = f"{resolution_key}|{pos_id}"
+                if idem_key in self._processed_resolution_ids:
+                    self.logger.info(
+                        f"[Judge] {symbol} pnl_resolved 幂等跳过 key={idem_key}")
+                    return
+                self._processed_resolution_ids.add(idem_key)
+                if len(self._processed_resolution_ids) > self._processed_resolution_max:
+                    # 简单 LRU:超量时清空一半最旧条目(set 没有顺序,这里直接清空最旧)
+                    self._processed_resolution_ids = set(
+                        list(self._processed_resolution_ids)[-self._processed_resolution_max // 2:])
+            pnl = payload.get('realized_pnl_net_usdt')
+            if pnl is None:
+                pnl = payload.get('pnl', 0)
+            pnl = float(pnl or 0)
+            # archetype cooldown 记 final pnl
+            attribution = payload.get('attribution', {})
+            if attribution and pnl != 0:
+                archetype = self._archetype_cooldown.classify(attribution)
+                self._archetype_cooldown.record_result(archetype, pnl)
+            # PRD §6.2 #5:final 升级后,若 close_cause 明确为 exchange_sl 才补计 SL hit。
+            # close_cause 为 exchange_tp/external_unknown 不计 SL hit。
+            close_cause = payload.get('close_cause', '')
+            is_strategy_stop = bool(payload.get('is_strategy_stop', close_cause == 'exchange_sl'))
+            if is_strategy_stop:
+                state = self._get_state(symbol)
+                closed_dir = payload.get('direction', payload.get('side', ''))
+                sl_dir = 'long' if 'long' in closed_dir else ('short' if 'short' in closed_dir else None)
+                self._record_sl_hit(state, sl_dir)
+                self.logger.info(
+                    f"[Judge] {symbol} pnl_resolved 升级补计 SL hit close_cause={close_cause}")
+            # probe_short 升级:仅在 final close cause 为 exchange_sl(is_strategy_stop)
+            # 时才补计 SL count;external_unknown/manual_close/liquidation 即便 PnL 为负
+            # 也不污染 probe_short cooldown(FR-3C / AC3-P1-004)。
+            if self._probe_short_active == symbol:
+                self._probe_short_active = None
+                if is_strategy_stop and pnl < 0:
+                    self._probe_short_sl_count += 1
+                    if self._probe_short_sl_count >= 2:
+                        self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
+                        self.logger.info(
+                            f"[Judge] probe_short final 升级 SL,连续{self._probe_short_sl_count}次,冷却{self._probe_short_cooldown_hours}h")
+                elif pnl >= 0:
+                    self._probe_short_sl_count = 0
+            self._state_dirty = True
+            self._persist_state()
+            return
+
         if msg['type'] == 'strategy_review':
             payload = msg.get('payload', {})
             recent = payload.get('recent_metrics', {})
@@ -407,41 +477,70 @@ class MultiJudge(BaseAgent):
                     state["last_force_close_time"] = time.time()
                     closed_dir = payload.get('direction', payload.get('action', ''))
                     sl_dir = 'long' if 'long' in closed_dir else ('short' if 'short' in closed_dir else None)
-                    self._record_sl_hit(state, sl_dir)
+                    # FR-004: 只对 is_strategy_stop=True 的 force_closed 计 SL hit;
+                    # 风控/全平/价格失败/外部平仓未归因不污染策略 SL cooldown
+                    is_strategy_stop = bool(payload.get('is_strategy_stop'))
+                    if is_strategy_stop:
+                        self._record_sl_hit(state, sl_dir)
                     cooldown = self._get_escalating_cooldown(state)
                     self._open_positions.discard(symbol)
                     self._position_slots.pop(symbol, None)
                     # Probe short tracking
                     if self._probe_short_active == symbol:
                         self._probe_short_active = None
-                        self._probe_short_sl_count += 1
-                        if self._probe_short_sl_count >= 2:
-                            self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
-                            self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL，冷却{self._probe_short_cooldown_hours}h")
-                    self.logger.warning(f"[Judge] {symbol} 强平冷却启动，{cooldown}s内禁止同方向开仓 (active={len(self._open_positions)})")
+                        if is_strategy_stop:
+                            self._probe_short_sl_count += 1
+                            if self._probe_short_sl_count >= 2:
+                                self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
+                                self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL，冷却{self._probe_short_cooldown_hours}h")
+                    self.logger.warning(
+                        f"[Judge] {symbol} 强平冷却启动 ({payload.get('exit_reason', 'unknown')}),"
+                        f"{cooldown}s内禁止同方向开仓 (active={len(self._open_positions)}) "
+                        f"strategy_stop={is_strategy_stop}"
+                    )
                 elif status == 'closed_externally':
                     state["last_force_close_time"] = time.time()
                     state["deferred_entry"] = None
                     closed_dir = payload.get('direction', payload.get('action', ''))
                     sl_dir = 'long' if 'long' in closed_dir else ('short' if 'short' in closed_dir else None)
-                    self._record_sl_hit(state, sl_dir)
+                    # PRD §6.2 #5 + §6.8 P1-d:外部平仓 pending 阶段(pnl_is_final=False)
+                    # 不能计 SL hit;只有 Resolver final 后明确归因 exchange_sl 才计。
+                    result_data = payload.get('result', {})
+                    pnl_is_final = bool(result_data.get('pnl_is_final',
+                                                         payload.get('pnl_is_final', False)))
+                    is_strategy_stop = bool(payload.get('is_strategy_stop'))
+                    if is_strategy_stop and pnl_is_final:
+                        self._record_sl_hit(state, sl_dir)
+                    elif is_strategy_stop and not pnl_is_final:
+                        self.logger.info(
+                            f"[Judge] {symbol} closed_externally pending,等 pnl_resolved 升级再计 SL hit")
                     cooldown = self._get_escalating_cooldown(state)
                     self._open_positions.discard(symbol)
                     self._position_slots.pop(symbol, None)
-                    # Probe short tracking: only count as SL if pnl < 0
+                    # PRD §6.2: probe_short SL tracking 必须等 pnl_is_final=True 才计;
+                    # closed_externally pending PnL=None,会误判为 SL,要门控。
                     if self._probe_short_active == symbol:
-                        self._probe_short_active = None
                         result_data = payload.get('result', {})
-                        pnl = result_data.get('pnl', result_data.get('realized_pnl', -1))
-                        exit_reason = result_data.get('exit_reason', result_data.get('reason', ''))
-                        is_loss = pnl < 0 or exit_reason in ('sl', 'stop_loss', 'force_closed')
-                        if is_loss:
-                            self._probe_short_sl_count += 1
-                            if self._probe_short_sl_count >= 2:
-                                self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
-                                self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL(external)，冷却{self._probe_short_cooldown_hours}h")
+                        pnl_is_final = bool(result_data.get('pnl_is_final',
+                                                              payload.get('pnl_is_final', False)))
+                        if not pnl_is_final:
+                            self.logger.info(
+                                f"[Judge] {symbol} probe_short pending PnL,等 pnl_resolved 升级再计 SL")
                         else:
-                            self._probe_short_sl_count = 0
+                            self._probe_short_active = None
+                            pnl = result_data.get('realized_pnl_net_usdt')
+                            if pnl is None:
+                                pnl = result_data.get('pnl', result_data.get('realized_pnl', -1))
+                            exit_reason = result_data.get('exit_reason', result_data.get('reason', ''))
+                            is_loss = (pnl is not None and pnl < 0) or \
+                                exit_reason in ('sl', 'stop_loss', 'force_closed')
+                            if is_loss:
+                                self._probe_short_sl_count += 1
+                                if self._probe_short_sl_count >= 2:
+                                    self._probe_short_cooldown_until = time.time() + self._probe_short_cooldown_hours * 3600
+                                    self.logger.info(f"[Judge] probe_short 连续{self._probe_short_sl_count}次SL(external)，冷却{self._probe_short_cooldown_hours}h")
+                            else:
+                                self._probe_short_sl_count = 0
                     self.logger.info(f"[Judge] {symbol} 被交易所平仓，清除延迟入场+冷却{cooldown}s (active={len(self._open_positions)})")
                 elif status == 'executed' and action in ('open_long', 'open_short'):
                     state["last_open_time"] = time.time()
@@ -466,10 +565,17 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} 主动平仓 (active={len(self._open_positions)})")
 
                 # RQ-06: 记录交易结果到原型 cooldown
+                # PRD §6.2: 仅 pnl_is_final=True 才能进入 archetype cooldown,
+                # closed_externally pending pnl=None 不能污染 cooldown 决策
                 result = payload.get('result', {})
                 attribution = result.get('attribution') or payload.get('attribution', {})
-                pnl = result.get('pnl', 0)
-                if pnl != 0 and attribution and status in ('executed', 'force_closed', 'closed_externally'):
+                pnl_is_final = bool(result.get('pnl_is_final',
+                                                 payload.get('pnl_is_final', False)))
+                pnl = result.get('realized_pnl_net_usdt')
+                if pnl is None:
+                    pnl = result.get('pnl', 0)
+                if pnl_is_final and pnl != 0 and attribution and \
+                        status in ('executed', 'force_closed', 'closed_externally'):
                     archetype = self._archetype_cooldown.classify(attribution)
                     self._archetype_cooldown.record_result(archetype, pnl)
                 self._state_dirty = True

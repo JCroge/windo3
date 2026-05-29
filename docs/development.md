@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-05-27，系统主入口是多 Agent 交易系统：
+截至 2026-05-28，系统主入口是多 Agent 交易系统：
 
 ```bash
 python3 run_agents.py
@@ -12,7 +12,7 @@ python3 run_agents.py
 
 `live_trading.py` 已标记为 deprecated，只保留给单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
 
-当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 已统一收敛到 `Judge._check_entry_position_policy`，分批止盈生命周期收敛阶段 1+2+3 已上线（基线 618 passed，含 partial TP lifecycle 32 case + R:R Floor 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case）。OKX 真实 testnet 语义验收 2026-05-27 完成（T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP=账户为 long_short_mode、T7 SKIP=mock_only），**live 扩容前置阻断已解除**；下一步进入小额 24h 灰度观察 segmented metrics。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效——`_cancel_protective_sl` 50002 bug 就是 mock 测试无法覆盖、必须真实 testnet 才能暴露的典型案例。
+当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 已统一收敛到 `Judge._check_entry_position_policy`，分批止盈生命周期收敛阶段 1+2+3 已上线。**2026-05-28 第三次审计 P0/P1/P2 整改基线为 `807 passed / 4 deselected / 1 warning`**：FR-3A `reduce_position()` fail-closed 结构化结果（撤旧 SL 失败立即返回不清旧 ID、reduce reject 后 restore 原 SL、residual 必重挂、live OKX halt）+ FR-3B `_cleanup_protective_orders_on_close()` owner-bound sweep（owner-tag clOrdId `ca+namespace+bot_instance+base+random` + 三层 owner 判定 + foreign 不撤 + halt 阻断新开仓）+ FR-3C `pnl_resolved` final close cause 证据 + 幂等（`_classify_close_evidence` 输出 `final_close_cause/match_rule/confidence`，Judge/Reviewer LRU 去重，probe_short SL 计数受 `is_strategy_stop` 门控）+ FR-3D 新闻 ticker 边界匹配（`utils/symbol_mentions.py` 严格正则边界 + 高歧义短 ticker 黑名单）。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS。**第四次审计（2026-05-28 晚）新增三阻断尚未闭环**：F4-001 reduce 失败回参误广播 risk_reduced（P0）/ F4-002 pnl_resolved evidence 透传不完整（P1）/ F4-003 owner tag 未用于真实 OKX SL 下单（P1）；live 扩容 NO-GO，详见 `docs/audit_remediation_third_pass_20260528_prd.md` 与 `docs/generated_reports/系统性审计报告_20260528_第四次.md`。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
 
 **热更新语义**：Telegram `/restart` 现在会让 `run_agents.py` 在优雅停机后执行 `os.execv(...)`，重新拉起 Python 解释器并重新 import 已修改的模块。`execv` 后 PID 可能不变，这是正常现象；判断是否换上新代码，应看启动日志和新行为。若变更的是 Python/venv/系统级依赖，仍建议 `kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。
 
@@ -281,12 +281,17 @@ python3 test_p2p3_grid_search.py
 
 ## 状态文件
 
+文件路径由 `utils/state_paths.py` 单一真相源派生（FR-008，2026-05-28）。命名空间优先级：`STATE_NAMESPACE=live|testnet|paper` > `USE_TESTNET=true` 推断 testnet > 默认 live。live 默认完全兼容历史路径；testnet/paper 自动加 `testnet_` / `paper_` 前缀。新增状态文件必须通过 `get_state_paths()` 读取默认值；显式参数仍可覆盖（测试或运维场景）。
+
 | 文件 | 写入者 | 说明 |
 |------|--------|------|
 | `data/positions.json` | `ContractExecutor` | 实盘持仓快照 |
 | `data/risk_state.json` | `RiskManager` | daily pnl / peak balance |
+| `data/halt_state.json` | `HaltState` | 全局熔断状态（加载损坏 fail-closed） |
 | `data/trade_history.json` | `ReviewerAgent` | 已完成交易历史 |
 | `data/riskguard_state.json` | `PortfolioRiskGuard` | 风控追踪状态和熔断状态 |
+| `data/live_order_events.jsonl` | `LiveLedger` | 订单事件流 append-only |
+| `data/live_position_lifecycle.json` | `LiveLedger` | 持仓生命周期聚合 |
 | `data/paper_positions.json` | `PaperExecutor` | 影子账户持仓 |
 | `data/paper_equity.json` | `PaperExecutor` | 影子账户权益 |
 | `data/paper_trades.jsonl` | `PaperExecutor` | 影子账户已完成交易 |
@@ -299,6 +304,7 @@ python3 test_p2p3_grid_search.py
 以 `.env.example` 为准。关键项：
 - `EXCHANGE=okx`
 - `USE_TESTNET=true|false`
+- `STATE_NAMESPACE=live|testnet|paper`（覆盖 USE_TESTNET 推断；默认按 USE_TESTNET 推断；未设且 USE_TESTNET=false 时为 live）
 - `MAX_TRADE_AMOUNT`
 - `MAX_DRAWDOWN_PCT`
 - `MAX_DAILY_LOSS` 或 `DAILY_PNL_HARD_STOP`

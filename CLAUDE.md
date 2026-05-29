@@ -8,9 +8,15 @@
 - 2026-05-25 自动化基线：`531 passed / 4 deselected / 1 warning`（含 `test_okx_posmode_executor.py` 38）。
 - 2026-05-26 自动化基线：`551 passed / 4 deselected / 1 warning`（含 R:R Floor Policy 新增 20 个 case）。
 - 2026-05-26 Long Entry Position Guard 上线后基线：`575 passed / 4 deselected / 1 warning`（含 `test_long_entry_position_guard.py` 新增 23 case）。
-- OKX mock 执行语义验收 10 case PASS（含 posMode close 矩阵 + 拒单状态复核）；OKX 真实 testnet 语义验收 2026-05-27 完成：T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP（账户为 long_short_mode），T7 SKIP（mock_only，已在 mock 矩阵 PASS）。报告：`docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`。修复关键 bug：`_cancel_protective_sl` / `_cancel_algo_by_id` 改走 `cancel_orders([id], symbol, params={'trigger': True})`（直接 `private_post_trade_cancel_algos` 传 dict/list 都被 OKX 拒成 50002）。Live 扩容前置阻断已解除。
+- 2026-05-28 P0 整改后基线：`668 passed / 4 deselected / 1 warning`（含 `test_protective_sl_owner.py` 11 case + `test_judge_close_cause.py` 33 case + 既有用例）。
+- 2026-05-28 P1 整改后基线：`699 passed / 4 deselected / 1 warning`（新增 `test_behavioral_critic_contract.py` 15 case + `test_state_namespace.py` 16 case）。
+- 2026-05-28 真实已实现 PnL 账本 Phase 1+2 后基线：`711 passed / 4 deselected / 1 warning`（新增 `test_exchange_realized_pnl_resolver.py` 12 case，覆盖 AC-A1..A9 + AC-A12 + AC-D1/D2）。
+- 2026-05-28 真实已实现 PnL 账本 Phase 3 backfill 后基线：`727 passed / 4 deselected / 1 warning`（新增 `test_realized_pnl_backfill.py` 16 case，覆盖 AC-A10 dry-run 不动 events.jsonl + delta 输出 / AC-A11 apply 写 correction 不删旧 JSONL + 幂等 + summary resolved/pending/mismatch/skipped；脚本 `scripts/backfill_realized_pnl.py` 默认 dry-run 安全）。
+- 2026-05-28 真实已实现 PnL 账本 P0+P1 整改后基线：`739 passed / 4 deselected / 1 warning`（test_exchange_realized_pnl_resolver.py 12 → 17 case，新增 AC-A5b retry schedule [10/30/120/600/1800] / AC-A14 needs_manual_reconcile + next_retry_at 门控 / AC-A13 sl_algo_id+tp_algo_id+entry_attribution 全链路透传到 resolution + correction event）。修复 P0-1..P0-4：(P0-1) closed_externally pending 不计 SL hit，pnl_resolved final 才追溯；(P0-2) apply_pnl_resolution 严格按 status 分流 — final 写 correction、pending/pending_fx 调 update_pending_resolution_attempt 只更新 retry metadata、mismatch 写独立 pnl_mismatch_alert，retry chain 不被 supersede 误断；(P0-3) Reconciler/Executor 后台 resolve 仅 final 调 apply、pending 不广播总线事件；(P0-4) Telegram 加 pnl_resolved/pnl_mismatch 订阅、null pnl 走 estimated_pnl 文案、_handle_pnl_resolved/_handle_pnl_mismatch 升级与对账偏差告警分离、daily summary 仅 final。P1：retry schedule + 24h needs_manual 落到 update_pending_resolution_attempt；resolver 透传 sl/tp algo IDs + entry_attribution 到 resolution，correction event 与 pnl_resolved/pnl_mismatch 总线事件携带同一字段集。
+- 2026-05-28 第三次审计整改后基线：`807 passed / 4 deselected / 1 warning`（新增 `test_reduce_protective_sl_lifecycle.py` 14 + `test_protective_cleanup_owner.py` 12 + `test_external_close_final_cause.py` 9 + probe_short 门控 2 + `test_symbol_mentions.py` 33 case + utils/symbol_mentions.py helper）。FR-3A reduce_position 结构化结果 + cancel/restore/replace fail-closed + residual 必重挂 + live OKX halt；FR-3B `_cleanup_protective_orders_on_close()` owner-tag clOrdId（`ca+namespace+bot+base+random`）+ 三层 owner 判定 + foreign 不撤 + halt 阻断新开仓；FR-3C resolver `_classify_close_evidence` 输出 `final_close_cause/match_rule/confidence`，Judge/Reviewer 按 correction_event_id 幂等去重，probe_short SL 计数受 `is_strategy_stop` 门控；FR-3D 新闻 ticker mention 走严格边界正则（cashtag/paren/pair/keyword/word），TON/ARB/NEAR 等高歧义短 ticker 不放行 word 规则。详见 `docs/audit_remediation_third_pass_20260528_prd.md` / `docs/audit_remediation_third_pass_20260528_acceptance.md`。
+- OKX mock 执行语义验收 10 case PASS；OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 跑 T0/T1/T4/T5/T6/T8/T9/T10/T11/T12/T13/T14/T15 13 PASS（T2/T3 SKIP、T7 SKIP mock_only），net_mode 子账户单独跑 T0/T2/T3 3 PASS；T2/T3 net_mode caveat 已解除。第三次整改 P0/P1/P2 代码与单测已闭环，但第四次审计发现新增阻断：reduce 失败回参会被 Agent 误广播为 `risk_reduced`、`pnl_resolved` final cause evidence 未在所有发布路径透传、真实 OKX 新 SL 仍未使用 owner tag。当前 live 扩容 NO-GO；待办看 `docs/to-do-list.md`，第四次审计报告看 `docs/generated_reports/系统性审计报告_20260528_第四次.md`。
 - R:R Floor Policy 修复已上线（2026-05-26）：单一 `Judge._select_rr_floor` 函数，主路径与 deferred 路径共用，新增 `long_aligned_low_rr` 分支允许 mixed/choppy 下趋势强一致多头按 1.30 floor 进入 low_rr_extra slot。详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
-- 当前待办统一看 `docs/to-do-list.md`，审计报告看 `docs/generated_reports/系统性审计报告_20260524.md`。
+- 当前待办统一看 `docs/to-do-list.md`，最新审计报告看 `docs/generated_reports/系统性审计报告_20260528.md`。
 
 ## 快速命令
 
@@ -114,6 +120,10 @@ Reviewer / RiskGuard
 - 修改 Judge / 策略公式必须同步事件回测或补同构测试，不能只看 mock 单测。
 - 修改 R:R floor 必须改 `Judge._select_rr_floor` 单一函数，主路径与 `_apply_regime_policy` 共用；不能在调用点重新写 if/else 分支。`probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` 五种 policy 标签由该函数返回。
 - 修改 Long Entry Position Guard 必须改 `Judge._check_entry_position_policy` 单一函数，主开仓路径与三条 deferred 路径（15m / pullback / chase）必须都调用它；不能在 deferred helper 中再写一遍 overheat 判定。新增字段必须同步到 `_build_attribution` 与 `_rejection_attribution`，并在 `event_backtest.py` 中同步。详见 `docs/long_entry_position_guard_prd.md`。
+- 保护单 owner 单一入口（2026-05-28 P0 FR-001/FR-002）：策略层（EarlyReview、partial TP 锁利）必须走 `ContractExecutor.move_protective_sl(symbol, new_sl, reason=...)`，不得在 agent 层直接写 `pos['stop_loss']` 或调 `_save_positions()` 与 `_replace_protective_sl`。`_replace_protective_sl` 撤旧失败不得挂新 SL，live OKX 必须 halt symbol；返回结构遵循 `ProtectiveSLResult` 契约（见 `docs/audit_remediation_20260528_acceptance.md` §8.1）。
+- close path 不直接撤保护单（2026-05-28 P0 FR-003）：`agents/trading/executor.py` 的 trade_decision close、risk_alert（emergency/flash/position_danger/high_leverage_danger/trailing_stop）、`_close_all_positions`、local_stop（stop_loss/take_profit/price_fetch_failed）全部只能调 `executor.close_position(symbol)`；保护单 cancel + orphan algo sweep 由 root `_cleanup_protective_orders_on_close()` 完成，状态写到 `result.protective_cleanup_state ∈ {cleaned/none/failed/unknown}`。新增 close 路径同样禁止直接 `cancel_order(sl_order_id)`。
+- execution_result.v2 close cause（2026-05-28 P0 FR-004）：close 类 payload（action='close' 或 status ∈ {force_closed, closed_externally}）必须含 `exit_reason / close_cause / is_strategy_stop / is_risk_forced`，由 `_classify_close_cause(source, reason)` 单一函数生成；Judge 的 `force_closed` / `closed_externally` 分支必须用 `payload['is_strategy_stop']` 门控 `_record_sl_hit()` 与 `_probe_short_sl_count`，禁止再用 `status == 'force_closed'` 当作 SL hit 信号。下游对历史无新字段 payload 必须 fail-safe（默认不计 SL）。
+- 真实已实现 PnL 账本 dual-payload（2026-05-28 PRD §6.2 Phase 1+2）：外部平仓必须走 `closed_externally` 先 publish `pnl_is_final=false`、再 `pnl_resolved/pnl_mismatch` 升级 final，禁止再在同步路径里 best-effort 估算成 final。`utils/realized_pnl_resolver.py` 是唯一 OKX fills-history+bills 解析入口，状态集合 `final/pending/estimated/mismatch/pending_fx`；`utils/live_ledger.record_pending_external_close()` 写 pending（`realized_pnl_net_usdt=None`）+ `apply_pnl_resolution()` 写 correction（`supersedes_event_id`+`correction_seq`，幂等 upsert）；`Reconciler.auto_resolve_pending()` 每 tick 扫 pending 升级 final，由 Executor `_run_reconciliation()` 发布 `pnl_resolved` / `pnl_mismatch` 总线事件。Reviewer/Judge 必须按 `pnl_is_final=True` 守门，pending 不进 `trade_history.json`、不进 `_archetype_cooldown.record_result()`、不计 probe_short SL。`fee` 非 USDT 时落 `pending_fx` 不强行换算；fills/bills 净值偏差超过 `max(0.10, |bills_net|*0.05)` 落 `mismatch` 不写 final。详见 `docs/exchange_realized_pnl_ledger_prd.md` / `docs/exchange_realized_pnl_ledger_acceptance.md`。
 
 ## Exchange 规则
 
@@ -123,10 +133,18 @@ Reviewer / RiskGuard
 - `executor.py` 底层仍直接创建 ccxt，但必须保持构造期设置 sandbox；后续应收敛到 factory。
 - Binance path 视为 legacy，不能假设具备与 OKX `attachAlgoOrds` 相同语义。
 
+## 状态文件命名空间（FR-008）
+
+- 状态路径由 `utils/state_paths.py` 单一真相源派生，禁止再硬编码 `data/positions.json` 等。
+- 命名空间优先级：显式 `STATE_NAMESPACE=live|testnet|paper` > `USE_TESTNET=true` 推断 testnet > 默认 live。
+- live 默认完全兼容历史路径（`data/positions.json` / `data/risk_state.json` / `data/halt_state.json` / `data/riskguard_state.json` / `data/live_order_events.jsonl` / `data/live_position_lifecycle.json`）；testnet/paper 加 `testnet_` / `paper_` 前缀。
+- 新增状态文件必须通过 `get_state_paths()` 读取默认值；显式参数仍可覆盖（测试或运维场景）。
+- 启动 banner 由 `format_banner()` 自动打印当前 namespace 与 6 个状态文件路径。
+
 ## LLM 规则
 
 - 所有 LLM JSON 调用应传 schema，并记录 validation errors。
-- `BehavioralCritic` 当前待统一 `counter_action/confidence` 与 `counter_recommendation/confidence_in_challenge` 字段。
+- `BehavioralCritic` 字段已统一为 canonical `counter_recommendation/confidence_in_challenge`（2026-05-28 FR-005）；schema 与 `_rule_fallback` 输出 canonical 字段，`_normalize_critic_payload` 把 legacy `counter_action/confidence` 别名补齐，`PositionAnalyst._arbitrate` 兼容两套字段。
 - LLM audit 会记录截断后的 user message 和 raw response；涉及账户、订单或策略敏感信息时需先做脱敏设计。
 - LLM 不可用时必须规则降级，不能中断交易关键链路。
 

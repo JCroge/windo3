@@ -28,15 +28,16 @@ def load_klines(symbol='BTCUSDT', interval='1m', limit=100):
 import pytest
 
 @pytest.mark.network
-def test_strategy():
-    """测试策略信号生成"""
+def test_strategy(klines_db):
+    """测试策略信号生成（依赖 data/klines.db；缺则 skip）"""
     print("加载K线数据...")
     df = load_klines('BTCUSDT', '1m', 100)
 
     if len(df) < 30:
-        print(f"❌ 数据不足：只有{len(df)}条K线，需要至少30条")
-        print("请运行 test_kline.py 采集更多数据")
-        return
+        pytest.skip(
+            f"klines.db BTCUSDT 1m 数据不足（{len(df)} 条 / 需 ≥30），"
+            "请先运行 `python3 test_kline.py` 采集"
+        )
 
     print(f"✅ 加载了 {len(df)} 条K线数据\n")
 

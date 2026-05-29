@@ -18,7 +18,7 @@ class RiskManager:
                  max_daily_loss: float = 300.0,
                  stop_loss_pct: float = 2.0,
                  take_profit_pct: float = 5.0,
-                 state_file: str = 'data/risk_state.json',
+                 state_file: Optional[str] = None,
                  effective_balance_cap: Optional[float] = None,
                  baseline_mode: str = "session_start"):
         self.max_trade_amount = max_trade_amount
@@ -26,6 +26,10 @@ class RiskManager:
         self.max_daily_loss = max_daily_loss
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        if state_file is None:
+            # FR-008: 未显式指定时按 STATE_NAMESPACE 派生
+            from utils.state_paths import get_state_paths
+            state_file = get_state_paths().risk_state
         self.state_file = state_file
         self.effective_balance_cap = effective_balance_cap
         self.baseline_mode = baseline_mode

@@ -186,15 +186,17 @@ class TestTpFilledOnlyAdvancesAfterReduce:
         })
         ex.exchange.create_order = MagicMock(side_effect=Exception('mock reject'))
         ex._handle_okx_close_reject = MagicMock(return_value={'status': 'still_open'})
-        ex._move_sl = MagicMock()
+        ex._cancel_protective_sl = MagicMock(return_value=True)
+        ex._replace_protective_sl = MagicMock(return_value=True)
         ex._save_positions = MagicMock()
         result = ex.reduce_position('BTC-USDT', 0.5, tp_advance=1)
-        assert result is None
+        # FR-3A: reduce reject 后返回结构化 result(ok=False),不再 None
+        assert result is not None and result.get('ok') is False
+        assert result.get('reduce_ok') is False
         assert ex.positions['BTC-USDT']['tp_filled'] == 0, \
             'reduce 失败时 tp_filled 必须保持 0'
         assert ex.positions['BTC-USDT']['stop_loss'] == 95.0, \
             'reduce 失败时 SL 不得被锁利位前移'
-        ex._move_sl.assert_not_called()
 
     def test_reduce_success_advances_tp_filled_and_moves_sl(self):
         ex = _make_executor()
@@ -207,18 +209,24 @@ class TestTpFilledOnlyAdvancesAfterReduce:
         ex.exchange.market = MagicMock(return_value={
             'contractSize': 1, 'limits': {'amount': {'min': 1e-8}},
         })
-        ex._move_sl = MagicMock()
+        captured = {}
+        def fake_replace(symbol, position, new_sl):
+            captured['new_sl'] = new_sl
+            position['sl_algo_id'] = 'algo-new'
+            position['protection_state'] = 'protected'
+            position['sl_sync_state'] = 'active'
+            return True
+        ex._replace_protective_sl = fake_replace
         ex._save_positions = MagicMock()
         ex.risk_manager.record_trade = MagicMock()
         result = ex.reduce_position('BTC-USDT', 0.5, tp_advance=1)
-        assert result is not None
+        assert result is not None and result.get('ok') is True
         assert ex.positions['BTC-USDT']['tp_filled'] == 1, \
             'reduce 成功后 tp_filled 必须推进到 1'
-        ex._move_sl.assert_called_once()
-        new_sl_arg = ex._move_sl.call_args[0][2]
         # entry=100, R=(100-95)/100=0.05, TP1 SL = 100*(1+0.05*0.5) = 102.5
-        assert abs(new_sl_arg - 102.5) < 1e-6, \
-            f'TP1 锁利 SL 应在 entry+0.5R=102.5,实得 {new_sl_arg}'
+        assert abs(captured['new_sl'] - 102.5) < 1e-6, \
+            f'TP1 锁利 SL 应在 entry+0.5R=102.5,实得 {captured["new_sl"]}'
+        assert result.get('protective_update_state') == 'protected'
 
     def test_short_reduce_success_moves_sl_down(self):
         ex = _make_executor()
@@ -242,16 +250,23 @@ class TestTpFilledOnlyAdvancesAfterReduce:
         ex.exchange.market = MagicMock(return_value={
             'contractSize': 1, 'limits': {'amount': {'min': 1e-8}},
         })
-        ex._move_sl = MagicMock()
+        captured = {}
+        def fake_replace(symbol, position, new_sl):
+            captured['new_sl'] = new_sl
+            position['sl_algo_id'] = 'algo-new'
+            position['protection_state'] = 'protected'
+            position['sl_sync_state'] = 'active'
+            return True
+        ex._replace_protective_sl = fake_replace
         ex._save_positions = MagicMock()
         ex.risk_manager.record_trade = MagicMock()
         result = ex.reduce_position('BTC-USDT', 0.5, tp_advance=1)
-        assert result is not None
+        assert result is not None and result.get('ok') is True
         assert ex.positions['BTC-USDT']['tp_filled'] == 1
-        new_sl_arg = ex._move_sl.call_args[0][2]
         # short: entry=100, R=0.05, TP1 SL = 100*(1-0.05*0.5)=97.5
-        assert abs(new_sl_arg - 97.5) < 1e-6, \
-            f'short TP1 锁利 SL 应在 entry-0.5R=97.5,实得 {new_sl_arg}'
+        assert abs(captured['new_sl'] - 97.5) < 1e-6, \
+            f'short TP1 锁利 SL 应在 entry-0.5R=97.5,实得 {captured["new_sl"]}'
+        assert result.get('protective_update_state') == 'protected'
 
     def test_normal_reduce_without_tp_advance_keeps_tp_filled(self):
         ex = _make_executor()
@@ -265,14 +280,23 @@ class TestTpFilledOnlyAdvancesAfterReduce:
         ex.exchange.market = MagicMock(return_value={
             'contractSize': 1, 'limits': {'amount': {'min': 1e-8}},
         })
-        ex._move_sl = MagicMock()
+        captured = {}
+        def fake_replace(symbol, position, new_sl):
+            captured['new_sl'] = new_sl
+            position['sl_algo_id'] = 'algo-resized'
+            position['protection_state'] = 'protected'
+            position['sl_sync_state'] = 'active'
+            return True
+        ex._replace_protective_sl = fake_replace
         ex._save_positions = MagicMock()
         ex.risk_manager.record_trade = MagicMock()
         result = ex.reduce_position('BTC-USDT', 0.3)
-        assert result is not None
+        assert result is not None and result.get('ok') is True
         assert ex.positions['BTC-USDT']['tp_filled'] == 0, \
             '不传 tp_advance 的减仓(RiskGuard)不得改 tp_filled'
-        ex._move_sl.assert_not_called()
+        # FR-3A: 普通 reduce 也必须 resize residual SL,使用原 stop_loss
+        assert abs(captured['new_sl'] - 95.0) < 1e-6, \
+            f'普通 reduce 应保持原 SL=95.0,实得 {captured.get("new_sl")}'
 
 
 class TestExitLock:
@@ -360,11 +384,11 @@ class TestExitLock:
         ex.exchange.market = MagicMock(return_value={
             'contractSize': 1, 'limits': {'amount': {'min': 1e-8}},
         })
-        ex._move_sl = MagicMock()
+        ex._replace_protective_sl = MagicMock(return_value=True)
         ex._save_positions = MagicMock()
         ex.risk_manager.record_trade = MagicMock()
         result = ex.reduce_position('BTC-USDT', 0.5, tp_advance=1)
-        assert result is not None
+        assert result is not None and result.get('ok') is True
         # 释放后下一动作必须能拿锁
         a, _ = ex._try_acquire_exit_lock('BTC-USDT', 'reduce', 'next')
         assert a == 'acquired'
@@ -377,8 +401,13 @@ class TestExitLock:
         })
         ex.exchange.create_order = MagicMock(side_effect=Exception('boom'))
         ex._handle_okx_close_reject = MagicMock(return_value={'status': 'still_open'})
+        ex._replace_protective_sl = MagicMock(return_value=False)
+        ex._save_positions = MagicMock()
         result = ex.reduce_position('BTC-USDT', 0.5, tp_advance=1)
-        assert result is None
+        # FR-3A: reduce reject 后返回结构化 result(ok=False),不再返回 None
+        assert result is not None and result.get('ok') is False
+        assert result.get('reduce_ok') is False
+        assert result.get('reason') == 'reduce_rejected'
         # 异常路径也应释放锁
         a, _ = ex._try_acquire_exit_lock('BTC-USDT', 'reduce', 'next')
         assert a == 'acquired'
@@ -417,13 +446,15 @@ class TestPrecisionAndDust:
         # precision 后变 0
         ex.exchange.amount_to_precision = lambda s, a: 0.0
         ex.exchange.create_order = MagicMock(return_value={'id': 'should-not-fire'})
-        ex._move_sl = MagicMock()
+        ex._replace_protective_sl = MagicMock(return_value=False)
         result = ex.reduce_position('BTC-USDT', 0.5, tp_advance=1)
-        assert result is None
+        # FR-3A: zero-amount 早返回 ok=False/reason=reduce_amount_zero,不再 None
+        assert result is not None and result.get('ok') is False
+        assert result.get('reason') == 'reduce_amount_zero'
         assert ex.positions['BTC-USDT']['tp_filled'] == 0, \
             'reduce_amount 精度后为 0 不得推进 tp_filled'
         ex.exchange.create_order.assert_not_called()
-        ex._move_sl.assert_not_called()
+        ex._replace_protective_sl.assert_not_called()
         # 锁也应释放
         a, _ = ex._try_acquire_exit_lock('BTC-USDT', 'reduce', 'next')
         assert a == 'acquired'
@@ -451,15 +482,16 @@ class TestPrecisionAndDust:
         ex.exchange.market = MagicMock(return_value={
             'contractSize': 1, 'limits': {'amount': {'min': 10.0}},
         })
-        ex._move_sl = MagicMock()
+        ex._replace_protective_sl = MagicMock(return_value=True)
         ex._save_positions = MagicMock()
         ex.risk_manager.record_trade = MagicMock()
         result = ex.reduce_position('BTC-USDT', 0.5, tp_advance=1)
-        assert result is not None
+        assert result is not None and result.get('ok') is True
+        assert result.get('protective_update_state') == 'dust_closed'
         # dust 路径下本地仓位被删除
         assert 'BTC-USDT' not in ex.positions
-        # 已无尾仓,不应再调 _move_sl 移动锁利位
-        ex._move_sl.assert_not_called()
+        # 已无尾仓,不应再调 _replace_protective_sl 重挂保护单
+        ex._replace_protective_sl.assert_not_called()
 
 
 class TestProtectiveSlSingleEntry:
@@ -526,6 +558,73 @@ class TestProtectiveSlSingleEntry:
         ex._halt_symbol = MagicMock()
         ex._replace_protective_sl('BTC-USDT', ex.positions['BTC-USDT'], 96.0)
         ex._halt_symbol.assert_not_called()
+
+    def test_cancel_failure_does_not_place_new_sl(self):
+        """AC-P0-004: 撤旧失败必须立即返回,不下新 SL,避免双保护单。"""
+        ex = _make_executor()
+        ex.testnet = False
+        self._base(ex)
+        ex._cancel_protective_sl = MagicMock(return_value=False)
+        ex._place_protective_sl = MagicMock(return_value='should-not-happen')
+        ex._halt_symbol = MagicMock()
+        ok = ex._replace_protective_sl('BTC-USDT', ex.positions['BTC-USDT'], 96.0)
+        assert ok is False
+        ex._place_protective_sl.assert_not_called()
+
+    def test_cancel_failure_marks_failed_and_keeps_old_algo(self):
+        """AC-P0-005: 撤旧失败写 sl_sync_state=failed/protection_state=unknown/
+        last_protection_error=sl_cancel_failed;旧 algo_id 不能被覆盖
+        (旧保护单仍可能在交易所有效)。"""
+        ex = _make_executor()
+        ex.testnet = False
+        self._base(ex)
+        ex._cancel_protective_sl = MagicMock(return_value=False)
+        ex._place_protective_sl = MagicMock()
+        ex._halt_symbol = MagicMock()
+        ex._replace_protective_sl('BTC-USDT', ex.positions['BTC-USDT'], 96.0)
+        pos = ex.positions['BTC-USDT']
+        assert pos['sl_sync_state'] == 'failed'
+        assert pos['protection_state'] == 'unknown'
+        assert pos['last_protection_error'] == 'sl_cancel_failed'
+        # 旧 algo_id 必须保留,因为旧保护单可能仍在交易所
+        assert pos['sl_algo_id'] == 'old-algo'
+        assert pos['sl_order_id'] == 'old-algo'
+
+    def test_cancel_failure_live_okx_halts(self):
+        """AC-P0-006: live OKX 撤旧失败必须 _halt_symbol(reason='sl_cancel_failed')。"""
+        ex = _make_executor()
+        ex.testnet = False
+        ex.exchange_id = 'okx'
+        self._base(ex)
+        ex._cancel_protective_sl = MagicMock(return_value=False)
+        ex._place_protective_sl = MagicMock()
+        ex._halt_symbol = MagicMock()
+        ex._replace_protective_sl('BTC-USDT', ex.positions['BTC-USDT'], 96.0)
+        ex._halt_symbol.assert_called_once()
+        assert ex._halt_symbol.call_args.kwargs.get('reason') == 'sl_cancel_failed'
+
+    def test_cancel_failure_testnet_does_not_halt(self):
+        """testnet 不 halt,只标 protection_state=unknown 等待运维。"""
+        ex = _make_executor()
+        ex.testnet = True
+        ex.exchange_id = 'okx'
+        self._base(ex)
+        ex._cancel_protective_sl = MagicMock(return_value=False)
+        ex._place_protective_sl = MagicMock()
+        ex._halt_symbol = MagicMock()
+        ex._replace_protective_sl('BTC-USDT', ex.positions['BTC-USDT'], 96.0)
+        ex._halt_symbol.assert_not_called()
+        assert ex.positions['BTC-USDT']['sl_sync_state'] == 'failed'
+
+    def test_replace_success_clears_last_protection_error(self):
+        """成功替换后必须清掉之前的 last_protection_error,避免误导后续诊断。"""
+        ex = _make_executor()
+        self._base(ex)
+        ex.positions['BTC-USDT']['last_protection_error'] = 'previous_failure'
+        ex._cancel_protective_sl = MagicMock(return_value=True)
+        ex._place_protective_sl = MagicMock(return_value='new-algo')
+        ex._replace_protective_sl('BTC-USDT', ex.positions['BTC-USDT'], 96.0)
+        assert 'last_protection_error' not in ex.positions['BTC-USDT']
 
     def test_move_sl_skips_throttle_when_no_protection(self):
         """reduce 之后 sl_algo_id 被清空,_move_sl 必须立即重挂,不受 30s 节流。"""

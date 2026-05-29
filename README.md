@@ -4,9 +4,9 @@
 
 ## 系统状态
 
-- 最新基线（2026-05-27）：`618 passed / 4 deselected / 1 warning`，含 partial TP lifecycle 32 个、Long Entry Position Guard 23 个、R:R Floor Policy 20 个、OKX posMode 38 个 case。
-- live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。
-- OKX 真实 testnet T0-T9 语义验收 2026-05-27 完成（7 PASS / 3 SKIP），live 扩容前置阻断已解除；最终报告 [OKX执行语义testnet验收报告_20260527_150518.md](docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md)。下一步进入小额 24h 灰度观察 segmented metrics。
+- 最新基线（2026-05-28 第三次审计 P0/P1/P2 整改后）：`807 passed / 4 deselected / 1 warning`，包括第三次整改新增 `test_reduce_protective_sl_lifecycle.py` 14 + `test_protective_cleanup_owner.py` 12 + `test_external_close_final_cause.py` 11（含 probe_short 门控扩展）+ `test_symbol_mentions.py` 33 case + utils/symbol_mentions.py helper；关键执行/契约定向回归全绿。
+- live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。Live 扩容当前 NO-GO（第四次审计新增三阻断 F4-001/002/003 未闭环）；小额灰度 CONDITIONAL GO，维持现有 cap、人工可接管、每日复核 OKX algo 残留与 `data/live_position_lifecycle.json`。
+- OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 子账户跑 T0/T1/T4/T5/T6/T8/T9/T10/T11/T12/T13/T14/T15 13 PASS（T2/T3 SKIP、T7 SKIP mock_only），net_mode 切换后单独跑 T0/T2/T3 3 PASS。第三次审计整改：FR-3A `reduce_position()` fail-closed（撤旧失败立即返回 / 不清旧 ID / live OKX halt / residual 必重挂 SL）+ FR-3B `_cleanup_protective_orders_on_close()` owner-bound sweep（owner-tag clOrdId `ca+namespace+bot_instance+base+random` + 三层 owner 判定 + foreign 不撤 + halt 阻断新开仓）+ FR-3C `pnl_resolved` final cause + 幂等（resolver `_classify_close_evidence` 输出 `final_close_cause/match_rule/confidence`，Judge/Reviewer 按 `correction_event_id|position_id` 幂等 LRU set，probe_short SL 计数受 `is_strategy_stop` 门控）+ FR-3D 新闻 ticker 边界匹配（`utils/symbol_mentions.py` 五规则正则边界 + 高歧义短 ticker 黑名单）。整改路径见 [audit_remediation_third_pass_20260528_prd.md](docs/audit_remediation_third_pass_20260528_prd.md) 与 [audit_remediation_third_pass_20260528_acceptance.md](docs/audit_remediation_third_pass_20260528_acceptance.md)；第四次审计阻断见 [docs/generated_reports/系统性审计报告_20260528_第四次.md](docs/generated_reports/系统性审计报告_20260528_第四次.md)。
 
 具体阈值与开关以启动 banner 为准（启动后看 `logs/launcher_*.log` 第一段），不要从 README 硬抄数字。
 
@@ -51,10 +51,10 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 ## 常用验证
 
 ```bash
-python3 -m pytest -q                       # 默认回归（基线 618 passed）
+python3 -m pytest -q                       # 默认回归（基线 807 passed）
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
-python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T9 验收（需 .env.testnet）
+python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（需 .env.testnet）
 ```
 
 更细的核心链路 / 收益验证 / 真实环境冒烟命令见 [docs/runbook.md](docs/runbook.md)。
@@ -69,7 +69,7 @@ python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T9 验收（�
 | [docs/integration-guide.md](docs/integration-guide.md) | 消息契约与下游接入 |
 | [docs/handoff.md](docs/handoff.md) | 项目交接与决策记录 |
 | [docs/to-do-list.md](docs/to-do-list.md) | 当前阻断项、后续优化、已关闭事项 |
-| [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档（最新 2026-05-24）+ OKX testnet 验收（2026-05-27 PASS） |
+| [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档（最新 2026-05-28）+ OKX testnet 验收（2026-05-28 T0-T15 13 PASS / 3 SKIP） |
 | [docs/okx_posmode_execution_*.md](docs/) | OKX posMode 执行兼容 PRD + 验收 |
 | [docs/rr_floor_policy_*.md](docs/) | R:R Floor Policy 修复 PRD + 验收（2026-05-26） |
 | [docs/long_entry_position_guard_*.md](docs/) | Long Entry Position Guard PRD + 验收（2026-05-26） |

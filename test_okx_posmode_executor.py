@@ -409,7 +409,9 @@ class TestReducePositionFlow:
         ex.exchange.fetch_positions = MagicMock(return_value=[])
         ex.exchange.create_order = MagicMock()
         result = ex.reduce_position('INJ-USDT-SWAP', 0.3)
-        assert result is None
+        # FR-3A: already_flat 也走结构化结果(ok=False, reason=already_flat)
+        assert result is not None and result.get('ok') is False
+        assert result.get('reason') == 'already_flat'
         assert 'INJ-USDT-SWAP' not in ex.positions
         ex.exchange.create_order.assert_not_called()
 

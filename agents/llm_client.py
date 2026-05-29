@@ -115,8 +115,8 @@ BEHAVIORAL_CRITIC_SCHEMA = {
     'bias_detected': {'type': str, 'default': 'none'},
     'severity': {'type': str, 'allowed': ['none', 'low', 'medium', 'high', 'critical'], 'default': 'none'},
     'challenge': {'type': str, 'default': ''},
-    'counter_action': {'type': str, 'allowed': ['hold', 'close', 'reduce', 'add', ''], 'default': ''},
-    'confidence': {'type': (int, float), 'range': (0, 100), 'default': 0},
+    'counter_recommendation': {'type': str, 'allowed': ['hold', 'close', 'reduce', 'add', ''], 'default': ''},
+    'confidence_in_challenge': {'type': (int, float), 'range': (0, 100), 'default': 0},
 }
 
 # ═══ P2-P: Prompt 安全 ═══

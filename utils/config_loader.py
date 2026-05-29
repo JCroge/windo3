@@ -410,6 +410,15 @@ def format_banner(cfg: dict) -> str:
         f"pullback_min={cfg.get('long_live_pullback_min_pct', 0.025)}, "
         f"timeout={cfg.get('long_live_pullback_timeout_hours', 4)}h, chase={overheat_chase})",
         f"  EV Bucket Sparse:      min_trades={cfg.get('ev_bucket_min_trades', 10)} sparse_uplift={bucket_uplift}",
-        "=" * 60,
     ]
+    # FR-008: 启动 banner 打印当前命名空间下的状态文件路径
+    try:
+        from utils.state_paths import get_state_paths
+        sp = get_state_paths()
+        lines.append("-" * 60)
+        lines.extend(sp.as_banner_lines())
+    except Exception:
+        # banner 不影响启动；解析失败仅静默
+        pass
+    lines.append("=" * 60)
     return "\n".join(lines)

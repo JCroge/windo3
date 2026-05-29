@@ -1,6 +1,6 @@
 # Live 准入验收文档
 
-更新日期：2026-05-27  
+更新日期：2026-05-28  
 关联 PRD：`docs/live_readiness_prd.md`
 
 ## 1. 验收结论规则
@@ -11,7 +11,7 @@
 | CONDITIONAL PASS | 仅 P2 存在非阻断遗留，且有明确 owner 和回归保护 |
 | FAIL | 任一 P1 验收项失败，或 OKX testnet 未执行/失败且无合理豁免 |
 
-当前状态：PASS。自动化 P1 验收已通过，Phase 2 配置已接入，非 open `execution_result` 契约已完成回归；OKX posMode 执行兼容代码已上线，OKX 真实 testnet T0-T9 语义验收 2026-05-27 完成（7 PASS / 3 SKIP，详见 `docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`）。**Live 扩容前置阻断已解除**，下一步小额 24h 灰度观察 segmented metrics。
+当前状态：SUPERSEDED。本文记录 2026-05-27 前的 live readiness 验收；2026-05-28 系统审计新增 P0 执行语义阻断（保护单 owner、SL cancel failure、Agent close path、Judge close cause），live 扩容当前 NO-GO。最新验收以 `docs/audit_remediation_20260528_acceptance.md` 为准。
 
 ## 2. 验收前置条件
 

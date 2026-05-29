@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-05-27）**：两层多 Agent 系统主入口为 `run_agents.py`。全量回归 `618 passed / 4 deselected / 1 warning`（含 partial TP lifecycle 32 case + R:R Floor Policy 20 case + Long Entry Position Guard 23 case + OKX posMode 38 case）；R:R floor 选择已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，attribution 新增 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse` 等可选字段；OKX posMode 执行兼容代码已上线，mock 验收 10 case PASS；OKX 真实 testnet 语义验收 2026-05-27 完成（T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP=账户为 long_short_mode、T7 SKIP=mock_only），live 扩容前置阻断已解除。下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
+**系统状态（2026-05-28）**：两层多 Agent 系统主入口为 `run_agents.py`。**全量回归 `807 passed / 4 deselected / 1 warning`**（第三次审计 P0/P1/P2 整改后基线）；R:R floor 选择已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS。第三次审计整改：FR-3A `reduce_position()` fail-closed（结构化结果含 `protective_update_state/protection_state/halt_required/cancel_ok/reduce_ok/replace_ok/sl_sync_state`，撤旧 SL 失败立即返回 / live OKX halt / residual 必重挂）+ FR-3B `_cleanup_protective_orders_on_close()` owner-bound sweep（owner-tag clOrdId `ca+namespace+bot_instance+base+random`、三层 owner 判定、foreign 不撤、`close_position` 透传 `result.protective_cleanup`）+ FR-3C `pnl_resolved` final close cause 证据 + 幂等（resolver `_classify_close_evidence` 输出 `final_close_cause/match_rule/confidence`，Judge/Reviewer LRU 去重）+ FR-3D `utils/symbol_mentions.py` 严格边界匹配（`NewsResearcher` 与 `MultiDataCollector` 复用，输出 `confidence/match_rule/freshness_sec` provenance）。**下游集成红线**：消费 `execution_result.v2` close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须按 `result.reduce_ok=true` 才确认（第四次审计 F4-001 待修，避免 reduce 失败被误当成功）。**第四次审计三阻断尚未闭环（F4-001/002/003）**，live 扩容 NO-GO；下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
 
 ## 核心模块接口
 
@@ -160,6 +160,11 @@ result = selector.analyze()  # 返回优质币种列表及评分
 | `data/risk_state.json` | 峰值余额 | 回撤计算基准 |
 | `data/trade_history.json` | 交易历史 | Reviewer追踪盈亏/策略衰减 |
 | `data/riskguard_state.json` | RiskGuard状态 | 持仓追踪/价格/熔断状态重启恢复 |
+| `data/halt_state.json` | 全局熔断状态 | 加载损坏 fail-closed |
+| `data/live_order_events.jsonl` | 订单事件流 | LiveLedger append-only |
+| `data/live_position_lifecycle.json` | 持仓生命周期 | LiveLedger 原子写入 |
+
+**状态文件命名空间（FR-008，2026-05-28）**：路径由 `utils/state_paths.py` 单一真相源派生。命名空间优先级 `STATE_NAMESPACE=live|testnet|paper` > `USE_TESTNET=true` 推断 testnet > 默认 live。live 默认完全兼容历史路径；testnet/paper 自动加 `testnet_` / `paper_` 前缀（如 `data/testnet_positions.json`）。下游若复用同一台机器跑多个 namespace，必须设置 `STATE_NAMESPACE` 隔离 6 个状态文件（`positions` / `risk_state` / `riskguard_state` / `halt_state` / `live_order_events` / `live_position_lifecycle`）。启动 banner 会打印当前 namespace 与全部 6 个路径。
 
 ## 扩展开发
 
@@ -261,6 +266,14 @@ class MyAgent(BaseAgent):
 - schema_version, status, action, symbol, source, request_id, correlation_id, reason, result, timestamp
 - status: executed / force_closed / rejected / risk_reduced / closed_externally / error
 - 可选字段：confidence, used_plan, is_add, reduce_pct, attribution
+- close 类 payload（`action='close'` 或 status ∈ {force_closed, closed_externally}）必带 close cause 字段（2026-05-28 P0 FR-004）：
+  - `exit_reason` ∈ {`local_stop_loss`, `local_take_profit`, `price_fetch_failed`, `partial_tp`, `risk_emergency`, `risk_flash_move`, `risk_position_danger`, `risk_high_leverage_danger`, `risk_trailing_stop`, `system_close_all`, `exchange_sl`, `external_unknown`, `manual_close`}
+  - `close_cause`：保留原始 reason 语义，用于细粒度归因
+  - `is_strategy_stop`：bool，仅 `local_stop_loss` / `exchange_sl` 为 true；下游（Judge）只在该字段为 true 时记 SL hit
+  - `is_risk_forced`：bool，risk_alert / close_all / price_fetch_failed 为 true
+  - `result.exit_reason` / `result.close_cause` / `result.is_strategy_stop` / `result.is_risk_forced` 镜像顶层
+  - `result.protective_cleanup_state` ∈ {`cleaned`, `none`, `failed`, `unknown`}：root `_cleanup_protective_orders_on_close()` 的 SL cancel + orphan algo sweep 结果
+  - 历史无新字段的 payload 必须 fail-safe 兼容（默认不计 SL）
 - 下游不得假设 `result` 一定含 entry_price；拒绝、异常和外部平仓都必须按 `status/source/reason` 解释。
 
 `paper_execution_result:{symbol}` — PaperExecutor发布，影子账户执行结果：

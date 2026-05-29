@@ -1,27 +1,59 @@
 # To-Do List
 
-更新日期：2026-05-27  
-来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS  
-当前基线：`618 passed / 4 deselected / 1 warning`，`verify_okx_testnet_semantics.py` mock 10 case PASS（含 posMode close 矩阵 + 拒单状态复核），`test_rr_floor_policy.py` 20 case PASS（覆盖 AC-RR-01..09），`test_long_entry_position_guard.py` 23 case PASS（覆盖 AC-LONGPOS-01..17），`test_partial_tp_lifecycle.py` 32 case PASS（含 FR-07 algo 迁移），OKX 真实 testnet 验收 7 PASS / 3 SKIP（T2/T3 net_mode 账户切换待人工执行，T7 mock_only 已在 mock 矩阵 PASS）。
+更新日期：2026-05-28  
+来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-28 第四次审计发现 reduce 失败回参误广播、pnl_resolved final cause 证据透传不完整、owner tag 未用于真实 SL 下单。  
+当前基线：第四次审计验证 `807 passed / 4 deselected / 1 warning`，`pytest -q -m network` 为 `4 passed / 807 deselected / 1 warning`；但测试绿不等于扩容安全。当前 live 扩容结论以 `docs/generated_reports/系统性审计报告_20260528_第四次.md` 为准：live 扩容 NO-GO。
+
+最新整改文档：
+
+- `docs/audit_remediation_20260528_prd.md`
+- `docs/audit_remediation_20260528_acceptance.md`
+- `docs/audit_remediation_third_pass_20260528_prd.md`
+- `docs/audit_remediation_third_pass_20260528_acceptance.md`
+- `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go
 
 - 本地开发：GO。
 - Paper/mock：GO。
-- 小额 live 灰度：GO（OKX 真实 testnet T0/T1/T4/T5/T6/T8/T9 已 PASS，关键路径全覆盖）。
-- live 扩容：GO，前置阻断已解除（仍建议先小额 24h 灰度观察 segmented metrics）。
+- 小额 live 灰度：CONDITIONAL GO（仅限现有额度、人工可接管）。
+- live 扩容：NO-GO。第四次审计 F4-001/F4-002/F4-003 未闭环前不得扩大额度。
 
-## P1 阻断 live 扩容
+## 第四次审计新增阻断
+
+| 状态 | 优先级 | 事项 | 下一步 | 验收标准 |
+|---|---|---|---|---|
+| OPEN | P0 | reduce 失败回参被误当成功 `risk_reduced` 广播 | Agent 层按 `reduce_ok/ok/protective_update_state` 分支；`reduce_ok=false` 不发布 `risk_reduced`；protection failed 必须显式告警 | 新增测试覆盖 cancel_failed/reduce_rejected 不触发 `risk_reduced`，RiskGuard 不缩减 exposure |
+| OPEN | P1 | `pnl_resolved` final cause evidence 未完整透传 | Reconciler summary 与 Executor publish 透传 `close_cause/final_close_cause/is_strategy_stop/close_evidence/resolution_id` | mock Reconciler 返回 `exchange_sl` evidence 时，发布 payload 带 evidence，Judge 幂等补计一次 SL |
+| OPEN | P1 | 新 owner tag 未用于真实 OKX SL 下单 | attach SL、replace SL、legacy open 独立 SL 统一使用 `_make_owner_tag_clord_id()`；live 要求 `BOT_INSTANCE_ID` | 新开仓与 replace 的 `algoClOrdId/attachAlgoClOrdId` 均匹配当前 owner prefix |
+
+## 第三次审计阻断（已闭环）
+
+| 状态 | 优先级 | 事项 | 落地 | 验收证据 |
+|---|---|---|---|---|
+| DONE 2026-05-28 | P0 | `reduce_position()` 缩仓保护单生命周期 | `executor.py:2427-2724` 撤旧 SL 失败立即返回 `sl_cancel_failed`、不清旧 ID、live OKX halt；reduce reject 后尝试 restore 原 SL；residual 必重挂 SL；结构化结果含 `protective_update_state/protection_state/halt_required/cancel_ok/reduce_ok/replace_ok` | `test_reduce_protective_sl_lifecycle.py` 14 case PASS；AC3-P0-001..008 全过 |
+| DONE 2026-05-28 | P0 | `_cleanup_protective_orders_on_close()` owner-bound sweep | `executor.py:1169-1310` 三层 owner 判定（known_id / clord exact / `ca+namespace+bot` owner-prefix）；新增 `_make_owner_tag_clord_id()` / `_is_owner_clord_id()`；foreign/unknown 不撤、写 `state=foreign_algos_present` + `halt_required=True`；`close_position()` 透传 `protective_cleanup` 全字段 | `test_protective_cleanup_owner.py` 12 case PASS；AC3-P0-009..014 全过 |
+| DONE 2026-05-28 | P1 | 外部平仓 final close cause 证据与幂等 | `utils/realized_pnl_resolver.py::_classify_close_evidence` 输出 `final_close_cause/match_rule/confidence/matched_*_id`，仅 `exchange_sl` + `confidence>=0.9` 才 `is_strategy_stop=True`；`agents/trading/judge.py` 与 `agents/trading/reviewer.py` 按 `correction_event_id\|position_id` 幂等去重；Judge probe_short SL 计数受 `is_strategy_stop` 门控（仅 exchange_sl 才递增） | `test_external_close_final_cause.py` 9 + 2 case PASS；AC3-P1-001..007 全过 |
+| DONE 2026-05-28 | P2 | 新闻 ticker mention 边界匹配 | `utils/symbol_mentions.py` 提供 `match_symbol_in_text` / `extract_symbol_mentions` / `filter_relevant_headlines`；五条规则 cashtag/paren/pair/keyword/word + 正则边界 `(?<![A-Z0-9])SYM(?![A-Z0-9])`，TON/ARB/NEAR 等高歧义短 ticker 不放行 word 规则；`agents/research/news_researcher.py` 与 `agents/trading/multi_data_collector.py` 都走 helper；输出 `confidence/match_rule/source/freshness_sec` provenance | `test_symbol_mentions.py` 33 case PASS；AC3-P2-001..006 全过 |
+
+## 已完成历史整改记录
 
 | 状态 | 事项 | 下一步 | 验收标准 |
 |---|---|---|---|
+| DONE 2026-05-28 | 保护单 owner 收敛（P0 FR-001/FR-002） | EarlyReview 收敛到 `ContractExecutor.move_protective_sl`；`_replace_protective_sl` cancel/place fail-closed；live OKX 失败 halt | `test_protective_sl_owner.py` 11 case + `test_partial_tp_lifecycle.py::TestProtectiveSlSingleEntry` PASS；AC-P0-001 至 AC-P0-006 通过 |
+| DONE 2026-05-28 | Agent close path 不直接撤保护单（P0 FR-003） | trade_decision close / risk_alert / close_all / local_stop 全部走 `close_position()`；新增 `_cleanup_protective_orders_on_close` sweep + `protective_cleanup_state` 字段 | `test_judge_close_cause.py::TestCloseDoesNotDirectlyCancel` 6 case + 静态扫描 `rg cancel_order\( agents/trading/executor.py` 仅剩 helper 与 sweep 引用；AC-P0-007 至 AC-P0-011 通过 |
+| DONE 2026-05-28 | close cause / Judge cooldown 修复（P0 FR-004） | `_build_execution_result()` 自动注入 `exit_reason/close_cause/is_strategy_stop/is_risk_forced` + `result.protective_cleanup_state`；Judge `force_closed`/`closed_externally` 分支只在 `is_strategy_stop=True` 时调用 `_record_sl_hit()` | `test_judge_close_cause.py::TestExecutionResultCloseCause` 17 case + `TestJudgeRecordSlHit` 10 case PASS；AC-P0-012 至 AC-P0-015 通过 |
+| DONE 2026-05-28 | OKX testnet T10-T15 保护单/close cause 补验（人工） | `verify_okx_testnet_real.py` 扩 T10-T15：EarlyReview move、cancel failure halt、risk_alert close、local stop close、close_all、external SL；`_wait_no_live_algos` 兜住 51400/51412 异步生效 | T10/T11/T12/T13/T14/T15 6/6 PASS；报告：`docs/generated_reports/OKX执行语义testnet验收报告_20260528_063307.md`；全量 T0-T15 13 PASS / 3 SKIP（T2/T3 long_short_mode、T7 mock_only） |
 | OPEN | OKX net_mode 切换二次验收（可选） | 把 testnet 账户 posMode 切到 net_mode 后跑 T2/T3 | T2 reduce ratio in [0.4, 0.6]、T3 close 后无残余 algo；当前账户为 long_short_mode，已通过 mock 矩阵覆盖 net_mode 闭环 |
+| DONE 2026-05-28 | testnet/live 状态命名空间（P1 FR-008） | `utils/state_paths.py` 解析 `STATE_NAMESPACE=live|testnet|paper`，未设时 `USE_TESTNET=true→testnet`，否则 live；`executor.py` / `risk_manager.py` / `portfolio_risk_guard.py` / `multi_data_collector.py` / `judge.py` / `position_analyst.py` / `telegram_notifier.py` / `utils/halt_state.py` / `utils/live_ledger.py` 默认路径全部按 namespace 派生；`format_banner` 打印 namespace 与 6 个状态文件路径；live 默认完全兼容历史路径 | `test_state_namespace.py` 16 case PASS；AC-P1-007/008/009/010 通过 |
+| DONE 2026-05-28 | BehavioralCritic 字段契约统一（P1 FR-005） | `BEHAVIORAL_CRITIC_SCHEMA` 改为 canonical `counter_recommendation/confidence_in_challenge`；`_normalize_critic_payload` 把 legacy `counter_action/confidence` 别名补齐；`PositionAnalyst._arbitrate` 同时读两套字段 | `test_behavioral_critic_contract.py` 15 case PASS；AC-P1-001/002 通过 |
+| DONE 2026-05-28 | network 测试限时 + 缺 DB 干净 skip（P1 FR-007） | `test_kline.py` 用 `asyncio.wait_for` 5s 时间窗 + 网络异常 skip；`conftest.py` 新增 `klines_db` fixture 缺 `data/klines.db` 时 pytest.skip 并给出准备说明；`test_indicators.py` / `test_backtest.py` / `test_strategy.py` 改用该 fixture | `pytest -q -m network` 4 case 12s PASS；缺 DB 时 3 skipped 1.9s；AC-P1-005/006 通过 |
 
 ## P2 后续优化
 
 | 状态 | 事项 | 下一步 | 验收标准 |
 |---|---|---|---|
-| OPEN | BehavioralCritic 字段契约统一 | 统一 `BEHAVIORAL_CRITIC_SCHEMA`、prompt、fallback 和 `PositionAnalyst` 消费字段 | LLM 按 schema 或 prompt 输出时，PA 都能读取 counter 建议；新增坏 JSON/缺字段测试 |
+| OPEN | 真实已实现 PnL 账本 Phase 4 testnet 矩阵 | OKX testnet 跑 T0..T6（fills 直达 / bills 兜底 / mismatch / pending_fx / ambiguous / external SL / 异步资源对账） | 6 case 真实 testnet 全过 + 报告 `docs/generated_reports/realized_pnl_ledger_testnet_*.md` |
 | OPEN | Paper 结果独立复盘 | 为 `paper_execution_result` 增加 version 或单独 paper reviewer/dashboard | 可查看 paper vs live 胜率、EV、回撤，不污染 live Reviewer |
 | OPEN | LLM audit 脱敏和保留策略 | 增加 `LLM_AUDIT_RETENTION_DAYS`、原始 prompt 记录开关、敏感字段脱敏 | 日志保留可配置，默认不长期保留敏感输入/响应 |
 | OPEN | `ContractExecutor` exchange 创建统一 | 将根 `executor.py` 的 ccxt 创建收敛到 `utils/exchange_factory.py` 或共享 helper | 所有 exchange client 的 sandbox/live 语义由单一入口控制 |
@@ -49,6 +81,11 @@
 | Long Entry Position Guard | `Judge._check_entry_position_policy` 单一函数收敛主路径与 `deferred_15m_confirmation` / `deferred_pullback` / `deferred_chase` 三条 deferred 路径；命中 `range_pos>=0.82` 或 `pre_12h>=0.05 ∧ range_pos>=0.75` 或 `prev_daily>=0.10 ∧ range_pos>=0.75` 标记 `entry_position_status=overheated`，有有效回调目标时进入 `deferred_pullback_overheat`（`chase_eligible=false`），否则直拒；`plan.entry_type` 在 EV gate 之前写入避免 `unknown` bucket key；EV bucket 增加 sparse-sample 保护（`EV_BUCKET_MIN_TRADES=10`，`EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`）；`event_backtest.py` 与 live 同构；`test_long_entry_position_guard.py` 23 case PASS（覆盖 AC-LONGPOS-01..17）；详见 `docs/long_entry_position_guard_prd.md` 与 `docs/long_entry_position_guard_acceptance.md` |
 | 分批止盈生命周期收敛 阶段 1+2+3 | `_build_okx_attach_algo` 不再带 TP；`reduce_position(tp_advance)` 真实成交后才推进 `tp_filled` 并锁利位；`_replace_protective_sl` 单一入口替代所有 SL cancel/place；`_make_sl_clord_id` + `_resolve_attached_sl_algo_id` 让 smart_open 通过 `attachAlgoClOrdId` 回查 algoId；`add_to_position` 在 `protection_state != protected` 时拒绝；`_migrate_okx_algos_for_symbol` 在重启/sync 后清理存量 algo（TP 一律撤、唯一 SL 归属本地、orphan 全撤、无 SL/多 SL/方向冲突 live halt）；`test_partial_tp_lifecycle.py` 32 case PASS；详见 `docs/partial_tp_lifecycle_prd.md` / `docs/partial_tp_lifecycle_acceptance.md` |
 | OKX 真实 testnet 语义验收 | T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP（账户为 long_short_mode），T7 SKIP（mock_only 已 PASS）。报告：`docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`。bug 修复：`_cancel_protective_sl` / `_cancel_algo_by_id` 改走 `cancel_orders([id], symbol, params={'trigger': True})`（直接 `private_post_trade_cancel_algos` 传 dict/list 都被 OKX 拒成 50002）。工具：`verify_okx_testnet_real.py` + `.env.testnet` 隔离 testnet 凭证 |
+| 2026-05-28 P0 整改代码与单测 | FR-001 EarlyReview → `ContractExecutor.move_protective_sl` 单一公开入口；FR-002 `_replace_protective_sl` 撤旧失败不挂新 SL，live OKX 失败 halt；FR-003 Agent close path 7 处直接 `cancel_order(sl_order_id)` 全部移除，`close_position()` 调用新增 `_cleanup_protective_orders_on_close` sweep 出 owner-tagged orphan algo，结果挂到 `result.protective_cleanup_state ∈ {cleaned/none/failed/unknown}`；FR-004 `_build_execution_result()` 在 close action 注入 `exit_reason/close_cause/is_strategy_stop/is_risk_forced`，Judge 仅在 `is_strategy_stop=True` 时记 SL hit；新增 `test_protective_sl_owner.py` 11 case + `test_judge_close_cause.py` 33 case；fixed legacy `test_executor_upgrade.py` / `test_riskguard_upgrade.py` / `test_full_pipeline.py` 三处 `cancel_order` 断言；全量回归 `668 passed / 4 deselected / 1 warning`。AC-P0-001..015 全过 |
+| OKX testnet T10-T15 保护单/close cause 真实补验 | 2026-05-28 6/6 PASS。T10 EarlyReview `move_protective_sl` 单一入口契约（ProtectiveSLResult 全字段、唯一新 algo、protection_state=protected）；T11 `_cancel_protective_sl` 失败时不挂新 SL（cancel_ok=False、place_call_count=0、sl_sync_state=failed、protection_state=unknown、本地 SL 保留、halt_required=False testnet 不 halt）；T12 risk_alert close（exit_reason=risk_emergency / is_risk_forced=True / is_strategy_stop=False）；T13 local_stop（exit_reason=local_stop_loss / is_strategy_stop=True）；T14 close_all（exit_reason=system_close_all / is_risk_forced=True）；T15 external_close 三种 reason 映射。OKX testnet 51400/51412 异步生效用 `_wait_no_live_algos` 轮询补撤兜住，残留 live algo=0 时接受 cleanup_state=failed。报告：`docs/generated_reports/OKX执行语义testnet验收报告_20260528_063307.md`，原始 trace `data/testnet_verify_20260528_063307.jsonl`，备份 `data/backup_T10_T15_20260528_142129/` |
+| 真实已实现 PnL 账本 Phase 1+2 | 2026-05-28 落地，`711 passed`。新增 `utils/realized_pnl_resolver.py`：唯一 OKX fills-history+bills 解析入口，pnl_status 集合 `final/pending/estimated/mismatch/pending_fx`，bills 阈值 `max(0.10, |bills_net|*0.05)`，funding subType 173/7 单独累加 `funding_usdt`，fee 非 USDT 落 `pending_fx`。`utils/live_ledger.py`：拆出 `record_pending_external_close()`（写 `realized_pnl_net_usdt=None` + `close_match_key`）+ `apply_pnl_resolution()`（写 correction 事件，含 `supersedes_event_id`/`correction_seq`，幂等 upsert）+ `find_pending_external_closes()` + `daily_realized_pnl(final_only=True)` 跳过 superseded。`utils/reconciliation.py` 加 `auto_resolve_pending(since_ts, max_attempts)` 把 pending 升级 final 返回摘要给 Executor 发布。`agents/trading/executor.py`：外部平仓走 dual-payload（先 `closed_externally pnl_is_final=False`，再 `asyncio.create_task` 调 resolver 升级，发 `pnl_resolved/pnl_mismatch`）；`_run_reconciliation` tick 自动消费 pending 队列。`agents/trading/reviewer.py`：订阅 `pnl_resolved`/`pnl_mismatch`，pending 不进 `trade_history.json`，final upsert by `entry_request_id`/`position_id`，新增 `_payload_pnl_is_final/_payload_pnl_value` helper。`agents/trading/judge.py`：`force_closed`/`closed_externally` 分支按 `pnl_is_final=True` 守门 archetype_cooldown / probe_short SL count。`execution_result.v2` 在 close 路径自动注入 `pnl_status / pnl_is_final / pnl_source / realized_pnl_net_usdt / estimated_pnl / position_id / entry_request_id`。新增 `test_exchange_realized_pnl_resolver.py` 12 case 覆盖 AC-A1/A2/A3 match+mismatch/A4/A5/A7/A8/A9/A12/D1/D2；`test_live_ledger.py` external_close 测试改 pending 契约（pnl_status=pending、realized_pnl_net_usdt=None、close_match_key 非空）；fixed legacy `test_executor_upgrade.py`/`test_riskguard_upgrade.py`/`test_full_pipeline.py` 三处 `cancel_order` 断言。Phase 3 backfill 与 Phase 4 testnet 矩阵 deferred。详见 `docs/exchange_realized_pnl_ledger_prd.md` / `docs/exchange_realized_pnl_ledger_acceptance.md` |
+| 真实已实现 PnL 账本 Phase 3 backfill | 2026-05-28 落地，`727 passed`。新增 `scripts/backfill_realized_pnl.py`：扫 `events.jsonl` 中 `pnl_status=pending` 或 legacy（`pnl_status` 缺失 + `source=='estimated'`） 的 `external_close` 事件（自动排除已被 `supersedes_event_id` 引用的）；调 `RealizedPnlResolver.resolve_external_close()` 拉 OKX fills-history+bills 升级 final；dry-run（默认）输出 old_pnl/new_pnl/delta/source 表格不写文件；`--apply` 走 `LiveLedger.apply_pnl_resolution()` 写 `external_close_correction` 事件（`supersedes_event_id` 指向原 pending、`correction_seq` 单调 +1），仅 status ∈ `{final/mismatch/pending_fx}` 才写；支持 `--since/--until/--symbol/--testnet/--events-path/--lifecycle-path/--json-out`，`--dry-run` 与 `--apply` 互斥（默认 dry-run 安全）；`run()` 接受注入 ledger/resolver/exchange 便于单测。新增 `test_realized_pnl_backfill.py` 16 case 覆盖 AC-A10（dry-run 不动 events.jsonl byte 级一致 + delta 输出）+ AC-A11（apply 写 correction、不删旧 JSONL、幂等：第二次 apply 候选清零、lifecycle 累计不变、summary resolved/pending/mismatch/pending_fx/skipped/needs_exchange_data 计数齐全）+ legacy estimated 检测 + superseded 排除 + symbol/since/until 过滤 + parser dry/apply 互斥 + `--json-out` audit。Phase 4 testnet 矩阵 deferred |
+
 
 ## 常用验证命令
 

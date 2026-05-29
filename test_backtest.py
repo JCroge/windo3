@@ -29,13 +29,15 @@ def load_klines(symbol='BTCUSDT', interval='1m', limit=100):
 import pytest
 
 @pytest.mark.network
-def test_backtest():
-    """测试回测引擎"""
+def test_backtest(klines_db):
+    """测试回测引擎（依赖 data/klines.db；缺则 skip）"""
     print("=== 回测测试 ===\n")
 
     # 1. 加载数据
     print("1. 加载K线数据...")
     df = load_klines('BTCUSDT', '1m', 100)
+    if len(df) == 0:
+        pytest.skip("klines.db 没有 BTCUSDT 1m 数据，请先运行 `python3 test_kline.py` 采集")
     print(f"   ✅ 加载了 {len(df)} 条K线\n")
 
     # 2. 运行策略

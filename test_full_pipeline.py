@@ -401,8 +401,9 @@ async def test_full_trading_cycle():
     mock_exec.positions = {"SOL-USDT-SWAP": {"sl_order_id": "sl_abc"}}
     await executor._handle_risk_alert(risk_msg['payload'])
     mock_exec.close_position.assert_called_once_with("SOL-USDT-SWAP")
-    mock_exec.cancel_order.assert_called_once_with("SOL-USDT-SWAP", "sl_abc")
-    print("    ✓ Executor 平仓 SOL-USDT-SWAP + 撤销止损单")
+    # FR-003: close_position() 内部撤保护单,Agent 层不再直接 cancel_order
+    mock_exec.cancel_order.assert_not_called()
+    print("    ✓ Executor 平仓 SOL-USDT-SWAP (保护单清理由 close_position 内部完成)")
 
     # Step 5: RiskGuard收到force_closed，移除持仓
     print("  [Step 5] force_closed → RiskGuard 移除持仓")

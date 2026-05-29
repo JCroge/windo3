@@ -256,6 +256,9 @@ class TestDailyPnl:
 
 class TestExternalClose:
     def test_external_close_with_order_info(self, ledger, mock_exchange):
+        """PRD §6.2: record_external_close 不再尝试同步拿真实成交,
+        统一走 pending 路径(等 RealizedPnlResolver 异步升级 final)
+        """
         ledger.record_open(
             order_id='o1', symbol='WLD-USDT-SWAP', side='short',
             amount_usdt=8.0, leverage=3, estimated_price=2.0
@@ -265,11 +268,11 @@ class TestExternalClose:
             entry_price=2.0, amount_usdt=8.0, leverage=3,
             order_info={'id': 'ext_1', 'average': 2.05, 'fee': {'cost': 0.03, 'currency': 'USDT'}}
         )
-        assert event['source'] == 'okx_order'
-        assert event['fill_price'] == 2.05
-        # short: (2.0 - 2.05) / 2.0 * 8 * 3 - 0.03 = -0.63
-        expected = (2.0 - 2.05) / 2.0 * 8.0 * 3 - 0.03
-        assert abs(event['realized_pnl'] - expected) < 0.01
+        assert event['source'] == 'estimated'
+        assert event['pnl_status'] == 'pending'
+        assert event['reconcile_status'] == 'pending'
+        assert event['realized_pnl_net_usdt'] is None
+        assert event.get('close_match_key')  # 升级 final 用
 
     def test_external_close_fallback_estimated(self, ledger, mock_exchange):
         ledger.record_open(
@@ -283,6 +286,7 @@ class TestExternalClose:
         )
         assert event['source'] == 'estimated'
         assert event['reconcile_status'] == 'pending'
+        assert event['pnl_status'] == 'pending'
 
 
 class TestPersistence:

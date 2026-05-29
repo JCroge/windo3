@@ -12,16 +12,13 @@ __pycache__/
 venv/
 ENV/
 
-# Data
-data/*.db
-data/*.db-journal
-data/*.json
-data/*.jsonl
-data/journal/
+# Data — 递归忽略所有 data/ 内容（含 backup_*/ 子目录里的真实账户流水）
+data/**
+!data/.gitkeep
 
-# Logs
-logs/*.log
-logs/*.jsonl
+# Logs — 递归忽略
+logs/**
+!logs/.gitkeep
 
 # IDE
 .vscode/

@@ -206,7 +206,8 @@ def test_behavioral_critic_schema_fills_defaults():
     cleaned, errors = validate_against_schema(data, BEHAVIORAL_CRITIC_SCHEMA)
     assert cleaned['bias_detected'] == 'loss_aversion'
     assert cleaned['severity'] == 'none'
-    assert cleaned['confidence'] == 0
+    assert cleaned['confidence_in_challenge'] == 0
+    assert cleaned['counter_recommendation'] == ''
     assert 'missing:severity' in errors
 
 
@@ -217,12 +218,14 @@ def test_behavioral_critic_schema_invalid_severity():
         'bias_detected': 'fomo',
         'severity': 'extreme',
         'challenge': 'test',
-        'counter_action': 'hold',
-        'confidence': 70,
+        'counter_recommendation': 'hold',
+        'confidence_in_challenge': 70,
     }
     cleaned, errors = validate_against_schema(data, BEHAVIORAL_CRITIC_SCHEMA)
     assert cleaned['severity'] == 'none'
     assert any('not_allowed:severity' in e for e in errors)
+    assert cleaned['counter_recommendation'] == 'hold'
+    assert cleaned['confidence_in_challenge'] == 70
 
 
 def test_final_synthesis_schema():

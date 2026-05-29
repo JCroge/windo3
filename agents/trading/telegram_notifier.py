@@ -8,6 +8,15 @@ import datetime
 import aiohttp
 from agents.base import BaseAgent
 from utils.halt_state import get_halt_state
+from utils.state_paths import get_state_paths
+
+
+def _positions_path() -> str:
+    return get_state_paths().positions
+
+
+def _riskguard_path() -> str:
+    return get_state_paths().riskguard_state
 
 
 class TelegramNotifier(BaseAgent):
@@ -19,6 +28,8 @@ class TelegramNotifier(BaseAgent):
         "strategy_review",
         "telegram_alert",
         "data_alert",
+        "pnl_resolved",
+        "pnl_mismatch",
     ]
 
     def __init__(self, config: dict = None):
@@ -73,6 +84,10 @@ class TelegramNotifier(BaseAgent):
             await self._send_message(f"{prefix} {text}")
         elif msg['type'] == 'data_alert':
             await self._handle_data_alert(msg)
+        elif msg['type'] == 'pnl_resolved':
+            await self._handle_pnl_resolved(msg)
+        elif msg['type'] == 'pnl_mismatch':
+            await self._handle_pnl_mismatch(msg)
 
     async def tick(self):
         if not self._enabled:
@@ -125,12 +140,31 @@ class TelegramNotifier(BaseAgent):
                 return
             self._close_notify_cache[symbol] = now
 
-            pnl = result.get('pnl', 0)
-            emoji = '💰' if pnl > 0 else '💸'
+            pnl_is_final = bool(
+                result.get('pnl_is_final',
+                           payload.get('pnl_is_final', True))
+            )
+            pnl_raw = result.get('realized_pnl_net_usdt')
+            if pnl_raw is None:
+                pnl_raw = result.get('pnl')
             reason = payload.get('reason', '交易所SL/TP触发' if status == 'closed_externally' else '主动平仓')
-            text = f"{emoji} 平仓 {symbol}\nPnL: {pnl:+.2f} USDT | 原因: {reason}"
-            await self._send_message(text)
-            self._update_daily_summary(pnl)
+
+            if pnl_is_final and pnl_raw is not None:
+                pnl = float(pnl_raw)
+                emoji = '💰' if pnl > 0 else '💸'
+                text = f"{emoji} 平仓 {symbol}\nPnL: {pnl:+.2f} USDT | 原因: {reason}"
+                await self._send_message(text)
+                self._update_daily_summary(pnl)
+            else:
+                # pending: 走 estimated_pnl,等 pnl_resolved 升级后再计 daily summary
+                est = result.get('estimated_pnl')
+                est_str = f"{float(est):+.2f}" if est is not None else "N/A"
+                text = (
+                    f"⏳ 平仓 {symbol}\n"
+                    f"PnL 待交易所账单确认 | 原因: {reason}\n"
+                    f"估算: {est_str} USDT"
+                )
+                await self._send_message(text)
 
     async def _handle_hard_stop(self, msg: dict):
         payload = msg['payload']
@@ -181,6 +215,53 @@ class TelegramNotifier(BaseAgent):
             await self._send_message(
                 f"⚠️ 数据采集告警: {symbol} 连续{consecutive_failures}次失败\n{str(error)[:100]}"
             )
+
+    async def _handle_pnl_resolved(self, msg: dict):
+        """PRD §6.2 dual-payload: pending → final 升级,补 daily summary"""
+        payload = msg['payload']
+        symbol = payload.get('symbol', '?')
+        final_pnl = payload.get('realized_pnl_net_usdt')
+        if final_pnl is None:
+            return
+        try:
+            final_pnl = float(final_pnl)
+        except (TypeError, ValueError):
+            return
+        emoji = '💰' if final_pnl > 0 else '💸'
+        est = payload.get('estimated_pnl')
+        if est is not None:
+            try:
+                est_str = f"{float(est):+.2f}"
+            except (TypeError, ValueError):
+                est_str = "N/A"
+        else:
+            est_str = "N/A"
+        confidence = payload.get('match_confidence')
+        conf_str = f" | 置信:{float(confidence):.2f}" if confidence is not None else ""
+        text = (
+            f"{emoji} PnL 校正 {symbol}\n"
+            f"估算 {est_str} → 终值 {final_pnl:+.2f} USDT{conf_str}"
+        )
+        await self._send_message(text)
+        self._update_daily_summary(final_pnl)
+
+    async def _handle_pnl_mismatch(self, msg: dict):
+        """PRD §6.2 dual-payload: fills/bills 偏差 → 人工复核告警,不进 daily"""
+        payload = msg['payload']
+        symbol = payload.get('symbol', '?')
+        local = payload.get('estimated_pnl')
+        exch = payload.get('exchange_pnl_usdt')
+        warnings = payload.get('warnings', []) or []
+        local_str = f"{float(local):+.2f}" if local is not None else "N/A"
+        exch_str = f"{float(exch):+.2f}" if exch is not None else "N/A"
+        text = (
+            f"⚠️ PnL 对账偏差 {symbol}\n"
+            f"本地估算: {local_str} | 交易所: {exch_str}\n"
+            f"需人工复核"
+        )
+        if warnings:
+            text += f"\n标记: {','.join(warnings[:3])}"
+        await self._send_message(text)
 
     async def _handle_strategy_review(self, msg: dict):
         payload = msg['payload']
@@ -302,7 +383,7 @@ class TelegramNotifier(BaseAgent):
 
         positions = {}
         try:
-            with open('data/positions.json', 'r') as f:
+            with open(_positions_path(), 'r') as f:
                 positions = json.load(f)
         except Exception:
             pass
@@ -321,7 +402,7 @@ class TelegramNotifier(BaseAgent):
                 reconciliation = f"对账: {hs.reconciliation_result}"
         except Exception:
             try:
-                with open('data/riskguard_state.json', 'r') as f:
+                with open(_riskguard_path(), 'r') as f:
                     halted = json.load(f).get('trading_halted', False)
             except Exception:
                 pass
@@ -342,7 +423,7 @@ class TelegramNotifier(BaseAgent):
     async def _cmd_positions(self):
         positions = {}
         try:
-            with open('data/positions.json', 'r') as f:
+            with open(_positions_path(), 'r') as f:
                 positions = json.load(f)
         except Exception:
             pass
@@ -435,14 +516,14 @@ class TelegramNotifier(BaseAgent):
 
             executor_positions = {}
             try:
-                with open('data/positions.json', 'r') as f:
+                with open(_positions_path(), 'r') as f:
                     executor_positions = json.load(f)
             except Exception:
                 pass
 
             riskguard_positions = {}
             try:
-                with open('data/riskguard_state.json', 'r') as f:
+                with open(_riskguard_path(), 'r') as f:
                     rg_state = json.load(f)
                     riskguard_positions = rg_state.get('positions', {})
             except Exception:

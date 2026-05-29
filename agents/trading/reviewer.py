@@ -8,9 +8,35 @@ import datetime
 from agents.base import BaseAgent
 
 
+def _payload_pnl_is_final(payload: dict, result: dict) -> bool:
+    """PRD §6.2: 仅 pnl_is_final=True 才允许进入 trade_history。
+    无字段(老 payload)默认按 final 兼容,但 closed_externally 必须显式 final。
+    """
+    explicit = result.get('pnl_is_final')
+    if explicit is None:
+        explicit = payload.get('pnl_is_final')
+    if explicit is not None:
+        return bool(explicit)
+    status_text = result.get('pnl_status') or payload.get('pnl_status')
+    if status_text == 'pending' or status_text == 'pending_fx' or status_text == 'mismatch':
+        return False
+    if payload.get('status') == 'closed_externally':
+        return False  # external_close 默认 pending,直到 pnl_resolved 升级
+    return True  # 其他兼容老 payload(reduce/internal close)按 final
+
+
+def _payload_pnl_value(result: dict) -> float:
+    """优先取 realized_pnl_net_usdt(final),降级 pnl/realized_pnl。"""
+    net = result.get('realized_pnl_net_usdt')
+    if net is not None:
+        return float(net)
+    return float(result.get('pnl') or result.get('realized_pnl') or 0)
+
+
 class ReviewerAgent(BaseAgent):
     name = "reviewer"
-    subscriptions = ["execution_result", "research_trigger", "risk_alert"]
+    subscriptions = ["execution_result", "research_trigger", "risk_alert",
+                     "pnl_resolved", "pnl_mismatch"]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -29,6 +55,10 @@ class ReviewerAgent(BaseAgent):
         self.consecutive_loss_limit = config.get('consecutive_loss_limit', 3) if config else 3
         # latch：当日已触发则不重复发，UTC 日切时重置
         self._hard_stop_triggered_date: str = ''
+        # FR-3C: pnl_resolved 幂等去重(按 correction_event_id),防止 Resolver 重发
+        # 同一升级事件导致重复 append/upsert trade_history。
+        self._processed_resolution_ids: set = set()
+        self._processed_resolution_max = 1024
 
     async def setup(self):
         self._load_trade_history()
@@ -37,6 +67,9 @@ class ReviewerAgent(BaseAgent):
     async def on_message(self, msg: dict):
         if msg['type'] == 'execution_result':
             await self._process_trade_result(msg)
+            await self._check_daily_hard_stop()
+        elif msg['type'] in ('pnl_resolved', 'pnl_mismatch'):
+            await self._apply_pnl_resolution(msg)
             await self._check_daily_hard_stop()
         elif msg['type'] == 'research_trigger':
             await self._run_strategy_review()
@@ -68,7 +101,13 @@ class ReviewerAgent(BaseAgent):
         # 记录减仓 PnL（risk_reduced 状态）
         if status == 'risk_reduced':
             result = payload.get('result', {})
-            pnl = result.get('pnl', result.get('realized_pnl', 0))
+            # PRD §6.2: pending PnL 不落 trade_history(等 pnl_resolved 升级 final 再 upsert)
+            if not _payload_pnl_is_final(payload, result):
+                self.logger.info(
+                    f"[复盘] reduce pending(等待 final): "
+                    f"{msg.get('symbol') or payload.get('symbol')}")
+                return
+            pnl = _payload_pnl_value(result)
             if pnl != 0:
                 symbol = msg.get('symbol') or payload.get('symbol')
                 trade_record = {
@@ -80,6 +119,10 @@ class ReviewerAgent(BaseAgent):
                     'confidence': payload.get('confidence', 0),
                     'source': payload.get('source', ''),
                     'correlation_id': payload.get('correlation_id', ''),
+                    'pnl_status': 'final',
+                    'pnl_source': result.get('pnl_source', payload.get('pnl_source', '')),
+                    'entry_request_id': result.get('entry_request_id', ''),
+                    'position_id': result.get('position_id', ''),
                 }
                 self.trade_history.append(trade_record)
                 self._save_trade_history()
@@ -97,9 +140,16 @@ class ReviewerAgent(BaseAgent):
         if action in ('open_long', 'open_short') and status == 'executed':
             pass
         elif action == 'close' or status in ('force_closed', 'closed_externally'):
-            # 平仓：记录完整交易
+            # PRD §6.2: pending external_close 不进 trade_history,
+            # 等 pnl_resolved 异步事件 upsert 才记。
+            if not _payload_pnl_is_final(payload, result):
+                self.logger.info(
+                    f"[复盘] close pending(等待 final): "
+                    f"{msg.get('symbol') or payload.get('symbol')} "
+                    f"reason={result.get('pnl_pending_reason', '')}")
+                return
             symbol = msg.get('symbol') or payload.get('symbol')
-            pnl = result.get('pnl', result.get('realized_pnl', 0))
+            pnl = _payload_pnl_value(result)
             attribution = result.get('attribution') or payload.get('attribution', {})
             side = result.get('side') or attribution.get('side', '')
             if not side:
@@ -121,6 +171,10 @@ class ReviewerAgent(BaseAgent):
                 'dispatch_path': (payload.get('attribution') or {}).get('dispatch_path', ''),
                 'source': payload.get('source', ''),
                 'correlation_id': payload.get('correlation_id', ''),
+                'position_id': result.get('position_id', ''),
+                'pnl_status': 'final',
+                'pnl_source': result.get('pnl_source', payload.get('pnl_source', '')),
+                'realized_pnl_net_usdt': result.get('realized_pnl_net_usdt', pnl),
             }
 
             # RQ-07: 归因字段（从 execution_result 中提取）
@@ -148,6 +202,90 @@ class ReviewerAgent(BaseAgent):
             self._save_trade_history()
 
             self.logger.info(f"[复盘] 记录交易: {symbol} PnL={pnl:.2f} USDT")
+
+    async def _apply_pnl_resolution(self, msg: dict):
+        """PRD §6.2: pnl_resolved/pnl_mismatch 异步事件 upsert trade_history。
+
+        - status=final: 按 entry_request_id/position_id 找已有 close 记录,有则更新 pnl,
+          无则 append 新 record(交易所主动平仓本就没经过 trade_decision)
+        - status=mismatch/pending_fx: 不计入,只记 warning
+        """
+        payload = msg['payload']
+        status = payload.get('pnl_status', '')
+        symbol = msg.get('symbol') or payload.get('symbol')
+        if status != 'final':
+            self.logger.warning(
+                f"[复盘] pnl_resolution status={status} 不入账: "
+                f"{symbol} warnings={payload.get('warnings', [])}")
+            return
+
+        # FR-3C: 幂等去重(correction_event_id/resolution_id)
+        resolution_key = (payload.get('correction_event_id')
+                          or payload.get('resolution_id')
+                          or payload.get('supersedes_event_id') or '')
+        if resolution_key:
+            pos_id = payload.get('position_id', '')
+            idem_key = f"{resolution_key}|{pos_id}"
+            if idem_key in self._processed_resolution_ids:
+                self.logger.info(
+                    f"[复盘] pnl_resolved 幂等跳过 key={idem_key}")
+                return
+            self._processed_resolution_ids.add(idem_key)
+            if len(self._processed_resolution_ids) > self._processed_resolution_max:
+                self._processed_resolution_ids = set(
+                    list(self._processed_resolution_ids)[-self._processed_resolution_max // 2:])
+
+        pnl = payload.get('realized_pnl_net_usdt')
+        if pnl is None:
+            pnl = payload.get('pnl', 0)
+        pnl = float(pnl or 0)
+        entry_req_id = payload.get('entry_request_id', '')
+        position_id = payload.get('position_id', '')
+
+        # 找已有 close 记录(可能是先发的 risk_reduced 或 closed_externally pending,
+        # 但 pending 我们没记;这里主要兜住将来 partial reduce 的最终升级)
+        target = None
+        for rec in reversed(self.trade_history):
+            if rec.get('event_type') not in ('close', 'reduce'):
+                continue
+            if entry_req_id and rec.get('entry_request_id') == entry_req_id:
+                target = rec
+                break
+            if position_id and rec.get('position_id') == position_id:
+                target = rec
+                break
+
+        if target is not None:
+            target['pnl'] = pnl
+            target['realized_pnl_net_usdt'] = pnl
+            target['pnl_status'] = 'final'
+            target['pnl_source'] = payload.get('pnl_source', '')
+            target['updated_at'] = time.time()
+            self._save_trade_history()
+            self.logger.info(
+                f"[复盘] upsert pnl_resolved: {symbol} PnL={pnl:+.4f} USDT "
+                f"(req={entry_req_id})")
+            return
+
+        # external_close pending 没进 trade_history,这里 append 一笔
+        trade_record = {
+            'timestamp': msg.get('timestamp', time.time()),
+            'symbol': symbol,
+            'status': 'closed_externally',
+            'pnl': pnl,
+            'realized_pnl_net_usdt': pnl,
+            'event_type': 'close',
+            'exit_reason': 'pnl_resolved',
+            'entry_request_id': entry_req_id,
+            'position_id': position_id,
+            'pnl_status': 'final',
+            'pnl_source': payload.get('pnl_source', ''),
+            'correlation_id': payload.get('correlation_id', ''),
+        }
+        self.trade_history.append(trade_record)
+        self._save_trade_history()
+        self.logger.info(
+            f"[复盘] append pnl_resolved: {symbol} PnL={pnl:+.4f} USDT")
 
     async def _check_daily_hard_stop(self):
         """检查daily hard stop触发条件"""

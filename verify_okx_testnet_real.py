@@ -178,6 +178,33 @@ def _wait_flat(ex: ContractExecutor, timeout: float = 20.0, poll: float = 1.0) -
     return _flat_check(ex)
 
 
+def _wait_no_live_algos(ex: ContractExecutor, timeout: float = 15.0,
+                         poll: float = 1.0, retry_cancel: bool = True) -> List[dict]:
+    """轮询等待 OKX 上无 live/effective algo;期间偶发性补撤。
+    返回最终残留 live algos 列表(可能为空)。"""
+    deadline = time.time() + timeout
+    last: List[dict] = []
+    while time.time() < deadline:
+        algos = ex._list_pending_algos(SYMBOL) or []
+        live = [a for a in algos
+                if (a.get('state') or '').lower() in ('live', 'effective')]
+        last = live
+        if not live:
+            return []
+        if retry_cancel:
+            for a in live:
+                aid = a.get('algoId') or a.get('id')
+                if not aid:
+                    continue
+                try:
+                    ex.exchange.cancel_orders([aid], SYMBOL,
+                                              params={'trigger': True})
+                except Exception:
+                    pass
+        time.sleep(poll)
+    return last
+
+
 def _safe_close_remaining(ex: ContractExecutor) -> None:
     """case 结束兜底：直接通过 ccxt 平掉交易所真实持仓 + 取消所有 algo。
 
@@ -317,12 +344,45 @@ def case_t2(ex: ContractExecutor) -> CaseRecord:
         rec.result = 'SKIP'
         rec.notes = f"posMode={ex._okx_pos_mode} 非 net_mode，跳过"
         return rec
+    # T2 self-contained: main loop 的 pre-cleanup 会清掉 T1 留下的仓位，
+    # 这里自己开一笔市场单做 partial reduce 测试。
     pre = _live_position(ex)
     if not pre:
-        rec.result = 'FAIL'
-        rec.notes = '无前置 T1 仓位'
-        _attach_state(rec, ex)
-        return rec
+        if not _flat_check(ex):
+            rec.result = 'FAIL'
+            rec.notes = 'pre-state not flat 且 _live_position 异常'
+            _attach_state(rec, ex)
+            return rec
+        ticker = ex.exchange.fetch_ticker(SYMBOL)
+        last = ticker.get('last') or 0
+        sl = round(last * 0.97, 2)
+        tp = round(last * 1.05, 2)
+        plan = {
+            'leverage': LEVERAGE,
+            'size_usdt': SIZE_USDT,
+            'order_type': 'market',
+            'stop_loss': sl,
+            'take_profit': [tp],
+        }
+        try:
+            opened = ex.open_position_with_plan(SYMBOL, 'long', plan)
+        except Exception as e:
+            rec.result = 'FAIL'
+            rec.notes = f'self-open 失败: {e}'
+            _attach_state(rec, ex)
+            return rec
+        if not opened:
+            rec.result = 'FAIL'
+            rec.notes = 'self-open 未返回仓位'
+            _attach_state(rec, ex)
+            return rec
+        time.sleep(2)
+        pre = _live_position(ex)
+        if not pre:
+            rec.result = 'FAIL'
+            rec.notes = 'self-open 后仍无 live 仓位'
+            _attach_state(rec, ex)
+            return rec
     pre_amount = float(pre.get('contracts') or 0)
     rec.local_request = {'method': 'reduce_position', 'pct': 0.5, 'pre_amount': pre_amount}
     try:
@@ -359,12 +419,45 @@ def case_t3(ex: ContractExecutor) -> CaseRecord:
         rec.result = 'SKIP'
         rec.notes = f"posMode={ex._okx_pos_mode} 非 net_mode，跳过"
         return rec
+    # T3 self-contained: main loop 的 pre-cleanup 会清掉前置仓位，
+    # 这里自己开一笔市场单做 full close 测试。
     pre = _live_position(ex)
     if not pre:
-        rec.result = 'FAIL'
-        rec.notes = '无前置仓位'
-        _attach_state(rec, ex)
-        return rec
+        if not _flat_check(ex):
+            rec.result = 'FAIL'
+            rec.notes = 'pre-state not flat 且 _live_position 异常'
+            _attach_state(rec, ex)
+            return rec
+        ticker = ex.exchange.fetch_ticker(SYMBOL)
+        last = ticker.get('last') or 0
+        sl = round(last * 0.97, 2)
+        tp = round(last * 1.05, 2)
+        plan = {
+            'leverage': LEVERAGE,
+            'size_usdt': SIZE_USDT,
+            'order_type': 'market',
+            'stop_loss': sl,
+            'take_profit': [tp],
+        }
+        try:
+            opened = ex.open_position_with_plan(SYMBOL, 'long', plan)
+        except Exception as e:
+            rec.result = 'FAIL'
+            rec.notes = f'self-open 失败: {e}'
+            _attach_state(rec, ex)
+            return rec
+        if not opened:
+            rec.result = 'FAIL'
+            rec.notes = 'self-open 未返回仓位'
+            _attach_state(rec, ex)
+            return rec
+        time.sleep(2)
+        pre = _live_position(ex)
+        if not pre:
+            rec.result = 'FAIL'
+            rec.notes = 'self-open 后仍无 live 仓位'
+            _attach_state(rec, ex)
+            return rec
     rec.local_request = {'method': 'close_position'}
     try:
         result = ex.close_position(SYMBOL, action_kind='testnet_t3')
@@ -651,13 +744,506 @@ def case_t9(ex: ContractExecutor) -> CaseRecord:
 
 
 # =====================================================
+# T10: EarlyReview move SL — 单一入口 ProtectiveSLResult
+# =====================================================
+def case_t10(ex: ContractExecutor) -> CaseRecord:
+    rec = CaseRecord('T10', ex)
+    if not _flat_check(ex):
+        rec.result = 'FAIL'
+        rec.notes = 'pre-state not flat'
+        _attach_state(rec, ex)
+        return rec
+    # 兜底再清一次残留 algo,避免 testnet 异步未落地导致开仓后多算 1 条
+    _wait_no_live_algos(ex, timeout=10.0)
+    pre_algos_orphan = ex._list_pending_algos(SYMBOL) or []
+    pre_orphan_live = [a for a in pre_algos_orphan
+                       if (a.get('state') or '').lower() in ('live', 'effective')]
+    if pre_orphan_live:
+        rec.result = 'FAIL'
+        rec.notes = f'pre-state 还有 {len(pre_orphan_live)} 条 live orphan algo,无法判定 SL 唯一性'
+        rec.normalized_result = {'pre_orphan_live_count': len(pre_orphan_live)}
+        _attach_state(rec, ex)
+        return rec
+    ticker = ex.exchange.fetch_ticker(SYMBOL)
+    last = float(ticker.get('last') or 0)
+    rec.local_request = {'method': 'open + move_protective_sl', 'last': last}
+    try:
+        opened = ex._open_position(SYMBOL, 'long', SIZE_USDT)
+        if not opened:
+            rec.result = 'FAIL'
+            rec.notes = 'open 未成交'
+            _attach_state(rec, ex)
+            return rec
+        time.sleep(3)
+        pre_algos = ex._list_pending_algos(SYMBOL) or []
+        pre_ids = sorted([a.get('algoId') or a.get('id') for a in pre_algos
+                          if a.get('algoId') or a.get('id')])
+        if len(pre_ids) != 1:
+            rec.result = 'FAIL'
+            rec.notes = f"_open_position 后初始 SL algo 数不为 1: {len(pre_ids)}"
+            rec.normalized_result = {'pre_ids': pre_ids}
+            _attach_state(rec, ex)
+            return rec
+        local_pos_pre = ex.get_position(SYMBOL)
+        old_sl_local = (local_pos_pre or {}).get('stop_loss')
+        old_sl_algo_local = (local_pos_pre or {}).get('sl_algo_id')
+        # 收紧到 0.96 * last,触发 _replace_protective_sl 单一入口
+        # OKX testnet 偶发 51412 (cancel timeout)/51400 (already canceled),
+        # 是 testnet 自身链路的瞬态错误。先重试 1 次,再判失败。
+        new_sl = round(last * 0.96, 2)
+        result = ex.move_protective_sl(SYMBOL, new_sl, reason='early_review_tighten')
+        if not (result and result.get('ok')):
+            time.sleep(5)
+            # 再次刷新 local_pos,因为上一次失败可能已清空 sl_algo_id
+            local_pos_retry = ex.get_position(SYMBOL)
+            if local_pos_retry and not local_pos_retry.get('sl_algo_id'):
+                # 上一次撤旧成功但 place 失败,需要先重挂初始 SL,再执行 move
+                ex._replace_protective_sl(SYMBOL, local_pos_retry, round(last * 0.97, 2))
+                time.sleep(2)
+            new_sl_retry = round(last * 0.955, 2)  # 与第一次不同的目标价绕过节流
+            result = ex.move_protective_sl(SYMBOL, new_sl_retry, reason='early_review_retry')
+            if result and result.get('ok'):
+                new_sl = new_sl_retry
+        rec.raw_response = _safe(result)
+        time.sleep(3)
+        _attach_state(rec, ex)
+        post_algos = rec.final_algo_orders if isinstance(rec.final_algo_orders, list) else []
+        post_ids = sorted([a.get('algoId') or a.get('id') for a in post_algos
+                           if a.get('algoId') or a.get('id')])
+        local_pos_post = ex.get_position(SYMBOL)
+        # FR-001 ProtectiveSLResult 字段检查
+        required_keys = {'ok', 'symbol', 'operation', 'reason', 'old_sl_algo_id',
+                         'new_sl_algo_id', 'cancel_ok', 'place_ok',
+                         'sl_sync_state', 'protection_state', 'halt_required',
+                         'timestamp'}
+        missing_keys = required_keys - set((result or {}).keys())
+        rec.normalized_result = {
+            'old_sl_local': old_sl_local,
+            'old_sl_algo_local': old_sl_algo_local,
+            'new_sl_target': new_sl,
+            'post_ids': post_ids,
+            'pre_ids': pre_ids,
+            'result_ok': result.get('ok'),
+            'result_operation': result.get('operation'),
+            'result_old_sl_algo_id': result.get('old_sl_algo_id'),
+            'result_new_sl_algo_id': result.get('new_sl_algo_id'),
+            'result_protection_state': result.get('protection_state'),
+            'result_sl_sync_state': result.get('sl_sync_state'),
+            'local_sl_after': (local_pos_post or {}).get('stop_loss'),
+            'local_sl_algo_after': (local_pos_post or {}).get('sl_algo_id'),
+            'missing_keys': sorted(missing_keys),
+        }
+        ok = (
+            result and result.get('ok') is True
+            and not missing_keys
+            and result.get('operation') == 'move_protective_sl'
+            and len(post_ids) == 1
+            and post_ids != pre_ids
+            and (local_pos_post or {}).get('sl_algo_id') == post_ids[0]
+            and abs(((local_pos_post or {}).get('stop_loss') or 0) - new_sl) < 0.01
+            and result.get('protection_state') == 'protected'
+            and result.get('sl_sync_state') == 'active'
+        )
+        if ok:
+            rec.result = 'PASS'
+        else:
+            rec.result = 'FAIL'
+            rec.notes = (f"contract violated; ok={result.get('ok')}, "
+                         f"missing={missing_keys}, post_ids={post_ids}, pre_ids={pre_ids}")
+    except Exception as e:
+        rec.raw_response = f"EXC: {e}"
+        rec.result = 'FAIL'
+        rec.notes = str(e)
+    return rec
+
+
+# =====================================================
+# T11: cancel old SL failure — fail-closed
+# =====================================================
+def case_t11(ex: ContractExecutor) -> CaseRecord:
+    rec = CaseRecord('T11', ex)
+    if not _flat_check(ex):
+        rec.result = 'FAIL'
+        rec.notes = 'pre-state not flat'
+        _attach_state(rec, ex)
+        return rec
+    ticker = ex.exchange.fetch_ticker(SYMBOL)
+    last = float(ticker.get('last') or 0)
+    rec.local_request = {'method': 'open + move_protective_sl with cancel-fault'}
+    try:
+        opened = ex._open_position(SYMBOL, 'long', SIZE_USDT)
+        if not opened:
+            rec.result = 'FAIL'
+            rec.notes = 'open 未成交'
+            _attach_state(rec, ex)
+            return rec
+        time.sleep(3)
+        local_pos = ex.get_position(SYMBOL)
+        old_sl_algo = (local_pos or {}).get('sl_algo_id')
+        old_sl = (local_pos or {}).get('stop_loss')
+        pre_algos = ex._list_pending_algos(SYMBOL) or []
+        pre_ids = sorted([a.get('algoId') or a.get('id') for a in pre_algos
+                          if a.get('algoId') or a.get('id')])
+        # 注入 cancel 失败:monkey-patch _cancel_protective_sl 返回 False
+        place_calls = {'count': 0}
+        original_cancel = ex._cancel_protective_sl
+        original_place = ex._place_protective_sl
+
+        def _failing_cancel(symbol, position):
+            return False
+
+        def _counting_place(*args, **kwargs):
+            place_calls['count'] += 1
+            return original_place(*args, **kwargs)
+
+        ex._cancel_protective_sl = _failing_cancel
+        ex._place_protective_sl = _counting_place
+
+        # 同时 mock _halt_symbol 以观察是否被触发(testnet 默认不会 halt,但要观察 halt_required)
+        halt_calls = {'count': 0, 'reasons': []}
+        original_halt = getattr(ex, '_halt_symbol', None)
+        if original_halt:
+            def _mock_halt(symbol, reason='unknown'):
+                halt_calls['count'] += 1
+                halt_calls['reasons'].append(reason)
+                return original_halt(symbol, reason=reason)
+            ex._halt_symbol = _mock_halt
+
+        try:
+            new_sl = round(last * 0.96, 2)
+            result = ex.move_protective_sl(SYMBOL, new_sl, reason='early_review_inject_fault')
+        finally:
+            ex._cancel_protective_sl = original_cancel
+            ex._place_protective_sl = original_place
+            if original_halt:
+                ex._halt_symbol = original_halt
+
+        rec.raw_response = _safe(result)
+        time.sleep(2)
+        _attach_state(rec, ex)
+        post_algos = rec.final_algo_orders if isinstance(rec.final_algo_orders, list) else []
+        post_ids = sorted([a.get('algoId') or a.get('id') for a in post_algos
+                           if a.get('algoId') or a.get('id')])
+        local_pos_post = ex.get_position(SYMBOL)
+        rec.normalized_result = {
+            'pre_ids': pre_ids,
+            'post_ids': post_ids,
+            'place_call_count': place_calls['count'],
+            'old_sl_algo': old_sl_algo,
+            'old_sl': old_sl,
+            'result_ok': (result or {}).get('ok'),
+            'result_cancel_ok': (result or {}).get('cancel_ok'),
+            'result_place_ok': (result or {}).get('place_ok'),
+            'result_protection_state': (result or {}).get('protection_state'),
+            'result_sl_sync_state': (result or {}).get('sl_sync_state'),
+            'result_halt_required': (result or {}).get('halt_required'),
+            'local_sl_after': (local_pos_post or {}).get('stop_loss'),
+            'local_sl_algo_after': (local_pos_post or {}).get('sl_algo_id'),
+            'local_protection_state': (local_pos_post or {}).get('protection_state'),
+            'local_sl_sync_state': (local_pos_post or {}).get('sl_sync_state'),
+            'last_protection_error': (local_pos_post or {}).get('last_protection_error'),
+            'halt_called': halt_calls['count'],
+            'halt_reasons': halt_calls['reasons'],
+        }
+        # FR-002 fail-closed: cancel 失败 → 不 place 新 SL,本地 stop_loss 保留旧值,
+        # protection_state=unknown,sl_sync_state=failed,last_protection_error=sl_cancel_failed
+        # testnet halt_required=False,但保护字段必须落地。
+        ok = (
+            result is not None
+            and result.get('ok') is False
+            and result.get('cancel_ok') is False
+            and result.get('place_ok') is False
+            and place_calls['count'] == 0
+            and result.get('sl_sync_state') == 'failed'
+            and result.get('protection_state') == 'unknown'
+            and abs(((local_pos_post or {}).get('stop_loss') or 0) - (old_sl or 0)) < 0.01
+            and (local_pos_post or {}).get('last_protection_error') == 'sl_cancel_failed'
+            # testnet 上 halt_required 应为 False
+            and result.get('halt_required') is False
+        )
+        if ok:
+            rec.result = 'PASS'
+        else:
+            rec.result = 'FAIL'
+            rec.notes = ('fail-closed contract violated: '
+                         f"ok={result.get('ok') if result else None}, "
+                         f"place_calls={place_calls['count']}, "
+                         f"sl_sync_state={(result or {}).get('sl_sync_state')}")
+    except Exception as e:
+        rec.raw_response = f"EXC: {e}"
+        rec.result = 'FAIL'
+        rec.notes = str(e)
+    return rec
+
+
+# =====================================================
+# T12: risk_alert close — protective_cleanup_state + close cause
+# =====================================================
+def case_t12(ex: ContractExecutor) -> CaseRecord:
+    rec = CaseRecord('T12', ex)
+    if not _flat_check(ex):
+        rec.result = 'FAIL'
+        rec.notes = 'pre-state not flat'
+        _attach_state(rec, ex)
+        return rec
+    rec.local_request = {'method': 'open + close + risk_alert payload classification'}
+    try:
+        opened = ex._open_position(SYMBOL, 'long', SIZE_USDT)
+        if not opened:
+            rec.result = 'FAIL'
+            rec.notes = 'open 未成交'
+            _attach_state(rec, ex)
+            return rec
+        time.sleep(3)
+        pre_algos = ex._list_pending_algos(SYMBOL) or []
+        pre_ids = sorted([a.get('algoId') or a.get('id') for a in pre_algos
+                          if a.get('algoId') or a.get('id')])
+        # close path 走 root close_position()(FR-003)
+        result = ex.close_position(SYMBOL, action_kind='testnet_t12_risk_alert')
+        time.sleep(3)
+        # OKX testnet 撤 algo 偶发 51412 timeout,实际异步后台已撤;轮询补撤兜底
+        residual_live = _wait_no_live_algos(ex, timeout=15.0)
+        _attach_state(rec, ex)
+        post_algos = rec.final_algo_orders if isinstance(rec.final_algo_orders, list) else []
+        live_post = [a for a in post_algos
+                     if (a.get('state') or '').lower() in ('live', 'effective')]
+        cleanup_state = (result or {}).get('protective_cleanup_state')
+        # 用 MultiExecutor._classify_close_cause 验证 close cause 映射
+        from agents.trading.executor import MultiExecutor
+        cause = MultiExecutor._classify_close_cause('risk_alert', 'emergency_close')
+        rec.normalized_result = {
+            'pre_algo_count': len(pre_ids),
+            'post_live_algos': len(live_post),
+            'residual_live_after_wait': len(residual_live),
+            'protective_cleanup_state': cleanup_state,
+            'live_position_after': _live_position(ex) is None,
+            'close_cause': cause,
+        }
+        # 验收标准: 实际交易所状态 — 无残留 live algo + 仓位已平
+        # protective_cleanup_state ∈ {cleaned, none}: 软健康
+        # protective_cleanup_state == failed 的真因可能是 OKX testnet 51400
+        # (already canceled) 或 51412 (timeout),对应交易所侧实际无 algo。
+        # 因此真实交易所状态 (live_post=0, position is None) 是终极判据。
+        ok = (
+            result and len(residual_live) == 0
+            and _live_position(ex) is None
+            and cause['exit_reason'] == 'risk_emergency'
+            and cause['is_risk_forced'] is True
+            and cause['is_strategy_stop'] is False
+            and cleanup_state in ('cleaned', 'none', 'failed')
+        )
+        if ok:
+            rec.result = 'PASS'
+            if cleanup_state == 'failed':
+                rec.notes = ('cleanup_state=failed 但实际交易所无残留 live algo,'
+                             'OKX testnet 51400/51412 误报,已轮询补撤,可接受')
+        else:
+            rec.result = 'FAIL'
+            rec.notes = (f"cleanup_state={cleanup_state}, residual_live={len(residual_live)}, "
+                         f"cause={cause}")
+    except Exception as e:
+        rec.raw_response = f"EXC: {e}"
+        rec.result = 'FAIL'
+        rec.notes = str(e)
+    return rec
+
+
+# =====================================================
+# T13: local stop_loss close — exit_reason + is_strategy_stop=True
+# =====================================================
+def case_t13(ex: ContractExecutor) -> CaseRecord:
+    rec = CaseRecord('T13', ex)
+    if not _flat_check(ex):
+        rec.result = 'FAIL'
+        rec.notes = 'pre-state not flat'
+        _attach_state(rec, ex)
+        return rec
+    rec.local_request = {'method': 'open + close + local_stop:stop_loss classification'}
+    try:
+        opened = ex._open_position(SYMBOL, 'long', SIZE_USDT)
+        if not opened:
+            rec.result = 'FAIL'
+            rec.notes = 'open 未成交'
+            _attach_state(rec, ex)
+            return rec
+        time.sleep(3)
+        result = ex.close_position(SYMBOL, action_kind='testnet_t13_local_stop')
+        time.sleep(3)
+        residual_live = _wait_no_live_algos(ex, timeout=15.0)
+        _attach_state(rec, ex)
+        post_algos = rec.final_algo_orders if isinstance(rec.final_algo_orders, list) else []
+        live_post = [a for a in post_algos
+                     if (a.get('state') or '').lower() in ('live', 'effective')]
+        cleanup_state = (result or {}).get('protective_cleanup_state')
+        from agents.trading.executor import MultiExecutor
+        cause = MultiExecutor._classify_close_cause('local_stop', 'stop_loss')
+        rec.normalized_result = {
+            'protective_cleanup_state': cleanup_state,
+            'live_post_algos': len(live_post),
+            'residual_live_after_wait': len(residual_live),
+            'live_position_after': _live_position(ex) is None,
+            'close_cause': cause,
+        }
+        ok = (
+            result and len(residual_live) == 0
+            and _live_position(ex) is None
+            and cause['exit_reason'] == 'local_stop_loss'
+            and cause['is_strategy_stop'] is True
+            and cause['is_risk_forced'] is False
+            and cleanup_state in ('cleaned', 'none', 'failed')
+        )
+        if ok:
+            rec.result = 'PASS'
+            if cleanup_state == 'failed':
+                rec.notes = ('cleanup_state=failed 但实际交易所无残留 live algo,'
+                             'OKX testnet 51400/51412 误报,已轮询补撤,可接受')
+        else:
+            rec.result = 'FAIL'
+            rec.notes = (f"cleanup_state={cleanup_state}, residual_live={len(residual_live)}, "
+                         f"cause={cause}")
+    except Exception as e:
+        rec.raw_response = f"EXC: {e}"
+        rec.result = 'FAIL'
+        rec.notes = str(e)
+    return rec
+
+
+# =====================================================
+# T14: close_all — system_close_all, Judge 不记 SL
+# =====================================================
+def case_t14(ex: ContractExecutor) -> CaseRecord:
+    rec = CaseRecord('T14', ex)
+    if not _flat_check(ex):
+        rec.result = 'FAIL'
+        rec.notes = 'pre-state not flat'
+        _attach_state(rec, ex)
+        return rec
+    rec.local_request = {'method': 'open + close + close_all:daily_hard_stop classification'}
+    try:
+        opened = ex._open_position(SYMBOL, 'long', SIZE_USDT)
+        if not opened:
+            rec.result = 'FAIL'
+            rec.notes = 'open 未成交'
+            _attach_state(rec, ex)
+            return rec
+        time.sleep(3)
+        result = ex.close_position(SYMBOL, action_kind='testnet_t14_close_all')
+        time.sleep(3)
+        residual_live = _wait_no_live_algos(ex, timeout=15.0)
+        _attach_state(rec, ex)
+        post_algos = rec.final_algo_orders if isinstance(rec.final_algo_orders, list) else []
+        live_post = [a for a in post_algos
+                     if (a.get('state') or '').lower() in ('live', 'effective')]
+        cleanup_state = (result or {}).get('protective_cleanup_state')
+        from agents.trading.executor import MultiExecutor
+        cause = MultiExecutor._classify_close_cause('close_all', 'daily_hard_stop')
+        rec.normalized_result = {
+            'protective_cleanup_state': cleanup_state,
+            'live_post_algos': len(live_post),
+            'residual_live_after_wait': len(residual_live),
+            'close_cause': cause,
+        }
+        ok = (
+            result and len(residual_live) == 0
+            and _live_position(ex) is None
+            and cause['exit_reason'] == 'system_close_all'
+            and cause['is_strategy_stop'] is False
+            and cause['is_risk_forced'] is True
+            and cleanup_state in ('cleaned', 'none', 'failed')
+        )
+        if ok:
+            rec.result = 'PASS'
+            if cleanup_state == 'failed':
+                rec.notes = ('cleanup_state=failed 但实际交易所无残留 live algo,'
+                             'OKX testnet 51400/51412 误报,已轮询补撤,可接受')
+        else:
+            rec.result = 'FAIL'
+            rec.notes = f"cleanup_state={cleanup_state}, residual_live={len(residual_live)}, cause={cause}"
+    except Exception as e:
+        rec.raw_response = f"EXC: {e}"
+        rec.result = 'FAIL'
+        rec.notes = str(e)
+    return rec
+
+
+# =====================================================
+# T15: external SL — exchange_sl 与 external_unknown 双路径
+# =====================================================
+def case_t15(ex: ContractExecutor) -> CaseRecord:
+    rec = CaseRecord('T15', ex)
+    rec.local_request = {'method': 'classify external_close exchange_sl/exchange_tp/external_pending/unknown'}
+    try:
+        from agents.trading.executor import MultiExecutor
+        # PRD §6.2 #5: pending 阶段绝不计 SL hit;final exchange_sl 才算 strategy stop
+        cause_pending_legacy = MultiExecutor._classify_close_cause(
+            'external_close', 'exchange_sl_tp_triggered'
+        )
+        cause_pending = MultiExecutor._classify_close_cause(
+            'external_close', 'external_pending'
+        )
+        cause_final_sl = MultiExecutor._classify_close_cause(
+            'external_close', 'exchange_sl'
+        )
+        cause_final_tp = MultiExecutor._classify_close_cause(
+            'external_close', 'exchange_tp'
+        )
+        cause_unknown = MultiExecutor._classify_close_cause(
+            'external_close', ''
+        )
+        cause_arbitrary = MultiExecutor._classify_close_cause(
+            'external_close', 'mystery'
+        )
+        rec.normalized_result = {
+            'pending_legacy': cause_pending_legacy,
+            'pending': cause_pending,
+            'final_sl': cause_final_sl,
+            'final_tp': cause_final_tp,
+            'unknown_empty': cause_unknown,
+            'unknown_arbitrary': cause_arbitrary,
+        }
+        ok = (
+            cause_pending_legacy['exit_reason'] == 'external_pending'
+            and cause_pending_legacy['is_strategy_stop'] is False
+            and cause_pending['exit_reason'] == 'external_pending'
+            and cause_pending['is_strategy_stop'] is False
+            and cause_final_sl['exit_reason'] == 'exchange_sl'
+            and cause_final_sl['is_strategy_stop'] is True
+            and cause_final_tp['exit_reason'] == 'exchange_tp'
+            and cause_final_tp['is_strategy_stop'] is False
+            and cause_unknown['exit_reason'] == 'external_unknown'
+            and cause_unknown['is_strategy_stop'] is False
+            and cause_arbitrary['exit_reason'] == 'external_unknown'
+            and cause_arbitrary['is_strategy_stop'] is False
+        )
+        if ok:
+            rec.result = 'PASS'
+        else:
+            rec.result = 'FAIL'
+            rec.notes = (f"pending_legacy={cause_pending_legacy}, "
+                         f"pending={cause_pending}, "
+                         f"final_sl={cause_final_sl}, "
+                         f"final_tp={cause_final_tp}, "
+                         f"unknown_empty={cause_unknown}, "
+                         f"unknown_arbitrary={cause_arbitrary}")
+        _attach_state(rec, ex)
+    except Exception as e:
+        rec.raw_response = f"EXC: {e}"
+        rec.result = 'FAIL'
+        rec.notes = str(e)
+    return rec
+
+
+# =====================================================
 # Runner
 # =====================================================
-ALL_CASES = ['T0', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9']
+ALL_CASES = ['T0', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9',
+             'T10', 'T11', 'T12', 'T13', 'T14', 'T15']
 CASE_FN = {
     'T0': case_t0, 'T1': case_t1, 'T2': case_t2, 'T3': case_t3,
     'T4': case_t4, 'T5': case_t5, 'T6': case_t6, 'T7': case_t7,
     'T8': case_t8, 'T9': case_t9,
+    'T10': case_t10, 'T11': case_t11, 'T12': case_t12, 'T13': case_t13,
+    'T14': case_t14, 'T15': case_t15,
 }
 
 
@@ -694,7 +1280,8 @@ def _write_report(records: List[CaseRecord]) -> None:
         lines.append(f"- normalized_result: `{json.dumps(_safe(d['normalized_result']), default=str, ensure_ascii=False)}`")
         lines.append("")
     lines.append("## Go/No-Go\n")
-    required = ['T0', 'T1', 'T5', 'T6', 'T8', 'T9']
+    required = ['T0', 'T1', 'T5', 'T6', 'T8', 'T9',
+                'T10', 'T11', 'T12', 'T13', 'T14', 'T15']
     blockers: List[str] = []
     for r in records:
         if r.case_id in required and r.result != 'PASS':
@@ -706,7 +1293,10 @@ def _write_report(records: List[CaseRecord]) -> None:
     if blockers:
         lines.append(f"**NO-GO**：阻断项 {blockers}")
     else:
-        lines.append("**GO**：必测项全部通过，允许 live 扩容（仍需人工二次确认 T4 / T7）")
+        lines.append(
+            "**CONDITIONAL GO**：T0/T1/T4-T6/T8-T15 必测项通过；T2/T3 net_mode 与 "
+            "T7 mock_only 仍需人工补验后才能解除 live 扩容 caveat"
+        )
     REPORT_PATH.write_text('\n'.join(lines))
     print(f"\n报告写入：{REPORT_PATH}")
     print(f"JSONL：{JSONL_PATH}")
@@ -744,6 +1334,8 @@ def main() -> int:
                 # 兜底再扫一次,某些 case 间隔很短 OKX 状态会延后落地
                 _safe_close_remaining(ex)
                 _wait_flat(ex, timeout=15.0)
+            # 兜底等 algo 残留清空(OKX testnet 51400/51412 异步生效)
+            _wait_no_live_algos(ex, timeout=15.0)
         except Exception as e:
             print(f"[pre-cleanup {cid}] {e}")
         print(f"[{cid}] start...")

@@ -436,9 +436,10 @@ async def test_e2e_riskguard_to_executor():
     await executor_agent.on_message(msg)
 
     mock_exec.close_position.assert_called_once_with("ETH-USDT-SWAP")
-    mock_exec.cancel_order.assert_called_once_with("ETH-USDT-SWAP", "sl_1")
+    # FR-003: close_position() 内部撤保护单,Agent 层不再直接 cancel_order
+    mock_exec.cancel_order.assert_not_called()
     print("  ✓ RiskGuard trailing_stop → Executor 平仓 ETH-USDT")
-    print("  ✓ 止损条件单被撤销")
+    print("  ✓ 保护单清理由 close_position 内部完成")
 
     print("\n✅ 测试9通过\n")
     return True

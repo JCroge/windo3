@@ -107,6 +107,8 @@ class BehavioralCritic(BaseAgent):
 
             if not result or not isinstance(result, dict):
                 result = self._rule_fallback(review)
+            else:
+                result = self._normalize_critic_payload(result)
 
             result['symbol'] = symbol
             self.logger.info(
@@ -120,6 +122,19 @@ class BehavioralCritic(BaseAgent):
             result = self._rule_fallback(review)
 
         await self.publish("position_verdict", result, symbol=symbol)
+
+    @staticmethod
+    def _normalize_critic_payload(result: dict) -> dict:
+        """把 legacy 字段（counter_action / confidence）别名到 canonical 字段，避免 LLM 旧 prompt 输出丢字段。"""
+        if 'counter_recommendation' not in result or result.get('counter_recommendation') in (None, ''):
+            legacy = result.get('counter_action')
+            if legacy not in (None, ''):
+                result['counter_recommendation'] = legacy
+        if 'confidence_in_challenge' not in result or result.get('confidence_in_challenge') in (None, 0):
+            legacy_conf = result.get('confidence')
+            if isinstance(legacy_conf, (int, float)) and legacy_conf > 0:
+                result['confidence_in_challenge'] = legacy_conf
+        return result
 
     def _rule_fallback(self, review: dict) -> dict:
         """LLM不可用时的规则降级（防遗憾优化：趋势顺向时不误判）"""

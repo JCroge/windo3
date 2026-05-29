@@ -40,7 +40,8 @@ class PositionAnalyst(BaseAgent):
         self.logger.info(f"持仓分析官就绪 (评估周期={REVIEW_INTERVAL//3600}h, 持仓={len(self._positions)}个, 7因子防遗憾版)")
 
     def _load_positions(self):
-        positions_file = 'data/positions.json'
+        from utils.state_paths import get_state_paths
+        positions_file = get_state_paths().positions
         if os.path.exists(positions_file):
             try:
                 with open(positions_file, 'r') as f:
@@ -155,7 +156,8 @@ class PositionAnalyst(BaseAgent):
 
     async def _evaluate_all_positions(self) -> bool:
         """返回True表示至少评估了一个持仓，False表示全部因缺数据跳过"""
-        positions_file = 'data/positions.json'
+        from utils.state_paths import get_state_paths
+        positions_file = get_state_paths().positions
         if os.path.exists(positions_file):
             try:
                 with open(positions_file, 'r') as f:
@@ -541,7 +543,7 @@ class PositionAnalyst(BaseAgent):
         a_conviction = analyst['conviction']
         bias = critic.get('bias_detected')
         severity = critic.get('severity', 'none')
-        counter = critic.get('counter_recommendation')
+        counter = critic.get('counter_recommendation') or critic.get('counter_action')
         symbol = analyst['symbol']
         pnl_pct = analyst['context']['pnl_pct']
 

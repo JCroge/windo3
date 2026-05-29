@@ -5,6 +5,7 @@ import time
 import aiohttp
 import feedparser
 from agents.base import BaseAgent
+from utils.symbol_mentions import extract_symbol_mentions
 
 RSS_FEEDS = [
     {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
@@ -106,19 +107,9 @@ class NewsResearcher(BaseAgent):
         return headlines
 
     def _extract_symbol_mentions(self, headlines: list) -> dict:
-        """统计各币种在新闻中被提及的次数和上下文"""
-        mentions = {}
+        """统计各币种在新闻中被提及的次数和上下文。
 
-        for article in headlines:
-            text = f"{article['title']} {article.get('summary', '')}".upper()
-
-            for symbol in KNOWN_SYMBOLS:
-                if symbol in text or f"${symbol}" in text:
-                    if symbol not in mentions:
-                        mentions[symbol] = {"count": 0, "headlines": []}
-                    mentions[symbol]["count"] += 1
-                    if len(mentions[symbol]["headlines"]) < 3:
-                        mentions[symbol]["headlines"].append(article['title'])
-
-        mentions = dict(sorted(mentions.items(), key=lambda x: x[1]['count'], reverse=True))
-        return mentions
+        FR-3D: 走 utils.symbol_mentions.extract_symbol_mentions,严格边界匹配,
+        高歧义短 ticker(TON/ARB/NEAR 等)只允许 cashtag/paren/pair/keyword。
+        """
+        return extract_symbol_mentions(headlines, KNOWN_SYMBOLS)

@@ -21,7 +21,8 @@ class PortfolioRiskGuard(BaseAgent):
         self._account_balance = 0.0
         self._trading_halted = False
         self._halt_state = get_halt_state()
-        self._state_file = 'data/riskguard_state.json'
+        from utils.state_paths import get_state_paths
+        self._state_file = get_state_paths().riskguard_state
 
         self._max_portfolio_exposure = 25.0
         self._max_single_loss_pct_fallback = 50.0
@@ -538,7 +539,8 @@ class PortfolioRiskGuard(BaseAgent):
                 self.logger.error(f"加载状态失败: {e}")
 
         # 交叉验证：从positions.json补录RiskGuard不知道的持仓（统一为 internal 格式）
-        positions_file = 'data/positions.json'
+        from utils.state_paths import get_state_paths
+        positions_file = get_state_paths().positions
         if os.path.exists(positions_file):
             try:
                 with open(positions_file, 'r') as f:

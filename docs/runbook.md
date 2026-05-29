@@ -97,12 +97,12 @@ python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/T
 python3 -m pytest test_drawdown_baseline.py  # 回撤基准修正验收（14 tests）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 618 passed / 4 deselected / 1 warning（2026-05-27，含 partial TP lifecycle 32 case + Long Entry Position Guard 23 case + R:R Floor Policy 20 case + OKX posMode 38 case）
-python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络）
+python3 -m pytest -q              # 807 passed / 4 deselected / 1 warning（2026-05-28 第三次整改后；含新增 test_reduce_protective_sl_lifecycle.py 14 + test_protective_cleanup_owner.py 12 + test_external_close_final_cause.py 11 含 probe_short 门控 + test_symbol_mentions.py 33 + 历史 P0+P1 / Phase 1+2+3 / partial TP / Long Entry Guard / R:R / posMode）
+python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络，运行 5s 时间窗后退出；缺数据库时 fixture 干净 skip）
 
 # OKX 真实 testnet 端到端语义验收（需 .env.testnet 隔离凭证）
 python3 verify_okx_testnet_semantics.py   # mock 矩阵 10 case，CI 一定要先过这个
-python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T9，2026-05-27 7 PASS / 3 SKIP
+python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-28 long_short_mode 13 PASS / 3 SKIP（T0/T1/T4-T6/T8-T15 PASS；T2/T3 long_short_mode SKIP、T7 mock_only SKIP），切到 net_mode 子账户后单独跑 T0/T2/T3 全 PASS（脚本 T2/T3 已 self-contained 自建仓）；覆盖 EarlyReview move/SL cancel failure/close path/close cause
 ```
 
 > conftest.py 通过 `monkeypatch.chdir(tmp_path)` 把 `data/` 和 `logs/` 隔离到临时目录，每个测试独立。
@@ -110,12 +110,15 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T9，2026-05-2
 
 ## 数据持久化文件
 
+文件路径由 `utils/state_paths.py` 单一真相源派生（FR-008，2026-05-28）。命名空间优先级：显式 `STATE_NAMESPACE=live|testnet|paper` > `USE_TESTNET=true` 推断 testnet > 默认 live。下表 default basename 为 live 命名空间；testnet/paper 自动加 `testnet_` / `paper_` 前缀（如 `data/testnet_positions.json`），启动 banner 会打印当前 namespace 与全部 6 个状态文件路径。
+
 | 文件 | 写入者 | 用途 | 备注 |
 |------|--------|------|------|
 | `data/positions.json` | ContractExecutor | 实盘持仓快照 | 重启恢复 |
 | `data/risk_state.json` | RiskManager | 回撤基准（v2 schema：session_peak_equity/baseline_mode/legacy_peak_balance） | 重启不丢，启动时按 baseline_mode 决定是否重置 |
 | `data/trade_history.json` | ReviewerAgent | 已平仓历史+策略衰减 | 缺失时空起 |
 | `data/riskguard_state.json` | PortfolioRiskGuard | 持仓追踪/价格缓存/熔断状态 | 缺失时空起 |
+| `data/halt_state.json` | HaltState | 全局熔断状态 | 缺失/损坏 fail-closed |
 | `data/judge_state.json` | MultiJudge | deferred_entry/sl_timestamps/cooldown | 缺失时空起，启动时清理过期条目 |
 | `data/live_order_events.jsonl` | LiveLedger | 订单事件流（open/reduce/close） | append-only |
 | `data/live_position_lifecycle.json` | LiveLedger | 持仓生命周期聚合 | 原子写入 |
@@ -135,7 +138,8 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T9，2026-05-2
 | OKX_POS_MODE_OVERRIDE | OKX posMode 兜底覆盖（仅 testnet 生效，可选 `net_mode` / `long_short_mode`）。live 永远以 `private_get_account_config` 返回为准；testnet 拿不到时若设此值则使用，否则降级 `net_mode` 并 warning | （未启用） | 否 |
 | BINANCE_API_KEY | Binance API密钥 | - | 是（Binance） |
 | BINANCE_SECRET | Binance Secret | - | 是（Binance） |
-| USE_TESTNET | 是否测试网 | false | 否 |
+| USE_TESTNET | 是否测试网；未显式设置 STATE_NAMESPACE 时，`true` 自动把状态文件切到 `data/testnet_*` | false | 否 |
+| STATE_NAMESPACE | 状态文件命名空间（FR-008，2026-05-28），可选 `live` / `testnet` / `paper`，覆盖 USE_TESTNET 推断；非白名单值回退 `live`；live 默认完全兼容历史路径 | （随 USE_TESTNET 推断） | 否 |
 | LEVERAGE | 杠杆倍数 | 3 | 否 |
 | MAX_TRADE_AMOUNT | 单笔最大保证金（USDT） | 10 | 否 |
 | MAX_DRAWDOWN_PCT | 最大回撤百分比 | 20.0 | 否 |
@@ -413,6 +417,28 @@ pip3 install --upgrade ccxt
 **根因**：symbol格式不一致（`ZEC-USDT` vs `ZEC-USDT-SWAP`）导致Judge冷却设在错误key上
 
 **状态**：2026-05-15已修复。Judge/PA/RiskGuard的execution_result handler入口统一strip `-SWAP`后缀，deferred_entry触发后立即设冷却。如仍复现，检查是否有新的消息路径绕过了strip逻辑。
+
+---
+
+### 问题：保护单残留 / Judge cooldown 被风控强平污染（2026-05-28 P0 修复）
+
+**症状**：close 后 OKX 仍能查到 owner-tagged trigger algo；或风控强平 / 全平 / 价格失败也被 Judge 计入 SL hit，导致 escalating cooldown 误升。
+
+**根因**：
+- 旧 Agent close path 在多个分支（trade_decision close、risk_alert、close_all、local_stop）直接 `cancel_order(sl_order_id)`，与 root `close_position()` 内部清理重复或冲突。
+- Judge 旧逻辑在 `status == 'force_closed'` 即调 `_record_sl_hit`，没有区分 close cause。
+
+**状态**：2026-05-28 已修复，PRD/验收 见 `docs/audit_remediation_20260528_prd.md` / `docs/audit_remediation_20260528_acceptance.md`：
+- `agents/trading/executor.py` 全部 close 分支改成只调 `executor.close_position(symbol)`；保护单 cancel + orphan algo sweep 由 root `_cleanup_protective_orders_on_close()` 完成，结果挂在 `result.protective_cleanup_state ∈ {cleaned/none/failed/unknown}`。
+- `_build_execution_result()` 在 close action 自动注入 `exit_reason / close_cause / is_strategy_stop / is_risk_forced`，由 `_classify_close_cause(source, reason)` 单一函数生成。
+- Judge `force_closed` / `closed_externally` 分支必须用 `payload['is_strategy_stop']` 门控 `_record_sl_hit()`；老 payload 缺字段时 fail-safe 不计 SL。
+
+**复检**：
+```bash
+rg -n "cancel_order\(" agents/trading/executor.py    # 应该只剩 helper / sweep 内部引用
+rg -n "is_strategy_stop|_record_sl_hit" agents/trading/judge.py
+python3 -m pytest -q test_protective_sl_owner.py test_judge_close_cause.py
+```
 
 ---
 

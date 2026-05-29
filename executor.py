@@ -7,7 +7,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 from risk_manager import RiskManager
 from utils.logger import setup_logger
 
@@ -31,7 +31,7 @@ class ContractExecutor:
                  password: str = None,
                  testnet: bool = True,
                  leverage: int = 1,
-                 positions_file: str = 'data/positions.json'):
+                 positions_file: Optional[str] = None):
         """
         Args:
             exchange_id: 交易所ID (binance/okx)
@@ -40,13 +40,18 @@ class ContractExecutor:
             password: API密码（OKX需要）
             testnet: 是否使用测试网
             leverage: 杠杆倍数（默认1倍，不使用杠杆）
-            positions_file: 持仓持久化文件路径
+            positions_file: 持仓持久化文件路径；None 时按 STATE_NAMESPACE 自动派生
+                            (live → data/positions.json, testnet → data/testnet_positions.json,
+                             paper → data/paper_positions.json)
         """
         self.logger = setup_logger('executor')
         self.exchange_id = exchange_id
         self.testnet = testnet
         self.leverage = leverage
-        self.positions_file = positions_file
+        # FR-008: 通过 state_paths 解析命名空间
+        from utils.state_paths import get_state_paths
+        sp = get_state_paths()
+        self.positions_file = positions_file or sp.positions
 
         # 初始化交易所
         exchange_class = getattr(ccxt, exchange_id)
@@ -93,7 +98,7 @@ class ContractExecutor:
             max_trade_amount=max_amount,
             max_drawdown_pct=max_dd,
             max_daily_loss=max_daily,
-            state_file='data/risk_state.json',
+            state_file=sp.risk_state,
             effective_balance_cap=_cap,
             baseline_mode=_baseline_mode,
         )
@@ -288,9 +293,53 @@ class ContractExecutor:
 
     @staticmethod
     def _make_sl_clord_id(symbol: str) -> str:
-        """生成符合 OKX algoClOrdId 字母数字限制的 32 字符以内 client id。"""
+        """生成符合 OKX algoClOrdId 字母数字限制的 32 字符以内 client id。
+
+        FR-3B 兼容: 历史 sl... 前缀只能通过 exact sl_algo_clord_id 匹配证明 owner,
+        不能用 'sl' 前缀做泛化 sweep。新发的 owner-tag 前缀用 _make_owner_tag_clord_id。
+        """
         base = symbol.replace('-', '').replace('/', '').replace(':', '').upper()[:8]
         return f"sl{base}{uuid.uuid4().hex[:18]}"
+
+    @staticmethod
+    def _resolve_owner_tag() -> tuple:
+        """FR-3B owner tag: 返回 (namespace, bot_instance) 短串,只含字母数字。
+
+        algoClOrdId = ca + namespace + bot_instance + base + random,
+        OKX 限制字母数字共 32 chars。namespace 来自 STATE_NAMESPACE,
+        bot_instance 来自 BOT_INSTANCE_ID,缺省空串。
+        """
+        ns = (os.getenv('STATE_NAMESPACE') or '').strip()
+        if not ns:
+            ns = 'live' if os.getenv('USE_TESTNET', '').lower() != 'true' else 'testnet'
+        bot = (os.getenv('BOT_INSTANCE_ID') or '').strip()
+        # 只保留字母数字
+        ns_clean = ''.join(c for c in ns if c.isalnum())[:6]
+        bot_clean = ''.join(c for c in bot if c.isalnum())[:6]
+        return ns_clean, bot_clean
+
+    @classmethod
+    def _make_owner_tag_clord_id(cls, symbol: str) -> str:
+        """生成带 owner 标识的 SL algoClOrdId。
+
+        格式: ca + ns + bot + base(<=6) + random(<=14),OKX 字母数字限制 32 chars。
+        """
+        ns, bot = cls._resolve_owner_tag()
+        base = ''.join(c for c in symbol if c.isalnum()).upper()[:6]
+        prefix = f"ca{ns}{bot}{base}"
+        rand_len = max(8, 32 - len(prefix))
+        return prefix + uuid.uuid4().hex[:rand_len]
+
+    @classmethod
+    def _is_owner_clord_id(cls, clord_id: Optional[str]) -> bool:
+        """判定 algoClOrdId 是否归属当前实例(owner-prefix 匹配)。"""
+        if not clord_id:
+            return False
+        ns, bot = cls._resolve_owner_tag()
+        if not ns and not bot:
+            return False
+        prefix = f"ca{ns}{bot}"
+        return clord_id.startswith(prefix)
 
     def _resolve_attached_sl_algo_id(self, symbol: str,
                                        clord_id: str) -> Optional[str]:
@@ -1117,6 +1166,149 @@ class ContractExecutor:
             self.logger.warning(f"设置SL条件单失败（本地兜底）: {e}")
             return None
 
+    def _cleanup_protective_orders_on_close(self, symbol: str, position: dict) -> Dict[str, Any]:
+        """FR-3B: close path 唯一保护单清理点,owner-bound。
+
+        只取消以下 algo:
+          - 本地 position 记录的 sl_algo_id / sl_order_id
+          - algoClOrdId 精确等于本地 sl_algo_clord_id
+          - lifecycle/ledger 中记录为本系统创建的 algo id
+          - 新 owner 前缀(ca+namespace+bot_instance)匹配的 algoClOrdId
+        历史 'sl' 前缀只能通过 exact sl_algo_clord_id 识别 owner,不做泛化 sweep。
+
+        返回结构化结果(FR-3B):
+          {
+            'ok': bool,                 # 整体清理成功
+            'symbol': str,
+            'state': cleaned/none/failed/foreign_algos_present/unknown,
+            'known_cancel_ok': bool,
+            'cancelled_algo_ids': [...],
+            'owned_algo_ids': [...],
+            'foreign_algo_ids': [...],
+            'unknown_algo_count': int,
+            'warnings': [...],
+            'halt_required': bool,
+            'timestamp': float,
+          }
+        """
+        result: Dict[str, Any] = {
+            'ok': True,
+            'symbol': symbol,
+            'operation': 'cleanup_protective_orders_on_close',
+            'state': 'none',
+            'known_cancel_ok': True,
+            'cancelled_algo_ids': [],
+            'owned_algo_ids': [],
+            'foreign_algo_ids': [],
+            'unknown_algo_count': 0,
+            'warnings': [],
+            'halt_required': False,
+            'timestamp': time.time(),
+        }
+
+        known_sl_algo = position.get('sl_algo_id') or position.get('sl_order_id')
+        known_clord = position.get('sl_algo_clord_id')
+        known_ids = set()
+        if known_sl_algo:
+            known_ids.add(str(known_sl_algo))
+
+        had_known = bool(known_sl_algo)
+        cancel_ok = True
+        if had_known:
+            cancel_ok = self._cancel_protective_sl(symbol, position)
+            if cancel_ok:
+                result['cancelled_algo_ids'].append(str(known_sl_algo))
+                result['owned_algo_ids'].append(str(known_sl_algo))
+        result['known_cancel_ok'] = cancel_ok if had_known else True
+
+        if self.exchange_id != 'okx':
+            if not had_known:
+                result['state'] = 'none'
+            elif not cancel_ok:
+                result['state'] = 'failed'
+                result['ok'] = False
+            else:
+                result['state'] = 'cleaned'
+            return result
+
+        # OKX: 列剩余 pending algo,做 owner 判定
+        try:
+            algos = self._list_pending_algos(symbol)
+        except Exception as e:
+            self.logger.warning(f"[Cleanup] {symbol} 列 pending algos 失败: {e}")
+            result['warnings'].append(f'list_pending_algos_failed: {e}')
+            if had_known:
+                result['state'] = 'cleaned' if cancel_ok else 'failed'
+                result['ok'] = cancel_ok
+            else:
+                result['state'] = 'unknown'
+                result['ok'] = False
+            return result
+
+        sweep_failed = False
+        for algo in algos or []:
+            algo_id = algo.get('algoId')
+            if not algo_id:
+                continue
+            if algo_id in known_ids:
+                continue  # 已在 _cancel_protective_sl 处理
+            algo_clord = algo.get('algoClOrdId') or ''
+
+            # owner 判定: 三层
+            # 1) algoClOrdId exact == 本地 sl_algo_clord_id
+            # 2) lifecycle/ledger 已知 algo id (暂用 known_ids;后续可扩展)
+            # 3) 新 owner prefix 匹配
+            is_owned = False
+            if known_clord and algo_clord == str(known_clord):
+                is_owned = True
+            elif self._is_owner_clord_id(algo_clord):
+                is_owned = True
+
+            if is_owned:
+                try:
+                    self.exchange.cancel_orders(
+                        [algo_id], symbol, params={'trigger': True},
+                    )
+                    result['cancelled_algo_ids'].append(str(algo_id))
+                    result['owned_algo_ids'].append(str(algo_id))
+                    self.logger.info(
+                        f"[Cleanup] {symbol} 撤 owner algo {algo_id} clord={algo_clord}"
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"[Cleanup] {symbol} 撤 owner algo {algo_id} 失败: {e}"
+                    )
+                    sweep_failed = True
+                    result['warnings'].append(f'cancel_owned_failed:{algo_id}:{e}')
+            else:
+                # foreign / unknown: 不撤,只记录 + 告警
+                if algo_clord:
+                    result['foreign_algo_ids'].append(str(algo_id))
+                    self.logger.warning(
+                        f"[Cleanup] {symbol} foreign algo {algo_id} clord={algo_clord} 不撤"
+                    )
+                else:
+                    result['unknown_algo_count'] += 1
+                    self.logger.warning(
+                        f"[Cleanup] {symbol} unknown algo {algo_id}(无 clord)不撤"
+                    )
+
+        # 终态判定
+        if not had_known and not algos:
+            result['state'] = 'none'
+        elif sweep_failed or (had_known and not cancel_ok):
+            result['state'] = 'failed'
+            result['ok'] = False
+        elif result['foreign_algo_ids'] or result['unknown_algo_count'] > 0:
+            result['state'] = 'foreign_algos_present'
+            result['ok'] = False
+            result['halt_required'] = True
+            result['warnings'].append('foreign_algo_not_cancelled')
+        else:
+            result['state'] = 'cleaned'
+
+        return result
+
     def _cancel_protective_sl(self, symbol: str, position: dict) -> bool:
         """撤当前持仓的保护单 SL。
 
@@ -1148,6 +1340,87 @@ class ContractExecutor:
             self.logger.warning(f"[SL Cancel] {symbol} 撤单失败: {e}")
             return False
 
+    def move_protective_sl(self, symbol: str, new_sl: float, *,
+                            reason: str = 'unspecified',
+                            action_id: Optional[str] = None) -> dict:
+        """FR-001 公开入口: Agent 层移动 SL 必须通过此方法。
+
+        - 调用方只传目标 SL 和归因 reason,不得直接读写本地 stop_loss
+        - 只有交易所保护单替换成功后,才会同步更新本地 position['stop_loss']
+            和 sl_algo_id/sl_algo_clord_id/sl_sync_state/protection_state
+        - 替换失败时,本地 stop_loss 保留旧值;sl_sync_state/protection_state
+            由 _replace_protective_sl 写为 failed/unknown,live OKX 还会触发
+            _halt_symbol(reason='sl_cancel_failed' 或 'sl_replace_failed')
+
+        返回 ProtectiveSLResult dict (FR-001/8.1)。调用方可用 result['ok']
+        判定;失败时不可在本地另行覆盖 stop_loss。
+
+        action_id 为可选幂等键,当前仅记录在结果里;后续如需 dedupe 由本方法
+        持有 symbol 级 token。
+        """
+        result = {
+            'ok': False,
+            'symbol': symbol,
+            'operation': 'move_protective_sl',
+            'reason': reason,
+            'old_sl_algo_id': None,
+            'new_sl_algo_id': None,
+            'old_stop_loss': None,
+            'new_stop_loss': None,
+            'cancel_ok': False,
+            'place_ok': False,
+            'sl_sync_state': 'unknown',
+            'protection_state': 'unknown',
+            'halt_required': False,
+            'action_id': action_id,
+            'timestamp': time.time(),
+        }
+        position = self.positions.get(symbol)
+        if not position:
+            result['reason'] = 'position_missing'
+            return result
+        if new_sl is None or new_sl <= 0:
+            result['reason'] = 'invalid_new_sl'
+            return result
+        old_sl_algo_id = position.get('sl_algo_id') or position.get('sl_order_id')
+        old_stop_loss = position.get('stop_loss')
+        result['old_sl_algo_id'] = old_sl_algo_id
+        result['old_stop_loss'] = old_stop_loss
+
+        ok = self._replace_protective_sl(symbol, position, new_sl)
+        result['ok'] = ok
+        result['cancel_ok'] = ok or position.get('last_protection_error') != 'sl_cancel_failed'
+        result['place_ok'] = ok
+        result['sl_sync_state'] = position.get('sl_sync_state', 'unknown')
+        result['protection_state'] = position.get('protection_state', 'unknown')
+        result['new_sl_algo_id'] = position.get('sl_algo_id')
+
+        if ok:
+            position['stop_loss'] = new_sl
+            position['last_protection_update_reason'] = reason
+            result['new_stop_loss'] = new_sl
+            self._save_positions()
+            self.logger.info(
+                f"[SL Move] {symbol} {old_stop_loss} → {new_sl} reason={reason}"
+            )
+            return result
+
+        # 失败: 不改本地 stop_loss;_replace_protective_sl 已写入失败状态字段
+        result['halt_required'] = (
+            self.exchange_id == 'okx' and not self.testnet
+        )
+        result['reason'] = position.get('last_protection_error') or reason
+        # 失败时也持久化保护字段,便于重启诊断
+        try:
+            self._save_positions()
+        except Exception:
+            pass
+        self.logger.error(
+            f"[SL Move] {symbol} 移动失败 old={old_stop_loss} target={new_sl} "
+            f"reason={reason} state={result['protection_state']}"
+        )
+        return result
+
     def _replace_protective_sl(self, symbol: str, position: dict,
                                  new_sl: float) -> bool:
         """FR-04 单一入口: 撤旧 SL → 挂新 SL → 更新保护字段。
@@ -1155,7 +1428,13 @@ class ContractExecutor:
         所有 SL 价位变更(BE move / TP1 lock / ATR trail / add_position 重挂)
         必须经由此函数,使 position['sl_algo_id'] 始终对应交易所唯一保护单。
 
-        失败时 protection_state 置 unknown,non-testnet OKX 触发 halt_symbol。
+        FR-002 fail-closed:
+          - 旧 SL 撤单失败时禁止下新 SL,避免交易所同时存在两条保护单
+          - 撤旧失败保留旧 sl_algo_id(旧保护单仍然有效),写
+            sl_sync_state=failed/protection_state=unknown/last_protection_error
+          - live OKX 触发 _halt_symbol(reason='sl_cancel_failed')
+          - 撤旧成功但新 SL 挂单失败 → 清空 sl_algo_id,标 protection_state=unknown,
+            live OKX halt(reason='sl_replace_failed')
         """
         if new_sl is None or new_sl <= 0:
             return False
@@ -1167,7 +1446,20 @@ class ContractExecutor:
             )
             return False
 
-        self._cancel_protective_sl(symbol, position)
+        old_sl_algo_id = position.get('sl_algo_id') or position.get('sl_order_id')
+        cancel_ok = self._cancel_protective_sl(symbol, position)
+        if not cancel_ok:
+            # FR-002 AC-P0-004/005/006: 撤旧失败立即返回,不挂新 SL
+            position['sl_sync_state'] = 'failed'
+            position['protection_state'] = 'unknown'
+            position['last_protection_error'] = 'sl_cancel_failed'
+            self.logger.error(
+                f"[SL Replace] {symbol} 撤旧 SL {old_sl_algo_id} 失败,"
+                f"放弃挂新 SL,protection_state=unknown"
+            )
+            if self.exchange_id == 'okx' and not self.testnet:
+                self._halt_symbol(symbol, reason='sl_cancel_failed')
+            return False
 
         new_clord = self._make_sl_clord_id(symbol) if self.exchange_id == 'okx' else None
         new_id = self._place_protective_sl(
@@ -1180,6 +1472,7 @@ class ContractExecutor:
             position['sl_algo_clord_id'] = new_clord
             position['sl_sync_state'] = 'active'
             position['protection_state'] = 'protected'
+            position.pop('last_protection_error', None)
             return True
 
         position['sl_order_id'] = None
@@ -1187,6 +1480,7 @@ class ContractExecutor:
         position['sl_algo_clord_id'] = None
         position['sl_sync_state'] = 'failed'
         position['protection_state'] = 'unknown'
+        position['last_protection_error'] = 'sl_place_failed'
         self.logger.error(
             f"[SL Replace] {symbol} 新 SL 挂单失败,protection_state=unknown"
         )
@@ -1261,9 +1555,11 @@ class ContractExecutor:
                 params=close_params,
             )
 
-            # 取消独立 SL 条件单（_open_position 路径会设置；attachAlgoOrds 路径由 OKX 自动取消）
-            if position.get('sl_order_id') or position.get('sl_algo_id'):
-                self._cancel_protective_sl(symbol, position)
+            # FR-3B: close path 唯一保护单清理点,owner-bound
+            #   返回结构化 dict: state / cancelled_algo_ids / foreign_algo_ids / halt_required
+            #   foreign/unknown algo 不撤,halt_required=True 阻断同 symbol 新开仓
+            cleanup_result = self._cleanup_protective_orders_on_close(symbol, position)
+            cleanup_state = cleanup_result.get('state', 'unknown')
 
             # 真实成交 PnL：通过 ledger 查询 fetch_order 获取
             leverage = position.get('leverage', 1)
@@ -1297,7 +1593,16 @@ class ContractExecutor:
                 'attribution': position.get('attribution', {}),
                 'entry_type': position.get('entry_type', 'unknown'),
                 'entry_request_id': position.get('request_id', ''),
+                'protective_cleanup_state': cleanup_state,
+                'protective_cleanup': cleanup_result,
+                'foreign_algo_ids': cleanup_result.get('foreign_algo_ids', []),
+                'cleanup_warnings': cleanup_result.get('warnings', []),
             }
+
+            # FR-3B: foreign/unknown algo 残留 → halt symbol 阻断新开仓
+            if cleanup_result.get('halt_required') and self.exchange_id == 'okx' and not self.testnet:
+                self._halt_symbol(symbol, reason='foreign_algos_present')
+                result['halt_required'] = True
 
             # 删除持仓
             del self.positions[symbol]
@@ -2157,29 +2462,69 @@ class ContractExecutor:
 
         try:
             position = self.positions[symbol]
-            reduce_amount = position['amount'] * pct
+            old_sl_algo_id = position.get('sl_algo_id') or position.get('sl_order_id')
+            old_sl_clord_id = position.get('sl_algo_clord_id')
+            old_amount = position.get('amount', 0)
+            old_amount_usdt = position.get('amount_usdt', 0)
+            old_stop_loss = position.get('stop_loss')
+            entry_request_id = position.get('request_id', '')
 
-            # 精度处理：用交易所精度格式化
+            # 结构化结果(FR-3A)。任一失败路径都通过本 dict 返回,调用方据此停推 tp_filled、
+            # 阻断后续 add/open/reduce、live OKX halt。
+            result: Dict[str, Any] = {
+                'ok': False,
+                'symbol': symbol,
+                'operation': 'reduce_position',
+                'action_id': action_id,
+                'action_kind': action_kind,
+                'requested_pct': pct,
+                'requested_reduce_amount': 0.0,
+                'actual_reduce_amount': 0.0,
+                'order': None,
+                'reduce_ok': False,
+                'cancel_ok': False,
+                'replace_ok': False,
+                'protective_update_state': 'unknown',
+                'protection_state': position.get('protection_state', 'unknown'),
+                'old_sl_algo_id': old_sl_algo_id,
+                'old_sl_algo_clord_id': old_sl_clord_id,
+                'new_sl_algo_id': None,
+                'sl_sync_state': position.get('sl_sync_state', 'unknown'),
+                'reduced_pct': pct,
+                'realized_pnl': 0.0,
+                'pnl': 0.0,
+                'halt_required': False,
+                'reason': '',
+                'warnings': [],
+                'entry_request_id': entry_request_id,
+                'timestamp': time.time(),
+            }
+
+            reduce_amount = old_amount * pct
             try:
                 reduce_amount = float(self.exchange.amount_to_precision(symbol, reduce_amount))
             except Exception:
                 pass
+            result['requested_reduce_amount'] = reduce_amount
 
             if reduce_amount <= 0:
-                return None
+                result['reason'] = 'reduce_amount_zero'
+                return result
 
-            # OKX：减仓前以交易所真实仓位为准
             if self.exchange_id == 'okx':
                 ex_pos = self._fetch_okx_position_state(symbol)
                 if ex_pos is None:
                     self._mark_external_closed(symbol, reason='reduce_already_flat')
-                    return None
+                    result['reason'] = 'already_flat'
+                    return result
                 if ex_pos['side'] != position['side']:
                     self.logger.error(
                         f"[OKX reduce] {symbol} 方向冲突: 本地{position['side']} vs 交易所{ex_pos['side']}, 暂停"
                     )
                     self._halt_symbol(symbol, reason='direction_conflict_reduce')
-                    return None
+                    result['reason'] = 'direction_conflict'
+                    result['halt_required'] = True
+                    return result
                 if reduce_amount > ex_pos['available_contracts']:
                     self.logger.warning(
                         f"[OKX reduce] {symbol} 数量超出可平 {reduce_amount} > {ex_pos['available_contracts']}, 收敛"
@@ -2190,11 +2535,36 @@ class ContractExecutor:
                     except Exception:
                         pass
                     if reduce_amount <= 0:
-                        return None
+                        result['reason'] = 'reduce_amount_zero'
+                        return result
+                    result['requested_reduce_amount'] = reduce_amount
 
-            # 减仓前取消旧SL条件单（数量变化后旧单无效）
-            if position.get('sl_order_id') or position.get('sl_algo_id'):
-                self._cancel_protective_sl(symbol, position)
+            # FR-3A: 撤旧 SL 失败 → 立即返回,不发 reduce order,不清旧 ID。
+            had_old_sl = bool(old_sl_algo_id)
+            cancel_ok = True
+            if had_old_sl:
+                cancel_ok = self._cancel_protective_sl(symbol, position)
+            result['cancel_ok'] = cancel_ok if had_old_sl else True
+            if had_old_sl and not cancel_ok:
+                position['sl_sync_state'] = 'failed'
+                position['protection_state'] = 'unknown'
+                position['last_protection_error'] = 'sl_cancel_failed'
+                result['protective_update_state'] = 'cancel_failed'
+                result['protection_state'] = 'unknown'
+                result['sl_sync_state'] = 'failed'
+                result['reason'] = 'sl_cancel_failed'
+                result['warnings'].append('old_sl_may_still_be_live')
+                self.logger.error(
+                    f"[Reduce] {symbol} 撤旧 SL {old_sl_algo_id} 失败,放弃缩仓; "
+                    f"old_sl_algo_id 保留,protection_state=unknown"
+                )
+                if self.exchange_id == 'okx' and not self.testnet:
+                    self._halt_symbol(symbol, reason='sl_cancel_failed')
+                    result['halt_required'] = True
+                self._save_positions()
+                return result
+            if had_old_sl and cancel_ok:
+                # 撤旧成功才清空本地 ID,后面挂新 SL 时再回填
                 position['sl_order_id'] = None
                 position['sl_algo_id'] = None
                 position['sl_algo_clord_id'] = None
@@ -2202,13 +2572,56 @@ class ContractExecutor:
 
             order_side = 'sell' if position['side'] == 'long' else 'buy'
             reduce_params = self._build_close_order_params(position)
-            order = self.exchange.create_order(
-                symbol=symbol, type='market', side=order_side,
-                amount=reduce_amount, params=reduce_params,
-            )
+            try:
+                order = self.exchange.create_order(
+                    symbol=symbol, type='market', side=order_side,
+                    amount=reduce_amount, params=reduce_params,
+                )
+            except Exception as ce:
+                error_msg = str(ce)
+                if self.exchange_id == 'okx' and _is_okx_position_reject(error_msg):
+                    review = self._handle_okx_close_reject(symbol, error_msg, action='reduce')
+                    self.logger.warning(f"[OKX reduce 拒单复核] {symbol} → {review['status']}")
+                else:
+                    self.logger.error(f"减仓下单失败: {ce}")
+                # FR-3A: 撤旧成功但 reduce reject → 尝试 restore 原 SL,失败则 halt
+                restore_ok = False
+                if had_old_sl and old_stop_loss:
+                    restore_ok = self._replace_protective_sl(
+                        symbol, position, old_stop_loss
+                    )
+                result['reduce_ok'] = False
+                result['order'] = None
+                result['reason'] = 'reduce_rejected'
+                if restore_ok:
+                    result['protective_update_state'] = 'restored_old_sl'
+                    result['protection_state'] = position.get('protection_state', 'unknown')
+                    result['sl_sync_state'] = position.get('sl_sync_state', 'unknown')
+                    result['new_sl_algo_id'] = position.get('sl_algo_id')
+                    result['warnings'].append('reduce_rejected_old_sl_restored')
+                else:
+                    if had_old_sl:
+                        position['protection_state'] = 'unknown'
+                        position['sl_sync_state'] = 'failed'
+                        position['last_protection_error'] = 'sl_restore_failed'
+                        result['protective_update_state'] = 'restore_failed'
+                        result['protection_state'] = 'unknown'
+                        result['sl_sync_state'] = 'failed'
+                        result['warnings'].append('reduce_rejected_protection_lost')
+                        if self.exchange_id == 'okx' and not self.testnet:
+                            self._halt_symbol(symbol, reason='sl_restore_failed')
+                            result['halt_required'] = True
+                    else:
+                        result['protective_update_state'] = 'no_op'
+                self._save_positions()
+                return result
+
+            result['order'] = order
+            result['reduce_ok'] = True
+            result['actual_reduce_amount'] = reduce_amount
 
             # 真实成交 PnL：通过 ledger 记录减仓
-            reduce_usdt = position['amount_usdt'] * pct
+            reduce_usdt = old_amount_usdt * pct
             realized_pnl = 0.0
             if self.ledger:
                 try:
@@ -2223,67 +2636,88 @@ class ContractExecutor:
                 except Exception as e:
                     self.logger.warning(f"[Ledger] 减仓记录失败: {e}")
 
-            # 减仓 PnL 立即计入风控
             if realized_pnl != 0:
                 self.risk_manager.record_trade(realized_pnl)
+            result['realized_pnl'] = realized_pnl
+            result['pnl'] = realized_pnl
 
-            position['amount'] -= reduce_amount
-            position['amount_usdt'] *= (1 - pct)
+            position['amount'] = old_amount - reduce_amount
+            position['amount_usdt'] = old_amount_usdt * (1 - pct)
 
-            # 浮点精度兜底：剩余量极小时视为全平
             min_amount = self.exchange.market(symbol).get('limits', {}).get('amount', {}).get('min', 1e-8)
             position_dust_closed = False
             if position['amount'] < max(min_amount, 1e-8):
                 del self.positions[symbol]
                 self.logger.info(f"减仓后剩余量过小，视为全平: {symbol}")
                 position_dust_closed = True
+                result['protective_update_state'] = 'dust_closed'
+                result['protection_state'] = 'closed'
 
-            # partial TP 真实减仓成功后才推进 tp_filled 并锁利 SL。
-            # 全平 dust 情况下不再有剩余仓位需要保护,直接跳过。
-            if tp_advance is not None and not position_dust_closed:
-                entry = position['entry_price']
-                original_sl = position.get('original_sl', position['stop_loss'])
-                R = abs(entry - original_sl) / entry if entry else 0.0
-                is_long = (position['side'] == 'long')
-                if tp_advance == 1:
-                    new_sl = entry * (1 + R * 0.5) if is_long else entry * (1 - R * 0.5)
-                elif tp_advance == 2:
-                    new_sl = entry * (1 + R * 1.5) if is_long else entry * (1 - R * 1.5)
-                else:
-                    new_sl = None
-                position['tp_filled'] = tp_advance
-                if new_sl is not None and R > 0:
-                    self._move_sl(symbol, position, new_sl)
-                    if position.get('protection_state') == 'protected':
-                        self.logger.info(
-                            f"[PartialTP] {symbol} TP{tp_advance} reduce 成功,"
-                            f"tp_filled={tp_advance},SL→{new_sl:.4f}"
-                        )
+            replace_ok = True
+            if not position_dust_closed:
+                # FR-3A: 任意 reduce 成功后,只要剩余仓位存在,必须重挂 residual SL。
+                # tp_advance 走锁利 SL,普通 reduce 走原 stop_loss。
+                if tp_advance is not None:
+                    entry = position['entry_price']
+                    original_sl = position.get('original_sl', position.get('stop_loss'))
+                    R = abs(entry - original_sl) / entry if entry and original_sl else 0.0
+                    is_long = (position['side'] == 'long')
+                    if tp_advance == 1:
+                        new_sl = entry * (1 + R * 0.5) if is_long else entry * (1 - R * 0.5)
+                    elif tp_advance == 2:
+                        new_sl = entry * (1 + R * 1.5) if is_long else entry * (1 - R * 1.5)
                     else:
-                        # FR-05: reduce 成功但保护单更新失败,告警 + 阻断后续动作
-                        self.logger.error(
-                            f"[PartialTP] {symbol} TP{tp_advance} reduce 成功但 SL "
-                            f"重挂失败,protection_state="
-                            f"{position.get('protection_state')}; 阻断后续 add/open"
-                        )
-                        if self.testnet:
-                            position['protection_state'] = 'local_fallback'
-            elif not position_dust_closed:
-                # FR-05: 普通减仓后也要确保剩余仓位有有效保护单
-                remaining_sl = position.get('stop_loss')
-                if remaining_sl:
-                    self._replace_protective_sl(symbol, position, remaining_sl)
+                        new_sl = None
+                    position['tp_filled'] = tp_advance
+                    if new_sl is not None and R > 0:
+                        replace_ok = self._replace_protective_sl(symbol, position, new_sl)
+                        if replace_ok:
+                            position['stop_loss'] = new_sl
+                else:
+                    remaining_sl = position.get('stop_loss')
+                    if remaining_sl:
+                        replace_ok = self._replace_protective_sl(symbol, position, remaining_sl)
+                    else:
+                        replace_ok = False
+                        result['warnings'].append('residual_no_stop_loss_target')
+
+                if replace_ok:
+                    result['protective_update_state'] = 'protected'
+                    result['protection_state'] = position.get('protection_state', 'protected')
+                    result['sl_sync_state'] = position.get('sl_sync_state', 'active')
+                    result['new_sl_algo_id'] = position.get('sl_algo_id')
+                    if tp_advance is not None:
+                        position['partial_tp_state'] = 'protected'
+                else:
+                    # reduce 已成交,但 residual 保护单挂不上 → 阻断后续 add/open/reduce
+                    position['protection_state'] = 'unknown'
+                    position['sl_sync_state'] = 'failed'
+                    position['last_protection_error'] = 'sl_replace_failed_after_reduce'
+                    if tp_advance is not None:
+                        position['partial_tp_state'] = 'protection_failed'
+                    result['protective_update_state'] = 'replace_failed'
+                    result['protection_state'] = 'unknown'
+                    result['sl_sync_state'] = 'failed'
+                    result['warnings'].append('residual_protection_failed')
+                    self.logger.error(
+                        f"[Reduce] {symbol} reduce 成功但 residual SL 重挂失败,"
+                        f"protection_state=unknown,阻断后续 add/open/reduce"
+                    )
+                    if self.exchange_id == 'okx' and not self.testnet:
+                        self._halt_symbol(symbol, reason='sl_replace_failed')
+                        result['halt_required'] = True
+
+            result['replace_ok'] = replace_ok
+            result['ok'] = result['reduce_ok'] and (replace_ok or position_dust_closed)
             self._save_positions()
 
-            self.logger.info(f"减仓: {symbol} 减{pct*100:.0f}%, 剩余{position.get('amount', 0):.6f}, PnL={realized_pnl:+.4f}")
-            return {'symbol': symbol, 'reduced_pct': pct, 'order': order, 'realized_pnl': realized_pnl, 'entry_request_id': position.get('request_id', '')}
+            self.logger.info(
+                f"减仓: {symbol} 减{pct*100:.0f}%, 剩余{position.get('amount', 0):.6f}, "
+                f"PnL={realized_pnl:+.4f}, protective={result['protective_update_state']}"
+            )
+            return result
 
         except Exception as e:
-            error_msg = str(e)
-            if self.exchange_id == 'okx' and _is_okx_position_reject(error_msg):
-                review = self._handle_okx_close_reject(symbol, error_msg, action='reduce')
-                self.logger.warning(f"[OKX reduce 拒单复核] {symbol} → {review['status']}")
-                return None
             self.logger.error(f"减仓失败: {e}")
             return None
         finally:

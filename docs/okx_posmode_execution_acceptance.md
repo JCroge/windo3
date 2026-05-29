@@ -284,7 +284,7 @@ GET /api/v5/account/config
 - 自动开新仓 NO-GO。
 - 只允许人工确认后的最小化恢复动作。
 
-> 2026-05-27 验收结果：T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP（账户为 long_short_mode），T7 SKIP（mock_only 已在 mock 矩阵 PASS）。所有必测项已通过，**Live 扩容前置阻断已解除**。
+> 2026-05-27 验收结果：T0/T1/T4/T5/T6/T8/T9 PASS，T2/T3 SKIP（账户为 long_short_mode），T7 SKIP（mock_only 已在 mock 矩阵 PASS）。2026-05-28 审计已覆盖当时扩容判断：保护单 owner 与 close cause P0 修复前，live 扩容 NO-GO。
 
 ## 7. 回滚与应急
 
