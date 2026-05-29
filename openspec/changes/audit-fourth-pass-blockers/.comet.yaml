@@ -1,8 +1,10 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: subagent-driven-development
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit5_pycache python3 -m compileall -q .
+verify_command: python3 -m pytest -q
 isolation: branch
-verify_mode: null
+verify_mode: full
 base_ref: a11f892c6d57cb0e787e8e83530dccd9f6d3ff46
 design_doc: docs/superpowers/specs/2026-05-29-audit-fourth-pass-blockers-design.md
 plan: docs/superpowers/plans/2026-05-29-audit-fourth-pass-blockers.md

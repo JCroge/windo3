@@ -96,6 +96,39 @@ async def test_portfolio_drawdown():
     return True
 
 
+async def test_portfolio_drawdown_uses_effective_balance_cap():
+    """组合回撤分母优先使用 effective_balance_cap，而不是持仓保证金兜底。"""
+    MessageBus.reset()
+    bus = MessageBus.get_instance()
+
+    rg = PortfolioRiskGuard({
+        "exchange": "okx",
+        "max_trade_amount": 10,
+        "effective_balance_cap": 300.0,
+    })
+    bus.register("test_listener", ["risk_alert"])
+
+    # 复现手动加仓后的错误场景：account_balance 未初始化。
+    # 如果错误地用保证金 32 作为分母，-16U 会触发 50% drawdown；
+    # 正确应使用 cap=300，drawdown 仅 5.33%，不应全平。
+    rg._account_balance = 0.0
+    rg._positions = {
+        "INJ-USDT": {
+            "symbol": "INJ-USDT", "side": "long",
+            "entry_price": 100.0, "amount_usdt": 32.0,
+            "leverage": 5, "stop_loss": 90.0, "take_profit": 110.0,
+            "open_time": time.time(), "highest_price": 100.0, "lowest_price": 100.0,
+        }
+    }
+    rg._prices = {"INJ-USDT": 90.0}
+
+    await rg._check_portfolio_drawdown()
+
+    msg = await bus.receive("test_listener", timeout=0.1)
+    assert msg is None, "effective_balance_cap=300 下 -16U 不应触发 max_drawdown"
+    return True
+
+
 async def test_flash_move():
     """测试3: 60秒内价格变化>3% → flash_move"""
     print("=" * 60)
