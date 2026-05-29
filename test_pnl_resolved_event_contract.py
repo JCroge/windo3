@@ -381,3 +381,203 @@ class TestRunReconciliationPublish:
         assert payload["close_evidence"]["match_rule"] == "sl_algo_id_exact"
         assert payload["resolution_id"] == "corr:CORR-9"
 
+
+
+class TestSubscriberDeduplication:
+    """F4-002: Judge/Reviewer 按 resolution_id 优先去重 pnl_resolved。"""
+
+    def _make_judge(self):
+        from agents.trading.judge import MultiJudge
+        from unittest.mock import MagicMock
+        j = MultiJudge.__new__(MultiJudge)
+        j._symbol_state = {}
+        j.logger = MagicMock()
+        j._processed_resolution_ids = set()
+        j._processed_resolution_max = 1024
+        j._archetype_cooldown = MagicMock()
+        j._record_sl_hit = MagicMock()
+        j._probe_short_active = None
+        j._probe_short_sl_count = 0
+        j._probe_short_cooldown_until = 0
+        j._probe_short_cooldown_hours = 24
+        return j
+
+    @pytest.mark.asyncio
+    async def test_judge_dedup_by_resolution_id_only(self):
+        """resolution_id 存在、correction_event_id 为空时 Judge 仍能去重(验证优先级)。"""
+        j = self._make_judge()
+        msg = {
+            "type": "pnl_resolved",
+            "symbol": "BTC-USDT",
+            "timestamp": 1000.0,
+            "payload": {
+                "symbol": "BTC-USDT",
+                "pnl_status": "final",
+                "is_strategy_stop": True,
+                "close_cause": "exchange_sl",
+                "final_close_cause": "exchange_sl",
+                "resolution_id": "key:K-7",
+                "correction_event_id": "",
+                "supersedes_event_id": "",
+                "realized_pnl_net_usdt": -9.5,
+                "attribution": {},
+                "direction": "long",
+                "position_id": "pos-7",
+            },
+        }
+        await j.on_message(msg)
+        await j.on_message(msg)
+        # Under old code correction_event_id="" -> no key -> no dedup -> called twice.
+        # Under fix resolution_id="key:K-7" is used -> dedup -> called once.
+        assert j._record_sl_hit.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_judge_skips_duplicate_resolution_id(self):
+        """Judge 收到同一 resolution_id 第二次时不重复 record SL hit。"""
+        j = self._make_judge()
+        msg = {
+            "type": "pnl_resolved",
+            "symbol": "BTC-USDT",
+            "timestamp": 1000.0,
+            "payload": {
+                "symbol": "BTC-USDT",
+                "pnl_status": "final",
+                "is_strategy_stop": True,
+                "close_cause": "exchange_sl",
+                "final_close_cause": "exchange_sl",
+                "resolution_id": "corr:E-1",
+                "correction_event_id": "E-1",
+                "realized_pnl_net_usdt": -9.5,
+                "attribution": {},
+                "direction": "long",
+                "position_id": "pos-1",
+            },
+        }
+        await j.on_message(msg)
+        await j.on_message(msg)
+        assert j._record_sl_hit.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_judge_falls_back_to_correction_event_id_when_no_resolution_id(self):
+        """payload 缺 resolution_id 时按 correction_event_id 去重(fail-safe)。"""
+        j = self._make_judge()
+        msg = {
+            "type": "pnl_resolved",
+            "symbol": "BTC-USDT",
+            "timestamp": 1000.0,
+            "payload": {
+                "symbol": "BTC-USDT",
+                "pnl_status": "final",
+                "is_strategy_stop": True,
+                "close_cause": "exchange_sl",
+                "correction_event_id": "E-LEGACY",
+                "realized_pnl_net_usdt": -9.5,
+                "attribution": {},
+                "direction": "long",
+                "position_id": "pos-2",
+            },
+        }
+        await j.on_message(msg)
+        await j.on_message(msg)
+        assert j._record_sl_hit.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reviewer_dedup_by_resolution_id_only(self):
+        """resolution_id 存在、correction_event_id 为空時 Reviewer 仍能去重(验证优先级)。"""
+        from agents.trading.reviewer import ReviewerAgent
+        from unittest.mock import MagicMock
+        r = ReviewerAgent.__new__(ReviewerAgent)
+        r.logger = MagicMock()
+        r._processed_resolution_ids = set()
+        r._processed_resolution_max = 1024
+        r.trade_history = []
+        r._save_trade_history = MagicMock()
+        r._hard_stop_triggered_date = ''
+        r.daily_pnl_hard_stop = -50.0
+        r.consecutive_loss_limit = 3
+
+        msg = {
+            "type": "pnl_resolved",
+            "symbol": "BTC-USDT",
+            "timestamp": 1000.0,
+            "payload": {
+                "symbol": "BTC-USDT",
+                "pnl_status": "final",
+                "resolution_id": "key:K-7",
+                "correction_event_id": "",
+                "supersedes_event_id": "",
+                "realized_pnl_net_usdt": -9.5,
+                "position_id": "pos-7",
+                "attribution": {},
+            },
+        }
+        await r._apply_pnl_resolution(msg)
+        await r._apply_pnl_resolution(msg)
+        # Under old code empty correction_event_id -> no key -> no dedup -> two appends.
+        # Under fix resolution_id="key:K-7" is used -> dedup -> one append.
+        assert len(r.trade_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_reviewer_skips_duplicate_resolution_id(self):
+        """Reviewer 收到同一 resolution_id 第二次时不重复 append trade_history。"""
+        from agents.trading.reviewer import ReviewerAgent
+        from unittest.mock import MagicMock
+        r = ReviewerAgent.__new__(ReviewerAgent)
+        r.logger = MagicMock()
+        r._processed_resolution_ids = set()
+        r._processed_resolution_max = 1024
+        r.trade_history = []
+        r._save_trade_history = MagicMock()
+        r._hard_stop_triggered_date = ''
+        r.daily_pnl_hard_stop = -50.0
+        r.consecutive_loss_limit = 3
+
+        msg = {
+            "type": "pnl_resolved",
+            "symbol": "BTC-USDT",
+            "timestamp": 1000.0,
+            "payload": {
+                "symbol": "BTC-USDT",
+                "pnl_status": "final",
+                "resolution_id": "corr:E-1",
+                "correction_event_id": "E-1",
+                "realized_pnl_net_usdt": -9.5,
+                "position_id": "pos-1",
+                "attribution": {},
+            },
+        }
+        await r._apply_pnl_resolution(msg)
+        await r._apply_pnl_resolution(msg)
+        assert len(r.trade_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_reviewer_falls_back_to_correction_event_id_when_no_resolution_id(self):
+        """payload 缺 resolution_id 时 Reviewer 按 correction_event_id 去重(fail-safe)。"""
+        from agents.trading.reviewer import ReviewerAgent
+        from unittest.mock import MagicMock
+        r = ReviewerAgent.__new__(ReviewerAgent)
+        r.logger = MagicMock()
+        r._processed_resolution_ids = set()
+        r._processed_resolution_max = 1024
+        r.trade_history = []
+        r._save_trade_history = MagicMock()
+        r._hard_stop_triggered_date = ''
+        r.daily_pnl_hard_stop = -50.0
+        r.consecutive_loss_limit = 3
+
+        msg = {
+            "type": "pnl_resolved",
+            "symbol": "BTC-USDT",
+            "timestamp": 1000.0,
+            "payload": {
+                "symbol": "BTC-USDT",
+                "pnl_status": "final",
+                "correction_event_id": "E-LEGACY",
+                "realized_pnl_net_usdt": -9.5,
+                "position_id": "pos-3",
+                "attribution": {},
+            },
+        }
+        await r._apply_pnl_resolution(msg)
+        await r._apply_pnl_resolution(msg)
+        assert len(r.trade_history) == 1

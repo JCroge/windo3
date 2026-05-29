@@ -219,9 +219,10 @@ class ReviewerAgent(BaseAgent):
                 f"{symbol} warnings={payload.get('warnings', [])}")
             return
 
-        # FR-3C: 幂等去重(correction_event_id/resolution_id)
-        resolution_key = (payload.get('correction_event_id')
-                          or payload.get('resolution_id')
+        # F4-002: resolution_id 是 make_resolution_id 生成的强幂等键(优先级 corr/sup/key/pos),
+        # 优先使用;老 payload 缺 resolution_id 时回退到 correction_event_id / supersedes_event_id。
+        resolution_key = (payload.get('resolution_id')
+                          or payload.get('correction_event_id')
                           or payload.get('supersedes_event_id') or '')
         if resolution_key:
             pos_id = payload.get('position_id', '')
