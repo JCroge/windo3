@@ -198,3 +198,102 @@ class TestPositionAnalystPartialClose:
         # 不应该出现 risk_reduced
         assert not any(s == "risk_reduced" for s, _ in statuses_actions)
 
+
+class TestPortfolioExposureReduce:
+    @pytest.mark.asyncio
+    async def test_replace_failed_emits_risk_reduced_with_protection_failed(self):
+        from agents.trading.executor import MultiExecutor
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.publish = fake_publish
+        ex.logger = MagicMock()
+        ex.executor = MagicMock()
+        ex.executor.get_all_positions.return_value = {
+            "BTC-USDT": {"amount_usdt": 100, "request_id": "r"},
+        }
+        ex.executor.reduce_position = MagicMock(return_value={
+            "reduce_ok": True, "ok": False,
+            "protective_update_state": "replace_failed",
+            "protection_state": "unknown",
+            "actual_reduce_amount": 50.0,
+            "requested_reduce_amount": 100.0,
+        })
+
+        await ex._handle_risk_alert({
+            "type": "portfolio_exposure", "scope": "market",
+        })
+
+        risk_reduced = [p for t, p in published if p.get("status") == "risk_reduced"]
+        assert len(risk_reduced) == 1
+        assert risk_reduced[0]["protection_failed"] is True
+        # actual_reduce_pct = (50/100) * 0.5 = 0.25
+        assert risk_reduced[0]["reduce_pct"] == pytest.approx(0.25)
+
+    @pytest.mark.asyncio
+    async def test_reduce_rejected_no_risk_reduced(self):
+        from agents.trading.executor import MultiExecutor
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.publish = fake_publish
+        ex.logger = MagicMock()
+        ex.executor = MagicMock()
+        ex.executor.get_all_positions.return_value = {
+            "BTC-USDT": {"amount_usdt": 100, "request_id": "r"},
+        }
+        ex.executor.reduce_position = MagicMock(return_value={
+            "reduce_ok": False, "reason": "reduce_rejected",
+            "protective_update_state": "restored_old_sl",
+        })
+
+        await ex._handle_risk_alert({
+            "type": "correlation_risk", "scope": "market",
+        })
+
+        statuses = [p.get("status") for t, p in published]
+        assert "reduce_failed" in statuses
+        assert "risk_reduced" not in statuses
+
+    @pytest.mark.asyncio
+    async def test_clean_ok_emits_risk_reduced(self):
+        """干净减仓: ok=True → risk_reduced + actual reduce_pct, protection_failed 缺失。"""
+        from agents.trading.executor import MultiExecutor
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.publish = fake_publish
+        ex.logger = MagicMock()
+        ex.executor = MagicMock()
+        ex.executor.get_all_positions.return_value = {
+            "BTC-USDT": {"amount_usdt": 100, "request_id": "r"},
+        }
+        ex.executor.reduce_position = MagicMock(return_value={
+            "reduce_ok": True, "ok": True,
+            "protective_update_state": "protected",
+            "protection_state": "protected",
+            "actual_reduce_amount": 50.0,
+            "requested_reduce_amount": 100.0,
+        })
+
+        await ex._handle_risk_alert({
+            "type": "portfolio_exposure", "scope": "market",
+        })
+
+        risk_reduced = [p for t, p in published if p.get("status") == "risk_reduced"]
+        assert len(risk_reduced) == 1
+        assert risk_reduced[0].get("protection_failed") in (None, False)
+        assert risk_reduced[0]["reduce_pct"] == pytest.approx(0.25)
+

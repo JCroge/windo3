@@ -488,14 +488,40 @@ class MultiExecutor(BaseAgent):
             pos = positions.get(largest_sym, {})
             entry_req_id = pos.get('request_id', '')
             result = self.executor.reduce_position(largest_sym, 0.5)
-            if result:
+            classification = self._classify_reduce_outcome(result, 0.5)
+            override_action = classification["action_override"] or "reduce"
+
+            if isinstance(result, dict):
                 result['entry_request_id'] = entry_req_id
-                payload = self._build_execution_result(
-                    status="risk_reduced", action="reduce", symbol=largest_sym,
-                    source="risk_alert", reason=alert_type, result=result,
-                    request_id=entry_req_id, reduce_pct=0.5,
-                )
-                await self.publish("execution_result", payload, symbol=largest_sym)
+
+            payload = self._build_execution_result(
+                status=classification["status"],
+                action=override_action,
+                symbol=largest_sym,
+                source="risk_alert",
+                reason=classification["reason"] or alert_type,
+                result=result if isinstance(result, dict) else {},
+                request_id=entry_req_id,
+            )
+
+            if classification["status"] == "risk_reduced":
+                payload["reduce_pct"] = classification["actual_reduce_pct"]
+                payload["protection_state"] = classification["protection_state"]
+                payload["protective_update_state"] = classification["protective_update_state"]
+                if classification["protection_failed"]:
+                    payload["protection_failed"] = True
+            elif classification["status"] == "executed" and override_action == "close":
+                payload["protection_state"] = classification["protection_state"]
+                payload["protective_update_state"] = classification["protective_update_state"]
+                payload["reduce_origin"] = True
+            # rejected / reduce_failed: 不带 reduce_pct,reason 已 set
+
+            await self.publish("execution_result", payload, symbol=largest_sym)
+            self.logger.info(
+                f"[执行] {largest_sym} risk_alert reduce {classification['status']} "
+                f"reason={classification['reason']} "
+                f"actual_pct={classification['actual_reduce_pct']:.4f}"
+            )
 
         elif alert_type == 'stale_position':
             symbol = alert.get('symbol')
