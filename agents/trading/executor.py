@@ -728,6 +728,12 @@ class MultiExecutor(BaseAgent):
                 "attribution": s.get("entry_attribution", {}),
                 "supersedes_event_id": s.get("supersedes_event_id", ""),
                 "correction_event_id": s.get("correction_event_id", ""),
+                # F4-002: final close cause 证据 + 幂等键
+                "close_cause": s.get("close_cause", ""),
+                "final_close_cause": s.get("final_close_cause", ""),
+                "is_strategy_stop": bool(s.get("is_strategy_stop", False)),
+                "close_evidence": s.get("close_evidence", {}),
+                "resolution_id": s.get("resolution_id", ""),
                 "timestamp": time.time(),
             }, symbol=s.get("symbol", ""))
         # Step 2: 全局账单 vs 本地账本 advisory 对账

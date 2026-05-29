@@ -317,3 +317,67 @@ class TestResolveExternalCloseAsyncPublish:
         assert "pnl_mismatch" not in topics
         ex.logger.warning.assert_called()
 
+
+class TestRunReconciliationPublish:
+    @pytest.mark.asyncio
+    async def test_run_reconciliation_publishes_final_cause(self):
+        """_run_reconciliation 收到 summary 后发布 pnl_resolved 必须透传字段。"""
+        from agents.trading.executor import MultiExecutor
+        from unittest.mock import MagicMock, AsyncMock
+
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.publish = fake_publish
+        ex.logger = MagicMock()
+
+        # mock reconciler 返回一条 final summary
+        rec = MagicMock()
+        rec.auto_resolve_pending.return_value = [{
+            "symbol": "BTC-USDT",
+            "position_id": "pos-1",
+            "entry_request_id": "req-1",
+            "pnl_status": "final",
+            "pnl_source": "okx_fills",
+            "realized_pnl_net_usdt": -9.5,
+            "estimated_pnl": -10,
+            "exchange_pnl_usdt": -9.5,
+            "fills_pnl_usdt": -10,
+            "gross_close_pnl_usdt": -10,
+            "fee_usdt": -0.5,
+            "funding_usdt": 0,
+            "order_ids": ["ord-1"],
+            "bill_ids": ["bill-1"],
+            "match_confidence": 1.0,
+            "warnings": [],
+            "sl_algo_id": "algo-1",
+            "sl_algo_clord_id": "casllivebot42",
+            "tp_algo_id": "",
+            "tp_algo_clord_id": "",
+            "entry_attribution": {},
+            "supersedes_event_id": "PEND-9",
+            "correction_event_id": "CORR-9",
+            "pending_event_id": "PEND-9",
+            # F4-002 新字段（来自 Task 5）
+            "close_cause": "exchange_sl",
+            "final_close_cause": "exchange_sl",
+            "is_strategy_stop": True,
+            "close_evidence": {"match_rule": "sl_algo_id_exact", "confidence": 1.0},
+            "resolution_id": "corr:CORR-9",
+        }]
+        rec.run_and_report = MagicMock(return_value=None)
+        ex._reconciler = rec
+
+        await ex._run_reconciliation()
+
+        topics = [t for t, _ in published]
+        assert "pnl_resolved" in topics
+        payload = next(p for t, p in published if t == "pnl_resolved")
+        assert payload["final_close_cause"] == "exchange_sl"
+        assert payload["is_strategy_stop"] is True
+        assert payload["close_evidence"]["match_rule"] == "sl_algo_id_exact"
+        assert payload["resolution_id"] == "corr:CORR-9"
+
