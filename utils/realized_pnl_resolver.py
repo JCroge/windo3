@@ -28,6 +28,34 @@ DEFAULT_BILLS_GRACE_MS = 60_000
 DEFAULT_LOOKBACK_MS = 30 * 60 * 1000  # 30 分钟
 
 
+def make_resolution_id(resolution: Dict[str, Any],
+                        correction: Optional[Dict[str, Any]] = None) -> str:
+    """生成 pnl_resolved/pnl_mismatch 事件的幂等键。
+
+    优先级链:
+        corr:<event_id>      — 写 ledger correction 成功(全局唯一)
+        sup:<supersedes_id>  — pending → final 链兜底
+        key:<close_match_key> — resolver 内部对账键
+        pos:<pid>|orders:<sorted>  — 兜底,基于 position_id + 排序后 order_ids
+
+    Returns:
+        非空字符串。下游账本类订阅者用此键 LRU 去重。
+    """
+    if correction:
+        event_id = correction.get("event_id")
+        if event_id:
+            return f"corr:{event_id}"
+        sup = correction.get("supersedes_event_id")
+        if sup:
+            return f"sup:{sup}"
+    match_key = resolution.get("close_match_key")
+    if match_key:
+        return f"key:{match_key}"
+    pos_id = resolution.get("position_id", "") or ""
+    order_ids = sorted(resolution.get("order_ids") or [])
+    return f"pos:{pos_id}|orders:{','.join(order_ids)}"
+
+
 def _resolution_skeleton(symbol: str, side: str, position_id: str = "",
                          entry_request_id: str = "") -> Dict[str, Any]:
     return {
