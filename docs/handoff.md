@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-05-27 OKX 真实 testnet T0-T9 语义验收完成（7 PASS / 3 SKIP），关键 bug `_cancel_protective_sl` / `_cancel_algo_by_id` 50002 已修；2026-05-27 分批止盈生命周期收敛阶段 1+2+3 完成（575→618 passed，新增 32 case `test_partial_tp_lifecycle.py` 含 AC-A2/A3/A6/A9/A7 + FR-04/FR-05）；2026-05-26 Long Entry Position Guard 上线完成（551→575 passed）；2026-05-26 R:R Floor Policy 修复完成（531→551 passed）；2026-05-25 OKX posMode 执行兼容代码完成并通过 mock 验收。**Live 扩容前置阻断已解除。**
-**下一阶段**：小额 24h 灰度观察 segmented metrics（按 `attribution.regime` / `attribution.rr_policy` / `slot_type` 分桶查看胜率、EV、回撤），如 metrics 健康再考虑扩容；可选项是把 testnet 账户切到 net_mode 后补跑 T2/T3，但当前不是阻断项
+**当前阶段**：2026-05-28 第四次审计完成。第三次整改测试已全绿（默认回归 `807 passed / 4 deselected / 1 warning`，network `4 passed / 807 deselected / 1 warning`），但新增 F4-001/F4-002/F4-003 阻断：reduce 失败回参误广播为 `risk_reduced`、`pnl_resolved` final cause evidence 未全链路透传、真实 OKX 新 SL 未使用 owner tag。当前 live 扩容 NO-GO，详见 `docs/generated_reports/系统性审计报告_20260528_第四次.md`。
+**下一阶段**：先修复第四次审计 F4-001/F4-002/F4-003，再重新评审 live 扩容。小额 live 灰度只能维持现有额度，并继续每日复核 `data/live_position_lifecycle.json` 与 OKX algo 残留情况。
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -730,8 +730,10 @@ python3 verify_system.py          # 基础验证
 python3 verify_trading_flow.py    # 交易Flow验证
 python3 verify_okx_real.py        # OKX真实账户验证
 
-# 启动实盘交易
-python3 live_trading.py
+# 启动实盘交易（生产入口）
+python3 run_agents.py
+# 或：./start.sh
+# 注意：live_trading.py / main.py 已 deprecated，仅保留为单策略调试参考
 ```
 
 ## 文档位置
