@@ -10,6 +10,7 @@ PRD §6.1: Reconciler 兼具两个职责
 import time
 import datetime
 from typing import Optional, List, Dict, Any
+from utils.realized_pnl_resolver import make_resolution_id
 
 
 class ReconcileResult:
@@ -282,5 +283,11 @@ class Reconciler:
                 'supersedes_event_id': (correction or {}).get('supersedes_event_id', ''),
                 'correction_event_id': (correction or {}).get('event_id', ''),
                 'pending_event_id': ev.get('event_id', ''),
+                # F4-002: final close cause 证据 + 幂等键
+                'close_cause': resolution.get('close_cause', ''),
+                'final_close_cause': resolution.get('final_close_cause', ''),
+                'is_strategy_stop': bool(resolution.get('is_strategy_stop', False)),
+                'close_evidence': resolution.get('close_evidence', {}),
+                'resolution_id': make_resolution_id(resolution, correction),
             })
         return results
