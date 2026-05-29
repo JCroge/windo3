@@ -128,7 +128,15 @@ class TelegramNotifier(BaseAgent):
 
         elif status == 'risk_reduced':
             reduce_pct = payload.get('reduce_pct', 0.5)
-            text = f"✂️ 减仓 {symbol} {int(reduce_pct*100)}%"
+            if payload.get('protection_failed'):
+                pus = payload.get('protective_update_state', 'unknown')
+                text = (
+                    f"⚠️ 减仓 {symbol} {int(reduce_pct*100)}% 已成交\n"
+                    f"但保护单异常: {pus}\n"
+                    f"protection_state=unknown,需人工核查"
+                )
+            else:
+                text = f"✂️ 减仓 {symbol} {int(reduce_pct*100)}%"
             await self._send_message(text)
 
         elif status in ('executed', 'force_closed', 'closed_externally') and (action == 'close' or status in ('force_closed', 'closed_externally')):
@@ -184,7 +192,8 @@ class TelegramNotifier(BaseAgent):
         symbol = payload.get('symbol', '')
         self._daily_summary['alerts'] += 1
 
-        critical_types = ('flash_move', 'max_drawdown', 'emergency_close', 'llm_degraded')
+        critical_types = ('flash_move', 'max_drawdown', 'emergency_close', 'llm_degraded',
+                          'protection_failed')
         if alert_type not in critical_types:
             return
 
@@ -193,6 +202,7 @@ class TelegramNotifier(BaseAgent):
             'max_drawdown': '📉 最大回撤',
             'emergency_close': '🆘 紧急平仓',
             'llm_degraded': '🤖 LLM降级',
+            'protection_failed': '⚠️ 保护单异常',
         }
         name = type_names.get(alert_type, alert_type)
         text = f"{name} {symbol}"
@@ -203,6 +213,12 @@ class TelegramNotifier(BaseAgent):
             text += f"\n回撤: {payload.get('drawdown_pct', 0):.1f}%"
         elif alert_type == 'llm_degraded':
             text += f"\n{payload.get('message', '')}"
+        elif alert_type == 'protection_failed':
+            pus = payload.get('protective_update_state', 'unknown')
+            request_id = payload.get('request_id', '')
+            text += f"\nprotective_update_state: {pus}"
+            if request_id:
+                text += f"\nrequest_id: {request_id}"
 
         await self._send_message(text)
 

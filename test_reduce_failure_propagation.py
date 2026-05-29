@@ -484,3 +484,107 @@ class TestPortfolioRiskGuardReduceHandling:
         await g._handle_execution_result(payload)
         assert "BTC-USDT" not in g._positions
 
+
+class TestTelegramReduceMessages:
+    def _make_notifier(self):
+        from agents.trading.telegram_notifier import TelegramNotifier
+        n = TelegramNotifier.__new__(TelegramNotifier)
+        n.logger = MagicMock()
+        return n
+
+    @pytest.mark.asyncio
+    async def test_clean_reduce_short_message(self):
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+        msg = {
+            "type": "execution_result",
+            "payload": {
+                "status": "risk_reduced",
+                "action": "close",
+                "symbol": "BTC-USDT",
+                "reduce_pct": 0.5,
+            },
+        }
+        await n._handle_execution(msg)
+        assert any("减仓" in s and "保护单" not in s for s in sent)
+
+    @pytest.mark.asyncio
+    async def test_protection_failed_message(self):
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+        msg = {
+            "type": "execution_result",
+            "payload": {
+                "status": "risk_reduced",
+                "action": "close",
+                "symbol": "BTC-USDT",
+                "reduce_pct": 0.25,
+                "protection_failed": True,
+                "protective_update_state": "replace_failed",
+            },
+        }
+        await n._handle_execution(msg)
+        text = "\n".join(sent)
+        assert "replace_failed" in text or "保护单" in text
+        assert "unknown" in text or "故障" in text or "异常" in text
+
+    @pytest.mark.asyncio
+    async def test_rejected_no_reduce_message(self):
+        """rejected/reduce_failed 不发减仓文案(现有 _handle_execution 静默忽略)。"""
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+        for status in ("rejected", "reduce_failed"):
+            msg = {
+                "type": "execution_result",
+                "payload": {
+                    "status": status,
+                    "action": "close",
+                    "symbol": "BTC-USDT",
+                    "reason": "sl_cancel_failed" if status == "rejected" else "reduce_rejected",
+                },
+            }
+            await n._handle_execution(msg)
+        # 两次 rejected/reduce_failed 调用都不应发任何减仓文案
+        assert not any("减仓" in s for s in sent)
+
+    @pytest.mark.asyncio
+    async def test_protection_failed_risk_alert_emits_critical(self):
+        """RiskGuard 发的 protection_failed risk_alert 必须进入 critical 推送。"""
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+        # _handle_risk_alert 需要 _daily_summary['alerts'] 计数器
+        n._daily_summary = {"alerts": 0}
+        msg = {
+            "type": "risk_alert",
+            "payload": {
+                "type": "protection_failed",
+                "symbol": "BTC-USDT",
+                "protective_update_state": "replace_failed",
+                "request_id": "r-9",
+            },
+        }
+        await n._handle_risk_alert(msg)
+        text = "\n".join(sent)
+        assert "保护单" in text or "protection_failed" in text
+        assert "replace_failed" in text or "BTC-USDT" in text
+
