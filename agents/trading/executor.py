@@ -226,12 +226,55 @@ class MultiExecutor(BaseAgent):
         elif action == 'close' and position is not None:
             try:
                 if size_pct < 1.0 and source == 'position_analyst':
-                    # 减仓：部分平仓
+                    # F4-001: 部分平仓走 _classify_reduce_outcome 分流，失败结果不再
+                    # 被广播为 risk_reduced。该路径自己 publish + return，不走下方通用块。
                     result = await asyncio.to_thread(
                         self.executor.reduce_position, norm_symbol, size_pct
                     )
-                    if result:
-                        self.logger.info(f"[执行] {symbol} 减仓{int(size_pct*100)}%")
+                    classification = self._classify_reduce_outcome(result, size_pct)
+                    override_action = classification["action_override"] or action
+
+                    if isinstance(result, dict):
+                        result['entry_request_id'] = (position or {}).get('request_id', '')
+                        result['exit_request_id'] = request_id
+
+                    payload = self._build_execution_result(
+                        status=classification["status"],
+                        action=override_action,
+                        symbol=symbol,
+                        source="executor_close",
+                        request_id=request_id,
+                        result=result if isinstance(result, dict) else {},
+                        reason=classification["reason"],
+                    )
+                    payload["confidence"] = confidence
+                    payload["used_plan"] = plan is not None
+                    attribution = decision.get('attribution')
+                    if attribution:
+                        payload['attribution'] = attribution
+                        if isinstance(result, dict):
+                            result['attribution'] = attribution
+
+                    if classification["status"] == "risk_reduced":
+                        payload["reduce_pct"] = classification["actual_reduce_pct"]
+                        payload["protection_state"] = classification["protection_state"]
+                        payload["protective_update_state"] = classification["protective_update_state"]
+                        if classification["protection_failed"]:
+                            payload["protection_failed"] = True
+                    elif classification["status"] == "executed" and override_action == "close":
+                        # dust_closed: 视为平仓终态
+                        payload["protection_state"] = classification["protection_state"]
+                        payload["protective_update_state"] = classification["protective_update_state"]
+                        payload["reduce_origin"] = True
+                    # rejected / reduce_failed: 不带 reduce_pct，reason 已 set
+
+                    await self.publish("execution_result", payload, symbol=symbol)
+                    self.logger.info(
+                        f"[执行] {symbol} reduce {classification['status']} "
+                        f"reason={classification['reason']} "
+                        f"actual_pct={classification['actual_reduce_pct']:.4f}"
+                    )
+                    return
                 else:
                     # 全平 — FR-003: close_position() 内部清理保护单,
                     # Agent 不再直接撤 sl_order_id
@@ -279,9 +322,9 @@ class MultiExecutor(BaseAgent):
                 result['attribution'] = attribution
             if source == 'position_analyst' and action in ('open_long', 'open_short'):
                 payload["is_add"] = True
-            if source == 'position_analyst' and action == 'close' and size_pct < 1.0:
-                payload["status"] = "risk_reduced"
-                payload["reduce_pct"] = size_pct
+            # NOTE: partial close (size_pct < 1.0, source=position_analyst) now publishes
+            # its own payload via _classify_reduce_outcome and returns early — it never
+            # reaches this common block. The old status="risk_reduced" patch is removed.
             await self.publish("execution_result", payload, symbol=symbol)
         elif action in ('open_long', 'open_short'):
             self.logger.warning(f"[执行] {symbol} 底层返回None，发布rejected终态")
