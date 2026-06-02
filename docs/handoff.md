@@ -3,8 +3,8 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-05-28 第四次审计完成。第三次整改测试已全绿（默认回归 `807 passed / 4 deselected / 1 warning`，network `4 passed / 807 deselected / 1 warning`），但新增 F4-001/F4-002/F4-003 阻断：reduce 失败回参误广播为 `risk_reduced`、`pnl_resolved` final cause evidence 未全链路透传、真实 OKX 新 SL 未使用 owner tag。当前 live 扩容 NO-GO，详见 `docs/generated_reports/系统性审计报告_20260528_第四次.md`。
-**下一阶段**：先修复第四次审计 F4-001/F4-002/F4-003，再重新评审 live 扩容。小额 live 灰度只能维持现有额度，并继续每日复核 `data/live_position_lifecycle.json` 与 OKX algo 残留情况。
+**当前阶段**：2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 已完成，默认回归基线 `954 passed / 4 deselected / 1 warning`。第四次审计 F4-001/F4-002/F4-003 阻断已在 2026-05-29 代码与单测闭环，真实 OKX owner-tag 补验 T0/T1/T6 PASS；TG 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id`，Entry Drift Hybrid Policy 对 open 路径执行 4 档 drift gate。
+**下一阶段**：live 扩容为 CONDITIONAL GO。扩容前需将 `BOT_INSTANCE_ID` 写入 systemd / pm2 等启动配置，完成真实 TG 命令链与 drift gate 运维验收，并继续每日复核 `data/live_position_lifecycle.json` 与 OKX algo 残留情况。
 
 ## 重大决策：放弃套利策略（2026-05-06）
 

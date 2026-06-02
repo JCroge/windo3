@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-05-28）**：主入口为 `run_agents.py`，全量回归 `699 passed / 4 deselected / 1 warning`。R:R Floor 选择已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`。OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP（T0/T1/T4-T6/T8-T15 PASS），net_mode 切换后单独跑 T0/T2/T3 3 PASS（verify_okx_testnet_real.py 的 T2/T3 已 self-contained，main loop pre-cleanup 不再抹掉前置仓位）；2026-05-28 审计 P0（保护单 owner、SL cancel failure、Agent close path、close cause）+ P1（FR-005 BehavioralCritic 字段统一、FR-007 network 测试限时、FR-008 STATE_NAMESPACE 状态命名空间）代码 + 单测 + testnet T10-T15 真实补验已闭环，T2/T3 net_mode caveat 解除，T7 mock_only by design（已 mock 矩阵 PASS）。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-06-01）**：主入口为 `run_agents.py`，全量回归 `954 passed / 4 deselected / 1 warning`。R:R Floor 选择收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，Entry Drift Hybrid Policy 收敛到 `executor._classify_entry_drift` / `_recompute_plan_for_drift`。OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 2026-05-29 T0/T1/T6 PASS。TG Graceful Ops 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id` 和 `/status` health 行。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略

@@ -4,9 +4,10 @@
 
 ## 系统状态
 
-- 最新基线（2026-05-28 第三次审计 P0/P1/P2 整改后）：`807 passed / 4 deselected / 1 warning`，包括第三次整改新增 `test_reduce_protective_sl_lifecycle.py` 14 + `test_protective_cleanup_owner.py` 12 + `test_external_close_final_cause.py` 11（含 probe_short 门控扩展）+ `test_symbol_mentions.py` 33 case + utils/symbol_mentions.py helper；关键执行/契约定向回归全绿。
-- live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。Live 扩容当前 NO-GO（第四次审计新增三阻断 F4-001/002/003 未闭环）；小额灰度 CONDITIONAL GO，维持现有 cap、人工可接管、每日复核 OKX algo 残留与 `data/live_position_lifecycle.json`。
-- OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 子账户跑 T0/T1/T4/T5/T6/T8/T9/T10/T11/T12/T13/T14/T15 13 PASS（T2/T3 SKIP、T7 SKIP mock_only），net_mode 切换后单独跑 T0/T2/T3 3 PASS。第三次审计整改：FR-3A `reduce_position()` fail-closed（撤旧失败立即返回 / 不清旧 ID / live OKX halt / residual 必重挂 SL）+ FR-3B `_cleanup_protective_orders_on_close()` owner-bound sweep（owner-tag clOrdId `ca+namespace+bot_instance+base+random` + 三层 owner 判定 + foreign 不撤 + halt 阻断新开仓）+ FR-3C `pnl_resolved` final cause + 幂等（resolver `_classify_close_evidence` 输出 `final_close_cause/match_rule/confidence`，Judge/Reviewer 按 `correction_event_id|position_id` 幂等 LRU set，probe_short SL 计数受 `is_strategy_stop` 门控）+ FR-3D 新闻 ticker 边界匹配（`utils/symbol_mentions.py` 五规则正则边界 + 高歧义短 ticker 黑名单）。整改路径见 [audit_remediation_third_pass_20260528_prd.md](docs/audit_remediation_third_pass_20260528_prd.md) 与 [audit_remediation_third_pass_20260528_acceptance.md](docs/audit_remediation_third_pass_20260528_acceptance.md)；第四次审计阻断见 [docs/generated_reports/系统性审计报告_20260528_第四次.md](docs/generated_reports/系统性审计报告_20260528_第四次.md)。
+- 最新本地基线（2026-06-01 Entry Drift Hybrid Policy 后）：`954 passed / 4 deselected / 1 warning`。新增覆盖包括 TG Graceful Ops（`test_tg_symbol_halt_control.py` / `test_tg_pnl_correction.py` / `test_tg_status_enhancement.py`）与 Entry Drift Hybrid Policy（`test_entry_drift_hybrid_policy.py` / `tests/test_judge_plan_anchor_fields.py` / `tests/test_event_backtest_drift_compat.py`）。
+- live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。第四次审计 F4-001/002/003 代码与单测已闭环；live 扩容为 CONDITIONAL GO，扩容前需要把 `BOT_INSTANCE_ID` 写入 systemd / pm2 等启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
+- OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 子账户跑 T0/T1/T4/T5/T6/T8/T9/T10/T11/T12/T13/T14/T15 13 PASS（T2/T3 SKIP、T7 SKIP mock_only），net_mode 切换后单独跑 T0/T2/T3 3 PASS。第四次审计 F4 owner-tag 补验 2026-05-29 完成：T0/T1/T6 PASS，真实 SL `algoClOrdId` 含 owner-tag prefix。
+- 最新能力：TG Graceful Ops 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id` 与 `/status` health 行；Entry Drift Hybrid Policy 在开仓限价前和 fallback 前执行 4 档 drift gate，`execution_result.v2.attribution.entry_drift` 暴露 band/decision/drift_pct。
 
 具体阈值与开关以启动 banner 为准（启动后看 `logs/launcher_*.log` 第一段），不要从 README 硬抄数字。
 
@@ -51,7 +52,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 ## 常用验证
 
 ```bash
-python3 -m pytest -q                       # 默认回归（基线 807 passed）
+python3 -m pytest -q                       # 默认回归（基线 954 passed）
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（需 .env.testnet）
@@ -69,7 +70,7 @@ python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（
 | [docs/integration-guide.md](docs/integration-guide.md) | 消息契约与下游接入 |
 | [docs/handoff.md](docs/handoff.md) | 项目交接与决策记录 |
 | [docs/to-do-list.md](docs/to-do-list.md) | 当前阻断项、后续优化、已关闭事项 |
-| [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档（最新 2026-05-28）+ OKX testnet 验收（2026-05-28 T0-T15 13 PASS / 3 SKIP） |
+| [docs/generated_reports/](docs/generated_reports/) | 系统性审计报告归档 + OKX testnet 验收（2026-05-28 T0-T15 13 PASS / 3 SKIP；2026-05-29 owner-tag T0/T1/T6 PASS） |
 | [docs/okx_posmode_execution_*.md](docs/) | OKX posMode 执行兼容 PRD + 验收 |
 | [docs/rr_floor_policy_*.md](docs/) | R:R Floor Policy 修复 PRD + 验收（2026-05-26） |
 | [docs/long_entry_position_guard_*.md](docs/) | Long Entry Position Guard PRD + 验收（2026-05-26） |

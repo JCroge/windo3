@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-05-28，系统主入口是多 Agent 交易系统：
+截至 2026-06-01，系统主入口是多 Agent 交易系统：
 
 ```bash
 python3 run_agents.py
@@ -12,7 +12,7 @@ python3 run_agents.py
 
 `live_trading.py` 已标记为 deprecated，只保留给单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
 
-当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容代码已落地，R:R Floor Policy 已统一收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 已统一收敛到 `Judge._check_entry_position_policy`，分批止盈生命周期收敛阶段 1+2+3 已上线。**2026-05-28 第三次审计 P0/P1/P2 整改基线为 `807 passed / 4 deselected / 1 warning`**：FR-3A `reduce_position()` fail-closed 结构化结果（撤旧 SL 失败立即返回不清旧 ID、reduce reject 后 restore 原 SL、residual 必重挂、live OKX halt）+ FR-3B `_cleanup_protective_orders_on_close()` owner-bound sweep（owner-tag clOrdId `ca+namespace+bot_instance+base+random` + 三层 owner 判定 + foreign 不撤 + halt 阻断新开仓）+ FR-3C `pnl_resolved` final close cause 证据 + 幂等（`_classify_close_evidence` 输出 `final_close_cause/match_rule/confidence`，Judge/Reviewer LRU 去重，probe_short SL 计数受 `is_strategy_stop` 门控）+ FR-3D 新闻 ticker 边界匹配（`utils/symbol_mentions.py` 严格正则边界 + 高歧义短 ticker 黑名单）。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS。**第四次审计（2026-05-28 晚）新增三阻断尚未闭环**：F4-001 reduce 失败回参误广播 risk_reduced（P0）/ F4-002 pnl_resolved evidence 透传不完整（P1）/ F4-003 owner tag 未用于真实 OKX SL 下单（P1）；live 扩容 NO-GO，详见 `docs/audit_remediation_third_pass_20260528_prd.md` 与 `docs/generated_reports/系统性审计报告_20260528_第四次.md`。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
+当前工程链路已具备 paper/mock 和小额 live 灰度观察基础；OKX posMode 执行兼容、R:R Floor Policy、Long Entry Position Guard、分批止盈生命周期、第四次审计整改、TG Graceful Ops 与 Entry Drift Hybrid Policy 均已落地。**最新默认回归基线为 `954 passed / 4 deselected / 1 warning`**。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 T0/T1/T6 PASS。live 扩容为 CONDITIONAL GO，扩容前需完成 `BOT_INSTANCE_ID` 启动配置、真实 TG 命令链与 drift gate 运维验收。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。
 
 **热更新语义**：Telegram `/restart` 现在会让 `run_agents.py` 在优雅停机后执行 `os.execv(...)`，重新拉起 Python 解释器并重新 import 已修改的模块。`execv` 后 PID 可能不变，这是正常现象；判断是否换上新代码，应看启动日志和新行为。若变更的是 Python/venv/系统级依赖，仍建议 `kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。
 

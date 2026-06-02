@@ -1,8 +1,8 @@
 # To-Do List
 
-更新日期：2026-05-29  
-来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-28 第四次审计发现 reduce 失败回参误广播、pnl_resolved final cause 证据透传不完整、owner tag 未用于真实 SL 下单；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-05-29 ALGO 手动 PnL correction 暴露 `/pnl` 运维命令缺口。  
-当前基线：`860 passed / 4 deselected / 1 warning`，`pytest -q -m network` 为 `4 passed / 860 deselected / 1 warning`；OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容 NO-GO 已解除前置；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置。
+更新日期：2026-06-01
+来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成。
+当前基线：`954 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
 
 最新整改文档：
 
@@ -11,6 +11,8 @@
 - `docs/audit_remediation_third_pass_20260528_prd.md`
 - `docs/audit_remediation_third_pass_20260528_acceptance.md`
 - `docs/audit_remediation_fourth_pass_20260528_acceptance.md`
+- `docs/audit_remediation_tg_graceful_ops_acceptance.md`
+- `docs/audit_remediation_entry_drift_hybrid_policy_acceptance.md`
 - `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go
@@ -18,7 +20,7 @@
 - 本地开发：GO。
 - Paper/mock：GO。
 - 小额 live 灰度：GO（保持现有 cap，运维可接管）。
-- live 扩容：CONDITIONAL GO（解除 NO-GO 前置已完成；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置）。
+- live 扩容：CONDITIONAL GO（解除 NO-GO 前置已完成；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置，并完成真实 TG 命令链与 drift gate 运维验收）。
 
 ## 第四次审计阻断（已闭环 2026-05-29）
 

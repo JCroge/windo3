@@ -159,7 +159,7 @@ Reviewer / RiskGuard
 |---|---|
 | `README.md` | 项目入口和当前状态 |
 | `docs/to-do-list.md` | 当前阻断项、后续优化、已关闭事项 |
-| `docs/generated_reports/系统性审计报告_20260524.md` | 最新系统性审计报告 |
+| `docs/generated_reports/系统性审计报告_20260528_第四次.md` | 最新系统性审计报告 |
 | `docs/runbook.md` | 运维命令、环境变量、故障处理 |
 | `docs/development.md` | 开发边界、flow、验证矩阵 |
 | `docs/integration-guide.md` | 下游集成和消息契约 |
