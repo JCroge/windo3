@@ -1,0 +1,13 @@
+{
+  "change": "entry-drift-hybrid-policy",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "7d8d0f6165fb441045a58058f96cfe041ac647f98c54938b1c68bec858662512",
+  "files": [
+    { "path": "openspec/changes/entry-drift-hybrid-policy/proposal.md", "sha256": "88e7f87cd901ff0d6fa0a37e8dad7304cc0a257b5d2216b0cb73d4c6505b4928" },
+    { "path": "openspec/changes/entry-drift-hybrid-policy/design.md", "sha256": "99d45f8d42cc887eeb1d5db8785c824f9ee13fb765fef21d546b82daf865fdb4" },
+    { "path": "openspec/changes/entry-drift-hybrid-policy/tasks.md", "sha256": "24bbb36364aa89e825e09d15d3f48fd071c4775cc920dc387352a5150cfe8b93" }
+  ]
+}

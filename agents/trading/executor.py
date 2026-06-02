@@ -8,7 +8,7 @@ import uuid
 import asyncio
 from dotenv import load_dotenv
 from agents.base import BaseAgent
-from executor import ContractExecutor
+from executor import ContractExecutor, ENTRY_DRIFT_SMALL_PCT
 from utils.halt_state import get_halt_state
 from utils.reconciliation import Reconciler
 from utils.realized_pnl_resolver import (
@@ -84,9 +84,56 @@ class MultiExecutor(BaseAgent):
             elif cmd == 'resume':
                 await self._handle_resume(source, msg.get('payload', {}))
             elif cmd == 'force_resume':
+                # F-TG-001: 先快照,后清除,再 publish audit
+                halted_snapshot = (
+                    self.executor.get_halted_symbols()
+                    if getattr(self, 'executor', None) and hasattr(self.executor, 'get_halted_symbols')
+                    else {}
+                )
                 self._halt_state.force_resume(resume_by=source)
                 self._trading_halted = False
+                cleared_n = self._safe_clear_symbol_halt(
+                    None, source=f"force_resume:{source}"
+                )
+                if cleared_n > 0:
+                    cleared_symbols = [
+                        f"{sym} ({info.get('reason', '?')})"
+                        for sym, info in halted_snapshot.items()
+                    ]
+                    self.logger.warning(
+                        f"[强制解除熔断 audit] {source} 同时清除 {cleared_n} 个 "
+                        f"per-symbol halt: {cleared_symbols} — 请确认根因已排除"
+                    )
+                    await self.publish('risk_alert', {
+                        'type': 'force_resume_cleared_symbol_halts',
+                        'cleared_symbols': cleared_symbols,
+                        'source': source,
+                    })
                 self.logger.warning(f"[强制解除熔断] 通过{source}触发，跳过对账")
+            elif cmd == 'resume_symbol':
+                # F-TG-002: 单 symbol 解锁
+                symbol_raw = msg.get('payload', {}).get('symbol', '').strip()
+                if not symbol_raw:
+                    return
+                normalized = self.executor._normalize_symbol(symbol_raw)
+                cleared = self.executor.clear_symbol_halt(
+                    normalized, source=f"resume_symbol:{source}"
+                )
+                if cleared > 0:
+                    await self.publish('risk_alert', {
+                        'type': 'symbol_halt_cleared',
+                        'symbol': normalized,
+                        'source': source,
+                    })
+                    self.logger.info(
+                        f"[ResumeSymbol] {source} 解除 {normalized} per-symbol halt"
+                    )
+                else:
+                    await self.publish('risk_alert', {
+                        'type': 'symbol_halt_not_found',
+                        'symbol': normalized,
+                        'source': source,
+                    })
             return
 
         if msg['type'] == 'trade_decision':
@@ -326,12 +373,66 @@ class MultiExecutor(BaseAgent):
             # its own payload via _classify_reduce_outcome and returns early — it never
             # reaches this common block. The old status="risk_reduced" patch is removed.
             await self.publish("execution_result", payload, symbol=symbol)
+            await self._drain_drift_alerts()
         elif action in ('open_long', 'open_short'):
             self.logger.warning(f"[执行] {symbol} 底层返回None，发布rejected终态")
+            # Inspect pending drift alerts BEFORE draining to override reject reason
+            pending = getattr(self.executor, '_pending_drift_alerts', None) or []
+            drift_reason = None
+            for alert in pending:
+                if alert.get('type') == 'entry_drift_abandoned':
+                    drift_reason = 'drift_too_large'
+                    break
+                if alert.get('type') == 'entry_drift_rr_fail':
+                    drift_reason = 'drift_rr_floor_fail'
+                    break
+            reject_reason = drift_reason or "unknown_none_result"
+            drift_attr = self._build_drift_attribution(pending)
+            extra_kwargs = {'attribution': {'entry_drift': drift_attr}} if drift_attr else {}
             await self.publish("execution_result", self._build_execution_result(
                 status="rejected", action=action, symbol=symbol,
-                source="executor_open", reason="unknown_none_result", request_id=request_id,
+                source="executor_open", reason=reject_reason, request_id=request_id,
+                **extra_kwargs,
             ), symbol=symbol)
+            await self._drain_drift_alerts()
+
+    @staticmethod
+    def _build_drift_attribution(pending_alerts: list):
+        """From the buffered alerts, derive the attribution.entry_drift dict."""
+        for alert in pending_alerts or []:
+            t = alert.get('type')
+            if t == 'entry_drift_abandoned':
+                return {
+                    'band': 'abandon', 'decision': 'abandon',
+                    'drift_pct': alert.get('drift_pct'),
+                    'reason': 'drift_too_large',
+                    'gate': alert.get('gate'),
+                }
+            if t == 'entry_drift_rr_fail':
+                return {
+                    'band': 'medium' if (alert.get('drift_pct') or 0) > ENTRY_DRIFT_SMALL_PCT else 'small',
+                    'decision': 'recalc_fail',
+                    'drift_pct': alert.get('drift_pct'),
+                    'reason': 'drift_rr_floor_fail',
+                    'rr_actual': alert.get('rr_actual'),
+                    'rr_floor_used': alert.get('rr_floor_used'),
+                    'gate': alert.get('gate'),
+                }
+        return None
+
+    async def _drain_drift_alerts(self) -> None:
+        """Drain root executor's pending drift alerts and publish them as risk_alert events."""
+        ex = getattr(self, 'executor', None)
+        pending = getattr(ex, '_pending_drift_alerts', None) if ex else None
+        if not pending:
+            return
+        alerts = list(pending)
+        pending.clear()
+        for alert in alerts:
+            try:
+                await self.publish('risk_alert', alert)
+            except Exception as e:
+                self.logger.warning(f"[Drift Alert] publish failed: {e}")
 
     async def _execute_with_plan(self, symbol: str, side: str, plan: dict) -> dict:
         """基于Judge plan智能执行（限价单可能阻塞30s，用线程池避免冻结事件循环）"""
@@ -373,6 +474,21 @@ class MultiExecutor(BaseAgent):
             )
         return result
 
+    def _safe_clear_symbol_halt(self, symbol=None, source: str = "unknown") -> int:
+        """F-TG-001: 调用 root executor.clear_symbol_halt 的 fail-soft 包装。
+
+        如果 self.executor 不存在(单测/启动早期场景),返回 0 不抛 AttributeError。
+        生产环境 self.executor 必然存在,这只是防御性单测兜底。
+        """
+        ex = getattr(self, 'executor', None)
+        if ex is None:
+            return 0
+        try:
+            return ex.clear_symbol_halt(symbol, source=source)
+        except AttributeError:
+            # ex 可能是 mock 不实现 clear_symbol_halt
+            return 0
+
     async def _handle_resume(self, source: str, payload: dict):
         """Executor 是 resume 的唯一 owner：执行对账后决定是否恢复交易"""
         reconciliation_result = payload.get('reconciliation_result')
@@ -380,6 +496,7 @@ class MultiExecutor(BaseAgent):
         if reconciliation_result and reconciliation_result.get('status') == 'matched':
             self._halt_state.confirm_resume(resume_by=source, reconcile_ok=True)
             self._trading_halted = False
+            self._safe_clear_symbol_halt(None, source=f"_handle_resume:{source}")  # F-TG-001
             self.logger.info(f"[解除熔断] 通过{source}触发，对账通过")
             return
 
@@ -392,6 +509,7 @@ class MultiExecutor(BaseAgent):
                 if not blocking:
                     self._halt_state.confirm_resume(resume_by=source, reconcile_ok=True)
                     self._trading_halted = False
+                    self._safe_clear_symbol_halt(None, source=f"_handle_resume:{source}")  # F-TG-001
                     self.logger.info(f"[解除熔断] 通过{source}触发，本地对账通过")
                 else:
                     self._halt_state.confirm_resume(resume_by=source, reconcile_ok=False)
@@ -404,6 +522,7 @@ class MultiExecutor(BaseAgent):
         else:
             self._halt_state.confirm_resume(resume_by=source, reconcile_ok=True)
             self._trading_halted = False
+            self._safe_clear_symbol_halt(None, source=f"_handle_resume:{source}")  # F-TG-001
             self.logger.info(f"[解除熔断] 通过{source}触发（无reconciler，直接恢复）")
 
     async def _handle_risk_alert(self, alert: dict):
@@ -911,6 +1030,24 @@ class MultiExecutor(BaseAgent):
                 })
         except Exception as e:
             self.logger.warning(f"[Reconciler] 对账异常: {e}")
+        # F-TG-004: 同步 publish halts_snapshot 给 Orchestrator
+        await self._publish_halts_snapshot()
+
+    async def _publish_halts_snapshot(self):
+        """F-TG-004: 周期性 publish halts_snapshot 事件供 Orchestrator 写 agent_health.json。
+
+        payload schema:
+            halted_symbols: dict {symbol -> {reason, halted_at}}
+            ts: 当前时戳
+        """
+        try:
+            halts = self.executor.get_halted_symbols()
+            await self.publish('halts_snapshot', {
+                'halted_symbols': halts,
+                'ts': time.time(),
+            })
+        except Exception as e:
+            self.logger.warning(f"[HaltsSnapshot] publish 失败: {e}")
 
     async def _notify_synced_positions(self):
         """将同步发现的新持仓通知RiskGuard"""

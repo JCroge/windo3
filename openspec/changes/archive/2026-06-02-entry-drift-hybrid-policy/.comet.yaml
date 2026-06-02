@@ -1,0 +1,18 @@
+workflow: full
+phase: archive
+build_mode: subagent-driven-development
+isolation: branch
+verify_mode: full
+base_ref: 733c671f7f6e2437f07d36064b3db0ceaeb547fc
+design_doc: docs/superpowers/specs/2026-06-01-entry-drift-hybrid-policy-design.md
+plan: docs/superpowers/plans/2026-06-01-entry-drift-hybrid-policy.md
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-06-01-entry-drift-hybrid-policy-verify.md
+branch_status: handled
+created_at: 2026-06-01
+verified_at: 2026-06-02
+archived: true
+handoff_context: openspec/changes/entry-drift-hybrid-policy/.comet/handoff/design-context.json
+handoff_hash: 7d8d0f6165fb441045a58058f96cfe041ac647f98c54938b1c68bec858662512
+build_command: python3 -m pytest -q
+verify_command: python3 -m pytest -q

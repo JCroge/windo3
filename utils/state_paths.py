@@ -67,6 +67,7 @@ class StatePaths:
     halt_state: str
     live_order_events: str
     live_position_lifecycle: str
+    agent_health: str
 
     @classmethod
     def for_namespace(cls, namespace: Optional[str] = None) -> 'StatePaths':
@@ -80,6 +81,7 @@ class StatePaths:
             halt_state=f'data/{p}halt_state.json',
             live_order_events=f'data/{p}live_order_events.jsonl',
             live_position_lifecycle=f'data/{p}live_position_lifecycle.json',
+            agent_health=f'data/{p}agent_health.json',
         )
 
     def as_banner_lines(self) -> list:
@@ -93,6 +95,7 @@ class StatePaths:
             f'    halt_state         → {self.halt_state}',
             f'    live_order_events  → {self.live_order_events}',
             f'    live_position_life → {self.live_position_lifecycle}',
+            f'    agent_health       → {self.agent_health}',
             f'    BOT_INSTANCE_ID    → {bot_id or "<empty>"}',
         ]
         if self.namespace == "live" and not bot_id:

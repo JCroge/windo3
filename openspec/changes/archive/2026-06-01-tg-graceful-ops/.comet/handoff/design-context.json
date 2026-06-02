@@ -1,0 +1,16 @@
+{
+  "change": "tg-graceful-ops",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "e95a4ffec72cc8947b4f0296548dd38012becc79063785beadd670031638545f",
+  "files": [
+    { "path": "openspec/changes/tg-graceful-ops/proposal.md", "sha256": "878ab8d169b94034170775c55f09a2afc6d004d95e3f639bdd7a528d3155a808" },
+    { "path": "openspec/changes/tg-graceful-ops/design.md", "sha256": "70a7bc0ce6ca924d49df9f9c2d16650876a19175d1d132400e9e99253aed44c6" },
+    { "path": "openspec/changes/tg-graceful-ops/tasks.md", "sha256": "fddda7a8f84063d14e7b3ccd9cafe6e2afb3e604eb9185eacff8f6cb46573c2f" },
+    { "path": "openspec/changes/tg-graceful-ops/specs/tg-pnl-correction/spec.md", "sha256": "db5fb69a6558dcec02bebb73c6d6deaaa62853ebb2f9e1786c5eb5602672e6b6" },
+    { "path": "openspec/changes/tg-graceful-ops/specs/tg-status-enhancement/spec.md", "sha256": "2132fdd8415c1af14c74d8af16c71ae065990f103854e74b8814225c4754195e" },
+    { "path": "openspec/changes/tg-graceful-ops/specs/tg-symbol-halt-control/spec.md", "sha256": "10b1da4219f245a394e5dead695a0b432b12add559bf6f4e81d9aafa3d51b216" }
+  ]
+}

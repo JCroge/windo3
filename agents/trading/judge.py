@@ -3150,11 +3150,19 @@ class MultiJudge(BaseAgent):
             digits = max(2, 4 - int(floor(log10(abs(x)))) - 1)
             return round(x, digits)
 
+        sl_rounded = price_round(stop_loss)
+        sl_pct_value = abs(sl_rounded - price) / price if price > 0 else 0.0
+        tp_rounded = [price_round(tp) for tp in take_profit]
+        tp_pct_values = [abs(tp - price) / price for tp in tp_rounded] if price > 0 else []
+
         return {
             "side": "long" if is_long else "short",
+            "entry_ref": price_round(price),
+            "sl_pct": round(sl_pct_value, 6),
+            "tp_pct": [round(p, 6) for p in tp_pct_values],
             "entry_zone": [price_round(e) for e in entry_zone],
-            "stop_loss": price_round(stop_loss),
-            "take_profit": [price_round(tp) for tp in take_profit],
+            "stop_loss": sl_rounded,
+            "take_profit": tp_rounded,
             "leverage": leverage,
             "size_usdt": size_usdt,
             "order_type": order_type,

@@ -7,9 +7,31 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional
 from risk_manager import RiskManager
 from utils.logger import setup_logger
+
+# ---------------------------------------------------------------------------
+# Entry Drift Hybrid Policy — threshold constants
+# ---------------------------------------------------------------------------
+ENTRY_DRIFT_ACCEPT_PCT = 0.005       # ≤0.5 %  → accept as-is
+ENTRY_DRIFT_SMALL_PCT = 0.02         # ≤2 %    → small band (recalc, usually pass)
+ENTRY_DRIFT_LARGE_PCT = 0.05         # ≤5 %    → medium band (recalc, tighter floor)
+                                     # >5 %    → abandon band
+ENTRY_DRIFT_MEDIUM_FLOOR_BUMP = 0.20  # +20 % R:R floor bump in medium band
+
+
+@dataclass(frozen=True)
+class DriftDecision:
+    """Immutable result of classify_entry_drift().  Callers must not mutate."""
+    band: Literal['accept', 'small', 'medium', 'abandon']
+    drift_pct: float
+    decision: Literal['accept', 'recalc_pass', 'recalc_fail', 'abandon']
+    reason: Optional[str]
+    new_plan: Optional[dict]
+    rr_actual: Optional[float]
+    rr_floor_used: Optional[float]
 
 
 # OKX 拒单错误码：与持仓状态相关，必须做交易所状态复核
@@ -117,6 +139,9 @@ class ContractExecutor:
         # 详见 docs/partial_tp_lifecycle_prd.md FR-04/FR-06。
         self._exit_lock_mu = threading.Lock()
         self._exit_locks: Dict[str, dict] = {}
+
+        # Entry drift gate: buffered risk alerts for agent layer to drain & publish
+        self._pending_drift_alerts: list[dict] = []
 
         # P1-M: 订单能力缓存 + 幂等防护
         try:
@@ -914,6 +939,46 @@ class ContractExecutor:
     def is_symbol_halted(self, symbol: str) -> bool:
         return symbol in getattr(self, '_halted_symbols', {})
 
+    def clear_symbol_halt(self, symbol: Optional[str] = None,
+                           *, source: str = "unknown") -> int:
+        """清除 per-symbol halt 残留。
+
+        Args:
+            symbol: 指定 symbol 仅清该项；None 清全部。
+            source: 触发清理的上下文（如 "telegram" / "_handle_resume" / "force_resume"），
+                    写入 audit log 用于事后查证。
+
+        Returns:
+            清掉的项数（用于审计日志）。
+        """
+        halted = getattr(self, '_halted_symbols', None)
+        if not halted:
+            return 0
+        if symbol is None:
+            n = len(halted)
+            cleared_keys = list(halted.keys())
+            halted.clear()
+            if n > 0:
+                self.logger.info(
+                    f"[ClearSymbolHalt] source={source} cleared {n} per-symbol halt(s): {cleared_keys}"
+                )
+            return n
+        if symbol in halted:
+            reason = halted[symbol].get('reason', '')
+            del halted[symbol]
+            self.logger.info(
+                f"[ClearSymbolHalt] source={source} cleared {symbol} (reason={reason})"
+            )
+            return 1
+        return 0
+
+    def get_halted_symbols(self) -> Dict[str, dict]:
+        """返回 _halted_symbols 顶层浅拷贝快照。
+
+        调用方 MUST NOT 修改返回 dict 的 value（内部 dict 引用复用）。
+        """
+        return dict(getattr(self, '_halted_symbols', {}))
+
     # ------------------------------------------------------------------
     # FR-06: per-symbol exit lock
     # ------------------------------------------------------------------
@@ -1122,6 +1187,132 @@ class ContractExecutor:
         if clord_id:
             params['clOrdId'] = clord_id
         return params
+
+    def _recompute_plan_for_drift(self, plan: dict, new_entry: float,
+                                  drift_band: str) -> Optional[dict]:
+        """按 plan.sl_pct / tp_pct 同比例平移 SL/TP 到 new_entry。
+
+        medium band floor 加成 +0.20。R:R 复检不过返回 None。
+        不修改原 plan（deepcopy）。
+        """
+        import copy
+        new_plan = copy.deepcopy(plan)
+        side = plan.get('side')
+        sl_pct = plan.get('sl_pct')
+        tp_pct = plan.get('tp_pct') or []
+        if not sl_pct or not tp_pct or new_entry <= 0:
+            return None
+
+        if side == 'long':
+            new_sl = new_entry * (1 - sl_pct)
+            new_tp = [new_entry * (1 + p) for p in tp_pct]
+        else:
+            new_sl = new_entry * (1 + sl_pct)
+            new_tp = [new_entry * (1 - p) for p in tp_pct]
+
+        sl_dist = sl_pct
+        tp_dist = abs(new_tp[0] - new_entry) / new_entry
+        rr_actual = tp_dist / sl_dist if sl_dist > 0 else 0.0
+
+        base_floor = (plan.get('attribution') or {}).get('rr_floor', 2.0)
+        bump = ENTRY_DRIFT_MEDIUM_FLOOR_BUMP if drift_band == 'medium' else 0.0
+        floor_used = base_floor + bump
+
+        if rr_actual < floor_used:
+            return None
+
+        new_plan['stop_loss'] = new_sl
+        new_plan['take_profit'] = new_tp
+        new_plan['recompute_reason'] = f'drift_{drift_band}'
+        new_plan['original_entry_ref'] = plan.get('entry_ref')
+        new_plan['recomputed_entry'] = new_entry
+        new_plan['recomputed_sl'] = new_sl
+        new_plan['recomputed_tp'] = new_tp
+        new_plan['rr_floor_used'] = floor_used
+        new_plan['rr_actual_after_recompute'] = rr_actual
+        return new_plan
+
+    def _enqueue_drift_alert(self, alert_type: str, **fields) -> None:
+        """Buffer a drift-related risk alert for the agent layer to drain & publish."""
+        self._pending_drift_alerts.append({
+            'type': alert_type,
+            'timestamp': time.time(),
+            **fields,
+        })
+
+    def _record_drift_decision_event(self, symbol: str, side: str,
+                                     decision: 'DriftDecision', gate: str) -> None:
+        """Record drift decision to live order events jsonl (full impl in Task 8)."""
+        if self.ledger:
+            try:
+                self.ledger.record_entry_drift_decision(
+                    symbol=symbol, side=side, gate=gate,
+                    band=decision.band, drift_pct=decision.drift_pct,
+                    decision=decision.decision, reason=decision.reason,
+                    rr_actual=decision.rr_actual,
+                    rr_floor_used=decision.rr_floor_used,
+                )
+            except (AttributeError, Exception) as e:
+                self.logger.warning(f"[Drift Event] record failed: {e}")
+
+    def _classify_entry_drift(self, plan: dict, live_price: float) -> 'DriftDecision':
+        """Drift gate single source of truth.
+
+        Bands (boundary inclusive on the lower side of the next band):
+          drift <= 0.005        → accept
+          0.005 < drift <= 0.02 → small (recompute, floor unchanged)
+          0.02  < drift <= 0.05 → medium (recompute, floor + 0.20)
+          drift > 0.05          → abandon (reason=drift_too_large)
+        Plan missing entry_ref/sl_pct/tp_pct → fail-safe accept (drift_pct=0.0)
+        + risk_alert.plan_missing_entry_ref enqueued.
+        """
+        entry_ref = plan.get('entry_ref')
+        sl_pct = plan.get('sl_pct')
+        tp_pct = plan.get('tp_pct')
+        if not entry_ref or not sl_pct or not tp_pct or live_price <= 0:
+            self._enqueue_drift_alert(
+                'plan_missing_entry_ref',
+                symbol=plan.get('symbol'),
+                has_entry_ref=bool(entry_ref),
+                has_sl_pct=bool(sl_pct),
+                has_tp_pct=bool(tp_pct),
+            )
+            return DriftDecision(
+                band='accept', drift_pct=0.0, decision='accept',
+                reason=None, new_plan=None, rr_actual=None, rr_floor_used=None,
+            )
+
+        drift = abs(live_price - entry_ref) / entry_ref
+
+        if drift <= ENTRY_DRIFT_ACCEPT_PCT:
+            return DriftDecision(
+                band='accept', drift_pct=drift, decision='accept',
+                reason=None, new_plan=None, rr_actual=None, rr_floor_used=None,
+            )
+
+        if drift > ENTRY_DRIFT_LARGE_PCT:
+            return DriftDecision(
+                band='abandon', drift_pct=drift, decision='abandon',
+                reason='drift_too_large',
+                new_plan=None, rr_actual=None, rr_floor_used=None,
+            )
+
+        band = 'small' if drift <= ENTRY_DRIFT_SMALL_PCT else 'medium'
+        new_plan = self._recompute_plan_for_drift(plan, live_price, band)
+        if new_plan is None:
+            base_floor = (plan.get('attribution') or {}).get('rr_floor', 2.0)
+            floor_used = base_floor + (ENTRY_DRIFT_MEDIUM_FLOOR_BUMP if band == 'medium' else 0.0)
+            return DriftDecision(
+                band=band, drift_pct=drift, decision='recalc_fail',
+                reason='drift_rr_floor_fail',
+                new_plan=None, rr_actual=None, rr_floor_used=floor_used,
+            )
+        return DriftDecision(
+            band=band, drift_pct=drift, decision='recalc_pass',
+            reason=None, new_plan=new_plan,
+            rr_actual=new_plan['rr_actual_after_recompute'],
+            rr_floor_used=new_plan['rr_floor_used'],
+        )
 
     def _build_close_order_params(self, position: dict, *, clord_id: Optional[str] = None) -> dict:
         """非 OKX 走原 reduceOnly=True；OKX 走构造器。"""
@@ -1727,6 +1918,22 @@ class ContractExecutor:
         SL更新直接修改position dict（棘轮，只向有利方向移动）
         """
         side = position['side']
+        # Invariant: take_profit must mirror take_profit_levels[0]
+        tp_levels_check = position.get('take_profit_levels') or []
+        tp_scalar_check = position.get('take_profit')
+        if tp_levels_check and tp_scalar_check is not None and tp_scalar_check != tp_levels_check[0]:
+            self.logger.error(
+                f"[TP Invariant] {symbol} breach: take_profit={tp_scalar_check} "
+                f"!= take_profit_levels[0]={tp_levels_check[0]}; halting symbol"
+            )
+            self._halt_symbol(symbol, reason='tp_invariant_breach')
+            self._enqueue_drift_alert(
+                'tp_invariant_breach',
+                symbol=symbol,
+                take_profit=tp_scalar_check,
+                take_profit_levels_first=tp_levels_check[0],
+            )
+            return None
         entry = position['entry_price']
         original_sl = position.get('original_sl', position['stop_loss'])
         R = abs(entry - original_sl) / entry  # 1R = 止损距离
@@ -1875,6 +2082,17 @@ class ContractExecutor:
         except Exception as e:
             self.logger.error(f"保存持仓失败: {e}")
 
+    def _set_position_tp(self, position: dict, tp_first: float,
+                         tp_levels: list) -> None:
+        """Single sink for TP fields. Enforces:
+           position['take_profit'] == position['take_profit_levels'][0]"""
+        assert tp_levels, "tp_levels must be non-empty"
+        assert tp_first == tp_levels[0], (
+            f"tp_first {tp_first} must equal tp_levels[0] {tp_levels[0]}"
+        )
+        position['take_profit'] = tp_first
+        position['take_profit_levels'] = list(tp_levels)
+
     def get_position(self, symbol: str) -> Optional[Dict]:
         """获取持仓信息"""
         return self.positions.get(symbol)
@@ -1934,34 +2152,80 @@ class ContractExecutor:
             ticker = self.exchange.fetch_ticker(symbol)
             current_price = ticker['last']
 
+            # === Gate 1: Drift Classification ===
+            import copy
+            orig_plan_for_gate2 = copy.deepcopy(plan)
+            drift_decision = self._classify_entry_drift(plan, current_price)
+            self._record_drift_decision_event(symbol, side, drift_decision, gate='gate_1')
+
+            if drift_decision.decision == 'abandon':
+                self.logger.warning(
+                    f"[Drift Gate 1] {symbol} abandon drift={drift_decision.drift_pct*100:.2f}%; "
+                    f"plan.entry_ref={plan.get('entry_ref')} live={current_price}"
+                )
+                self._enqueue_drift_alert(
+                    'entry_drift_abandoned', symbol=symbol, side=side,
+                    drift_pct=drift_decision.drift_pct,
+                    plan_entry_ref=plan.get('entry_ref'), live_price=current_price,
+                    gate='gate_1',
+                )
+                return None
+            if drift_decision.decision == 'recalc_fail':
+                self.logger.warning(
+                    f"[Drift Gate 1] {symbol} recalc_fail R:R={drift_decision.rr_actual} "
+                    f"floor={drift_decision.rr_floor_used}"
+                )
+                self._enqueue_drift_alert(
+                    'entry_drift_rr_fail', symbol=symbol, side=side,
+                    drift_pct=drift_decision.drift_pct,
+                    rr_actual=drift_decision.rr_actual,
+                    rr_floor_used=drift_decision.rr_floor_used,
+                    gate='gate_1',
+                )
+                return None
+            if drift_decision.decision == 'recalc_pass':
+                plan = drift_decision.new_plan
+                current_price = drift_decision.new_plan['recomputed_entry']
+                stop_loss = plan['stop_loss']
+                take_profit = plan['take_profit']
+                self.logger.info(
+                    f"[Drift Gate 1] {symbol} {drift_decision.band} recalc_pass "
+                    f"new_entry={current_price} new_SL={stop_loss} new_TP[0]={take_profit[0]}"
+                )
+
             # 预计算止盈止损价格（开仓时一并提交）
             if not stop_loss:
                 stop_loss = self.risk_manager.calculate_stop_loss(current_price, side)
             tp_first = take_profit[0] if take_profit else self.risk_manager.calculate_take_profit(current_price, side)
 
-            # SL方向校验：价格可能在Judge决策后变动，导致SL落在错误一侧
-            if side == 'short' and stop_loss <= current_price:
-                stop_loss = current_price * 1.015
-                self.logger.warning(f"SL方向修正(short): SL={stop_loss:.4f} > entry={current_price:.4f}")
-            elif side == 'long' and stop_loss >= current_price:
-                stop_loss = current_price * 0.985
-                self.logger.warning(f"SL方向修正(long): SL={stop_loss:.4f} < entry={current_price:.4f}")
-
-            # TP方向校验
-            if tp_first:
-                if side == 'short' and tp_first >= current_price:
-                    tp_first = current_price * 0.97
-                    self.logger.warning(f"TP方向修正(short): TP={tp_first:.4f} < entry={current_price:.4f}")
-                elif side == 'long' and tp_first <= current_price:
-                    tp_first = current_price * 1.03
-                    self.logger.warning(f"TP方向修正(long): TP={tp_first:.4f} > entry={current_price:.4f}")
+            # Invariant: drift gate guarantees SL on correct side. Breach = upstream bug.
+            if side == 'short' and stop_loss is not None and stop_loss <= current_price:
+                self.logger.error(
+                    f"[SL Invariant] {symbol} short SL={stop_loss} <= entry={current_price}; halting"
+                )
+                self._halt_symbol(symbol, reason='sl_invariant_breach')
+                self._enqueue_drift_alert(
+                    'sl_invariant_breach', symbol=symbol, side=side,
+                    stop_loss=stop_loss, entry=current_price,
+                )
+                return None
+            elif side == 'long' and stop_loss is not None and stop_loss >= current_price:
+                self.logger.error(
+                    f"[SL Invariant] {symbol} long SL={stop_loss} >= entry={current_price}; halting"
+                )
+                self._halt_symbol(symbol, reason='sl_invariant_breach')
+                self._enqueue_drift_alert(
+                    'sl_invariant_breach', symbol=symbol, side=side,
+                    stop_loss=stop_loss, entry=current_price,
+                )
+                return None
 
             # 构建附带TP/SL的下单参数
             sl_clord_id = self._make_owner_tag_clord_id(symbol) if self.exchange_id == 'okx' and stop_loss else None
             tp_sl_params = self._build_tp_sl_params(side, stop_loss, tp_first, sl_clord_id=sl_clord_id)
 
             if order_type == 'limit' and entry_zone:
-                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id)
+                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id, orig_plan=orig_plan_for_gate2)
                 if filled is None:
                     return None
                 amount, fill_price, limit_order_id = filled
@@ -1979,7 +2243,7 @@ class ContractExecutor:
                 if not self._check_slippage(symbol, size_usdt, current_price):
                     self.logger.info(f"滑点过大，降级为限价单")
                     if entry_zone:
-                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id)
+                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id, orig_plan=orig_plan_for_gate2)
                         if filled is None:
                             return None
                         amount, fill_price, limit_order_id = filled
@@ -2080,7 +2344,7 @@ class ContractExecutor:
                 'leverage': leverage,
                 'stop_loss': stop_loss,
                 'take_profit': tp_first,
-                'take_profit_levels': take_profit,
+                'take_profit_levels': list(take_profit) if take_profit else [tp_first],
                 'sl_order_id': sl_algo_id_resolved,
                 # FR-02: 保护单生命周期字段。
                 'exit_owner': 'local_partial_tp_exchange_sl',
@@ -2100,6 +2364,7 @@ class ContractExecutor:
                 'open_time': time.time(),
                 'request_id': plan.get('request_id', ''),
             }
+            self._set_position_tp(position, position['take_profit'], position['take_profit_levels'])
             self.positions[symbol] = position
             self._save_positions()
 
@@ -2141,7 +2406,8 @@ class ContractExecutor:
     def _execute_limit_order(self, symbol: str, side: str, size_usdt: float,
                              current_price: float, entry_zone: dict,
                              leverage: int = 1, tp_sl_params: dict = None,
-                             clord_id: str = None) -> Optional[tuple]:
+                             clord_id: str = None,
+                             orig_plan: dict = None) -> Optional[tuple]:
         """限价单执行，30秒超时，附带TP/SL"""
         import time
 
@@ -2158,11 +2424,6 @@ class ContractExecutor:
             low = entry_zone.get('low', current_price * 0.999)
             high = entry_zone.get('high', current_price * 1.001)
         limit_price = (low + high) / 2
-
-        # 限价单价格偏离实时价格超过2%时，基于实时价格重新计算
-        if abs(limit_price - live_price) / live_price > 0.02:
-            self.logger.warning(f"限价单价格{limit_price:.4f}偏离实时价{live_price:.4f}超2%，重新校准")
-            limit_price = live_price * (0.999 if side == 'long' else 1.001)
 
         market = self.exchange.market(symbol)
         contract_size = float(market.get('contractSize', 1) or 1)
@@ -2216,10 +2477,34 @@ class ContractExecutor:
 
         ticker = self.exchange.fetch_ticker(symbol)
         new_price = ticker['last']
-        price_change = abs(new_price - current_price) / current_price
-        if price_change > 0.005:
-            self.logger.info(f"价格变化>{price_change*100:.1f}%，放弃入场")
-            return None
+
+        # === Gate 2: re-classify drift against ORIGINAL plan.entry_ref ===
+        if orig_plan is not None:
+            gate2 = self._classify_entry_drift(orig_plan, new_price)
+            self._record_drift_decision_event(symbol, side, gate2, gate='gate_2')
+            if gate2.decision == 'abandon':
+                self.logger.warning(
+                    f"[Drift Gate 2] {symbol} abandon drift={gate2.drift_pct*100:.2f}%"
+                )
+                self._enqueue_drift_alert(
+                    'entry_drift_abandoned', symbol=symbol, side=side,
+                    drift_pct=gate2.drift_pct, gate='gate_2',
+                )
+                return None
+            if gate2.decision == 'recalc_fail':
+                self._enqueue_drift_alert(
+                    'entry_drift_rr_fail', symbol=symbol, side=side,
+                    drift_pct=gate2.drift_pct, gate='gate_2',
+                )
+                return None
+            if gate2.decision == 'recalc_pass':
+                # Use recomputed SL/TP for the fallback market order's attach algo
+                recomputed = gate2.new_plan
+                sl_clord_existing = tp_sl_params.get('sl_clord_id') if tp_sl_params else None
+                tp_sl_params = self._build_tp_sl_params(
+                    side, recomputed['stop_loss'], recomputed['take_profit'][0],
+                    sl_clord_id=sl_clord_existing,
+                )
 
         amount = float(self.exchange.amount_to_precision(
             symbol, (size_usdt * leverage) / (new_price * contract_size)

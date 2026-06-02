@@ -35,6 +35,8 @@ class Orchestrator:
         self._research_watchdogs = {}
         self._research_cycle_completed = set()
         self._research_cycle_retries = {}
+        self._latest_halts_snapshot: dict = {}    # F-TG-004
+        self._health_write_interval: float = 30.0  # F-TG-004 秒
 
     def _default_config(self) -> dict:
         try:
@@ -111,14 +113,17 @@ class Orchestrator:
 
         self.bus.register(
             "orchestrator",
-            ["system_command", "trade_decision:*", "research_preliminary", "research_result"]
+            ["system_command", "trade_decision:*", "research_preliminary",
+             "research_result", "halts_snapshot"]  # F-TG-004
         )
 
         self._tasks = [asyncio.create_task(agent.run()) for agent in all_agents]
         research_task = asyncio.create_task(self._research_loop())
         cmd_task = asyncio.create_task(self._command_listener())
+        health_task = asyncio.create_task(self._health_loop())  # F-TG-004
         self._tasks.append(research_task)
         self._tasks.append(cmd_task)
+        self._tasks.append(health_task)
 
         self.logger.info("所有Agent已启动，进入运行状态...")
 
@@ -249,6 +254,10 @@ class Orchestrator:
             if not msg:
                 continue
             mtype = msg.get('type')
+            # F-TG-004: halts_snapshot 缓存
+            if mtype == 'halts_snapshot':
+                self._on_halts_snapshot(msg)
+                continue
             if mtype == 'system_command':
                 cmd = msg.get('payload', {}).get('command', '')
                 if cmd == 'shutdown':
@@ -262,6 +271,67 @@ class Orchestrator:
             elif mtype in ('research_preliminary', 'research_result'):
                 cycle_id = msg.get('payload', {}).get('cycle_id')
                 self._mark_research_cycle_completed(cycle_id, mtype)
+
+    def _on_halts_snapshot(self, msg: dict):
+        """F-TG-004: 缓存 halts_snapshot 事件,供 _write_agent_health 用。"""
+        try:
+            payload = msg.get('payload', {}) or {}
+            halts = payload.get('halted_symbols', {})
+            self._latest_halts_snapshot = dict(halts) if halts else {}
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] _on_halts_snapshot 异常: {e}")
+
+    def _write_agent_health(self):
+        """F-TG-004: 写 data/<ns_>agent_health.json。失败 logger.warning 不抛。"""
+        try:
+            from utils.state_paths import get_state_paths
+            from utils.atomic_io import atomic_write_json
+            from agents.message_bus import MessageBus
+
+            tasks_alive = 0
+            tasks_failed = 0
+            for t in self._tasks:
+                try:
+                    if t.done():
+                        if t.exception() is not None:
+                            tasks_failed += 1
+                    else:
+                        tasks_alive += 1
+                except Exception:
+                    pass  # 单个 task 异常不影响整体计数
+
+            agents_registered = len(self._research_agents) + len(self._trading_agents)
+
+            try:
+                bus = MessageBus.get_instance()
+                dlq_size = len(getattr(bus, '_dead_letter', []))
+            except Exception:
+                dlq_size = 0
+
+            health = {
+                'ts': time.time(),
+                'agents_registered': agents_registered,
+                'tasks_alive': tasks_alive,
+                'tasks_failed': tasks_failed,
+                'halted_symbols': dict(self._latest_halts_snapshot),
+                'bus_dlq_size': dlq_size,
+            }
+            path = get_state_paths().agent_health
+            atomic_write_json(path, health)
+        except Exception as e:
+            self.logger.warning(f"[AgentHealth] 写入失败: {e}")
+
+    async def _health_loop(self):
+        """F-TG-004: 每 N 秒写一次 agent_health.json。"""
+        while not self._shutdown_event.is_set():
+            self._write_agent_health()
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=self._health_write_interval,
+                )
+            except asyncio.TimeoutError:
+                continue
 
     async def _graceful_shutdown(self, all_agents):
         """优雅停机流程"""

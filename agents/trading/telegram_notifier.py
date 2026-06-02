@@ -5,6 +5,7 @@ import json
 import os
 import time
 import datetime
+from typing import Optional
 import aiohttp
 from agents.base import BaseAgent
 from utils.halt_state import get_halt_state
@@ -51,6 +52,7 @@ class TelegramNotifier(BaseAgent):
         self._last_balance = 0.0
         self._halt_state = get_halt_state()
         self._active_symbols = []
+        self._ledger = None
 
     async def setup(self):
         if not self._enabled:
@@ -64,6 +66,16 @@ class TelegramNotifier(BaseAgent):
         else:
             self.logger.error("Telegram连接失败，通知功能降级")
             self._enabled = False
+
+        # F-TG-003: lazy-init LiveLedger for /pnl /pnl_id commands
+        # 仅读 events.jsonl + 写 correction,无需 exchange fetch_fill
+        if self._ledger is None:
+            try:
+                from utils.live_ledger import LiveLedger
+                self._ledger = LiveLedger(exchange=None, logger=self.logger)
+            except Exception as e:
+                self.logger.warning(f"[TG] LiveLedger init 失败,/pnl /pnl_id 将不可用: {e}")
+                self._ledger = None
 
     async def on_message(self, msg: dict):
         if not self._enabled:
@@ -192,11 +204,45 @@ class TelegramNotifier(BaseAgent):
         symbol = payload.get('symbol', '')
         self._daily_summary['alerts'] += 1
 
-        critical_types = ('flash_move', 'max_drawdown', 'emergency_close', 'llm_degraded',
-                          'protection_failed')
+        critical_types = (
+            'flash_move', 'max_drawdown', 'emergency_close', 'llm_degraded',
+            'protection_failed',
+            'symbol_halt_cleared',                  # F-TG-002
+            'symbol_halt_not_found',                # F-TG-002
+            'force_resume_cleared_symbol_halts',    # F-TG-001
+            # entry-drift-hybrid-policy
+            'entry_drift_abandoned',
+            'entry_drift_rr_fail',
+            'plan_missing_entry_ref',
+            'tp_invariant_breach',
+            'sl_invariant_breach',
+        )
         if alert_type not in critical_types:
             return
 
+        # F-TG-002: 三种新 alert 类型独立分支(放在现有 alert 处理之前)
+        if alert_type == 'symbol_halt_cleared':
+            text = f"✅ {symbol} per-symbol halt 已解除 (来源: {payload.get('source', '?')})"
+            await self._send_message(text)
+            return
+
+        if alert_type == 'symbol_halt_not_found':
+            text = f"ℹ️ {symbol} 没有 per-symbol halt (无需解除)"
+            await self._send_message(text)
+            return
+
+        if alert_type == 'force_resume_cleared_symbol_halts':
+            cleared = payload.get('cleared_symbols', [])
+            text = (
+                f"⚠️ /force_resume 同时清除了 {len(cleared)} 个 per-symbol halt:\n"
+                + "\n".join(f"  • {s}" for s in cleared)
+                + "\n\n请确认根因已排除"
+            )
+            await self._send_message(text)
+            return
+
+        # 现有 critical_types 处理（flash_move / max_drawdown / llm_degraded /
+        # protection_failed 等）保持不变,继续在下面执行
         type_names = {
             'flash_move': '⚡ 闪崩',
             'max_drawdown': '📉 最大回撤',
@@ -373,7 +419,9 @@ class TelegramNotifier(BaseAgent):
         if str(chat_id) != str(self._chat_id):
             return
 
-        cmd = text.split()[0] if text else ''
+        parts = text.split()
+        cmd = parts[0] if parts else ''
+        args = parts[1:]
         handlers = {
             '/status': self._cmd_status,
             '/positions': self._cmd_positions,
@@ -384,14 +432,253 @@ class TelegramNotifier(BaseAgent):
             '/force_resume': self._cmd_force_resume,
             '/reconcile': self._cmd_reconcile,
             '/log': self._cmd_log,
+            '/halts': self._cmd_halts,                       # F-TG-002 (Task 6)
+            '/resume_symbol': self._cmd_resume_symbol,        # F-TG-002 (Task 7)
+            '/pnl': self._cmd_pnl,                            # F-TG-003
+            '/pnl_id': self._cmd_pnl_id,                      # F-TG-003
         }
+        handlers_with_args = {'/resume_symbol', '/pnl', '/pnl_id'}  # 需要 args 的命令
 
         handler = handlers.get(cmd)
         if handler:
             self.logger.info(f"[Telegram] 收到命令: {cmd}")
-            await handler()
+            if cmd in handlers_with_args:
+                await handler(args)
+            else:
+                await handler()
         elif text.startswith('/'):
             self.logger.info(f"[Telegram] 未知命令: {text}")
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        """F-TG-002: 格式化经过时间为人类可读 '2h15m' / '45s'。"""
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m"
+        hours = minutes // 60
+        return f"{hours}h{minutes % 60}m"
+
+    def _read_agent_health(self) -> Optional[dict]:
+        """F-TG-002: 读 data/<ns_>agent_health.json,失败返回 None。"""
+        try:
+            from utils.state_paths import get_state_paths
+            path = get_state_paths().agent_health
+            with open(path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    async def _cmd_halts(self):
+        """F-TG-002: 列出当前 per-symbol halt。"""
+        health = self._read_agent_health() or {}
+        halts = health.get('halted_symbols', {})
+
+        if not halts:
+            await self._send_message("✅ 无 per-symbol halt")
+            return
+
+        lines = [f"🔒 Per-symbol halt: {len(halts)} 个"]
+        now = time.time()
+        for sym, info in halts.items():
+            reason = info.get('reason', '?')
+            halted_at = info.get('halted_at', 0)
+            elapsed = now - halted_at if halted_at else 0
+            lines.append(f"• {sym}")
+            lines.append(f"  reason: {reason}")
+            lines.append(f"  halted: {self._format_elapsed(elapsed)} ago")
+        await self._send_message("\n".join(lines))
+
+    # ==================== PnL Correction Helpers (F-TG-003) ====================
+
+    def _resolve_pending_for_pnl_correction(self, filter_fn, label: str) -> dict:
+        """F-TG-003: 共享候选解析。
+
+        Args:
+            filter_fn: callable(event_dict) -> bool, 过滤候选
+            label: 错误消息中的标签(如 "symbol=XLM" / "event_id=abc")
+
+        Returns:
+            {status: 'ok'|'not_found'|'multiple'|'error',
+             candidates: list,
+             error_msg: str}
+        """
+        if not getattr(self, '_ledger', None):
+            return {"status": "error", "candidates": [],
+                    "error_msg": "ledger 未初始化"}
+
+        try:
+            all_pending = self._ledger.find_pending_external_closes()
+        except Exception as e:
+            return {"status": "error", "candidates": [],
+                    "error_msg": f"查询 pending 失败: {e}"}
+
+        candidates = [ev for ev in (all_pending or []) if filter_fn(ev)]
+
+        if len(candidates) == 0:
+            return {"status": "not_found", "candidates": [],
+                    "error_msg": f"未找到 {label} 的活跃 pending external_close"}
+        if len(candidates) > 1:
+            return {"status": "multiple", "candidates": candidates,
+                    "error_msg": f"{label} 匹配 {len(candidates)} 条 pending"}
+        return {"status": "ok", "candidates": candidates, "error_msg": ""}
+
+    async def _apply_pnl_correction(self, pending_ev: dict, net_pnl: float, reason: str):
+        """F-TG-003: 根据 pending event 写 manual correction 并回显。"""
+        resolution = {
+            "pnl_status": "final",
+            "pnl_source": "manual_tg_review",
+            "symbol": pending_ev.get('symbol', ''),
+            "side": pending_ev.get('side', ''),
+            "position_id": pending_ev.get('position_id', ''),
+            "entry_request_id": pending_ev.get('entry_request_id', ''),
+            "realized_pnl_net_usdt": net_pnl,
+            "estimated_pnl": pending_ev.get('estimated_pnl', 0),
+            "gross_close_pnl_usdt": net_pnl,
+            "fee_usdt": 0.0,
+            "funding_usdt": 0.0,
+            "order_ids": [],
+            "bill_ids": [],
+            "match_confidence": 1.0,
+            "warnings": ["manual_pnl_correction"],
+            "close_match_key": pending_ev.get('close_match_key', ''),
+            "close_cause": "manual_close",
+            "final_close_cause": "manual_close",
+            "is_strategy_stop": False,
+            "close_evidence": {},
+            "manual_correction_reason": reason or "tg_user_review",
+            "sl_algo_id": pending_ev.get('sl_algo_id', ''),
+            "sl_algo_clord_id": pending_ev.get('sl_algo_clord_id', ''),
+            "tp_algo_id": pending_ev.get('tp_algo_id', ''),
+            "tp_algo_clord_id": pending_ev.get('tp_algo_clord_id', ''),
+            "entry_attribution": pending_ev.get('entry_attribution', {}),
+        }
+
+        try:
+            correction = self._ledger.apply_pnl_resolution(resolution)
+        except Exception as e:
+            await self._send_message(f"❌ apply_pnl_resolution 失败: {e}")
+            return
+
+        if correction:
+            sym = pending_ev.get('symbol', '?')
+            new_eid = (correction.get('event_id', '') or '')[:8]
+            old_eid = pending_ev.get('event_id', '')[:8]
+            await self._send_message(
+                f"✅ PnL correction 已写入\n"
+                f"symbol: {sym}\n"
+                f"net_pnl: {net_pnl:+.4f} USDT\n"
+                f"supersedes: {old_eid}\n"
+                f"new event: {new_eid}"
+            )
+        else:
+            await self._send_message(
+                f"⚠️ apply_pnl_resolution 返回 None(可能已 superseded);未写新 correction"
+            )
+
+    async def _cmd_pnl(self, args: list):
+        """F-TG-003: /pnl <SYMBOL> <NET_PNL> [reason] 写 manual PnL correction。"""
+        if len(args) < 2:
+            await self._send_message(
+                "用法: /pnl <SYMBOL> <NET_PNL_USDT> [reason]"
+            )
+            return
+
+        raw_sym = args[0].strip().upper()
+        try:
+            net_pnl = float(args[1])
+        except ValueError:
+            await self._send_message(
+                "用法: /pnl <SYMBOL> <NET_PNL_USDT> [reason]\n"
+                "NET_PNL 必须是数字"
+            )
+            return
+
+        reason = " ".join(args[2:]) if len(args) > 2 else ""
+
+        # 归一化:容忍带后缀
+        if raw_sym.endswith('-SWAP'):
+            symbol = raw_sym
+        elif raw_sym.endswith('-USDT'):
+            symbol = f"{raw_sym}-SWAP"
+        else:
+            symbol = f"{raw_sym}-USDT-SWAP"
+
+        result = self._resolve_pending_for_pnl_correction(
+            filter_fn=lambda ev: ev.get('symbol') == symbol,
+            label=f"symbol={symbol}",
+        )
+
+        if result["status"] == "ok":
+            await self._apply_pnl_correction(
+                result["candidates"][0], net_pnl, reason
+            )
+        elif result["status"] == "multiple":
+            eids = [(ev.get('event_id', '') or '')[:8] for ev in result["candidates"]]
+            await self._send_message(
+                f"⚠️ {result['error_msg']}\n"
+                f"候选 event_id: {eids}\n"
+                f"用 /pnl_id <event_id> <NET_PNL> [reason] 指定具体哪一条"
+            )
+        else:
+            await self._send_message(f"❌ {result['error_msg']}")
+
+    async def _cmd_pnl_id(self, args: list):
+        """F-TG-003: /pnl_id <event_id> <NET_PNL> [reason] 按 event_id 精确匹配。"""
+        if len(args) < 2:
+            await self._send_message(
+                "用法: /pnl_id <event_id> <NET_PNL_USDT> [reason]"
+            )
+            return
+
+        event_id = args[0]
+        try:
+            net_pnl = float(args[1])
+        except ValueError:
+            await self._send_message(
+                "用法: /pnl_id <event_id> <NET_PNL_USDT> [reason]\n"
+                "NET_PNL 必须是数字"
+            )
+            return
+
+        reason = " ".join(args[2:]) if len(args) > 2 else ""
+
+        result = self._resolve_pending_for_pnl_correction(
+            filter_fn=lambda ev: ev.get('event_id') == event_id,
+            label=f"event_id={event_id}",
+        )
+
+        if result["status"] == "ok":
+            await self._apply_pnl_correction(
+                result["candidates"][0], net_pnl, reason
+            )
+        else:
+            # event_id 唯一,不可能 multiple
+            await self._send_message(f"❌ {result['error_msg']}")
+
+    async def _cmd_resume_symbol(self, args: list):
+        """F-TG-002: 通过 bus system_command 单 symbol 解锁。"""
+        if not args:
+            await self._send_message("用法: /resume_symbol <SYMBOL>")
+            return
+
+        raw = args[0].strip().upper()
+        # TG 端粗归一化: 容忍带后缀, 统一加 -USDT-SWAP
+        if raw.endswith('-SWAP'):
+            symbol = raw
+        elif raw.endswith('-USDT'):
+            symbol = f"{raw}-SWAP"
+        else:
+            symbol = f"{raw}-USDT-SWAP"
+
+        await self.publish('system_command', {
+            'command': 'resume_symbol',
+            'symbol': symbol,
+            'source': 'telegram',
+        })
+        await self._send_message(f"🔄 已发送 /resume_symbol {symbol} 请求")
 
     async def _cmd_status(self):
         uptime = time.time() - self._start_time
@@ -434,6 +721,28 @@ class TelegramNotifier(BaseAgent):
             text += f"{reconciliation}\n"
         text += f"今日交易: {self._daily_summary['trades']}笔\n"
         text += f"今日PnL: {self._daily_summary['pnl']:+.2f} USDT"
+
+        # F-TG-004: 增加 health 行
+        health = self._read_agent_health()
+        if health:
+            agents_registered = health.get('agents_registered', '?')
+            tasks_alive = health.get('tasks_alive', '?')
+            tasks_failed = health.get('tasks_failed', 0)
+            dlq = health.get('bus_dlq_size', 0)
+            text += f"\n─ Agents: {agents_registered} 注册 / {tasks_alive} 任务存活 / {tasks_failed} 异常"
+            text += f"\n─ Bus DLQ: {dlq}"
+
+            halts = health.get('halted_symbols', {})
+            if not halts:
+                text += "\n─ Per-symbol halt: 0"
+            else:
+                short_list = list(halts.keys())[:5]
+                suffix = f" …+{len(halts) - 5}" if len(halts) > 5 else ""
+                halt_str = ", ".join(s.split("-")[0] for s in short_list)  # 取 base 简写
+                text += f"\n─ Per-symbol halt: {len(halts)} ({halt_str}{suffix})"
+        else:
+            text += "\n─ Health: ?（agent_health.json 缺失）"
+
         await self._send_message(text)
 
     async def _cmd_positions(self):

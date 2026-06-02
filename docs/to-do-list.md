@@ -55,7 +55,7 @@
 | 状态 | 事项 | 下一步 | 验收标准 |
 |---|---|---|---|
 | OPEN | 真实已实现 PnL 账本 Phase 4 testnet 矩阵 | OKX testnet 跑 T0..T6（fills 直达 / bills 兜底 / mismatch / pending_fx / ambiguous / external SL / 异步资源对账） | 6 case 真实 testnet 全过 + 报告 `docs/generated_reports/realized_pnl_ledger_testnet_*.md` |
-| OPEN | Telegram `/pnl` 手动 PnL correction 命令 | 新增 `/pnl SYMBOL AMOUNT [reason]` 或 `/pnl POSITION_ID AMOUNT [reason]`，只允许解析未 supersede 的 pending external close，并调用 `LiveLedger.apply_pnl_resolution()` 写 final correction | 写入幂等 `external_close_correction`，更新 lifecycle/reviewer 或发布 `pnl_resolved`；重复提交不重复累计；未知/已 final/多候选必须拒绝并提示人工确认 |
+| DONE 2026-06-01 | Telegram `/pnl` 手动 PnL correction 命令 | 新增 `/pnl <SYMBOL> <NET_PNL> [reason]` 与 `/pnl_id <event_id> <NET_PNL> [reason]`,共用 `_resolve_pending_for_pnl_correction(filter_fn)` helper,1 候选写 `manual_tg_review` correction、0/多候选 fail-fast | `test_tg_pnl_correction.py` 15 case PASS;TG `setup()` lazy-init `LiveLedger(exchange=None)`,reason 写入 manual_correction_reason,详见 `docs/audit_remediation_tg_graceful_ops_acceptance.md` |
 | OPEN | Paper 结果独立复盘 | 为 `paper_execution_result` 增加 version 或单独 paper reviewer/dashboard | 可查看 paper vs live 胜率、EV、回撤，不污染 live Reviewer |
 | OPEN | LLM audit 脱敏和保留策略 | 增加 `LLM_AUDIT_RETENTION_DAYS`、原始 prompt 记录开关、敏感字段脱敏 | 日志保留可配置，默认不长期保留敏感输入/响应 |
 | OPEN | `ContractExecutor` exchange 创建统一 | 将根 `executor.py` 的 ccxt 创建收敛到 `utils/exchange_factory.py` 或共享 helper | 所有 exchange client 的 sandbox/live 语义由单一入口控制 |

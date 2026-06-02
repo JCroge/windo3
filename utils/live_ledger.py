@@ -161,6 +161,37 @@ class LiveLedger:
         self._close_lifecycle(event)
         return event
 
+    def record_entry_drift_decision(self, *, symbol: str, side: str, gate: str,
+                                    band: str, drift_pct: float, decision: str,
+                                    reason: Optional[str],
+                                    rr_actual: Optional[float],
+                                    rr_floor_used: Optional[float],
+                                    plan_entry_ref: Optional[float] = None,
+                                    live_price: Optional[float] = None,
+                                    request_id: str = "") -> None:
+        """Record an entry drift gate decision to the live order events jsonl.
+
+        This is observational — does NOT mutate ledger state, does NOT affect PnL.
+        Used for downstream slicing of recompute vs original-plan win rates.
+        """
+        event = {
+            'event': 'entry_drift_decision',
+            'ts': time.time(),
+            'symbol': symbol,
+            'side': side,
+            'gate': gate,
+            'band': band,
+            'drift_pct': drift_pct,
+            'decision': decision,
+            'reason': reason,
+            'rr_actual': rr_actual,
+            'rr_floor_used': rr_floor_used,
+            'plan_entry_ref': plan_entry_ref,
+            'live_price': live_price,
+            'request_id': request_id,
+        }
+        self._write_event(event)
+
     def record_external_close(self, symbol: str, side: str,
                               entry_price: float, amount_usdt: float,
                               leverage: int,

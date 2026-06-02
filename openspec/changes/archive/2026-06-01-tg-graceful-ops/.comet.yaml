@@ -1,0 +1,18 @@
+workflow: full
+phase: archive
+build_mode: subagent-driven-development
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_tg_pycache python3 -m compileall -q .
+verify_command: python3 -m pytest -q
+isolation: worktree
+verify_mode: full
+base_ref: 826e0ed1b0cc7181e615faca0dd652bd2431fa23
+design_doc: docs/superpowers/specs/2026-05-30-tg-graceful-ops-design.md
+plan: docs/superpowers/plans/2026-05-30-tg-graceful-ops.md
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-06-01-tg-graceful-ops-verify.md
+branch_status: handled
+created_at: 2026-05-30
+verified_at: 2026-06-01
+archived: true
+handoff_context: openspec/changes/tg-graceful-ops/.comet/handoff/design-context.json
+handoff_hash: e95a4ffec72cc8947b4f0296548dd38012becc79063785beadd670031638545f
