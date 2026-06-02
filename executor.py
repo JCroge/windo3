@@ -2225,7 +2225,12 @@ class ContractExecutor:
             tp_sl_params = self._build_tp_sl_params(side, stop_loss, tp_first, sl_clord_id=sl_clord_id)
 
             if order_type == 'limit' and entry_zone:
-                filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id, orig_plan=orig_plan_for_gate2)
+                filled = self._execute_limit_order(
+                    symbol, side, size_usdt, current_price, entry_zone, leverage,
+                    tp_sl_params, clord_id, orig_plan=orig_plan_for_gate2,
+                    timeout_sec=plan.get('limit_timeout_sec', 30),
+                    no_fallback=plan.get('limit_no_fallback', False),
+                )
                 if filled is None:
                     return None
                 amount, fill_price, limit_order_id = filled
@@ -2243,7 +2248,12 @@ class ContractExecutor:
                 if not self._check_slippage(symbol, size_usdt, current_price):
                     self.logger.info(f"滑点过大，降级为限价单")
                     if entry_zone:
-                        filled = self._execute_limit_order(symbol, side, size_usdt, current_price, entry_zone, leverage, tp_sl_params, clord_id, orig_plan=orig_plan_for_gate2)
+                        filled = self._execute_limit_order(
+                            symbol, side, size_usdt, current_price, entry_zone, leverage,
+                            tp_sl_params, clord_id, orig_plan=orig_plan_for_gate2,
+                            timeout_sec=plan.get('limit_timeout_sec', 30),
+                            no_fallback=plan.get('limit_no_fallback', False),
+                        )
                         if filled is None:
                             return None
                         amount, fill_price, limit_order_id = filled
@@ -2407,8 +2417,10 @@ class ContractExecutor:
                              current_price: float, entry_zone: dict,
                              leverage: int = 1, tp_sl_params: dict = None,
                              clord_id: str = None,
-                             orig_plan: dict = None) -> Optional[tuple]:
-        """限价单执行，30秒超时，附带TP/SL"""
+                             orig_plan: dict = None,
+                             timeout_sec: int = 30,
+                             no_fallback: bool = False) -> Optional[tuple]:
+        """限价单执行，超时可选 cancel-and-give-up（pullback policy）或市价 fallback。"""
         import time
 
         # 获取实时价格，防止plan过期导致限价单超出交易所允许范围
@@ -2455,7 +2467,7 @@ class ContractExecutor:
         order_id = order['id']
         self.logger.info(f"限价单挂出: {order_side} {amount:.6f} @ {limit_price:.2f}")
 
-        deadline = time.time() + 30
+        deadline = time.time() + max(1, int(timeout_sec))
         while time.time() < deadline:
             time.sleep(3)
             try:
@@ -2474,6 +2486,17 @@ class ContractExecutor:
             self.exchange.cancel_order(order_id, symbol)
         except Exception:
             pass
+
+        # 数据回测验收的 pullback 策略：未成交直接放弃，不做市价 fallback。
+        if no_fallback:
+            self.logger.info(
+                f"[Pullback] {symbol} {side} 限价 {limit_price:.6g} 在 {timeout_sec}s 内未成交，放弃，不做市价fallback"
+            )
+            self._enqueue_drift_alert(
+                'pullback_unfilled', symbol=symbol, side=side,
+                limit_price=limit_price, timeout_sec=int(timeout_sec),
+            )
+            return None
 
         ticker = self.exchange.fetch_ticker(symbol)
         new_price = ticker['last']

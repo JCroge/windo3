@@ -1436,13 +1436,21 @@ class MultiJudge(BaseAgent):
 
                     # ═══ AC-LONGPOS-11: entry_type must be set BEFORE EV gate ═══
                     # 让 bucket EV 拿到真实 entry_type，避免出现 "unknown" bucket key。
-                    if rule.get('entry_long') or rule.get('entry_short'):
+                    # _route_to_probe_long 已设置 'momentum_probe_long'，此处不能覆盖。
+                    existing_et = plan.get('entry_type')
+                    if existing_et == 'momentum_probe_long':
+                        entry_type = existing_et
+                    elif rule.get('entry_long') or rule.get('entry_short'):
                         entry_type = 'rule_signal'
                     elif rule.get('ma_aligned_long') or rule.get('ma_aligned_short'):
                         entry_type = 'ma_aligned'
                     else:
                         entry_type = 'llm_driven'
                     plan['entry_type'] = entry_type
+
+                    # 数据回测验证：ma_aligned/probe_long 主路径走 0.5% 回调限价 + 2.0×ATR SL/2R TP。
+                    # 不动开仓条件，仅改写执行参数；deferred_* 与 rule_signal/llm_driven 保持原样。
+                    plan = self._apply_pullback_atr_policy(plan, tech, entry_type)
 
                     # ═══ P2-N: 期望值门（在所有开仓决策前的最后闸门）═══
                     # 历史交易不足时使用降级胜率（不会过严）；rolling 胜率生效时严格执行
@@ -3472,6 +3480,98 @@ class MultiJudge(BaseAgent):
             if tps and abs(tps[0] - price) / price < min_tp_pct:
                 tps = [price * (1 - min_tp_pct * m) for m in [1.0, 2.0, 3.0]]
             return tps
+
+    # 数据回测验收的常量（21 笔真实样本，net=+23.03U vs baseline=-19.86U）。
+    PULLBACK_ATR_ENTRY_TYPES = ('ma_aligned', 'momentum_probe_long')
+    PULLBACK_ATR_PCT = 0.005       # 0.5% 限价回调
+    PULLBACK_ATR_SL_MULT = 2.0     # SL = 2.0 × ATR
+    PULLBACK_ATR_TP_R = 2.0        # TP1 = 2R
+    PULLBACK_LIMIT_TIMEOUT_SEC = 1800  # 30 分钟
+    PULLBACK_ZONE_HALF_TICK = 0.0005   # 限价区间 ±0.05%（窄区间 ≈ 单一限价）
+
+    def _apply_pullback_atr_policy(self, plan: dict, tech: dict, entry_type: str) -> dict:
+        """单一收口：对 ma_aligned / momentum_probe_long 主路径改写为
+        「30 分钟内 0.5% 回调限价 + 2.0×ATR SL + 2R TP + 不走市价 fallback」。
+
+        其他 entry_type（deferred_15m_confirmation/deferred_pullback*/deferred_chase）保持原 plan 不动。
+        R:R floor 不达标时也保留原 plan，避免与 _select_rr_floor 兜底冲突。
+
+        Why: 21 笔真实 closed live 仓位 + OKX 1m 真实路径回测显示，
+             baseline 实际 PnL=-19.86U，应用此策略后 net=+23.03U（fills=19/21）。
+        How to apply: _build_plan 末尾在 plan['entry_type'] 已知时调用一次。
+        """
+        if entry_type not in self.PULLBACK_ATR_ENTRY_TYPES:
+            return plan
+        atr_pct = float(plan.get('atr_pct') or 0.0)
+        if atr_pct <= 0:
+            return plan
+        side = plan.get('side')
+        entry_ref = float(plan.get('entry_ref') or 0.0)
+        if entry_ref <= 0 or side not in ('long', 'short'):
+            return plan
+
+        sl_dist_pct = self.PULLBACK_ATR_SL_MULT * atr_pct
+        tp_dist_pct = self.PULLBACK_ATR_TP_R * sl_dist_pct
+        if sl_dist_pct <= 0 or sl_dist_pct >= 0.5:
+            return plan
+
+        original_tp = plan.get('take_profit') or []
+        if side == 'long':
+            target = entry_ref * (1 - self.PULLBACK_ATR_PCT)
+            stop_loss = target * (1 - sl_dist_pct)
+            tp_first = target * (1 + tp_dist_pct)
+            tp_levels = [tp_first]
+            for m in (1.5 * self.PULLBACK_ATR_TP_R, 2.0 * self.PULLBACK_ATR_TP_R):
+                tp_levels.append(target * (1 + m * sl_dist_pct))
+        else:
+            target = entry_ref * (1 + self.PULLBACK_ATR_PCT)
+            stop_loss = target * (1 + sl_dist_pct)
+            tp_first = target * (1 - tp_dist_pct)
+            tp_levels = [tp_first]
+            for m in (1.5 * self.PULLBACK_ATR_TP_R, 2.0 * self.PULLBACK_ATR_TP_R):
+                tp_levels.append(target * (1 - m * sl_dist_pct))
+
+        from math import log10, floor
+        def _round(x):
+            if x <= 0:
+                return x
+            digits = max(2, 4 - int(floor(log10(abs(x)))) - 1)
+            return round(x, digits)
+
+        target_r = _round(target)
+        sl_r = _round(stop_loss)
+        tp_r = [_round(t) for t in tp_levels]
+
+        zone_low = target_r * (1 - self.PULLBACK_ZONE_HALF_TICK)
+        zone_high = target_r * (1 + self.PULLBACK_ZONE_HALF_TICK)
+        entry_zone = [_round(zone_low), _round(zone_high)]
+
+        # R:R floor 校验：用 _select_rr_floor 单一函数获取当前 floor
+        gross_rr = tp_dist_pct / sl_dist_pct if sl_dist_pct > 0 else 0
+        try:
+            action_for_floor = ('open_long' if side == 'long' else 'open_short')
+            min_rr, _, _ = self._select_rr_floor(action_for_floor, plan, tech, 0.0)
+        except Exception:
+            min_rr = 1.5
+        if gross_rr < min_rr:
+            return plan
+
+        new_plan = dict(plan)
+        new_plan['entry_zone'] = entry_zone
+        new_plan['stop_loss'] = sl_r
+        new_plan['take_profit'] = tp_r
+        new_plan['sl_pct'] = round(abs(sl_r - target_r) / target_r if target_r else sl_dist_pct, 6)
+        new_plan['tp_pct'] = [round(abs(t - target_r) / target_r if target_r else 0.0, 6) for t in tp_r]
+        new_plan['order_type'] = 'limit'
+        new_plan['limit_timeout_sec'] = self.PULLBACK_LIMIT_TIMEOUT_SEC
+        new_plan['limit_no_fallback'] = True
+        new_plan['risk_reward_ratio'] = round(gross_rr, 2)
+        # entry_ref 保持原信号价（让 entry drift Gate 仍以原信号价为基准）
+        new_plan['pullback_target'] = target_r
+        new_plan['pullback_policy'] = 'pullback_atr_v1'
+        new_plan['atr_sl_multiplier'] = self.PULLBACK_ATR_SL_MULT
+        new_plan['atr_tp_r'] = self.PULLBACK_ATR_TP_R
+        return new_plan
 
     def _calc_risk_budget(self, tech: dict, action: str, sl_dist: float, score: float = 50) -> dict:
         """统一风险预算：从风险约束推导杠杆和仓位
