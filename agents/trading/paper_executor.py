@@ -14,7 +14,7 @@ mirror_risk 模式（默认 true）：
 import json
 import os
 import time
-from typing import Optional
+from typing import Optional, Dict
 
 from agents.base import BaseAgent
 from utils.halt_state import get_halt_state
@@ -22,6 +22,8 @@ from utils.halt_state import get_halt_state
 PAPER_TRADES_FILE = "data/paper_trades.jsonl"
 PAPER_POSITIONS_FILE = "data/paper_positions.json"
 PAPER_EQUITY_FILE = "data/paper_equity.json"
+
+DEFAULT_PAPER_LIMIT_TICK_STALENESS_SEC = 60
 
 
 class PaperExecutor(BaseAgent):
@@ -47,6 +49,12 @@ class PaperExecutor(BaseAgent):
         self._halt_state = get_halt_state()
         self._cost_model = None
         self._rejected_log: list = []
+        self._pending_limits: Dict[str, dict] = {}
+        self._tick_staleness_sec = float(
+            (config or {}).get('paper_limit_tick_staleness_sec',
+                               DEFAULT_PAPER_LIMIT_TICK_STALENESS_SEC)
+        )
+        self._latest_tick_ts: Dict[str, float] = {}
 
     async def setup(self):
         os.makedirs("data", exist_ok=True)
@@ -80,8 +88,12 @@ class PaperExecutor(BaseAgent):
             symbol = msg.get('symbol') or payload.get('symbol')
             price = payload.get('price')
             if symbol and price:
-                self._latest_price[symbol] = float(price)
-                await self._check_sl_tp(symbol, float(price))
+                price_f = float(price)
+                self._latest_price[symbol] = price_f
+                self._latest_tick_ts[symbol] = time.time()
+                if symbol in self._pending_limits:
+                    await self._wait_paper_limit_fill(symbol, price_f)
+                await self._check_sl_tp(symbol, price_f)
             return
 
         if mtype == 'trade_decision':
@@ -122,13 +134,25 @@ class PaperExecutor(BaseAgent):
             return
 
         if action in ('open_long', 'open_short') and position is None:
+            if symbol in self._pending_limits:
+                # Already waiting on a limit fill — guard handled inside _open_paper
+                self.logger.info(
+                    f"[PAPER] {norm_symbol} {action} 跳过：已有 pending limit"
+                )
+                return
             if source == 'position_analyst':
-                return  # PA 加仓信号但无持仓，忽略
+                return
             await self._open_paper(norm_symbol, action, plan, decision)
         elif action in ('open_long', 'open_short') and position is not None:
             if source == 'position_analyst':
                 await self._add_paper(norm_symbol, action, size_pct, position)
-        elif action == 'close' and position is not None:
+        elif action == 'close':
+            if norm_symbol in self._pending_limits:
+                self._pending_limits.pop(norm_symbol, None)
+                self.logger.info(f"[PAPER] {norm_symbol} close 取消 pending limit")
+                return
+            if position is None:
+                return
             if size_pct < 1.0 and source == 'position_analyst':
                 await self._reduce_paper(norm_symbol, size_pct, position)
             else:
@@ -151,13 +175,83 @@ class PaperExecutor(BaseAgent):
 
     async def _open_paper(self, symbol: str, action: str, plan: Optional[dict], decision: dict):
         side = 'long' if action == 'open_long' else 'short'
+
+        # Duplicate-pending guard (Req5 Scenario 1)
+        if symbol in self._pending_limits:
+            self.logger.info(
+                f"[PAPER] {symbol} {action} 跳过：已有 pending limit"
+            )
+            return
+
+        order_type = (plan or {}).get('order_type', 'market')
+        entry_zone = (plan or {}).get('entry_zone') or []
+        if (order_type == 'limit'
+                and isinstance(entry_zone, (list, tuple))
+                and len(entry_zone) >= 2
+                and float(entry_zone[0] or 0) > 0
+                and float(entry_zone[1] or 0) > 0):
+            self._enqueue_pending_limit(symbol, side, action, plan, decision)
+            return
+
         price = self._latest_price.get(symbol)
         if not price:
             price = (plan or {}).get('entry_zone', [0])[0] if plan else 0
             if not price:
                 self.logger.warning(f"[PAPER] {symbol} 无价格快照，跳过开仓")
                 return
+        await self._open_paper_at_price(
+            symbol=symbol, side=side, action=action,
+            plan=plan, decision=decision,
+            fill_price=price, entry_method='market',
+        )
 
+    def _enqueue_pending_limit(self, symbol: str, side: str, action: str,
+                               plan: dict, decision: dict) -> None:
+        """Queue a limit-order paper open until tick hit or timeout."""
+        entry_zone = list(plan.get('entry_zone', []))
+        low = min(entry_zone[0], entry_zone[1])
+        high = max(entry_zone[0], entry_zone[1])
+        timeout_sec = float(plan.get('limit_timeout_sec', 30))
+        no_fallback = bool(plan.get('limit_no_fallback', False))
+        now = time.time()
+        self._pending_limits[symbol] = {
+            'symbol': symbol,
+            'side': side,
+            'action': action,
+            'plan': dict(plan),
+            'decision': dict(decision),
+            'entry_zone': [low, high],
+            'created_at': now,
+            'deadline': now + timeout_sec,
+            'limit_no_fallback': no_fallback,
+        }
+        self.logger.info(
+            f"[PAPER] {symbol} {side} 限价挂出 zone=[{low:.6g},{high:.6g}] "
+            f"timeout={timeout_sec:.0f}s no_fallback={no_fallback}"
+        )
+
+    async def _wait_paper_limit_fill(self, symbol: str, tick_price: float) -> None:
+        """Tick-driven limit fill check. Hit → midpoint fill + entry_method='limit_filled'."""
+        pending = self._pending_limits.get(symbol)
+        if not pending:
+            return
+        low, high = pending['entry_zone']
+        if not (low <= tick_price <= high):
+            return
+        fill_price = (low + high) / 2.0
+        plan = pending['plan']
+        decision = pending['decision']
+        await self._open_paper_at_price(
+            symbol=symbol, side=pending['side'], action=pending['action'],
+            plan=plan, decision=decision,
+            fill_price=fill_price, entry_method='limit_filled',
+        )
+        self._pending_limits.pop(symbol, None)
+
+    async def _open_paper_at_price(self, symbol: str, side: str, action: str,
+                                   plan: Optional[dict], decision: dict,
+                                   fill_price: float, entry_method: str) -> None:
+        """Shared open path: builds position dict, persists, publishes event."""
         if plan:
             margin = float(plan.get('size_usdt', 0))
             leverage = int(plan.get('leverage', 3))
@@ -167,7 +261,6 @@ class PaperExecutor(BaseAgent):
                 tp = float(tp_levels[0])
             else:
                 tp_raw = plan.get('take_profit', 0)
-                # Judge._build_plan() 输出 take_profit 是 list（judge.py:1007）
                 if isinstance(tp_raw, (list, tuple)):
                     tp = float(tp_raw[0]) if tp_raw else 0.0
                 else:
@@ -177,48 +270,43 @@ class PaperExecutor(BaseAgent):
             margin = self._max_trade_amount * decision.get('size_pct', 0.5)
             leverage = int(self.config.get('leverage', 3))
             sl_dist = 0.025
-            sl = price * (1 - sl_dist) if side == 'long' else price * (1 + sl_dist)
-            tp = price * (1 + sl_dist * 1.5) if side == 'long' else price * (1 - sl_dist * 1.5)
+            sl = fill_price * (1 - sl_dist) if side == 'long' else fill_price * (1 + sl_dist)
+            tp = fill_price * (1 + sl_dist * 1.5) if side == 'long' else fill_price * (1 - sl_dist * 1.5)
             atr_pct = 0.02
 
         if margin <= 0 or (self._equity - self._locked_margin()) < margin:
-            self.logger.warning(f"[PAPER] {symbol} 跳过：可用保证金不足 (margin={margin}, free_equity={self._equity - self._locked_margin():.2f})")
+            self.logger.warning(
+                f"[PAPER] {symbol} 跳过：可用保证金不足 (margin={margin}, "
+                f"free_equity={self._equity - self._locked_margin():.2f})"
+            )
             return
 
         notional = margin * leverage
         entry_fee = self._fee(notional)
-
         pos = {
-            'symbol': symbol,
-            'side': side,
-            'entry_price': price,
-            'sl': sl,
-            'tp': tp,
-            'margin': margin,
-            'leverage': leverage,
-            'notional': notional,
-            'opened_at': time.time(),
-            'entry_fee': entry_fee,
+            'symbol': symbol, 'side': side,
+            'entry_price': fill_price,
+            'sl': sl, 'tp': tp,
+            'margin': margin, 'leverage': leverage, 'notional': notional,
+            'opened_at': time.time(), 'entry_fee': entry_fee,
             'atr_pct': atr_pct,
             'source': decision.get('source', 'judge'),
             'confidence': decision.get('confidence', 0),
             'request_id': decision.get('request_id', ''),
             'attribution': decision.get('attribution') or (plan or {}).get('attribution') or {},
+            'entry_method': entry_method,
         }
         self._positions[symbol] = pos
-        self._equity -= entry_fee  # 入场费立即结算
+        self._equity -= entry_fee
         self._persist_state()
         self.logger.info(
-            f"[PAPER] OPEN {side.upper()} {symbol} @ {price:.6f} "
-            f"margin={margin:.2f} lev={leverage}x SL={sl:.6f} TP={tp:.6f}"
+            f"[PAPER] OPEN {side.upper()} {symbol} @ {fill_price:.6f} "
+            f"margin={margin:.2f} lev={leverage}x SL={sl:.6f} TP={tp:.6f} "
+            f"entry_method={entry_method}"
         )
-
         await self.publish("paper_execution_result", {
-            "status": "executed",
-            "action": action,
-            "symbol": symbol,
-            "request_id": pos.get('request_id', ''),
-            "result": dict(pos),
+            "status": "executed", "action": action, "symbol": symbol,
+            "request_id": pos.get('request_id', ''), "result": dict(pos),
             "paper_equity": round(self._equity, 4),
             "locked_margin": round(self._locked_margin(), 4),
             "free_equity": round(self._equity - self._locked_margin(), 4),
@@ -259,6 +347,7 @@ class PaperExecutor(BaseAgent):
             'closed_at': time.time(),
             'paper_equity_after': round(self._equity, 4),
         }
+        trade_record['entry_method'] = position.get('entry_method', 'market')
         attr = position.get('attribution', {})
         if attr:
             trade_record['entry_regime'] = attr.get('entry_regime', 'unknown')
