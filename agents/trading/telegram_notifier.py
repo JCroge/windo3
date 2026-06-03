@@ -216,6 +216,9 @@ class TelegramNotifier(BaseAgent):
             'plan_missing_entry_ref',
             'tp_invariant_breach',
             'sl_invariant_breach',
+            # pullback-entry-paper-parity
+            'pullback_unfilled',
+            'paper_unfilled',
         )
         if alert_type not in critical_types:
             return
@@ -237,6 +240,34 @@ class TelegramNotifier(BaseAgent):
                 f"⚠️ /force_resume 同时清除了 {len(cleared)} 个 per-symbol halt:\n"
                 + "\n".join(f"  • {s}" for s in cleared)
                 + "\n\n请确认根因已排除"
+            )
+            await self._send_message(text)
+            return
+
+        if alert_type in ('pullback_unfilled', 'paper_unfilled'):
+            source = payload.get('source', '')
+            if alert_type == 'paper_unfilled' and source != 'paper_executor':
+                self.logger.warning(
+                    f"[TG] paper_unfilled with unexpected source={source!r}"
+                )
+            if alert_type == 'pullback_unfilled' and not source:
+                self.logger.warning(
+                    "[TG] pullback_unfilled missing source field — defaulting to live prefix"
+                )
+            prefix = '[模拟]' if source == 'paper_executor' else '[实盘]'
+            side = payload.get('side', '')
+            entry_zone = payload.get('entry_zone') or []
+            request_id = payload.get('request_id', '')
+            timeout_sec = payload.get('timeout_sec', 0)
+            subtype = payload.get('subtype', '')
+            kind = '⏱️ 限价未成交'
+            if subtype == 'no_tick':
+                kind = '⏱️ 限价超时(行情失联)'
+            text = (
+                f"{prefix} {kind} {symbol} {side}\n"
+                f"区间: {entry_zone}\n"
+                f"timeout: {timeout_sec:.0f}s\n"
+                f"req: {request_id}"
             )
             await self._send_message(text)
             return

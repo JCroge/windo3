@@ -5,7 +5,7 @@ isolation: branch
 verify_mode: null
 base_ref: f512d1a4c13ec3954fb5c8aed6c2d86acb3ba2a1
 design_doc: docs/superpowers/specs/2026-06-03-pullback-entry-paper-parity-design.md
-plan: null
+plan: docs/superpowers/plans/2026-06-03-pullback-entry-paper-parity.md
 verify_result: pending
 verification_report: null
 branch_status: pending

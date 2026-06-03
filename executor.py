@@ -1234,11 +1234,13 @@ class ContractExecutor:
 
     def _enqueue_drift_alert(self, alert_type: str, **fields) -> None:
         """Buffer a drift-related risk alert for the agent layer to drain & publish."""
-        self._pending_drift_alerts.append({
+        alert = {
             'type': alert_type,
             'timestamp': time.time(),
+            'source': fields.pop('source', 'executor'),
             **fields,
-        })
+        }
+        self._pending_drift_alerts.append(alert)
 
     def _record_drift_decision_event(self, symbol: str, side: str,
                                      decision: 'DriftDecision', gate: str) -> None:

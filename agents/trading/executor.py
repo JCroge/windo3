@@ -429,6 +429,13 @@ class MultiExecutor(BaseAgent):
         alerts = list(pending)
         pending.clear()
         for alert in alerts:
+            atype = alert.get('type', '')
+            if atype == 'pullback_unfilled':
+                self.logger.info(
+                    f"[Pullback] {alert.get('symbol')} {alert.get('side')} "
+                    f"limit @ {alert.get('limit_price')} "
+                    f"timeout={alert.get('timeout_sec')}s 未成交（live）"
+                )
             try:
                 await self.publish('risk_alert', alert)
             except Exception as e:
