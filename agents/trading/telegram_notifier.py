@@ -257,15 +257,26 @@ class TelegramNotifier(BaseAgent):
             prefix = '[模拟]' if source == 'paper_executor' else '[实盘]'
             side = payload.get('side', '')
             entry_zone = payload.get('entry_zone') or []
+            limit_price = payload.get('limit_price')
             request_id = payload.get('request_id', '')
             timeout_sec = payload.get('timeout_sec', 0)
             subtype = payload.get('subtype', '')
             kind = '⏱️ 限价未成交'
             if subtype == 'no_tick':
                 kind = '⏱️ 限价超时(行情失联)'
+            # Live drift alert carries limit_price (scalar), paper carries entry_zone (list)
+            if entry_zone:
+                price_line = f"区间: {entry_zone}"
+            elif limit_price is not None:
+                try:
+                    price_line = f"限价: {float(limit_price):.6g}"
+                except (TypeError, ValueError):
+                    price_line = f"限价: {limit_price}"
+            else:
+                price_line = "限价: —"
             text = (
                 f"{prefix} {kind} {symbol} {side}\n"
-                f"区间: {entry_zone}\n"
+                f"{price_line}\n"
                 f"timeout: {timeout_sec:.0f}s\n"
                 f"req: {request_id}"
             )
