@@ -70,6 +70,7 @@
 | OPEN | 数据源 provenance | 给跨源 OI/taker/crowd/news 字段补 `source`、`freshness_sec`、`confidence` | Reviewer 可按数据源质量分桶，Judge 不把弱外部信号当强事实 |
 | OPEN | Agent health supervisor | Orchestrator 增加 setup failure、loop alive、queue backlog、DLQ、LLM degraded、data degraded 状态 | Telegram `/status` 或 health 输出能看见关键 agent 健康状态 |
 | OPEN | 文档瘦身 | `CLAUDE.md`、`docs/architecture.md`、`docs/handoff.md` 历史流水迁出或压缩 | 规则文档只保留当前事实和硬约束，旧测试数仅在历史上下文出现 |
+| OPEN | 策略层深度优化提案（先观察） | 详见 `docs/strategy_optimization_proposal_20260602.md` 5 项发现（Exit Strategy 系统止损 20% 胜率 / ma_aligned 直接开仓 -9.14U / R:R poor bucket 全亏 / Regime choppy 主导 / BTC 14 分钟连续开 16 单）；2026-06-03 决定先归档观察，等 paper realistic 数据累计后回看 | paper realistic 数据足够后再决策实施或归档 |
 
 ## 已关闭
 
