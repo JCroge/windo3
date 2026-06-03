@@ -248,6 +248,96 @@ class PaperExecutor(BaseAgent):
         )
         self._pending_limits.pop(symbol, None)
 
+    async def _scan_pending_limits(self) -> None:
+        """Cleanup loop: resolve any pending limit whose deadline has elapsed."""
+        if not self._pending_limits:
+            return
+        now = time.time()
+        # Snapshot to allow mutation during iteration
+        expired = [(sym, p) for sym, p in self._pending_limits.items()
+                   if now >= p['deadline']]
+        for symbol, pending in expired:
+            await self._resolve_pending_timeout(symbol, pending, now)
+
+    async def _resolve_pending_timeout(self, symbol: str, pending: dict, now: float) -> None:
+        """Decision tree: no_fallback → reject; else fresh tick → market; stale → reject."""
+        side = pending['side']
+        plan = pending['plan']
+        decision = pending['decision']
+        no_fallback = pending['limit_no_fallback']
+        request_id = decision.get('request_id', '')
+        entry_zone = pending['entry_zone']
+
+        self._pending_limits.pop(symbol, None)
+
+        if no_fallback:
+            self._record_paper_unfilled(symbol, side, request_id, entry_zone,
+                                        reason='paper_unfilled')
+            await self._publish_paper_unfilled(symbol, side, request_id,
+                                               entry_zone, plan, subtype=None)
+            return
+
+        last_tick_ts = self._latest_tick_ts.get(symbol)
+        latest_price = self._latest_price.get(symbol)
+        stale = (last_tick_ts is None
+                 or latest_price is None
+                 or (now - last_tick_ts) > self._tick_staleness_sec)
+        if stale:
+            self._record_paper_unfilled(symbol, side, request_id, entry_zone,
+                                        reason='paper_unfilled_no_tick')
+            await self._publish_paper_unfilled(symbol, side, request_id,
+                                               entry_zone, plan, subtype='no_tick')
+            return
+
+        # Fresh tick → market fallback
+        await self._open_paper_at_price(
+            symbol=symbol, side=side, action=pending['action'],
+            plan=plan, decision=decision,
+            fill_price=float(latest_price), entry_method='market',
+        )
+        self.logger.info(
+            f"[PAPER] {symbol} {side} 限价超时 fallback market @ {latest_price:.6f}"
+        )
+
+    def _record_paper_unfilled(self, symbol: str, side: str, request_id: str,
+                               entry_zone: list, reason: str) -> None:
+        record = {
+            "ts": time.time(),
+            "symbol": symbol,
+            "side": side,
+            "action": f"open_{side}",
+            "reason": reason,
+            "entry_method": "limit_unfilled",
+            "entry_zone": list(entry_zone),
+            "request_id": request_id,
+            "halt_reason": self._halt_state.reason,
+        }
+        self._rejected_log.append(record)
+        if len(self._rejected_log) > 100:
+            self._rejected_log = self._rejected_log[-50:]
+        self.logger.info(f"[PAPER] {symbol} {side} {reason} entry_zone={entry_zone}")
+
+    async def _publish_paper_unfilled(self, symbol: str, side: str, request_id: str,
+                                      entry_zone: list, plan: dict,
+                                      subtype: Optional[str]) -> None:
+        payload = {
+            "type": "paper_unfilled",
+            "source": "paper_executor",
+            "symbol": symbol,
+            "side": side,
+            "entry_zone": list(entry_zone),
+            "request_id": request_id,
+            "timeout_sec": float(plan.get('limit_timeout_sec', 0)),
+            "limit_no_fallback": bool(plan.get('limit_no_fallback', False)),
+        }
+        if subtype:
+            payload["subtype"] = subtype
+            payload["reason"] = "paper_unfilled_no_tick"
+        try:
+            await self.publish("risk_alert", payload, symbol=symbol)
+        except Exception as e:
+            self.logger.warning(f"[PAPER] {symbol} paper_unfilled publish failed: {e}")
+
     async def _open_paper_at_price(self, symbol: str, side: str, action: str,
                                    plan: Optional[dict], decision: dict,
                                    fill_price: float, entry_method: str) -> None:
@@ -538,11 +628,12 @@ class PaperExecutor(BaseAgent):
     async def tick(self):
         import asyncio
         await asyncio.sleep(30)
-        # 每 5min 输出一次摘要（仅 paper 状态，不与实盘交互）
+        await self._scan_pending_limits()
         if int(time.time()) % 300 < 30:
             self.logger.info(
                 f"[PaperExecutor] equity={self._equity:.2f} 持仓={len(self._positions)} "
-                f"unrealized_pnl≈{self._unrealized_pnl():+.2f}"
+                f"unrealized_pnl≈{self._unrealized_pnl():+.2f} "
+                f"pending_limits={len(self._pending_limits)}"
             )
 
     def _unrealized_pnl(self) -> float:
