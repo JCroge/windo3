@@ -14,6 +14,18 @@ from freezegun import freeze_time
 from agents.trading.paper_executor import PaperExecutor
 
 
+def _isolate_paper_files(tmp_path, monkeypatch):
+    """Pin paper_executor module constants to tmp_path so an earlier test
+    that monkey-patched them globally (test_paper_executor.py at repo root)
+    cannot leak state into our fixture."""
+    import agents.trading.paper_executor as pe_mod
+    data_dir = tmp_path / 'data'
+    data_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(pe_mod, 'PAPER_TRADES_FILE', str(data_dir / 'paper_trades.jsonl'))
+    monkeypatch.setattr(pe_mod, 'PAPER_POSITIONS_FILE', str(data_dir / 'paper_positions.json'))
+    monkeypatch.setattr(pe_mod, 'PAPER_EQUITY_FILE', str(data_dir / 'paper_equity.json'))
+
+
 class _MockBus:
     def __init__(self):
         self.published = []
@@ -24,8 +36,8 @@ class _MockBus:
 
 @pytest.fixture
 def pe(tmp_path, monkeypatch):
+    _isolate_paper_files(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / 'data').mkdir(exist_ok=True)
     executor = PaperExecutor({
         'effective_balance_cap': 1000.0,
         'min_confidence': 60,
@@ -242,8 +254,8 @@ async def test_timeout_fallback_stale_tick(pe):
 
 @pytest.mark.asyncio
 async def test_custom_staleness_threshold(tmp_path, monkeypatch):
+    _isolate_paper_files(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / 'data').mkdir(exist_ok=True)
     executor = PaperExecutor({
         'effective_balance_cap': 1000.0, 'min_confidence': 60,
         'max_trade_amount': 30, 'paper_limit_tick_staleness_sec': 120,
@@ -305,8 +317,8 @@ async def test_close_cancels_pending(pe):
 
 @pytest.mark.asyncio
 async def test_restart_drops_pending_limits(tmp_path, monkeypatch):
+    _isolate_paper_files(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / 'data').mkdir(exist_ok=True)
     cfg = {'effective_balance_cap': 1000.0, 'min_confidence': 60, 'max_trade_amount': 30}
 
     pe1 = PaperExecutor(cfg)
