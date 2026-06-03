@@ -64,6 +64,8 @@ HARD_LIMITS = {
     "long_live_pullback_timeout_hours": (0.5, 24),
     # EV bucket
     "ev_bucket_min_trades": (1, 200),
+    # Paper limit fill
+    "paper_limit_tick_staleness_sec": (1.0, 600.0),
 }
 
 
@@ -155,6 +157,8 @@ DEFAULTS = {
     # Drawdown baseline
     "drawdown_baseline_mode": "session_start",
     "reset_risk_baseline_on_start": True,
+    # Paper limit fill: max tick staleness before fallback gates to no_tick rejection
+    "paper_limit_tick_staleness_sec": 60,
 }
 
 
@@ -277,6 +281,8 @@ def _read_env_overrides() -> dict:
         # Drawdown baseline
         "DRAWDOWN_BASELINE_MODE": ("drawdown_baseline_mode", str),
         "RESET_RISK_BASELINE_ON_START": ("reset_risk_baseline_on_start", _to_bool),
+        # Paper limit fill
+        "PAPER_LIMIT_TICK_STALENESS_SEC": ("paper_limit_tick_staleness_sec", float),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
