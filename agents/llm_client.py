@@ -194,7 +194,7 @@ class LLMClient:
 
         self.api_key = os.getenv('ANTHROPIC_API_KEY')
         self.base_url = os.getenv('ANTHROPIC_BASE_URL', 'https://api.anthropic.com')
-        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-7')
+        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-6')
 
         self.available = False
         self.client = None

@@ -149,7 +149,7 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | RESET_RISK_BASELINE_ON_START | 启动时是否重置本轮回撤基准 | true | 否 |
 | ANTHROPIC_API_KEY | Claude API密钥 | - | 否（多Agent系统） |
 | ANTHROPIC_BASE_URL | Claude API地址（中转） | https://api.anthropic.com | 否 |
-| ANTHROPIC_MODEL | Claude模型名 | claude-opus-4-7 | 否 |
+| ANTHROPIC_MODEL | Claude模型名 | claude-opus-4-6 | 否 |
 | RESEARCH_INTERVAL | 研判层运行周期（秒） | 14400 (4h) | 否 |
 | RANKING_ENABLED | 是否启用候选 Top-N Ranking 裁决 | true | 否 |
 | RANK_FLUSH_DELAY | Ranking flush 窗口秒数，等待同批候选到齐后统一排序。范围 [1, 30] | 5.0 | 否 |
@@ -490,7 +490,7 @@ OKX允许的杠杆值：[1, 2, 3, 5, 10, 20]
 curl -s https://www.dorocli.cc/v1/chat/completions \
   -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
   -H "content-type: application/json" \
-  -d '{"model":"claude-opus-4-7","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"claude-opus-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ### 问题：数据库锁定
