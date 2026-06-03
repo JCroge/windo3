@@ -395,3 +395,25 @@ async def test_cleanup_loop_runs_each_tick(pe, monkeypatch):
         frozen.tick(delta=timedelta(seconds=11))
         await pe.tick()
     assert 'WLD-USDT' not in pe._pending_limits
+
+
+# ---------------------------------------------------------------------------
+# Step 6.17 — Cleanup loop with empty pending limits is no-op
+# Spec: Req8 Scenario 2 — "Empty pending limits does no I/O / publish"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cleanup_loop_empty_pending_no_op(pe, monkeypatch):
+    """Req8 Scenario 2: empty _pending_limits → tick() does no I/O / publish."""
+    import asyncio as _asyncio
+    _real_sleep = _asyncio.sleep
+    async def _noop_sleep(*_a, **_k):
+        await _real_sleep(0)
+    monkeypatch.setattr(_asyncio, 'sleep', _noop_sleep)
+    assert pe._pending_limits == {}
+    pe.bus.published.clear()
+    await pe.tick()
+    risk_alerts = [m for m in pe.bus.published if m['type'] == 'risk_alert']
+    paper_results = [m for m in pe.bus.published if m['type'] == 'paper_execution_result']
+    assert risk_alerts == []
+    assert paper_results == []
