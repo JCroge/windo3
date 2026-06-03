@@ -193,6 +193,13 @@ class PaperExecutor(BaseAgent):
             self._enqueue_pending_limit(symbol, side, action, plan, decision)
             return
 
+        if order_type == 'limit':
+            # entry_zone invalid/missing — fail-safe to market with warning per spec Req1 Scenario 3
+            self.logger.warning(
+                f"[PAPER] {symbol} order_type=limit but entry_zone invalid ({entry_zone!r}) "
+                f"— falling back to market"
+            )
+
         price = self._latest_price.get(symbol)
         if not price:
             price = (plan or {}).get('entry_zone', [0])[0] if plan else 0
@@ -296,7 +303,7 @@ class PaperExecutor(BaseAgent):
             fill_price=float(latest_price), entry_method='market',
         )
         self.logger.info(
-            f"[PAPER] {symbol} {side} 限价超时 fallback market @ {latest_price:.6f}"
+            f"[PAPER] {symbol} {side} paper_limit_fallback_used 限价超时 fallback market @ {latest_price:.6f}"
         )
 
     def _record_paper_unfilled(self, symbol: str, side: str, request_id: str,
