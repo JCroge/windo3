@@ -1,0 +1,15 @@
+{
+  "change": "pullback-entry-paper-parity",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "05ac2c3c8e9e195f65a0e446dd4adb24303103ebc3a60cad2b6ab01545181f13",
+  "files": [
+    { "path": "openspec/changes/pullback-entry-paper-parity/proposal.md", "sha256": "e8146972a95ac94e5be46c4a45b6cd129252ff575771b6798ea4777abdefad0a" },
+    { "path": "openspec/changes/pullback-entry-paper-parity/design.md", "sha256": "e2032fa1de3d9083f622f192bf60421cbe61cef49b3dd2c7b92ba6e38722c882" },
+    { "path": "openspec/changes/pullback-entry-paper-parity/tasks.md", "sha256": "c057d8e11a7f7b20995df576cf8af078c7fc998ab35d8da418c4cbf07455fcd3" },
+    { "path": "openspec/changes/pullback-entry-paper-parity/specs/paper-executor/spec.md", "sha256": "dadf283da2a566ab70a4a4838cb6adeabd6b9581823aaa85ed18753de26a9d27" },
+    { "path": "openspec/changes/pullback-entry-paper-parity/specs/risk-alert-routing/spec.md", "sha256": "079928af559e092eceee5eaa3cf0a00f5cc40d55a5ec73578908c17d60190907" }
+  ]
+}
