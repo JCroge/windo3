@@ -2,6 +2,8 @@
 comet_change: pullback-entry-paper-parity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-03-pullback-entry-paper-parity
+status: final
 ---
 
 # Pullback Entry Paper Parity — Technical Design

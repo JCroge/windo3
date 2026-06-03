@@ -2,6 +2,7 @@
 change: pullback-entry-paper-parity
 design-doc: docs/superpowers/specs/2026-06-03-pullback-entry-paper-parity-design.md
 base-ref: f512d1a4c13ec3954fb5c8aed6c2d86acb3ba2a1
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 # Pullback Entry Paper Parity Implementation Plan
@@ -16,6 +17,7 @@ base-ref: f512d1a4c13ec3954fb5c8aed6c2d86acb3ba2a1
 
 **Source of truth:** OpenSpec specs at `openspec/changes/pullback-entry-paper-parity/specs/{paper-executor,risk-alert-routing}/spec.md`. Do not redefine requirements; tasks below cite Requirement / Scenario IDs.
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase Map
@@ -31,6 +33,7 @@ base-ref: f512d1a4c13ec3954fb5c8aed6c2d86acb3ba2a1
 | P7 | Tests for TG alert routing | P4+P5 | yes (with P6) | tests/test_telegram_pullback_alerts.py | `pytest -q tests/test_telegram_pullback_alerts.py` |
 | P8 | Full regression + docs sync | all above | — | docs/to-do-list.md, CLAUDE.md | `pytest -q`; baseline 980+ |
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 1 — Dependency + Config Plumbing
@@ -120,6 +123,7 @@ Refs: docs/superpowers/specs/2026-06-03-pullback-entry-paper-parity-design.md TD
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 2 — Paper Executor Limit Skeleton + entry_method Field
@@ -435,6 +439,7 @@ Req1/2/4/5/6 (write side); timeout/staleness handled in P3.
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 3 — Cleanup Loop + Timeout Decision Tree
@@ -584,6 +589,7 @@ Spec: Req3, Req7, Req8
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 4 — Telegram critical_types + Source Prefix
@@ -670,6 +676,7 @@ Spec: openspec/changes/pullback-entry-paper-parity/specs/risk-alert-routing/spec
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 5 — Live Alert source Field + Agent Log Passthrough
@@ -743,6 +750,7 @@ Spec: risk-alert-routing Req2 Scenario 2; design TD-7
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 6 — Tests for Paper Limit Fill
@@ -1109,6 +1117,7 @@ Uses freezegun to control time; _MockBus to capture risk_alert publishes.
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 7 — Tests for Telegram Alert Routing
@@ -1241,6 +1250,7 @@ git commit -m "test(tg): cover pullback_unfilled / paper_unfilled routing
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Phase 8 — Full Regression + Docs Sync
@@ -1327,6 +1337,7 @@ git commit -m "docs: sync to-do-list, CLAUDE.md baseline, tasks.md after pullbac
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-03-pullback-entry-paper-parity
 ---
 
 ## Self-Review Checklist (run before dispatching subagents)
