@@ -88,4 +88,4 @@
 - [x] 10.1 更新 `docs/to-do-list.md`：把"Paper 结果独立复盘"调整为已部分推进（entry_method 字段已铺垫），新增 follow-up 项（双轨模拟 / ma_aligned 触发面 / timeout 数值调参）
 - [x] 10.2 更新 `CLAUDE.md` 当前事实段，记录新基线 + paper limit 撮合契约入口 `_wait_paper_limit_fill`
 - [x] 10.3 在 `docs/superpowers/specs/` 创建对应 design doc 链接（comet-design 阶段产出）
-- [ ] 10.4 准备 verification report 路径：`docs/audit_remediation_pullback_entry_paper_parity_acceptance.md` (verify 阶段产出)
+- [x] 10.4 准备 verification report 路径：`docs/audit_remediation_pullback_entry_paper_parity_acceptance.md` (verify 阶段产出)

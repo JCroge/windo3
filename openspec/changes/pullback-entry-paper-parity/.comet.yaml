@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/pullback-entry-paper-parity/.comet/handoff/design-context.json
 handoff_hash: 05ac2c3c8e9e195f65a0e446dd4adb24303103ebc3a60cad2b6ab01545181f13
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q .
+verify_command: python3 -m pytest -q
