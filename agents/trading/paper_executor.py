@@ -248,12 +248,13 @@ class PaperExecutor(BaseAgent):
         fill_price = (low + high) / 2.0
         plan = pending['plan']
         decision = pending['decision']
+        # Pop BEFORE await so a failure inside _open_paper_at_price cannot leave a zombie pending entry
+        self._pending_limits.pop(symbol, None)
         await self._open_paper_at_price(
             symbol=symbol, side=pending['side'], action=pending['action'],
             plan=plan, decision=decision,
             fill_price=fill_price, entry_method='limit_filled',
         )
-        self._pending_limits.pop(symbol, None)
 
     async def _scan_pending_limits(self) -> None:
         """Cleanup loop: resolve any pending limit whose deadline has elapsed."""
