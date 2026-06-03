@@ -1,8 +1,8 @@
 # To-Do List
 
-更新日期：2026-06-01
-来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成。
-当前基线：`954 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
+更新日期：2026-06-03
+来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成；2026-06-03 Pullback Entry Paper Parity 完成。
+当前基线：`993 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
 
 最新整改文档：
 
@@ -13,6 +13,7 @@
 - `docs/audit_remediation_fourth_pass_20260528_acceptance.md`
 - `docs/audit_remediation_tg_graceful_ops_acceptance.md`
 - `docs/audit_remediation_entry_drift_hybrid_policy_acceptance.md`
+- `docs/superpowers/specs/2026-06-03-pullback-entry-paper-parity-design.md`
 - `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go
@@ -58,7 +59,11 @@
 |---|---|---|---|
 | OPEN | 真实已实现 PnL 账本 Phase 4 testnet 矩阵 | OKX testnet 跑 T0..T6（fills 直达 / bills 兜底 / mismatch / pending_fx / ambiguous / external SL / 异步资源对账） | 6 case 真实 testnet 全过 + 报告 `docs/generated_reports/realized_pnl_ledger_testnet_*.md` |
 | DONE 2026-06-01 | Telegram `/pnl` 手动 PnL correction 命令 | 新增 `/pnl <SYMBOL> <NET_PNL> [reason]` 与 `/pnl_id <event_id> <NET_PNL> [reason]`,共用 `_resolve_pending_for_pnl_correction(filter_fn)` helper,1 候选写 `manual_tg_review` correction、0/多候选 fail-fast | `test_tg_pnl_correction.py` 15 case PASS;TG `setup()` lazy-init `LiveLedger(exchange=None)`,reason 写入 manual_correction_reason,详见 `docs/audit_remediation_tg_graceful_ops_acceptance.md` |
-| OPEN | Paper 结果独立复盘 | 为 `paper_execution_result` 增加 version 或单独 paper reviewer/dashboard | 可查看 paper vs live 胜率、EV、回撤，不污染 live Reviewer |
+| OPEN | Paper 结果独立复盘 | 为 `paper_execution_result` 增加 version 或单独 paper reviewer/dashboard | 可查看 paper vs live 胜率、EV、回撤，不污染 live Reviewer。**2026-06-03 部分推进**：paper_trades.jsonl 与 paper_positions.json 已携带 `entry_method ∈ {market, limit_filled, limit_unfilled}` 字段，为后续 idealized vs realistic 对比铺垫；reviewer 仍未消费 paper 数据 |
+| OPEN | Paper 双轨模拟（idealized + realistic） | 同一笔 trade_decision 在 paper 跑两份：一份按 plan 模拟 limit（已有，本次落地），一份立成交 baseline；Reviewer 对比 idealized vs realistic gap | 状态文件、reviewer 展示扩展；建议在"Paper 结果独立复盘"完成后做 |
+| OPEN | ma_aligned 触发面收窄（pullback policy issue #2） | 评估 `PULLBACK_ATR_ENTRY_TYPES` 是否应排除 `ma_aligned`，让该 entry_type 走 deferred_15m_confirmation；当前 ma_aligned 全覆盖 pullback 路径 | 数据回测后决策（依赖 paper realistic 数据） |
+| OPEN | PULLBACK_LIMIT_TIMEOUT_SEC 数值调参（pullback policy issue #4） | 1800s 是否合理；是否应根据 atr/regime 动态化 | paper realistic 数据观察 unfilled 率后决策 |
+| OPEN | paper_limit_tick_staleness_sec 阈值调参 | 60s 默认值是否合适，从 paper_unfilled / paper_unfilled_no_tick 比例评估 | 数据回测后决策 |
 | OPEN | LLM audit 脱敏和保留策略 | 增加 `LLM_AUDIT_RETENTION_DAYS`、原始 prompt 记录开关、敏感字段脱敏 | 日志保留可配置，默认不长期保留敏感输入/响应 |
 | OPEN | `ContractExecutor` exchange 创建统一 | 将根 `executor.py` 的 ccxt 创建收敛到 `utils/exchange_factory.py` 或共享 helper | 所有 exchange client 的 sandbox/live 语义由单一入口控制 |
 | OPEN | Binance legacy path 标识 | 明确当前 live/testnet 只验收 OKX；Binance 分支标为 legacy 或补交易所能力适配 | 文档和代码注释不再暗示 Binance 已具备同等 TP/SL 语义 |
