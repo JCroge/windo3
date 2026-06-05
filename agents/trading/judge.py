@@ -787,6 +787,19 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, reject_reason, [reject_reason])
                     return
+                # Short gate check for deferred_15m_confirmation
+                if def_action == 'open_short':
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                        llm_result=None,
+                    )
+                    if not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self.logger.info(f"[Judge] {symbol} deferred_15m short gate blocked: {block_reason}")
+                        state['deferred_entry'] = None
+                        await self._publish_hold(symbol, block_reason, [block_reason])
+                        return
+
                 plan['order_type'] = 'market'
                 plan['entry_type'] = 'deferred_15m_confirmation'
                 # P1-2: 统一构建 attribution
@@ -795,6 +808,9 @@ class MultiJudge(BaseAgent):
                     plan, None, 'deferred_15m_confirmation'
                 )
                 attribution['tf_15m_wait_seconds'] = int(age_seconds)
+                # Apply short gate attribution if short
+                if def_action == 'open_short':
+                    attribution = self._apply_short_gate_attribution(attribution, short_gate)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 decision = {
@@ -890,6 +906,19 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, block_reason, [block_reason])
                     return
+                # Short gate check for deferred_pullback
+                if def_action == 'open_short':
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                        llm_result=None,
+                    )
+                    if not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self.logger.info(f"[Judge] {symbol} deferred_pullback short gate blocked: {block_reason}")
+                        state['deferred_entry'] = None
+                        await self._publish_hold(symbol, block_reason, [block_reason])
+                        return
+
                 plan['order_type'] = 'limit'
                 # Carry overheat tag through if this was an overheat-triggered deferred.
                 if deferred.get('entry_type') == 'deferred_pullback_overheat':
@@ -902,6 +931,9 @@ class MultiJudge(BaseAgent):
                     tech, def_action, deferred.get('signal_score', 50),
                     plan, None, attribution_label
                 )
+                # Apply short gate attribution if short
+                if def_action == 'open_short':
+                    attribution = self._apply_short_gate_attribution(attribution, short_gate)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 decision = {
@@ -995,6 +1027,19 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, block_reason, [block_reason])
                     return
+                # Short gate check for deferred_chase
+                if def_action == 'open_short':
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                        llm_result=None,
+                    )
+                    if not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self.logger.info(f"[Judge] {symbol} deferred_chase short gate blocked: {block_reason}")
+                        state['deferred_entry'] = None
+                        await self._publish_hold(symbol, block_reason, [block_reason])
+                        return
+
                 # RQ-02: chase 有效 RR 约束
                 chase_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
                 if chase_rr < self._rr_floor_default:
@@ -1008,6 +1053,9 @@ class MultiJudge(BaseAgent):
                     plan, None, 'deferred_chase'
                 )
                 attribution['chase_move_pct'] = round(move_pct, 4)
+                # Apply short gate attribution if short
+                if def_action == 'open_short':
+                    attribution = self._apply_short_gate_attribution(attribution, short_gate)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 self.logger.info(f"[Judge] {symbol} 价格已移动{move_pct:.1%}无回调，追价入场（仓位60%）")
@@ -1477,6 +1525,35 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
+                    # ═══ Short Main Path Risk Guard (Task 3 enforcement) ═══
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, final_action, plan, tech, score, llm_result
+                    )
+                    if final_action == 'open_short' and not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self._record_rejected_plan(
+                            symbol, final_action, plan, score, final_conf, block_reason,
+                            self._apply_short_gate_attribution(
+                                self._rejection_attribution(final_action, plan, block_reason, tech=tech),
+                                short_gate,
+                            )
+                        )
+                        attr = self._apply_short_gate_attribution(
+                            self._rejection_attribution(final_action, plan, block_reason, tech=tech),
+                            short_gate,
+                        )
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": block_reason,
+                            "key_factors": [f"blocked_by={block_reason}"],
+                            "risk_warnings": [block_reason],
+                            "attribution": attr,
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
                     # ═══ Long Entry Position Guard (AC-LONGPOS-01..06) ═══
                     pos_policy = self._check_entry_position_policy(
                         symbol, final_action, plan, tech, score, context='main'
@@ -1617,6 +1694,10 @@ class MultiJudge(BaseAgent):
                     attribution = self._build_attribution(
                         tech, final_action, score, plan, llm_result, entry_type
                     )
+
+                    # ═══ Short Main Path Risk Guard pass attribution ═══
+                    if final_action == 'open_short':
+                        attribution = self._apply_short_gate_attribution(attribution, short_gate)
 
                     # RQ-03: 计算排名分数并 buffer 候选
                     rank_candidate = {
@@ -2516,6 +2597,115 @@ class MultiJudge(BaseAgent):
         plan['probe_trigger_reason'] = 'rsi_overbought_momentum'
         plan['probe_evidence'] = {'type': 'momentum_probe_long', 'slot_type': 'probe_long'}
 
+    def _classify_short_entry_risk(
+        self,
+        symbol: str,
+        action: str,
+        plan: dict,
+        tech: dict,
+        score: float,
+        llm_result: dict = None,
+    ) -> dict:
+        """Classify short entry risk for main-path parity gate.
+
+        Returns a dict with keys: allowed, decision, reason, llm_short_reversal_risk,
+        short_gate_version, metrics.
+        """
+        def _reject(reason, llm_risk, range_pos, pre_move, rsi_val, htf_bearish):
+            return {
+                "allowed": False,
+                "decision": "reject",
+                "reason": reason,
+                "llm_short_reversal_risk": llm_risk,
+                "short_gate_version": "short_main_path_parity_v1",
+                "metrics": {
+                    "range_position_24h": range_pos,
+                    "pre_12h_return_pct": pre_move,
+                    "rsi": rsi_val,
+                    "htf_bearish_votes": htf_bearish,
+                },
+            }
+
+        # Step 1: Not applicable cases — pass immediately
+        if not self._short_regime_guard_enabled or 'long' in action or plan.get('is_probe'):
+            return {
+                "allowed": True,
+                "decision": "pass",
+                "reason": "",
+                "llm_short_reversal_risk": False,
+                "short_gate_version": "short_main_path_parity_v1",
+                "metrics": {
+                    "range_position_24h": 0.5,
+                    "pre_12h_return_pct": 0.0,
+                    "rsi": 50.0,
+                    "htf_bearish_votes": 0,
+                },
+            }
+
+        # Step 2: Parse LLM reversal risk
+        llm_short_reversal_risk = False
+        if llm_result:
+            _keywords = ['禁止做空', '超卖', '看涨背离', '支撑', '追空风险']
+            for field in ['reasoning']:
+                val = llm_result.get(field, '') or ''
+                if any(kw in val for kw in _keywords):
+                    llm_short_reversal_risk = True
+                    break
+            if not llm_short_reversal_risk:
+                for field in ['key_factors', 'risk_warnings']:
+                    items = llm_result.get(field) or []
+                    for item in items:
+                        if isinstance(item, str) and any(kw in item for kw in _keywords):
+                            llm_short_reversal_risk = True
+                            break
+                    if llm_short_reversal_risk:
+                        break
+
+        # Step 3: Extract metrics
+        trend = tech.get('trend', {}) or {}
+        short_ctx = tech.get('short_context', {}) or {}
+        entry_ctx = tech.get('entry_context', {}) or {}
+        indicators = tech.get('indicators', {}) or {}
+        momentum = tech.get('momentum', {}) or {}
+
+        daily_bias = trend.get('daily_bias', 'neutral')
+        range_pos = float(short_ctx.get('position_in_24h_range') or entry_ctx.get('position_in_24h_range') or 0.5)
+        pre_move = float(short_ctx.get('pre_12h_return_pct') or entry_ctx.get('pre_12h_return_pct') or 0.0)
+        rsi_val = float(indicators.get('rsi') or momentum.get('rsi') or 50)
+        htf_bearish = sum(
+            1 for d in [trend.get('direction'), trend.get('higher_tf_bias'), trend.get('daily_bias')]
+            if d == 'bearish'
+        )
+
+        # Step 4: Check gates in order
+        if daily_bias != 'bearish' and self._short_live_require_daily_bearish:
+            return _reject('daily_bearish_required', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if range_pos < self._short_live_min_range_pos:
+            return _reject('range_position_too_low', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if pre_move <= self._short_live_max_pre_move:
+            return _reject('pre_move_too_deep', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if rsi_val < self._short_live_min_rsi:
+            return _reject('rsi_too_low_for_short', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if abs(score) < self._short_live_min_score:
+            return _reject('short_score_too_low', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if htf_bearish < self._short_live_min_htf_votes:
+            return _reject('htf_votes_insufficient', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+
+        # Step 5: Pass
+        return {
+            "allowed": True,
+            "decision": "pass",
+            "reason": "",
+            "llm_short_reversal_risk": llm_short_reversal_risk,
+            "short_gate_version": "short_main_path_parity_v1",
+            "metrics": {
+                "range_position_24h": range_pos,
+                "pre_12h_return_pct": pre_move,
+                "rsi": rsi_val,
+                "htf_bearish_votes": htf_bearish,
+            },
+        }
+
     def _check_entry_position_policy(self, symbol: str, action: str, plan: dict,
                                      tech: dict, score: float, context: str = 'main') -> dict:
         """Long Entry Position Guard + Short side guard 的统一入口。
@@ -2863,6 +3053,23 @@ class MultiJudge(BaseAgent):
                                                   getattr(self, '_ev_bucket_min_trades', 10)),
             'ev_bucket_sparse': plan_dict.get('ev_bucket_sparse', False),
         }
+
+    def _apply_short_gate_attribution(self, attribution: dict, gate: dict) -> dict:
+        """Apply short gate classification metadata to attribution.
+
+        Called after _classify_short_entry_risk to merge gate results into
+        trade_decision attribution for both pass and reject paths.
+        """
+        attribution = attribution or {}
+        gate = gate or {}
+        attribution['short_gate_version'] = gate.get('short_gate_version', 'short_main_path_parity_v1')
+        attribution['short_gate_decision'] = gate.get('decision', 'pass')
+        attribution['short_gate_reason'] = gate.get('reason', '')
+        attribution['llm_short_reversal_risk'] = gate.get('llm_short_reversal_risk', False)
+        metrics = gate.get('metrics') or {}
+        if metrics:
+            attribution['short_gate_metrics'] = metrics
+        return attribution
 
     def _record_sl_hit(self, state: dict, direction: str = None):
         """记录一次SL触发，用于escalating cooldown（参考Freqtrade StoplossGuard）"""
