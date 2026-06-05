@@ -2516,6 +2516,115 @@ class MultiJudge(BaseAgent):
         plan['probe_trigger_reason'] = 'rsi_overbought_momentum'
         plan['probe_evidence'] = {'type': 'momentum_probe_long', 'slot_type': 'probe_long'}
 
+    def _classify_short_entry_risk(
+        self,
+        symbol: str,
+        action: str,
+        plan: dict,
+        tech: dict,
+        score: float,
+        llm_result: dict = None,
+    ) -> dict:
+        """Classify short entry risk for main-path parity gate.
+
+        Returns a dict with keys: allowed, decision, reason, llm_short_reversal_risk,
+        short_gate_version, metrics.
+        """
+        def _reject(reason, llm_risk, range_pos, pre_move, rsi_val, htf_bearish):
+            return {
+                "allowed": False,
+                "decision": "reject",
+                "reason": reason,
+                "llm_short_reversal_risk": llm_risk,
+                "short_gate_version": "short_main_path_parity_v1",
+                "metrics": {
+                    "range_position_24h": range_pos,
+                    "pre_12h_return_pct": pre_move,
+                    "rsi": rsi_val,
+                    "htf_bearish_votes": htf_bearish,
+                },
+            }
+
+        # Step 1: Not applicable cases — pass immediately
+        if not self._short_regime_guard_enabled or 'long' in action or plan.get('is_probe'):
+            return {
+                "allowed": True,
+                "decision": "pass",
+                "reason": "",
+                "llm_short_reversal_risk": False,
+                "short_gate_version": "short_main_path_parity_v1",
+                "metrics": {
+                    "range_position_24h": 0.5,
+                    "pre_12h_return_pct": 0.0,
+                    "rsi": 50.0,
+                    "htf_bearish_votes": 0,
+                },
+            }
+
+        # Step 2: Parse LLM reversal risk
+        llm_short_reversal_risk = False
+        if llm_result:
+            _keywords = ['禁止做空', '超卖', '看涨背离', '支撑', '追空风险']
+            for field in ['reasoning']:
+                val = llm_result.get(field, '') or ''
+                if any(kw in val for kw in _keywords):
+                    llm_short_reversal_risk = True
+                    break
+            if not llm_short_reversal_risk:
+                for field in ['key_factors', 'risk_warnings']:
+                    items = llm_result.get(field) or []
+                    for item in items:
+                        if isinstance(item, str) and any(kw in item for kw in _keywords):
+                            llm_short_reversal_risk = True
+                            break
+                    if llm_short_reversal_risk:
+                        break
+
+        # Step 3: Extract metrics
+        trend = tech.get('trend', {}) or {}
+        short_ctx = tech.get('short_context', {}) or {}
+        entry_ctx = tech.get('entry_context', {}) or {}
+        indicators = tech.get('indicators', {}) or {}
+        momentum = tech.get('momentum', {}) or {}
+
+        daily_bias = trend.get('daily_bias', 'neutral')
+        range_pos = float(short_ctx.get('position_in_24h_range') or entry_ctx.get('position_in_24h_range') or 0.5)
+        pre_move = float(short_ctx.get('pre_12h_return_pct') or entry_ctx.get('pre_12h_return_pct') or 0.0)
+        rsi_val = float(indicators.get('rsi') or momentum.get('rsi') or 50)
+        htf_bearish = sum(
+            1 for d in [trend.get('direction'), trend.get('higher_tf_bias'), trend.get('daily_bias')]
+            if d == 'bearish'
+        )
+
+        # Step 4: Check gates in order
+        if daily_bias != 'bearish' and self._short_live_require_daily_bearish:
+            return _reject('daily_bearish_required', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if range_pos < self._short_live_min_range_pos:
+            return _reject('range_position_too_low', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if pre_move <= self._short_live_max_pre_move:
+            return _reject('pre_move_too_deep', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if rsi_val < self._short_live_min_rsi:
+            return _reject('rsi_too_low_for_short', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if abs(score) < self._short_live_min_score:
+            return _reject('short_score_too_low', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+        if htf_bearish < self._short_live_min_htf_votes:
+            return _reject('htf_votes_insufficient', llm_short_reversal_risk, range_pos, pre_move, rsi_val, htf_bearish)
+
+        # Step 5: Pass
+        return {
+            "allowed": True,
+            "decision": "pass",
+            "reason": "",
+            "llm_short_reversal_risk": llm_short_reversal_risk,
+            "short_gate_version": "short_main_path_parity_v1",
+            "metrics": {
+                "range_position_24h": range_pos,
+                "pre_12h_return_pct": pre_move,
+                "rsi": rsi_val,
+                "htf_bearish_votes": htf_bearish,
+            },
+        }
+
     def _check_entry_position_policy(self, symbol: str, action: str, plan: dict,
                                      tech: dict, score: float, context: str = 'main') -> dict:
         """Long Entry Position Guard + Short side guard 的统一入口。
