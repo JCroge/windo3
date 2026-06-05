@@ -787,6 +787,19 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, reject_reason, [reject_reason])
                     return
+                # Short gate check for deferred_15m_confirmation
+                if def_action == 'open_short':
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                        llm_result=None,
+                    )
+                    if not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self.logger.info(f"[Judge] {symbol} deferred_15m short gate blocked: {block_reason}")
+                        state['deferred_entry'] = None
+                        await self._publish_hold(symbol, block_reason, [block_reason])
+                        return
+
                 plan['order_type'] = 'market'
                 plan['entry_type'] = 'deferred_15m_confirmation'
                 # P1-2: 统一构建 attribution
@@ -795,6 +808,9 @@ class MultiJudge(BaseAgent):
                     plan, None, 'deferred_15m_confirmation'
                 )
                 attribution['tf_15m_wait_seconds'] = int(age_seconds)
+                # Apply short gate attribution if short
+                if def_action == 'open_short':
+                    attribution = self._apply_short_gate_attribution(attribution, short_gate)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 decision = {
@@ -890,6 +906,19 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, block_reason, [block_reason])
                     return
+                # Short gate check for deferred_pullback
+                if def_action == 'open_short':
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                        llm_result=None,
+                    )
+                    if not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self.logger.info(f"[Judge] {symbol} deferred_pullback short gate blocked: {block_reason}")
+                        state['deferred_entry'] = None
+                        await self._publish_hold(symbol, block_reason, [block_reason])
+                        return
+
                 plan['order_type'] = 'limit'
                 # Carry overheat tag through if this was an overheat-triggered deferred.
                 if deferred.get('entry_type') == 'deferred_pullback_overheat':
@@ -902,6 +931,9 @@ class MultiJudge(BaseAgent):
                     tech, def_action, deferred.get('signal_score', 50),
                     plan, None, attribution_label
                 )
+                # Apply short gate attribution if short
+                if def_action == 'open_short':
+                    attribution = self._apply_short_gate_attribution(attribution, short_gate)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 decision = {
@@ -995,6 +1027,19 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, block_reason, [block_reason])
                     return
+                # Short gate check for deferred_chase
+                if def_action == 'open_short':
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, def_action, plan, tech, deferred.get('signal_score', 50),
+                        llm_result=None,
+                    )
+                    if not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self.logger.info(f"[Judge] {symbol} deferred_chase short gate blocked: {block_reason}")
+                        state['deferred_entry'] = None
+                        await self._publish_hold(symbol, block_reason, [block_reason])
+                        return
+
                 # RQ-02: chase 有效 RR 约束
                 chase_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
                 if chase_rr < self._rr_floor_default:
@@ -1008,6 +1053,9 @@ class MultiJudge(BaseAgent):
                     plan, None, 'deferred_chase'
                 )
                 attribution['chase_move_pct'] = round(move_pct, 4)
+                # Apply short gate attribution if short
+                if def_action == 'open_short':
+                    attribution = self._apply_short_gate_attribution(attribution, short_gate)
                 plan['attribution'] = attribution
                 state['deferred_entry'] = None
                 self.logger.info(f"[Judge] {symbol} 价格已移动{move_pct:.1%}无回调，追价入场（仓位60%）")
