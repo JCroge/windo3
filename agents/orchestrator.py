@@ -293,7 +293,14 @@ class Orchestrator:
             for t in self._tasks:
                 try:
                     if t.done():
-                        if t.exception() is not None:
+                        cancelled = getattr(t, "cancelled", None)
+                        if callable(cancelled) and cancelled() is True:
+                            continue
+                        try:
+                            task_exc = t.exception()
+                        except asyncio.CancelledError:
+                            continue
+                        if task_exc is not None:
                             tasks_failed += 1
                     else:
                         tasks_alive += 1

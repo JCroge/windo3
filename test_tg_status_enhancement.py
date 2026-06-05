@@ -3,6 +3,7 @@
 import json
 import os
 import time
+import asyncio
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -152,6 +153,22 @@ class TestOrchestratorWritesAgentHealth:
             health = json.load(f)
         assert health["tasks_alive"] == 2
         assert health["tasks_failed"] == 1
+
+    def test_write_agent_health_ignores_cancelled_tasks(self, tmp_path, monkeypatch):
+        orch = self._make_orchestrator(tmp_path, monkeypatch)
+        t_alive = MagicMock()
+        t_alive.done.return_value = False
+        t_cancelled = MagicMock()
+        t_cancelled.done.return_value = True
+        t_cancelled.exception.side_effect = asyncio.CancelledError()
+        orch._tasks = [t_alive, t_cancelled]
+
+        orch._write_agent_health()
+
+        with open("data/testnet_agent_health.json") as f:
+            health = json.load(f)
+        assert health["tasks_alive"] == 1
+        assert health["tasks_failed"] == 0
 
     def test_write_agent_health_failure_does_not_raise(self, tmp_path, monkeypatch):
         orch = self._make_orchestrator(tmp_path, monkeypatch)
