@@ -1,0 +1,14 @@
+{
+  "change": "short-main-path-risk-guard-parity",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d0ebf63892203f263466127008d28a52925875852fa23b50a74ea201bd13519d",
+  "files": [
+    { "path": "openspec/changes/short-main-path-risk-guard-parity/proposal.md", "sha256": "bd3456ebcdc54b01a5a5ebdd55da7e5f7e56554bbd3fadab0ba2dc4da01ac315" },
+    { "path": "openspec/changes/short-main-path-risk-guard-parity/design.md", "sha256": "cbc25b09316f6caa506a450b47f43c49338f2c92572075705c6d6eb1a0be3e68" },
+    { "path": "openspec/changes/short-main-path-risk-guard-parity/tasks.md", "sha256": "813edf05f1234764171476529b60ca5823397737835f2439698b052d0cc03fd1" },
+    { "path": "openspec/changes/short-main-path-risk-guard-parity/specs/short-main-path-risk-guard/spec.md", "sha256": "9b0c4a9631efda21916d09fb42bd41a5d20ce3e34bf5f0881c70c38e85d38a30" }
+  ]
+}

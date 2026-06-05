@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: subagent-driven-development
+isolation: branch
+verify_mode: null
+base_ref: 2023e464bbe2da71223b5753336157a4f2fe120b
+design_doc: docs/superpowers/specs/2026-06-05-short-main-path-risk-guard-parity-design.md
+plan: docs/superpowers/plans/2026-06-05-short-main-path-risk-guard-parity.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-05
+verified_at: null
+archived: false
+handoff_context: openspec/changes/short-main-path-risk-guard-parity/.comet/handoff/design-context.json
+handoff_hash: d0ebf63892203f263466127008d28a52925875852fa23b50a74ea201bd13519d
