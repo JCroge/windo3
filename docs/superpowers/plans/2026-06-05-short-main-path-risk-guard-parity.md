@@ -2,6 +2,7 @@
 change: short-main-path-risk-guard-parity
 design-doc: docs/superpowers/specs/2026-06-05-short-main-path-risk-guard-parity-design.md
 base-ref: 2023e464bbe2da71223b5753336157a4f2fe120b
+archived-with: 2026-06-05-short-main-path-risk-guard-parity
 ---
 
 # Short Main Path Risk Guard Parity Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 2023e464bbe2da71223b5753336157a4f2fe120b
 
 **Tech Stack:** Python 3, pytest, existing `MultiJudge` methods, existing OpenSpec change `short-main-path-risk-guard-parity`.
 
+archived-with: 2026-06-05-short-main-path-risk-guard-parity
 ---
 
 ## File Structure

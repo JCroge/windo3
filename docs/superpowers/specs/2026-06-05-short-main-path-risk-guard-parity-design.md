@@ -2,6 +2,8 @@
 comet_change: short-main-path-risk-guard-parity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-05-short-main-path-risk-guard-parity
+status: final
 ---
 
 # Short Main Path Risk Guard Parity Design
