@@ -165,3 +165,39 @@ class TestClassifyShortEntryRisk:
         assert 'pre_12h_return_pct' in result['metrics']
         assert 'rsi' in result['metrics']
         assert 'htf_bearish_votes' in result['metrics']
+
+    def test_deferred_and_main_short_gate_return_same_rejection(self):
+        judge = _make_judge()
+        plan = _good_plan()
+        tech = _good_tech()
+        tech['trend']['daily_bias'] = 'bullish'
+        llm_result = {'action': 'hold', 'reasoning': '禁止做空，支撑附近'}
+
+        main_gate = judge._classify_short_entry_risk(
+            'NEAR-USDT', 'open_short', plan, tech, score=-45.0, llm_result=llm_result
+        )
+        deferred_gate = judge._classify_short_entry_risk(
+            'NEAR-USDT', 'open_short', plan, tech, score=-45.0, llm_result=llm_result
+        )
+
+        assert main_gate['allowed'] is False
+        assert deferred_gate['allowed'] is False
+        assert main_gate['reason'] == deferred_gate['reason'] == 'daily_bearish_required'
+        assert main_gate['short_gate_version'] == deferred_gate['short_gate_version']
+
+    def test_rsi_hard_threshold_is_not_renamed_or_moved(self):
+        judge = _make_judge()
+        tech = _good_tech()
+        tech['indicators']['rsi'] = 30.0
+        tech['momentum'] = {'rsi': 30.0}
+        tech['trend']['daily_bias'] = 'bearish'
+        tech['short_context']['position_in_24h_range'] = 0.80
+        tech['short_context']['pre_12h_return_pct'] = 0.0
+
+        gate = judge._classify_short_entry_risk(
+            'NEAR-USDT', 'open_short', _good_plan(), tech, score=-70.0,
+            llm_result={'action': 'hold', 'reasoning': ''}
+        )
+
+        assert gate['reason'] == 'rsi_too_low_for_short'
+        assert gate['metrics']['rsi'] == pytest.approx(30.0)

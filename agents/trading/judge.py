@@ -1477,6 +1477,35 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
+                    # ═══ Short Main Path Risk Guard (Task 3 enforcement) ═══
+                    short_gate = self._classify_short_entry_risk(
+                        symbol, final_action, plan, tech, score, llm_result
+                    )
+                    if final_action == 'open_short' and not short_gate['allowed']:
+                        block_reason = short_gate['reason']
+                        self._record_rejected_plan(
+                            symbol, final_action, plan, score, final_conf, block_reason,
+                            self._apply_short_gate_attribution(
+                                self._rejection_attribution(final_action, plan, block_reason, tech=tech),
+                                short_gate,
+                            )
+                        )
+                        attr = self._apply_short_gate_attribution(
+                            self._rejection_attribution(final_action, plan, block_reason, tech=tech),
+                            short_gate,
+                        )
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": block_reason,
+                            "key_factors": [f"blocked_by={block_reason}"],
+                            "risk_warnings": [block_reason],
+                            "attribution": attr,
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
                     # ═══ Long Entry Position Guard (AC-LONGPOS-01..06) ═══
                     pos_policy = self._check_entry_position_policy(
                         symbol, final_action, plan, tech, score, context='main'
@@ -1617,6 +1646,10 @@ class MultiJudge(BaseAgent):
                     attribution = self._build_attribution(
                         tech, final_action, score, plan, llm_result, entry_type
                     )
+
+                    # ═══ Short Main Path Risk Guard pass attribution ═══
+                    if final_action == 'open_short':
+                        attribution = self._apply_short_gate_attribution(attribution, short_gate)
 
                     # RQ-03: 计算排名分数并 buffer 候选
                     rank_candidate = {
@@ -2972,6 +3005,23 @@ class MultiJudge(BaseAgent):
                                                   getattr(self, '_ev_bucket_min_trades', 10)),
             'ev_bucket_sparse': plan_dict.get('ev_bucket_sparse', False),
         }
+
+    def _apply_short_gate_attribution(self, attribution: dict, gate: dict) -> dict:
+        """Apply short gate classification metadata to attribution.
+
+        Called after _classify_short_entry_risk to merge gate results into
+        trade_decision attribution for both pass and reject paths.
+        """
+        attribution = attribution or {}
+        gate = gate or {}
+        attribution['short_gate_version'] = gate.get('short_gate_version', 'short_main_path_parity_v1')
+        attribution['short_gate_decision'] = gate.get('decision', 'pass')
+        attribution['short_gate_reason'] = gate.get('reason', '')
+        attribution['llm_short_reversal_risk'] = gate.get('llm_short_reversal_risk', False)
+        metrics = gate.get('metrics') or {}
+        if metrics:
+            attribution['short_gate_metrics'] = metrics
+        return attribution
 
     def _record_sl_hit(self, state: dict, direction: str = None):
         """记录一次SL触发，用于escalating cooldown（参考Freqtrade StoplossGuard）"""
