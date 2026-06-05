@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: null
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/short-main-path-risk-guard-parity/.comet/handoff/design-context.json
 handoff_hash: d0ebf63892203f263466127008d28a52925875852fa23b50a74ea201bd13519d
+build_command: python3 -m pytest -q
+verify_command: python3 -m pytest -q
