@@ -21,10 +21,13 @@ class MarketScanner(BaseAgent):
         self.exchange = None
         self.top_n = 50
         self.min_volume_24h = 5_000_000
+        self.research_min_volume_24h_usdt = float(self.config.get('research_min_volume_24h_usdt', 50_000_000))
+        self.research_min_open_interest_usd = float(self.config.get('research_min_open_interest_usd', 10_000_000))
         self._current_cycle_id = None
         self._last_good_candidates = []
         self._last_good_total_scanned = 0
         self._last_good_filtered = 0
+        self._last_good_liquidity_filter = None
         self._last_good_ts = None
 
     async def setup(self):
@@ -121,16 +124,21 @@ class MarketScanner(BaseAgent):
 
             await asyncio.gather(*[_enrich(c) for c in top_candidates])
 
-            self._remember_last_good(top_candidates, len(tickers), len(candidates))
+            top_candidates, liquidity_filter = self._apply_liquidity_hard_filter(top_candidates)
+            self._remember_last_good(top_candidates, len(tickers), len(candidates), liquidity_filter)
 
             await self.publish("research_market_data", {
                 "candidates": top_candidates,
                 "total_scanned": len(tickers),
                 "filtered": len(candidates),
                 "cycle_id": self._current_cycle_id,
+                "liquidity_filter": liquidity_filter,
             })
 
-            self.logger.info(f"[扫描] 完成: {len(tickers)}个合约 → {len(candidates)}个符合条件 → Top{len(top_candidates)}")
+            self.logger.info(
+                f"[扫描] 完成: {len(tickers)}个合约 → {len(candidates)}个符合条件 → "
+                f"流动性过滤移除{liquidity_filter['removed']}个 → Top{len(top_candidates)}"
+            )
 
         except Exception as e:
             self.logger.error(f"市场扫描失败: {e}")
@@ -158,12 +166,60 @@ class MarketScanner(BaseAgent):
 
         raise last_error
 
-    def _remember_last_good(self, candidates: list, total_scanned: int, filtered: int):
+    def _liquidity_rejection_reason(self, candidate: dict):
+        volume_24h = float(candidate.get('volume_24h') or 0)
+        if volume_24h < self.research_min_volume_24h_usdt:
+            return "volume_below_min"
+
+        open_interest = candidate.get('open_interest_usd')
+        if open_interest is None:
+            return "open_interest_missing"
+        if float(open_interest or 0) < self.research_min_open_interest_usd:
+            return "open_interest_below_min"
+        return None
+
+    def _apply_liquidity_hard_filter(self, candidates: list) -> tuple[list, dict]:
+        kept = []
+        examples = []
+
+        for candidate in candidates:
+            reason = self._liquidity_rejection_reason(candidate)
+            if reason is None:
+                kept.append(candidate)
+                continue
+
+            if len(examples) < 5:
+                examples.append({
+                    "symbol": candidate.get("symbol"),
+                    "volume_24h": candidate.get("volume_24h"),
+                    "open_interest_usd": candidate.get("open_interest_usd"),
+                    "reason": reason,
+                })
+
+        summary = {
+            "min_volume_24h_usdt": self.research_min_volume_24h_usdt,
+            "min_open_interest_usd": self.research_min_open_interest_usd,
+            "removed": len(candidates) - len(kept),
+            "kept": len(kept),
+            "examples": examples,
+        }
+
+        if summary["removed"] > 0:
+            sample = ", ".join(f"{item['symbol']}:{item['reason']}" for item in examples)
+            self.logger.info(
+                f"[扫描] 初选流动性硬过滤: 移除{summary['removed']}个，"
+                f"保留{summary['kept']}个，样例={sample}"
+            )
+
+        return kept, summary
+
+    def _remember_last_good(self, candidates: list, total_scanned: int, filtered: int, liquidity_filter: dict = None):
         if not candidates:
             return
         self._last_good_candidates = copy.deepcopy(candidates)
         self._last_good_total_scanned = total_scanned
         self._last_good_filtered = filtered
+        self._last_good_liquidity_filter = copy.deepcopy(liquidity_filter)
         self._last_good_ts = time.time()
 
     async def _publish_degraded_market_data(self, error: Exception):
@@ -171,6 +227,7 @@ class MarketScanner(BaseAgent):
             candidates = copy.deepcopy(self._last_good_candidates)
             total_scanned = self._last_good_total_scanned
             filtered = self._last_good_filtered
+            liquidity_filter = copy.deepcopy(self._last_good_liquidity_filter)
             fallback_source = "last_good"
             stale = True
             last_good_age_sec = round(time.time() - self._last_good_ts, 1) if self._last_good_ts else None
@@ -178,6 +235,7 @@ class MarketScanner(BaseAgent):
             candidates = []
             total_scanned = 0
             filtered = 0
+            liquidity_filter = None
             fallback_source = "empty"
             stale = False
             last_good_age_sec = None
@@ -194,6 +252,8 @@ class MarketScanner(BaseAgent):
         }
         if last_good_age_sec is not None:
             payload["last_good_age_sec"] = last_good_age_sec
+        if liquidity_filter is not None:
+            payload["liquidity_filter"] = liquidity_filter
 
         await self.publish("research_market_data", payload)
         self.logger.warning(

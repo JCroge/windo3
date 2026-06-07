@@ -66,6 +66,9 @@ HARD_LIMITS = {
     "ev_bucket_min_trades": (1, 200),
     # Paper limit fill
     "paper_limit_tick_staleness_sec": (1.0, 600.0),
+    # Research liquidity hard filter
+    "research_min_volume_24h_usdt": (0.0, 10_000_000_000.0),
+    "research_min_open_interest_usd": (0.0, 10_000_000_000.0),
 }
 
 
@@ -159,6 +162,9 @@ DEFAULTS = {
     "reset_risk_baseline_on_start": True,
     # Paper limit fill: max tick staleness before fallback gates to no_tick rejection
     "paper_limit_tick_staleness_sec": 60,
+    # Research liquidity hard filter: enforced before LLM candidate selection
+    "research_min_volume_24h_usdt": 50_000_000,
+    "research_min_open_interest_usd": 10_000_000,
 }
 
 
@@ -283,6 +289,9 @@ def _read_env_overrides() -> dict:
         "RESET_RISK_BASELINE_ON_START": ("reset_risk_baseline_on_start", _to_bool),
         # Paper limit fill
         "PAPER_LIMIT_TICK_STALENESS_SEC": ("paper_limit_tick_staleness_sec", float),
+        # Research liquidity hard filter
+        "RESEARCH_MIN_VOLUME_24H_USDT": ("research_min_volume_24h_usdt", float),
+        "RESEARCH_MIN_OPEN_INTEREST_USD": ("research_min_open_interest_usd", float),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)

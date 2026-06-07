@@ -35,6 +35,43 @@ class SequencedExchange:
         return {"swap": True}
 
 
+class MultiTickerExchange:
+    def fetch_tickers(self):
+        return {
+            "BTC/USDT:USDT": {
+                "quoteVolume": 200_000_000,
+                "high": 105_000,
+                "low": 100_000,
+                "last": 103_000,
+                "percentage": 3.0,
+            },
+            "BABY/USDT:USDT": {
+                "quoteVolume": 80_000_000,
+                "high": 0.016,
+                "low": 0.014,
+                "last": 0.015,
+                "percentage": 4.0,
+            },
+            "MISS/USDT:USDT": {
+                "quoteVolume": 90_000_000,
+                "high": 1.2,
+                "low": 1.0,
+                "last": 1.1,
+                "percentage": 2.0,
+            },
+            "THIN/USDT:USDT": {
+                "quoteVolume": 20_000_000,
+                "high": 2.4,
+                "low": 2.0,
+                "last": 2.2,
+                "percentage": 8.0,
+            },
+        }
+
+    def market(self, symbol):
+        return {"swap": True}
+
+
 @pytest.mark.asyncio
 async def test_market_scanner_failure_publishes_degraded_empty_payload():
     MessageBus.reset()
@@ -71,7 +108,7 @@ async def test_market_scanner_failure_reuses_last_good_candidates(monkeypatch):
     monkeypatch.setattr(scanner, "_fetch_monthly_kline_count", lambda inst_id: asyncio.sleep(0, result=12))
     monkeypatch.setattr(scanner, "_fetch_funding", lambda symbol: asyncio.sleep(0, result=0.0001))
     monkeypatch.setattr(scanner, "_fetch_long_short_ratio", lambda inst_id: asyncio.sleep(0, result=1.05))
-    monkeypatch.setattr(scanner, "_fetch_open_interest", lambda inst_id: asyncio.sleep(0, result=1_000_000))
+    monkeypatch.setattr(scanner, "_fetch_open_interest", lambda inst_id: asyncio.sleep(0, result=100_000_000))
     monkeypatch.setattr(scanner, "_fetch_sl_structure", lambda inst_id, price: asyncio.sleep(0, result={"sl_viable": True}))
 
     await scanner._scan_market()
@@ -89,6 +126,82 @@ async def test_market_scanner_failure_reuses_last_good_candidates(monkeypatch):
     assert payload["stale"] is True
     assert payload["fallback_source"] == "last_good"
     assert payload["candidates"][0]["symbol"] == "BTC-USDT"
+
+
+@pytest.mark.asyncio
+async def test_market_scanner_filters_low_liquidity_before_publish(monkeypatch):
+    MessageBus.reset()
+    bus = MessageBus.get_instance()
+    bus.register("catcher", ["research_market_data"])
+
+    scanner = MarketScanner({
+        "market_scan_retries": 1,
+        "market_scan_retry_delay": 0,
+        "research_min_volume_24h_usdt": 50_000_000,
+        "research_min_open_interest_usd": 10_000_000,
+    })
+    scanner.exchange = MultiTickerExchange()
+    scanner._current_cycle_id = "cycle_liquidity"
+
+    oi_by_inst = {
+        "BTC-USDT-SWAP": 100_000_000,
+        "BABY-USDT-SWAP": 2_000_000,
+        "MISS-USDT-SWAP": None,
+        "THIN-USDT-SWAP": 50_000_000,
+    }
+    monkeypatch.setattr(scanner, "_fetch_monthly_kline_count", lambda inst_id: asyncio.sleep(0, result=12))
+    monkeypatch.setattr(scanner, "_fetch_funding", lambda symbol: asyncio.sleep(0, result=0.0001))
+    monkeypatch.setattr(scanner, "_fetch_long_short_ratio", lambda inst_id: asyncio.sleep(0, result=1.05))
+    monkeypatch.setattr(scanner, "_fetch_open_interest", lambda inst_id: asyncio.sleep(0, result=oi_by_inst[inst_id]))
+    monkeypatch.setattr(scanner, "_fetch_sl_structure", lambda inst_id, price: asyncio.sleep(0, result={"sl_viable": True}))
+
+    await scanner._scan_market()
+
+    msg = await bus.receive("catcher", timeout=0.2)
+    payload = msg["payload"]
+    assert [c["symbol"] for c in payload["candidates"]] == ["BTC-USDT"]
+    assert payload["liquidity_filter"]["kept"] == 1
+    assert payload["liquidity_filter"]["removed"] == 3
+    assert payload["liquidity_filter"]["min_volume_24h_usdt"] == 50_000_000
+    assert payload["liquidity_filter"]["min_open_interest_usd"] == 10_000_000
+    examples = {item["symbol"]: item["reason"] for item in payload["liquidity_filter"]["examples"]}
+    assert examples["BABY-USDT"] == "open_interest_below_min"
+    assert examples["MISS-USDT"] == "open_interest_missing"
+    assert examples["THIN-USDT"] == "volume_below_min"
+
+
+@pytest.mark.asyncio
+async def test_market_scanner_degraded_payload_carries_liquidity_filter(monkeypatch):
+    MessageBus.reset()
+    bus = MessageBus.get_instance()
+    bus.register("catcher", ["research_market_data"])
+
+    scanner = MarketScanner({
+        "market_scan_retries": 1,
+        "market_scan_retry_delay": 0,
+        "research_min_volume_24h_usdt": 50_000_000,
+        "research_min_open_interest_usd": 10_000_000,
+    })
+    scanner.exchange = SequencedExchange()
+    scanner._current_cycle_id = "cycle_ok"
+    monkeypatch.setattr(scanner, "_fetch_monthly_kline_count", lambda inst_id: asyncio.sleep(0, result=12))
+    monkeypatch.setattr(scanner, "_fetch_funding", lambda symbol: asyncio.sleep(0, result=0.0001))
+    monkeypatch.setattr(scanner, "_fetch_long_short_ratio", lambda inst_id: asyncio.sleep(0, result=1.05))
+    monkeypatch.setattr(scanner, "_fetch_open_interest", lambda inst_id: asyncio.sleep(0, result=100_000_000))
+    monkeypatch.setattr(scanner, "_fetch_sl_structure", lambda inst_id, price: asyncio.sleep(0, result={"sl_viable": True}))
+
+    await scanner._scan_market()
+    first = await bus.receive("catcher", timeout=0.2)
+    assert first["payload"]["liquidity_filter"]["kept"] == 1
+
+    scanner._current_cycle_id = "cycle_fail"
+    await scanner._scan_market()
+
+    second = await bus.receive("catcher", timeout=0.2)
+    assert second["payload"]["degraded"] is True
+    assert second["payload"]["fallback_source"] == "last_good"
+    assert second["payload"]["liquidity_filter"]["kept"] == 1
+    assert second["payload"]["candidates"][0]["symbol"] == "BTC-USDT"
 
 
 @pytest.mark.asyncio
