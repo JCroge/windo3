@@ -33,7 +33,7 @@ def test_idealized_book_starts_at_same_initial_equity():
 
 
 @pytest.mark.asyncio
-async def test_open_and_close_on_idealized_book_isolated_from_realistic():
+async def test_open_on_idealized_book_isolated_from_realistic():
     pe = _mk()
     pe._latest_price["BTC-USDT"] = 100.0
     plan = {"size_usdt": 30, "leverage": 5, "stop_loss": 90, "tp_levels": [120]}
@@ -45,6 +45,8 @@ async def test_open_and_close_on_idealized_book_isolated_from_realistic():
     assert "BTC-USDT" in pe._books["idealized"]["positions"]
     assert pe._books["idealized"]["positions"]["BTC-USDT"]["book"] == "idealized"
     assert "BTC-USDT" not in pe._books["realistic"]["positions"]
+    assert pe._books["idealized"]["equity"] < pe._initial_equity   # paid entry fee
+    assert pe._books["realistic"]["equity"] == pytest.approx(pe._initial_equity)  # untouched
 
 
 @pytest.mark.asyncio
@@ -58,3 +60,4 @@ async def test_realistic_record_tagged_realistic_by_default():
         fill_price=50.0, entry_method="market",
     )
     assert pe._books["realistic"]["positions"]["ETH-USDT"]["book"] == "realistic"
+    assert pe._books["idealized"]["equity"] == pytest.approx(pe._initial_equity)  # untouched by realistic open

@@ -108,7 +108,7 @@ class PaperExecutor(BaseAgent):
                 self._latest_tick_ts[symbol] = time.time()
                 if symbol in self._pending_limits:
                     await self._wait_paper_limit_fill(symbol, price_f)
-                await self._check_sl_tp(symbol, price_f)
+                await self._check_sl_tp(symbol, price_f)  # realistic only; idealized SL/TP wired in T6
             return
 
         if mtype == 'trade_decision':
@@ -148,6 +148,7 @@ class PaperExecutor(BaseAgent):
         if confidence < self.min_confidence and action in ('open_long', 'open_short'):
             return
 
+        # realistic only; idealized mirroring wired in T6
         if action in ('open_long', 'open_short') and position is None:
             if symbol in self._pending_limits:
                 # Already waiting on a limit fill — guard handled inside _open_paper
@@ -388,11 +389,12 @@ class PaperExecutor(BaseAgent):
             tp = fill_price * (1 + sl_dist * 1.5) if side == 'long' else fill_price * (1 - sl_dist * 1.5)
             atr_pct = 0.02
 
+        locked = self._locked_margin(book)
         book_eq = self._books[book]["equity"]
-        if margin <= 0 or (book_eq - self._locked_margin(book)) < margin:
+        if margin <= 0 or (book_eq - locked) < margin:
             self.logger.warning(
                 f"[PAPER] {symbol} 跳过：可用保证金不足 (margin={margin}, "
-                f"free_equity={book_eq - self._locked_margin(book):.2f})"
+                f"free_equity={book_eq - locked:.2f})"
             )
             return
 
@@ -643,7 +645,7 @@ class PaperExecutor(BaseAgent):
     def _persist_state(self):
         try:
             from utils.atomic_io import atomic_write_json
-            atomic_write_json(PAPER_POSITIONS_FILE, self._positions)
+            atomic_write_json(PAPER_POSITIONS_FILE, self._positions)  # realistic only; idealized persistence added in T3
             locked = self._locked_margin()
             atomic_write_json(PAPER_EQUITY_FILE, {
                 'equity': round(self._equity, 4),
