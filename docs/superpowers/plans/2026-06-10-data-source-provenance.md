@@ -2,6 +2,7 @@
 change: data-source-provenance
 design-doc: docs/superpowers/specs/2026-06-10-data-source-provenance-design.md
 base-ref: 5f2ae3f8585610bb00acb1d1a3937a129f411cd3
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 # Data Source Provenance Implementation Plan
@@ -22,6 +23,7 @@ base-ref: 5f2ae3f8585610bb00acb1d1a3937a129f411cd3
 - All confidence scoring routes through the single `derive_confidence`.
 - Legacy payloads/records without provenance → consumers treat as `unknown`, never crash.
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Task 1: `utils/data_provenance.py` + tests
@@ -154,6 +156,7 @@ git add utils/data_provenance.py tests/test_data_provenance.py
 git commit -m "feat(provenance): add data_provenance confidence helper"
 ```
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Task 2: Collector captures source + item timestamp
@@ -211,6 +214,7 @@ git add agents/trading/multi_data_collector.py tests/test_data_provenance_collec
 git commit -m "feat(provenance): fetchers return (value, meta) with source + item_ts"
 ```
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Task 3: Collector assembles + emits the `provenance` block
@@ -273,6 +277,7 @@ git add agents/trading/multi_data_collector.py tests/test_data_provenance_collec
 git commit -m "feat(provenance): emit per-dimension provenance block in market_data"
 ```
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Task 4: Propagate through tech_analyst into tech_analysis
@@ -330,6 +335,7 @@ git add agents/trading/tech_analyst.py tests/test_data_provenance_propagation.py
 git commit -m "feat(provenance): forward provenance through tech_analysis"
 ```
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Task 5: Judge attaches provenance summary to attribution (metadata-only)
@@ -397,6 +403,7 @@ git add agents/trading/judge.py tests/test_data_provenance_propagation.py
 git commit -m "feat(provenance): Judge attaches metadata-only provenance summary to attribution"
 ```
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Task 6: Reviewer buckets by provenance summary
@@ -448,6 +455,7 @@ git add agents/trading/reviewer.py tests/test_data_provenance_propagation.py
 git commit -m "feat(provenance): Reviewer buckets trade records by provenance summary"
 ```
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Task 7: Verification + baseline
@@ -478,6 +486,7 @@ git add openspec/changes/data-source-provenance/tasks.md
 git commit -m "chore(provenance): mark tasks complete + record baseline"
 ```
 
+archived-with: 2026-06-10-data-source-provenance
 ---
 
 ## Self-Review Notes

@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-10-data-source-provenance-
 branch_status: handled
 created_at: 2026-06-10
 verified_at: 2026-06-10
-archived: false
+archived: true
 handoff_context: openspec/changes/data-source-provenance/.comet/handoff/design-context.json
 handoff_hash: 9315f4de310883326fbf6169609e2eb99ed9984a11ff37e4d35c1bd65e344977
 build_command: python3 -m pytest -q

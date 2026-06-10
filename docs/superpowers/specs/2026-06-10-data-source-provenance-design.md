@@ -2,6 +2,8 @@
 comet_change: data-source-provenance
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-10-data-source-provenance
+status: final
 ---
 
 # Data Source Provenance — Technical Design
