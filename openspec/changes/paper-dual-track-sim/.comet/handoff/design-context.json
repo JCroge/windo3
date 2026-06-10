@@ -1,0 +1,15 @@
+{
+  "change": "paper-dual-track-sim",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "5757aa852b0609e5d7bcb31a16c42bf7c516f793e4945c3119a9f319edef1e5c",
+  "files": [
+    { "path": "openspec/changes/paper-dual-track-sim/proposal.md", "sha256": "d52c9fe25c66f7ccf1724e1f793525d08e323c8a890d76b2e3b795902edbf105" },
+    { "path": "openspec/changes/paper-dual-track-sim/design.md", "sha256": "850102b34198afdb7956b1d2f792706d929fba2112fb362e619ec8c927f503d3" },
+    { "path": "openspec/changes/paper-dual-track-sim/tasks.md", "sha256": "13e28e99883539927d64a7ec6c120bd59c4580c696f95a727c1e56698389a287" },
+    { "path": "openspec/changes/paper-dual-track-sim/specs/paper-dual-track/spec.md", "sha256": "c6d60b32aac2364650f7d8d93becb738cc5331971892c6c5582a45042291d8fe" },
+    { "path": "openspec/changes/paper-dual-track-sim/specs/paper-executor/spec.md", "sha256": "a6b54a75e7cd0c8e90282fa0a9967451d34a182cdef51970fe448492a5f1c323" }
+  ]
+}
