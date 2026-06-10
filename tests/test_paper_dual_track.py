@@ -61,3 +61,39 @@ async def test_realistic_record_tagged_realistic_by_default():
     )
     assert pe._books["realistic"]["positions"]["ETH-USDT"]["book"] == "realistic"
     assert pe._books["idealized"]["equity"] == pytest.approx(pe._initial_equity)  # untouched by realistic open
+
+
+import json as _json_t
+
+
+def test_legacy_flat_positions_loads_as_realistic(tmp_path, monkeypatch):
+    from agents.trading import paper_executor as pe_mod
+    legacy = {"BTC-USDT": {"side": "long", "margin": 10, "entry_price": 100}}
+    pos_file = tmp_path / "paper_positions.json"
+    pos_file.write_text(_json_t.dumps(legacy))
+    monkeypatch.setattr(pe_mod, "PAPER_POSITIONS_FILE", str(pos_file))
+    monkeypatch.setattr(pe_mod, "PAPER_EQUITY_FILE", str(tmp_path / "paper_equity.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_POSITIONS_IDEAL_FILE", str(tmp_path / "paper_positions_idealized.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_EQUITY_IDEAL_FILE", str(tmp_path / "paper_equity_idealized.json"))
+    pe = pe_mod.PaperExecutor({})
+    pe._load_state()
+    assert pe._books["realistic"]["positions"]["BTC-USDT"]["side"] == "long"
+    assert pe._books["idealized"]["positions"] == {}
+
+
+def test_round_trip_preserves_book_separation(tmp_path, monkeypatch):
+    from agents.trading import paper_executor as pe_mod
+    monkeypatch.setattr(pe_mod, "PAPER_POSITIONS_FILE", str(tmp_path / "paper_positions.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_EQUITY_FILE", str(tmp_path / "paper_equity.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_POSITIONS_IDEAL_FILE", str(tmp_path / "paper_positions_idealized.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_EQUITY_IDEAL_FILE", str(tmp_path / "paper_equity_idealized.json"))
+    pe = pe_mod.PaperExecutor({})
+    pe._books["realistic"]["positions"]["BTC-USDT"] = {"side": "long", "margin": 5}
+    pe._books["idealized"]["positions"]["BTC-USDT"] = {"side": "long", "margin": 5, "book": "idealized"}
+    pe._persist_state()
+    pe2 = pe_mod.PaperExecutor({})
+    pe2._load_state()
+    assert "BTC-USDT" in pe2._books["realistic"]["positions"]
+    assert "BTC-USDT" in pe2._books["idealized"]["positions"]
+    flat = _json_t.loads((tmp_path / "paper_positions.json").read_text())
+    assert "BTC-USDT" in flat and "positions" not in flat

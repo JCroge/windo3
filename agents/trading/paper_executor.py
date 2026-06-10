@@ -22,6 +22,8 @@ from utils.halt_state import get_halt_state
 PAPER_TRADES_FILE = "data/paper_trades.jsonl"
 PAPER_POSITIONS_FILE = "data/paper_positions.json"
 PAPER_EQUITY_FILE = "data/paper_equity.json"
+PAPER_POSITIONS_IDEAL_FILE = "data/paper_positions_idealized.json"
+PAPER_EQUITY_IDEAL_FILE = "data/paper_equity_idealized.json"
 
 DEFAULT_PAPER_LIMIT_TICK_STALENESS_SEC = 60
 
@@ -627,6 +629,7 @@ class PaperExecutor(BaseAgent):
 
     def _load_state(self):
         try:
+            # --- realistic book (legacy flat format) ---
             if os.path.exists(PAPER_POSITIONS_FILE):
                 with open(PAPER_POSITIONS_FILE) as f:
                     loaded = json.load(f)
@@ -636,6 +639,16 @@ class PaperExecutor(BaseAgent):
                 with open(PAPER_EQUITY_FILE) as f:
                     data = json.load(f)
                     self._equity = float(data.get('equity', self._initial_equity))
+            # --- idealized book ---
+            if os.path.exists(PAPER_POSITIONS_IDEAL_FILE):
+                with open(PAPER_POSITIONS_IDEAL_FILE) as f:
+                    loaded_ideal = json.load(f)
+                    self._books["idealized"]["positions"].clear()
+                    self._books["idealized"]["positions"].update(loaded_ideal)
+            if os.path.exists(PAPER_EQUITY_IDEAL_FILE):
+                with open(PAPER_EQUITY_IDEAL_FILE) as f:
+                    data_ideal = json.load(f)
+                    self._books["idealized"]["equity"] = float(data_ideal.get('equity', self._initial_equity))
         except Exception as e:
             self.logger.warning(f"[PaperExecutor] 状态加载失败: {e}")
 
@@ -645,16 +658,23 @@ class PaperExecutor(BaseAgent):
     def _persist_state(self):
         try:
             from utils.atomic_io import atomic_write_json
-            atomic_write_json(PAPER_POSITIONS_FILE, self._positions)  # realistic only; idealized persistence added in T3
-            locked = self._locked_margin()
-            atomic_write_json(PAPER_EQUITY_FILE, {
-                'equity': round(self._equity, 4),
-                'locked_margin': round(locked, 4),
-                'free_equity': round(self._equity - locked, 4),
-                'initial_equity': self._initial_equity,
-                'open_positions': len(self._positions),
-                'updated_at': time.time(),
-            })
+            for book, pos_file, eq_file in (
+                ("realistic", PAPER_POSITIONS_FILE, PAPER_EQUITY_FILE),
+                ("idealized", PAPER_POSITIONS_IDEAL_FILE, PAPER_EQUITY_IDEAL_FILE),
+            ):
+                positions = self._books[book]["positions"]
+                atomic_write_json(pos_file, positions)
+                locked = self._locked_margin(book)
+                equity = self._books[book]["equity"]
+                atomic_write_json(eq_file, {
+                    'equity': round(equity, 4),
+                    'locked_margin': round(locked, 4),
+                    'free_equity': round(equity - locked, 4),
+                    'initial_equity': self._initial_equity,
+                    'open_positions': len(positions),
+                    'updated_at': time.time(),
+                    'book': book,
+                })
         except Exception as e:
             self.logger.error(f"[PaperExecutor] 状态持久化失败: {e}")
 
