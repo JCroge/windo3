@@ -2,6 +2,8 @@
 comet_change: paper-dual-track-sim
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-10-paper-dual-track-sim
+status: final
 ---
 
 # Paper Dual-Track Simulation — Technical Design

@@ -2,6 +2,7 @@
 change: paper-dual-track-sim
 design-doc: docs/superpowers/specs/2026-06-10-paper-dual-track-sim-design.md
 base-ref: ae64e12914d48de8f833a9a5e0325da1856e950d
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 # Paper Dual-Track Simulation Implementation Plan
@@ -22,6 +23,7 @@ base-ref: ae64e12914d48de8f833a9a5e0325da1856e950d
 - `_pending_limits` is realistic-only and never serialized.
 - No idealized record ever reaches a live Reviewer metric (paper/live isolation).
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 1: Book container + realistic proxies (no behavior change)
@@ -122,6 +124,7 @@ git add agents/trading/paper_executor.py tests/test_paper_dual_track.py
 git commit -m "feat(paper): add two-book container with realistic proxy properties"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 2: Parameterize core helpers by book (realistic default)
@@ -208,6 +211,7 @@ git add agents/trading/paper_executor.py tests/test_paper_dual_track.py
 git commit -m "feat(paper): parameterize open/close/sl-tp/add/reduce by book"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 3: Separate-file persistence + legacy load
@@ -332,6 +336,7 @@ git add agents/trading/paper_executor.py tests/test_paper_dual_track.py
 git commit -m "feat(paper): separate-file persistence per book with legacy realistic load"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 4: Config toggle `paper_dual_track_enabled`
@@ -383,6 +388,7 @@ git add utils/config_loader.py agents/trading/paper_executor.py tests/test_paper
 git commit -m "feat(paper): add paper_dual_track_enabled config flag (paper default on)"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 5: Idealized open path (market-immediate, tick-fresh gate)
@@ -499,6 +505,7 @@ git add agents/trading/paper_executor.py tests/test_paper_dual_track.py
 git commit -m "feat(paper): open idealized market book on accepted open decisions"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 6: Per-book SL/TP + mirror strategy close/reduce/add
@@ -640,6 +647,7 @@ git add agents/trading/paper_executor.py tests/test_paper_dual_track.py
 git commit -m "feat(paper): per-book SL/TP and mirror strategy close/reduce/add to idealized"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 7: Comparison reader `compute_gap`
@@ -807,6 +815,7 @@ git add agents/trading/paper_dual_track_report.py tests/test_paper_dual_track_re
 git commit -m "feat(paper): add compute_gap reader for realistic vs idealized comparison"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 8: Telegram `/paper_gap` command + periodic log
@@ -873,6 +882,7 @@ git add agents/trading/telegram_notifier.py agents/trading/paper_executor.py tes
 git commit -m "feat(tg): add /paper_gap command and periodic paper dual-track gap log"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 9: Paper/live isolation guard test
@@ -907,6 +917,7 @@ git add tests/test_paper_dual_track.py
 git commit -m "test(paper): lock paper/live isolation — reviewer never consumes idealized"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Task 10: Full verification + baseline
@@ -939,6 +950,7 @@ git add openspec/changes/paper-dual-track-sim/tasks.md
 git commit -m "chore(paper): mark dual-track tasks complete + record baseline"
 ```
 
+archived-with: 2026-06-10-paper-dual-track-sim
 ---
 
 ## Self-Review Notes
