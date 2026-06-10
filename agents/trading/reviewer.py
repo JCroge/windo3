@@ -186,6 +186,7 @@ class ReviewerAgent(BaseAgent):
                 trade_record['htf_votes'] = attribution.get('htf_votes', 0)
                 trade_record['liquidity_bucket'] = attribution.get('liquidity_bucket', 'unknown')
                 trade_record['rr_bucket'] = attribution.get('rr_bucket', 'unknown')
+                trade_record['provenance_bucket'] = self._provenance_bucket(attribution)
                 trade_record['ev_at_entry'] = attribution.get('ev_at_entry', 0)
                 trade_record['p_win_used'] = attribution.get('p_win_used', 0)
                 trade_record['p_win_source'] = attribution.get('p_win_source', 'unknown')
@@ -315,6 +316,22 @@ class ReviewerAgent(BaseAgent):
                 "timestamp": time.time(),
                 **payload,
             })
+
+    @staticmethod
+    def _provenance_bucket(attribution: dict) -> str:
+        """Derive a provenance segmentation bucket from the attribution dict.
+
+        Returns one of: 'cross_exchange/low', 'cross_exchange/high',
+        'native/low', 'native/high', or 'unknown'.
+        Legacy records without a provenance summary yield 'unknown'.
+        """
+        prov = attribution.get('provenance') or {}
+        if prov.get('quality') == 'known':
+            wc = prov.get('weakest_confidence')
+            band = 'low' if (wc is not None and wc < 0.5) else 'high'
+            venue = 'cross_exchange' if prov.get('has_cross_exchange') else 'native'
+            return f'{venue}/{band}'
+        return 'unknown'
 
     def _calculate_daily_pnl(self) -> float:
         """计算当日累计盈亏"""

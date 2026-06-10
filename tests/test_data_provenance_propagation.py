@@ -122,3 +122,44 @@ def test_summarize_provenance_unknown_when_missing():
     s = MultiJudge._summarize_provenance({})
     assert s["quality"] == "unknown"
     assert s["has_cross_exchange"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 6: ReviewerAgent._provenance_bucket
+# ---------------------------------------------------------------------------
+
+def test_reviewer_provenance_bucket_known_cross_low():
+    from agents.trading.reviewer import ReviewerAgent
+    attribution = {
+        'provenance': {
+            'quality': 'known',
+            'weakest_confidence': 0.35,
+            'has_cross_exchange': True,
+        }
+    }
+    assert ReviewerAgent._provenance_bucket(attribution) == 'cross_exchange/low'
+
+
+def test_reviewer_provenance_bucket_known_native_high():
+    from agents.trading.reviewer import ReviewerAgent
+    attribution = {
+        'provenance': {
+            'quality': 'known',
+            'weakest_confidence': 0.9,
+            'has_cross_exchange': False,
+        }
+    }
+    assert ReviewerAgent._provenance_bucket(attribution) == 'native/high'
+
+
+def test_reviewer_provenance_bucket_missing_provenance():
+    from agents.trading.reviewer import ReviewerAgent
+    assert ReviewerAgent._provenance_bucket({}) == 'unknown'
+
+
+def test_reviewer_provenance_bucket_unknown_quality():
+    from agents.trading.reviewer import ReviewerAgent
+    attribution = {
+        'provenance': {'quality': 'unknown', 'weakest_confidence': 0.8, 'has_cross_exchange': False}
+    }
+    assert ReviewerAgent._provenance_bucket(attribution) == 'unknown'
