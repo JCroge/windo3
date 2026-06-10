@@ -97,7 +97,7 @@ python3 test_paper_executor.py    # PaperExecutor 影子账户（open/close/SL/T
 python3 -m pytest test_drawdown_baseline.py  # 回撤基准修正验收（14 tests）
 
 # 完整 CI 回归（默认排除 network 标记的外部数据测试）
-python3 -m pytest -q              # 807 passed / 4 deselected / 1 warning（2026-05-28 第三次整改后；含新增 test_reduce_protective_sl_lifecycle.py 14 + test_protective_cleanup_owner.py 12 + test_external_close_final_cause.py 11 含 probe_short 门控 + test_symbol_mentions.py 33 + 历史 P0+P1 / Phase 1+2+3 / partial TP / Long Entry Guard / R:R / posMode）
+python3 -m pytest -q              # 1010 passed / 4 deselected / 1 warning（2026-06-10 本地验证；含 test_short_main_path_risk_guard.py 14 + 历史 paper limit fill / TG graceful ops / entry drift / partial TP / Long Entry Guard / R:R / posMode 等）
 python3 -m pytest -q -m network   # 仅跑 network 测试（需 data/klines.db 和实时网络，运行 5s 时间窗后退出；缺数据库时 fixture 干净 skip）
 
 # OKX 真实 testnet 端到端语义验收（需 .env.testnet 隔离凭证）

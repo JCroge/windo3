@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-06-01）**：两层多 Agent 系统主入口为 `run_agents.py`。**全量回归 `954 passed / 4 deselected / 1 warning`**；R:R floor 选择收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，Entry Drift Hybrid Policy 收敛到 `executor._classify_entry_drift` / `_recompute_plan_for_drift`。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 T0/T1/T6 PASS。**下游集成红线**：消费 `execution_result.v2` close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`，不能把保护单失败误当成干净缩仓成功；消费 open/reject 结果时可读取 `attribution.entry_drift` 复盘 drift band/decision/drift_pct。live 扩容为 CONDITIONAL GO；下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
+**系统状态（2026-06-10）**：两层多 Agent 系统主入口为 `run_agents.py`。**全量回归 `1010 passed / 4 deselected / 1 warning`**；R:R floor 选择收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，Entry Drift Hybrid Policy 收敛到 `executor._classify_entry_drift` / `_recompute_plan_for_drift`，Short 短单结构性风险 gate 收敛到 `Judge._classify_short_entry_risk`（main + deferred 三路径共用）。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 T0/T1/T6 PASS。**下游集成红线**：消费 `execution_result.v2` close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`，不能把保护单失败误当成干净缩仓成功；消费 open/reject 结果时可读取 `attribution.entry_drift` 复盘 drift band/decision/drift_pct，可读取 `attribution.short_gate_version` / `short_gate_decision` / `short_gate_reason` / `llm_short_reversal_risk` 切分短单 pre / post 分布。live 扩容为 CONDITIONAL GO；下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
 
 ## 核心模块接口
 

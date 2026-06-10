@@ -1,8 +1,8 @@
 # To-Do List
 
-更新日期：2026-06-03
-来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成；2026-06-03 Pullback Entry Paper Parity 完成。
-当前基线：`993 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
+更新日期：2026-06-10
+来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成；2026-06-03 Pullback Entry Paper Parity 完成；2026-06-05 Short Main Path Risk Guard Parity 完成。
+当前基线：`1010 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
 
 最新整改文档：
 
@@ -14,6 +14,8 @@
 - `docs/audit_remediation_tg_graceful_ops_acceptance.md`
 - `docs/audit_remediation_entry_drift_hybrid_policy_acceptance.md`
 - `docs/superpowers/specs/2026-06-03-pullback-entry-paper-parity-design.md`
+- `docs/superpowers/specs/2026-06-05-short-main-path-risk-guard-parity-design.md`
+- `docs/superpowers/reports/2026-06-05-short-main-path-risk-guard-parity-verify.md`
 - `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go
@@ -76,6 +78,7 @@
 
 | 事项 | 验收证据 |
 |---|---|
+| Short Main Path Risk Guard Parity | 2026-06-05 落地，2026-06-10 本地验证 `1010 passed`。新增 `Judge._classify_short_entry_risk` 单一函数，main path 与 deferred 三路径（15m / pullback / chase）共用；触发反转风险条件（`daily_bearish_required` / `range_position_too_low` / `pre_move_too_deep` / `rsi_too_low_for_short` / `short_score_too_low` / `htf_votes_insufficient`）在 main path 发布 `open_short` 之前评估，与 `_apply_regime_policy` 同语义。`RSI <= 30` 硬性 no-short 阈值在 `agents/trading/judge.py:853, 978, 1404` 三处保留，未与软性结构 gate 合并。LLM hold/"禁止做空"/"看涨背离"等文本只作为 `llm_short_reversal_risk=true` 收紧信号与归因，独立结构性风险才是拒单驱动；不能单独 veto。`_apply_short_gate_attribution` 在 accept/reject path 写入 `short_gate_version=short_main_path_parity_v1` / `short_gate_decision ∈ {pass,reject,probe}` / `short_gate_reason` / `llm_short_reversal_risk`，供 Reviewer 与 backtest 区分 pre/post 分布。新增 `tests/test_short_main_path_risk_guard.py` 14 case 全过；fixture 覆盖 NEAR 2026-06-05 09:01（LLM parse fail + bullish daily + low range + deep pre-move）/ 09:23（parsed 禁止做空 + bullish）。详见 `docs/superpowers/specs/2026-06-05-short-main-path-risk-guard-parity-design.md` 与 `docs/superpowers/reports/2026-06-05-short-main-path-risk-guard-parity-verify.md` |
 | Bucketed EV short side | `_build_plan()` 写入 `side`；`test_phase2_bucketed_ev.py` 覆盖 short bucket |
 | halt/resume owner | Telegram `/resume` 不直接 confirm；Executor `_handle_resume()` 负责 `HaltState.confirm_resume()` |
 | `execution_result.v2` 全路径统一 | `_build_execution_result()` 覆盖 reject/error/open/close/risk/sync/external close；`test_execution_result_contract.py` 通过 |
