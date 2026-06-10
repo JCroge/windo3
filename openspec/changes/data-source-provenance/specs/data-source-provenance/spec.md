@@ -67,13 +67,31 @@ Because Judge and Reviewer consume the derived `tech_analysis` payload rather th
 - **WHEN** a consumer reads a `tech_analysis` payload that predates this change (no `provenance` block)
 - **THEN** the consumer SHALL treat provenance as unknown (e.g. zero confidence / unknown source) and continue without error
 
+### Requirement: A per-decision provenance summary SHALL reach trade records via attribution
+
+Because the Reviewer consumes trade outcome records (`execution_result` → trade history), not `tech_analysis`, the Judge SHALL attach a per-decision provenance summary to `trade_decision.attribution` so the data-source quality at decision time travels with the trade. This attribution write is metadata-only and SHALL NOT gate, rank, or veto any decision (consistent with the observability-only scope). The summary SHALL capture at least the weakest contributing-signal confidence and whether any contributing signal was cross-exchange.
+
+#### Scenario: Provenance summary attached to a decision
+- **WHEN** the Judge produces a `trade_decision` from a `tech_analysis` payload that carries a `provenance` block
+- **THEN** `trade_decision.attribution` SHALL include a provenance summary with at least a weakest-signal confidence and a cross-exchange flag
+- **AND** the decision action/ranking SHALL be identical to what it would be without the provenance summary (metadata-only)
+
+#### Scenario: Missing provenance yields an unknown summary
+- **WHEN** the Judge produces a decision from a `tech_analysis` payload with no `provenance` block (legacy)
+- **THEN** the attribution provenance summary SHALL mark quality as unknown rather than fabricating a confidence
+- **AND** the decision SHALL proceed normally
+
 ### Requirement: Reviewer SHALL be able to bucket outcomes by data-source quality
 
-The Reviewer SHALL be able to segment/bucket trade outcomes by provenance attributes (source and/or a confidence band), so data-source quality can be correlated with performance.
+The Reviewer SHALL be able to segment/bucket trade outcomes by the per-decision provenance summary carried in the trade record (source/cross-exchange flag and/or a confidence band), so data-source quality can be correlated with performance.
 
 #### Scenario: Bucketing by confidence band
-- **WHEN** the Reviewer aggregates outcomes and provenance is available
+- **WHEN** the Reviewer aggregates outcomes and the provenance summary is available on trade records
 - **THEN** it SHALL be able to report metrics split by at least one provenance dimension (e.g. low- vs high-confidence, or native vs cross-exchange)
+
+#### Scenario: Tolerates trade records without a provenance summary
+- **WHEN** the Reviewer aggregates legacy trade records lacking a provenance summary
+- **THEN** it SHALL bucket them as `unknown` quality and continue without error
 
 ### Requirement: Provenance SHALL be observability-only in this change
 
