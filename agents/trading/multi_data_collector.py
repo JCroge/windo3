@@ -283,22 +283,22 @@ class MultiDataCollector(BaseAgent):
             dimensions_ok += 1
 
         # 4. OI delta
-        oi_data = await self._fetch_oi_delta(symbol)
+        oi_data, _oi_meta = await self._fetch_oi_delta(symbol)
         if oi_data:
             dimensions_ok += 1
 
         # 5. Taker买卖比
-        taker_ratio = await self._fetch_taker_ratio(symbol)
+        taker_ratio, _taker_meta = await self._fetch_taker_ratio(symbol)
         if taker_ratio:
             dimensions_ok += 1
 
         # 6. 大单成交
-        big_trades = await self._fetch_big_trades(symbol)
+        big_trades, _bt_meta = await self._fetch_big_trades(symbol)
         if big_trades:
             dimensions_ok += 1
 
         # 7. 多空账户比
-        long_short = await self._fetch_long_short_ratio(symbol)
+        long_short, _ls_meta = await self._fetch_long_short_ratio(symbol)
         if long_short:
             dimensions_ok += 1
 
@@ -491,7 +491,8 @@ class MultiDataCollector(BaseAgent):
             self.logger.warning(f"[采集] {symbol} 资金费率历史失败: {e}")
         return []
 
-    async def _fetch_oi_delta(self, symbol: str) -> dict:
+    async def _fetch_oi_delta(self, symbol: str) -> tuple:
+        _src = "binance_fapi"
         try:
             bn_symbol = self._to_binance_symbol(symbol)
             async with aiohttp.ClientSession() as session:
@@ -501,7 +502,7 @@ class MultiDataCollector(BaseAgent):
                     data = await resp.json()
 
             if not data or not isinstance(data, list):
-                return {}
+                return {}, {"source": _src, "item_ts": None}
 
             current = float(data[-1]['sumOpenInterestValue'])
             oi_1h_ago = float(data[-12]['sumOpenInterestValue']) if len(data) >= 12 else current
@@ -510,16 +511,20 @@ class MultiDataCollector(BaseAgent):
             delta_1h = ((current - oi_1h_ago) / oi_1h_ago * 100) if oi_1h_ago else 0
             delta_4h = ((current - oi_4h_ago) / oi_4h_ago * 100) if oi_4h_ago else 0
 
+            _ts = data[-1].get("timestamp")
+            item_ts = int(_ts) if _ts is not None else None
+
             return {
                 "current_usd": round(current, 2),
                 "delta_1h_pct": round(delta_1h, 2),
                 "delta_4h_pct": round(delta_4h, 2),
-            }
+            }, {"source": _src, "item_ts": item_ts}
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} OI数据失败: {e}")
-        return {}
+        return {}, {"source": _src, "item_ts": None}
 
-    async def _fetch_taker_ratio(self, symbol: str) -> dict:
+    async def _fetch_taker_ratio(self, symbol: str) -> tuple:
+        _src = "binance_fapi"
         try:
             bn_symbol = self._to_binance_symbol(symbol)
             async with aiohttp.ClientSession() as session:
@@ -530,16 +535,19 @@ class MultiDataCollector(BaseAgent):
 
             if data and isinstance(data, list) and len(data) > 0:
                 item = data[0]
+                _ts = item.get("timestamp")
+                item_ts = int(_ts) if _ts is not None else None
                 return {
                     "buy_sell_ratio": round(float(item.get('buySellRatio', 1)), 4),
                     "buy_vol": round(float(item.get('buyVol', 0)), 2),
                     "sell_vol": round(float(item.get('sellVol', 0)), 2),
-                }
+                }, {"source": _src, "item_ts": item_ts}
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} Taker比失败: {e}")
-        return {}
+        return {}, {"source": _src, "item_ts": None}
 
-    async def _fetch_big_trades(self, symbol: str) -> dict:
+    async def _fetch_big_trades(self, symbol: str) -> tuple:
+        _src = "okx"
         try:
             okx_inst = self._to_okx_inst(symbol)
             async with aiohttp.ClientSession() as session:
@@ -548,7 +556,7 @@ class MultiDataCollector(BaseAgent):
                     data = await resp.json()
 
             if data.get('code') != '0' or not data.get('data'):
-                return {}
+                return {}, {"source": _src, "item_ts": None}
 
             trades = data['data']
             sizes = sorted([float(t['sz']) for t in trades])
@@ -573,17 +581,21 @@ class MultiDataCollector(BaseAgent):
             else:
                 whale_dir = "neutral"
 
+            _ts = trades[0].get("ts") if trades else None
+            item_ts = int(_ts) if _ts is not None else None
+
             return {
                 "big_buy_vol": round(big_buy_vol, 4),
                 "big_sell_vol": round(big_sell_vol, 4),
                 "big_ratio": round(big_ratio, 2),
                 "whale_direction": whale_dir,
-            }
+            }, {"source": _src, "item_ts": item_ts}
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} 大单数据失败: {e}")
-        return {}
+        return {}, {"source": _src, "item_ts": None}
 
-    async def _fetch_long_short_ratio(self, symbol: str) -> dict:
+    async def _fetch_long_short_ratio(self, symbol: str) -> tuple:
+        _src = "binance_fapi"
         try:
             bn_symbol = self._to_binance_symbol(symbol)
             async with aiohttp.ClientSession() as session:
@@ -608,14 +620,17 @@ class MultiDataCollector(BaseAgent):
                 else:
                     sentiment = "neutral"
 
+                _ts = item.get("timestamp")
+                item_ts = int(_ts) if _ts is not None else None
+
                 return {
                     "long_ratio": round(long_r, 4),
                     "short_ratio": round(short_r, 4),
                     "crowd_sentiment": sentiment,
-                }
+                }, {"source": _src, "item_ts": item_ts}
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} 多空比失败: {e}")
-        return {}
+        return {}, {"source": _src, "item_ts": None}
 
     async def _collect_4h(self, symbol: str):
         try:
