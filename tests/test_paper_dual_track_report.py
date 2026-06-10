@@ -42,3 +42,12 @@ def test_format_gap_contains_verdict_and_low_sample():
     out = format_gap(g)
     assert "limit_discipline_value" in out
     assert "样本不足" in out
+
+
+def test_paper_gap_command_format_smoke():
+    from agents.trading.paper_dual_track_report import compute_gap, format_gap
+    g = compute_gap([{"book": "realistic", "net_pnl": 2.0}, {"book": "idealized", "net_pnl": -1.0}],
+                    window_days=None, min_trades=1)
+    out = format_gap(g)
+    assert "realistic" in out and "idealized" in out
+    assert g["limit_discipline_value"] == 3.0

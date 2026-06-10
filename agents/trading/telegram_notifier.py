@@ -478,8 +478,9 @@ class TelegramNotifier(BaseAgent):
             '/resume_symbol': self._cmd_resume_symbol,        # F-TG-002 (Task 7)
             '/pnl': self._cmd_pnl,                            # F-TG-003
             '/pnl_id': self._cmd_pnl_id,                      # F-TG-003
+            '/paper_gap': self._cmd_paper_gap,                # paper dual-track gap
         }
-        handlers_with_args = {'/resume_symbol', '/pnl', '/pnl_id'}  # 需要 args 的命令
+        handlers_with_args = {'/resume_symbol', '/pnl', '/pnl_id', '/paper_gap'}  # 需要 args 的命令
 
         handler = handlers.get(cmd)
         if handler:
@@ -721,6 +722,19 @@ class TelegramNotifier(BaseAgent):
             'source': 'telegram',
         })
         await self._send_message(f"🔄 已发送 /resume_symbol {symbol} 请求")
+
+    async def _cmd_paper_gap(self, args: list):
+        """paper dual-track gap: /paper_gap [天数]"""
+        from agents.trading.paper_dual_track_report import load_trades, compute_gap, format_gap
+        days = None
+        if args:
+            try:
+                days = float(args[0])
+            except ValueError:
+                await self._send_message("用法: /paper_gap [天数]")
+                return
+        gap = compute_gap(load_trades(), window_days=days, min_trades=10)
+        await self._send_message(format_gap(gap))
 
     async def _cmd_status(self):
         uptime = time.time() - self._start_time

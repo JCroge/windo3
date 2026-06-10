@@ -734,6 +734,12 @@ class PaperExecutor(BaseAgent):
                 f"unrealized_pnl≈{self._unrealized_pnl():+.2f} "
                 f"pending_limits={len(self._pending_limits)}"
             )
+        if self.dual_track_enabled and int(time.time()) % 300 < 30:
+            try:
+                from agents.trading.paper_dual_track_report import load_trades, compute_gap, format_gap
+                self.logger.info(format_gap(compute_gap(load_trades(), window_days=7, min_trades=10)))
+            except Exception as e:
+                self.logger.debug(f"[PaperExecutor] gap log skipped: {e}")
 
     def _unrealized_pnl(self, book: str = "realistic") -> float:
         total = 0.0
