@@ -142,3 +142,15 @@ async def test_idealized_not_opened_when_disabled():
     await pe._execute_decision({"action": "open_long", "symbol": "BTC-USDT",
                                 "confidence": 99, "plan": plan, "request_id": "r3"})
     assert pe._books["idealized"]["positions"] == {}
+
+
+@pytest.mark.asyncio
+async def test_idealized_skipped_when_tick_stale():
+    pe = _mk({})
+    pe._latest_price["BTC-USDT"] = 102.0
+    pe._latest_tick_ts["BTC-USDT"] = time.time() - 9999  # stale beyond staleness window
+    plan = {"order_type": "limit", "entry_zone": [100, 101],
+            "size_usdt": 30, "leverage": 5, "stop_loss": 95, "tp_levels": [120]}
+    await pe._execute_decision({"action": "open_long", "symbol": "BTC-USDT",
+                                "confidence": 99, "plan": plan, "request_id": "rs"})
+    assert "BTC-USDT" not in pe._books["idealized"]["positions"]

@@ -153,12 +153,13 @@ class PaperExecutor(BaseAgent):
             return
 
         if action in ('open_long', 'open_short') and position is None:
-            if symbol in self._pending_limits:
+            if norm_symbol in self._pending_limits:
                 # Already waiting on a limit fill — guard handled inside _open_paper
                 self.logger.info(
                     f"[PAPER] {norm_symbol} {action} 跳过：已有 pending limit"
                 )
-                await self._open_idealized(norm_symbol, action, plan, decision)
+                if source != 'position_analyst':
+                    await self._open_idealized(norm_symbol, action, plan, decision)
                 return
             if source == 'position_analyst':
                 return
