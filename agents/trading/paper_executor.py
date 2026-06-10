@@ -112,7 +112,9 @@ class PaperExecutor(BaseAgent):
                 self._latest_tick_ts[symbol] = time.time()
                 if symbol in self._pending_limits:
                     await self._wait_paper_limit_fill(symbol, price_f)
-                await self._check_sl_tp(symbol, price_f)  # realistic only; idealized SL/TP wired in T6
+                await self._check_sl_tp(symbol, price_f)
+                if self.dual_track_enabled:
+                    await self._check_sl_tp(symbol, price_f, book="idealized")
             return
 
         if mtype == 'trade_decision':
@@ -168,17 +170,29 @@ class PaperExecutor(BaseAgent):
         elif action in ('open_long', 'open_short') and position is not None:
             if source == 'position_analyst':
                 await self._add_paper(norm_symbol, action, size_pct, position)
+                if self.dual_track_enabled:
+                    ideal_pos = self._books["idealized"]["positions"].get(norm_symbol)
+                    if ideal_pos is not None:
+                        await self._add_paper(norm_symbol, action, size_pct, ideal_pos, book="idealized")
         elif action == 'close':
             if norm_symbol in self._pending_limits:
                 self._pending_limits.pop(norm_symbol, None)
                 self.logger.info(f"[PAPER] {norm_symbol} close 取消 pending limit")
-                return
-            if position is None:
-                return
-            if size_pct < 1.0 and source == 'position_analyst':
-                await self._reduce_paper(norm_symbol, size_pct, position)
-            else:
-                await self._close_paper(norm_symbol, position, reason='signal_close')
+                # realistic pending cancelled; idealized may still hold a position to mirror-close below
+            elif position is not None:
+                if size_pct < 1.0 and source == 'position_analyst':
+                    await self._reduce_paper(norm_symbol, size_pct, position)
+                else:
+                    await self._close_paper(norm_symbol, position, reason='signal_close')
+            # mirror into idealized book
+            if self.dual_track_enabled:
+                ideal_pos = self._books["idealized"]["positions"].get(norm_symbol)
+                if ideal_pos is not None:
+                    if size_pct < 1.0 and source == 'position_analyst':
+                        await self._reduce_paper(norm_symbol, size_pct, ideal_pos, book="idealized")
+                    else:
+                        await self._close_paper(norm_symbol, ideal_pos, reason='signal_close', book="idealized")
+            return
 
     def _record_rejection(self, symbol: str, action: str, reason: str, source: str):
         """记录被拒绝的开仓请求（mirror_risk 模式下）"""

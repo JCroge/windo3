@@ -154,3 +154,65 @@ async def test_idealized_skipped_when_tick_stale():
     await pe._execute_decision({"action": "open_long", "symbol": "BTC-USDT",
                                 "confidence": 99, "plan": plan, "request_id": "rs"})
     assert "BTC-USDT" not in pe._books["idealized"]["positions"]
+
+
+@pytest.mark.asyncio
+async def test_price_tick_checks_both_books_independently():
+    pe = _mk({})
+    for book, entry in (("realistic", 100.0), ("idealized", 102.0)):
+        pe._books[book]["positions"]["BTC-USDT"] = {
+            "symbol": "BTC-USDT", "side": "long", "entry_price": entry,
+            "sl": 95.0, "tp": 130.0, "margin": 10, "leverage": 5,
+            "notional": 50, "opened_at": time.time(), "entry_fee": 0.05,
+            "book": book,
+        }
+    await pe.on_message({"type": "price_tick", "symbol": "BTC-USDT",
+                         "payload": {"symbol": "BTC-USDT", "price": 94.0}})
+    assert "BTC-USDT" not in pe._books["realistic"]["positions"]
+    assert "BTC-USDT" not in pe._books["idealized"]["positions"]
+
+
+@pytest.mark.asyncio
+async def test_strategy_close_applies_to_both_books():
+    pe = _mk({})
+    for book in ("realistic", "idealized"):
+        pe._books[book]["positions"]["ETH-USDT"] = {
+            "symbol": "ETH-USDT", "side": "long", "entry_price": 50.0,
+            "sl": 45.0, "tp": 60.0, "margin": 10, "leverage": 3,
+            "notional": 30, "opened_at": time.time(), "entry_fee": 0.03,
+            "book": book,
+        }
+    pe._latest_price["ETH-USDT"] = 55.0
+    await pe._execute_decision({"action": "close", "symbol": "ETH-USDT"})
+    assert "ETH-USDT" not in pe._books["realistic"]["positions"]
+    assert "ETH-USDT" not in pe._books["idealized"]["positions"]
+
+
+@pytest.mark.asyncio
+async def test_close_noop_for_idealized_when_not_held():
+    pe = _mk({})
+    pe._books["realistic"]["positions"]["ETH-USDT"] = {
+        "symbol": "ETH-USDT", "side": "long", "entry_price": 50.0,
+        "sl": 45.0, "tp": 60.0, "margin": 10, "leverage": 3,
+        "notional": 30, "opened_at": time.time(), "entry_fee": 0.03,
+        "book": "realistic",
+    }
+    pe._latest_price["ETH-USDT"] = 55.0
+    await pe._execute_decision({"action": "close", "symbol": "ETH-USDT"})
+    assert "ETH-USDT" not in pe._books["realistic"]["positions"]
+
+
+@pytest.mark.asyncio
+async def test_unfilled_realistic_leaves_idealized_to_self_sl():
+    pe = _mk({})
+    pe._latest_price["NEAR-USDT"] = 2.40
+    pe._latest_tick_ts["NEAR-USDT"] = time.time()
+    plan = {"order_type": "limit", "entry_zone": [2.35, 2.36], "limit_no_fallback": True,
+            "limit_timeout_sec": 1800, "size_usdt": 30, "leverage": 5,
+            "stop_loss": 2.52, "tp_levels": [2.10]}
+    await pe._execute_decision({"action": "open_short", "symbol": "NEAR-USDT",
+                                "confidence": 99, "plan": plan, "request_id": "r9"})
+    assert pe._books["idealized"]["positions"]["NEAR-USDT"]["side"] == "short"
+    await pe.on_message({"type": "price_tick", "symbol": "NEAR-USDT",
+                         "payload": {"symbol": "NEAR-USDT", "price": 2.55}})
+    assert "NEAR-USDT" not in pe._books["idealized"]["positions"]
