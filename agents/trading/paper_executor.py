@@ -59,6 +59,8 @@ class PaperExecutor(BaseAgent):
                                DEFAULT_PAPER_LIMIT_TICK_STALENESS_SEC)
         )
         self._latest_tick_ts: Dict[str, float] = {}
+        self.dual_track_enabled = bool(
+            (config or {}).get('paper_dual_track_enabled', True))
 
     @property
     def _positions(self) -> dict:

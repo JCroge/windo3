@@ -162,6 +162,8 @@ DEFAULTS = {
     "reset_risk_baseline_on_start": True,
     # Paper limit fill: max tick staleness before fallback gates to no_tick rejection
     "paper_limit_tick_staleness_sec": 60,
+    # Paper dual-track simulation (idealized vs realistic)
+    "paper_dual_track_enabled": True,
     # Research liquidity hard filter: enforced before LLM candidate selection
     "research_min_volume_24h_usdt": 50_000_000,
     "research_min_open_interest_usd": 10_000_000,
@@ -289,6 +291,8 @@ def _read_env_overrides() -> dict:
         "RESET_RISK_BASELINE_ON_START": ("reset_risk_baseline_on_start", _to_bool),
         # Paper limit fill
         "PAPER_LIMIT_TICK_STALENESS_SEC": ("paper_limit_tick_staleness_sec", float),
+        # Paper dual-track simulation
+        "PAPER_DUAL_TRACK_ENABLED": ("paper_dual_track_enabled", _to_bool),
         # Research liquidity hard filter
         "RESEARCH_MIN_VOLUME_24H_USDT": ("research_min_volume_24h_usdt", float),
         "RESEARCH_MIN_OPEN_INTEREST_USD": ("research_min_open_interest_usd", float),

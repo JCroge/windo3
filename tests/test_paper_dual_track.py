@@ -97,3 +97,8 @@ def test_round_trip_preserves_book_separation(tmp_path, monkeypatch):
     assert "BTC-USDT" in pe2._books["idealized"]["positions"]
     flat = _json_t.loads((tmp_path / "paper_positions.json").read_text())
     assert "BTC-USDT" in flat and "positions" not in flat
+
+
+def test_dual_track_flag_defaults_and_override():
+    assert _mk({}).dual_track_enabled is True  # paper default on
+    assert _mk({"paper_dual_track_enabled": False}).dual_track_enabled is False
