@@ -1,7 +1,7 @@
 # To-Do List
 
 更新日期：2026-06-10
-来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成；2026-06-03 Pullback Entry Paper Parity 完成；2026-06-05 Short Main Path Risk Guard Parity 完成。
+来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成；2026-06-03 Pullback Entry Paper Parity 完成；2026-06-05 Short Main Path Risk Guard Parity 完成；2026-06-07 研究层低流动性硬过滤器上线（2026-06-10 补 OpenSpec/verify 流程闭环）。
 当前基线：`1010 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
 
 最新整改文档：
@@ -46,6 +46,7 @@
 
 | 状态 | 事项 | 下一步 | 验收标准 |
 |---|---|---|---|
+| DONE 2026-06-07 | 研究层低流动性硬过滤器（BABY-USDT 事件根因） | `agents/research/market_scanner.py` 新增 `_apply_liquidity_hard_filter` / `_liquidity_rejection_reason`，enrichment 后、发布 `research_market_data` 前按 `volume_24h >= research_min_volume_24h_usdt`(默认 50M) + `open_interest_usd >= research_min_open_interest_usd`(默认 10M) 双门槛硬过滤，缺 OI fail-closed 剔除；payload 带 `liquidity_filter` summary，degraded `last_good` 兜底带 summary；`utils/config_loader.py` 加 DEFAULTS/HARD_LIMITS + `RESEARCH_MIN_VOLUME_24H_USDT`/`RESEARCH_MIN_OPEN_INTEREST_USD` env 覆盖 | `test_research_market_scanner_failover.py` 8 case PASS（含 liquidity 专项 2 case）；OpenSpec change `2026-06-07-research-liquidity-hard-filter` + master spec `research-liquidity-filter` 已归档；verify 报告 `docs/superpowers/reports/2026-06-07-research-liquidity-hard-filter-verify.md`（2026-06-10 事后补流程闭环，代码 2026-06-07 commit 2047187 已上线） |
 | DONE 2026-05-28 | 保护单 owner 收敛（P0 FR-001/FR-002） | EarlyReview 收敛到 `ContractExecutor.move_protective_sl`；`_replace_protective_sl` cancel/place fail-closed；live OKX 失败 halt | `test_protective_sl_owner.py` 11 case + `test_partial_tp_lifecycle.py::TestProtectiveSlSingleEntry` PASS；AC-P0-001 至 AC-P0-006 通过 |
 | DONE 2026-05-28 | Agent close path 不直接撤保护单（P0 FR-003） | trade_decision close / risk_alert / close_all / local_stop 全部走 `close_position()`；新增 `_cleanup_protective_orders_on_close` sweep + `protective_cleanup_state` 字段 | `test_judge_close_cause.py::TestCloseDoesNotDirectlyCancel` 6 case + 静态扫描 `rg cancel_order\( agents/trading/executor.py` 仅剩 helper 与 sweep 引用；AC-P0-007 至 AC-P0-011 通过 |
 | DONE 2026-05-28 | close cause / Judge cooldown 修复（P0 FR-004） | `_build_execution_result()` 自动注入 `exit_reason/close_cause/is_strategy_stop/is_risk_forced` + `result.protective_cleanup_state`；Judge `force_closed`/`closed_externally` 分支只在 `is_strategy_stop=True` 时调用 `_record_sl_hit()` | `test_judge_close_cause.py::TestExecutionResultCloseCause` 17 case + `TestJudgeRecordSlHit` 10 case PASS；AC-P0-012 至 AC-P0-015 通过 |

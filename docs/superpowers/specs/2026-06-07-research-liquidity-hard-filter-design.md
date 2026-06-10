@@ -1,3 +1,11 @@
+---
+comet_change: research-liquidity-hard-filter
+role: technical-design
+canonical_spec: openspec
+archived-with: 2026-06-07-research-liquidity-hard-filter
+status: final
+---
+
 # Research Liquidity Hard Filter Design
 
 Date: 2026-06-07

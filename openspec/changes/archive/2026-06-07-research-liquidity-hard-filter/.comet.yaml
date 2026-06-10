@@ -1,0 +1,16 @@
+workflow: full
+phase: archive
+build_mode: direct
+isolation: main
+verify_mode: full
+base_ref: 2d287e1597b78096401757f8766da41e53cbd9b3
+design_doc: docs/superpowers/specs/2026-06-07-research-liquidity-hard-filter-design.md
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-06-07-research-liquidity-hard-filter-verify.md
+branch_status: handled
+created_at: 2026-06-07
+verified_at: 2026-06-10
+archived: true
+build_command: python3 -m pytest -q
+verify_command: python3 -m pytest -q
+note: Retroactive closeout. Change shipped 2026-06-07 as commit 2047187 directly on main; openspec/comet artifacts reconstructed and verified 2026-06-10.

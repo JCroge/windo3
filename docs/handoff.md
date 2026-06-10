@@ -3,7 +3,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-06-10 默认回归验证 `1010 passed / 4 deselected / 1 warning`。第四次审计 F4-001/F4-002/F4-003 阻断在 2026-05-29 闭环，真实 OKX owner-tag 补验 T0/T1/T6 PASS；TG 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id`，Entry Drift Hybrid Policy 对 open 路径执行 4 档 drift gate，Pullback Entry Paper Parity 对齐 paper/live 限价撮合契约，Short Main Path Risk Guard Parity 把短单结构性风险 gate 收敛到 `Judge._classify_short_entry_risk` 单一函数（main + deferred 三路径共用）。
+**当前阶段**：2026-06-10 默认回归验证 `1010 passed / 4 deselected / 1 warning`。第四次审计 F4-001/F4-002/F4-003 阻断在 2026-05-29 闭环，真实 OKX owner-tag 补验 T0/T1/T6 PASS；TG 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id`，Entry Drift Hybrid Policy 对 open 路径执行 4 档 drift gate，Pullback Entry Paper Parity 对齐 paper/live 限价撮合契约，Short Main Path Risk Guard Parity 把短单结构性风险 gate 收敛到 `Judge._classify_short_entry_risk` 单一函数（main + deferred 三路径共用）。2026-06-07 研究层低流动性硬过滤器上线（`MarketScanner._apply_liquidity_hard_filter`，volume+OI 双 gate、缺 OI fail-closed，BABY-USDT 事件根因），2026-06-10 补 OpenSpec change `2026-06-07-research-liquidity-hard-filter` + master spec `research-liquidity-filter` + verify 报告，完成流程闭环。
 **下一阶段**：live 扩容为 CONDITIONAL GO。扩容前需将 `BOT_INSTANCE_ID` 写入 systemd / pm2 等启动配置，完成真实 TG 命令链与 drift gate 运维验收，并继续每日复核 `data/live_position_lifecycle.json` 与 OKX algo 残留情况。
 
 ## 重大决策：放弃套利策略（2026-05-06）
