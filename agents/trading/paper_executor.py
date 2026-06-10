@@ -363,7 +363,8 @@ class PaperExecutor(BaseAgent):
 
     async def _open_paper_at_price(self, symbol: str, side: str, action: str,
                                    plan: Optional[dict], decision: dict,
-                                   fill_price: float, entry_method: str) -> None:
+                                   fill_price: float, entry_method: str,
+                                   book: str = "realistic") -> None:
         """Shared open path: builds position dict, persists, publishes event."""
         if plan:
             margin = float(plan.get('size_usdt', 0))
@@ -387,10 +388,11 @@ class PaperExecutor(BaseAgent):
             tp = fill_price * (1 + sl_dist * 1.5) if side == 'long' else fill_price * (1 - sl_dist * 1.5)
             atr_pct = 0.02
 
-        if margin <= 0 or (self._equity - self._locked_margin()) < margin:
+        book_eq = self._books[book]["equity"]
+        if margin <= 0 or (book_eq - self._locked_margin(book)) < margin:
             self.logger.warning(
                 f"[PAPER] {symbol} 跳过：可用保证金不足 (margin={margin}, "
-                f"free_equity={self._equity - self._locked_margin():.2f})"
+                f"free_equity={book_eq - self._locked_margin(book):.2f})"
             )
             return
 
@@ -408,24 +410,28 @@ class PaperExecutor(BaseAgent):
             'request_id': decision.get('request_id', ''),
             'attribution': decision.get('attribution') or (plan or {}).get('attribution') or {},
             'entry_method': entry_method,
+            'book': book,
         }
-        self._positions[symbol] = pos
-        self._equity -= entry_fee
+        self._books[book]["positions"][symbol] = pos
+        self._books[book]["equity"] -= entry_fee
         self._persist_state()
         self.logger.info(
             f"[PAPER] OPEN {side.upper()} {symbol} @ {fill_price:.6f} "
             f"margin={margin:.2f} lev={leverage}x SL={sl:.6f} TP={tp:.6f} "
             f"entry_method={entry_method}"
         )
+        cur_eq = self._books[book]["equity"]
         await self.publish("paper_execution_result", {
             "status": "executed", "action": action, "symbol": symbol,
             "request_id": pos.get('request_id', ''), "result": dict(pos),
-            "paper_equity": round(self._equity, 4),
-            "locked_margin": round(self._locked_margin(), 4),
-            "free_equity": round(self._equity - self._locked_margin(), 4),
+            "paper_equity": round(cur_eq, 4),
+            "locked_margin": round(self._locked_margin(book), 4),
+            "free_equity": round(cur_eq - self._locked_margin(book), 4),
+            "book": book,
         }, symbol=symbol)
 
-    async def _close_paper(self, symbol: str, position: dict, reason: str, exit_price: Optional[float] = None):
+    async def _close_paper(self, symbol: str, position: dict, reason: str, exit_price: Optional[float] = None,
+                           book: str = "realistic"):
         if exit_price is None:
             exit_price = self._latest_price.get(symbol, position['entry_price'])
 
@@ -444,11 +450,12 @@ class PaperExecutor(BaseAgent):
         exit_fee = self._fee(notional)
         hold_hours = (time.time() - position['opened_at']) / 3600
 
-        self._equity += gross_pnl - exit_fee
+        self._books[book]["equity"] += gross_pnl - exit_fee
 
-        del self._positions[symbol]
+        del self._books[book]["positions"][symbol]
         self._persist_state()
 
+        cur_eq = self._books[book]["equity"]
         trade_record = {
             **position,
             'exit_price': exit_price,
@@ -458,9 +465,10 @@ class PaperExecutor(BaseAgent):
             'net_pnl': round(gross_pnl - position['entry_fee'] - exit_fee, 4),
             'hold_hours': round(hold_hours, 2),
             'closed_at': time.time(),
-            'paper_equity_after': round(self._equity, 4),
+            'paper_equity_after': round(cur_eq, 4),
         }
         trade_record['entry_method'] = position.get('entry_method', 'market')
+        trade_record['book'] = book
         attr = position.get('attribution', {})
         if attr:
             trade_record['entry_regime'] = attr.get('entry_regime', 'unknown')
@@ -472,7 +480,7 @@ class PaperExecutor(BaseAgent):
         self._append_trade(trade_record)
         self.logger.info(
             f"[PAPER] CLOSE {symbol} @ {exit_price:.6f} ({reason}) "
-            f"PnL={trade_record['net_pnl']:+.4f} equity={self._equity:.2f}"
+            f"PnL={trade_record['net_pnl']:+.4f} equity={cur_eq:.2f}"
         )
 
         await self.publish("paper_execution_result", {
@@ -482,12 +490,14 @@ class PaperExecutor(BaseAgent):
             "reason": reason,
             "result": trade_record,
             "entry_request_id": position.get('request_id', ''),
-            "paper_equity": round(self._equity, 4),
-            "locked_margin": round(self._locked_margin(), 4),
-            "free_equity": round(self._equity - self._locked_margin(), 4),
+            "paper_equity": round(cur_eq, 4),
+            "locked_margin": round(self._locked_margin(book), 4),
+            "free_equity": round(cur_eq - self._locked_margin(book), 4),
+            "book": book,
         }, symbol=symbol)
 
-    async def _add_paper(self, symbol: str, action: str, size_pct: float, position: dict):
+    async def _add_paper(self, symbol: str, action: str, size_pct: float, position: dict,
+                         book: str = "realistic"):
         """加仓：按当前价加权平均"""
         side = 'long' if action == 'open_long' else 'short'
         if position['side'] != side:
@@ -509,7 +519,7 @@ class PaperExecutor(BaseAgent):
         add_notional = add_margin * leverage
         add_fee = self._fee(add_notional)
 
-        free_equity = self._equity - self._locked_margin()
+        free_equity = self._books[book]["equity"] - self._locked_margin(book)
         if add_margin + add_fee > free_equity:
             self.logger.warning(f"[PAPER] {symbol} 加仓跳过：可用保证金不足 (need={add_margin+add_fee:.2f}, free={free_equity:.2f})")
             return
@@ -532,14 +542,15 @@ class PaperExecutor(BaseAgent):
         position['sl'] = new_sl
         position['tp'] = new_tp
         position['entry_fee'] += add_fee
-        self._equity -= add_fee
+        self._books[book]["equity"] -= add_fee
         self._persist_state()
         self.logger.info(
             f"[PAPER] ADD {symbol} +{add_margin:.2f} → margin={position['margin']:.2f} "
             f"avg_entry={new_entry:.6f}"
         )
 
-    async def _reduce_paper(self, symbol: str, size_pct: float, position: dict):
+    async def _reduce_paper(self, symbol: str, size_pct: float, position: dict,
+                            book: str = "realistic"):
         """部分平仓：按 size_pct 比例兑现 PnL"""
         price = self._latest_price.get(symbol, position['entry_price'])
         side = position['side']
@@ -557,11 +568,12 @@ class PaperExecutor(BaseAgent):
         partial_pnl = reduce_margin * pnl_pct * leverage
         partial_fee = self._fee(reduce_notional)
         net_partial = partial_pnl - partial_fee
-        self._equity += net_partial
+        self._books[book]["equity"] += net_partial
 
         position['margin'] -= reduce_margin
         position['notional'] = position['margin'] * leverage
         self._persist_state()
+        cur_eq = self._books[book]["equity"]
         reduce_record = {
             **{k: position[k] for k in ('symbol', 'side', 'leverage')},
             'entry_price': entry,
@@ -571,7 +583,8 @@ class PaperExecutor(BaseAgent):
             'gross_pnl': round(partial_pnl, 4),
             'net_pnl': round(net_partial, 4),
             'closed_at': time.time(),
-            'paper_equity_after': round(self._equity, 4),
+            'paper_equity_after': round(cur_eq, 4),
+            'book': book,
         }
         attr = position.get('attribution', {})
         if attr:
@@ -582,8 +595,8 @@ class PaperExecutor(BaseAgent):
         self._append_trade(reduce_record)
         self.logger.info(f"[PAPER] REDUCE {symbol} {int(size_pct*100)}% PnL={net_partial:+.4f}")
 
-    async def _check_sl_tp(self, symbol: str, price: float):
-        pos = self._positions.get(symbol)
+    async def _check_sl_tp(self, symbol: str, price: float, book: str = "realistic"):
+        pos = self._books[book]["positions"].get(symbol)
         if not pos:
             return
         side = pos['side']
@@ -591,14 +604,14 @@ class PaperExecutor(BaseAgent):
 
         if side == 'long':
             if price <= sl:
-                await self._close_paper(symbol, pos, reason='sl', exit_price=sl)
+                await self._close_paper(symbol, pos, reason='sl', exit_price=sl, book=book)
             elif tp and price >= tp:
-                await self._close_paper(symbol, pos, reason='tp', exit_price=tp)
+                await self._close_paper(symbol, pos, reason='tp', exit_price=tp, book=book)
         else:  # short
             if price >= sl:
-                await self._close_paper(symbol, pos, reason='sl', exit_price=sl)
+                await self._close_paper(symbol, pos, reason='sl', exit_price=sl, book=book)
             elif tp and price <= tp:
-                await self._close_paper(symbol, pos, reason='tp', exit_price=tp)
+                await self._close_paper(symbol, pos, reason='tp', exit_price=tp, book=book)
 
     def _fee(self, notional: float) -> float:
         if self._cost_model:
@@ -624,8 +637,8 @@ class PaperExecutor(BaseAgent):
         except Exception as e:
             self.logger.warning(f"[PaperExecutor] 状态加载失败: {e}")
 
-    def _locked_margin(self) -> float:
-        return sum(p['margin'] for p in self._positions.values())
+    def _locked_margin(self, book: str = "realistic") -> float:
+        return sum(p['margin'] for p in self._books[book]["positions"].values())
 
     def _persist_state(self):
         try:
@@ -661,9 +674,9 @@ class PaperExecutor(BaseAgent):
                 f"pending_limits={len(self._pending_limits)}"
             )
 
-    def _unrealized_pnl(self) -> float:
+    def _unrealized_pnl(self, book: str = "realistic") -> float:
         total = 0.0
-        for sym, pos in self._positions.items():
+        for sym, pos in self._books[book]["positions"].items():
             price = self._latest_price.get(sym)
             if not price:
                 continue

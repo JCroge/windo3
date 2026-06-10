@@ -30,3 +30,31 @@ def test_idealized_book_starts_at_same_initial_equity():
     pe = _mk({"effective_balance_cap": 500})
     assert pe._books["idealized"]["equity"] == pytest.approx(500.0)
     assert pe._books["realistic"]["equity"] == pytest.approx(500.0)
+
+
+@pytest.mark.asyncio
+async def test_open_and_close_on_idealized_book_isolated_from_realistic():
+    pe = _mk()
+    pe._latest_price["BTC-USDT"] = 100.0
+    plan = {"size_usdt": 30, "leverage": 5, "stop_loss": 90, "tp_levels": [120]}
+    await pe._open_paper_at_price(
+        symbol="BTC-USDT", side="long", action="open_long",
+        plan=plan, decision={"request_id": "r1"},
+        fill_price=100.0, entry_method="market", book="idealized",
+    )
+    assert "BTC-USDT" in pe._books["idealized"]["positions"]
+    assert pe._books["idealized"]["positions"]["BTC-USDT"]["book"] == "idealized"
+    assert "BTC-USDT" not in pe._books["realistic"]["positions"]
+
+
+@pytest.mark.asyncio
+async def test_realistic_record_tagged_realistic_by_default():
+    pe = _mk()
+    pe._latest_price["ETH-USDT"] = 50.0
+    plan = {"size_usdt": 20, "leverage": 3, "stop_loss": 45, "tp_levels": [60]}
+    await pe._open_paper_at_price(
+        symbol="ETH-USDT", side="long", action="open_long",
+        plan=plan, decision={"request_id": "r2"},
+        fill_price=50.0, entry_method="market",
+    )
+    assert pe._books["realistic"]["positions"]["ETH-USDT"]["book"] == "realistic"
