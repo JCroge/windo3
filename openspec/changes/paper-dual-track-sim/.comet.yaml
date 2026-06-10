@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: null
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/paper-dual-track-sim/.comet/handoff/design-context.json
 handoff_hash: 5757aa852b0609e5d7bcb31a16c42bf7c516f793e4945c3119a9f319edef1e5c
+build_command: python3 -m pytest -q
+verify_command: python3 -m pytest -q
