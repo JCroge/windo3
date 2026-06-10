@@ -159,17 +159,19 @@ async def test_idealized_skipped_when_tick_stale():
 @pytest.mark.asyncio
 async def test_price_tick_checks_both_books_independently():
     pe = _mk({})
-    for book, entry in (("realistic", 100.0), ("idealized", 102.0)):
+    # realistic SL 95 (will hit at 94), idealized SL 90 (will NOT hit at 94)
+    for book, entry, sl in (("realistic", 100.0, 95.0), ("idealized", 102.0, 90.0)):
         pe._books[book]["positions"]["BTC-USDT"] = {
             "symbol": "BTC-USDT", "side": "long", "entry_price": entry,
-            "sl": 95.0, "tp": 130.0, "margin": 10, "leverage": 5,
+            "sl": sl, "tp": 130.0, "margin": 10, "leverage": 5,
             "notional": 50, "opened_at": time.time(), "entry_fee": 0.05,
             "book": book,
         }
     await pe.on_message({"type": "price_tick", "symbol": "BTC-USDT",
                          "payload": {"symbol": "BTC-USDT", "price": 94.0}})
+    # realistic SL hit and closed; idealized SL not hit, stays open
     assert "BTC-USDT" not in pe._books["realistic"]["positions"]
-    assert "BTC-USDT" not in pe._books["idealized"]["positions"]
+    assert "BTC-USDT" in pe._books["idealized"]["positions"]
 
 
 @pytest.mark.asyncio
@@ -200,6 +202,7 @@ async def test_close_noop_for_idealized_when_not_held():
     pe._latest_price["ETH-USDT"] = 55.0
     await pe._execute_decision({"action": "close", "symbol": "ETH-USDT"})
     assert "ETH-USDT" not in pe._books["realistic"]["positions"]
+    assert "ETH-USDT" not in pe._books["idealized"]["positions"]
 
 
 @pytest.mark.asyncio
