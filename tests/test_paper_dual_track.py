@@ -102,3 +102,43 @@ def test_round_trip_preserves_book_separation(tmp_path, monkeypatch):
 def test_dual_track_flag_defaults_and_override():
     assert _mk({}).dual_track_enabled is True  # paper default on
     assert _mk({"paper_dual_track_enabled": False}).dual_track_enabled is False
+
+
+import time
+
+
+@pytest.mark.asyncio
+async def test_limit_decision_still_fills_idealized_at_market():
+    pe = _mk({})
+    pe._latest_price["BTC-USDT"] = 102.0
+    pe._latest_tick_ts["BTC-USDT"] = time.time()
+    plan = {"order_type": "limit", "entry_zone": [100, 101],
+            "size_usdt": 30, "leverage": 5, "stop_loss": 95, "tp_levels": [120]}
+    await pe._execute_decision({"action": "open_long", "symbol": "BTC-USDT",
+                                "confidence": 99, "plan": plan, "request_id": "r1"})
+    assert "BTC-USDT" in pe._pending_limits
+    assert "BTC-USDT" not in pe._books["realistic"]["positions"]
+    ideal = pe._books["idealized"]["positions"]["BTC-USDT"]
+    assert ideal["entry_price"] == pytest.approx(102.0)
+    assert ideal["entry_method"] == "market" and ideal["book"] == "idealized"
+
+
+@pytest.mark.asyncio
+async def test_idealized_skipped_when_tick_missing():
+    pe = _mk({})
+    plan = {"order_type": "limit", "entry_zone": [100, 101],
+            "size_usdt": 30, "leverage": 5, "stop_loss": 95, "tp_levels": [120]}
+    await pe._execute_decision({"action": "open_long", "symbol": "X-USDT",
+                                "confidence": 99, "plan": plan, "request_id": "r2"})
+    assert "X-USDT" not in pe._books["idealized"]["positions"]
+
+
+@pytest.mark.asyncio
+async def test_idealized_not_opened_when_disabled():
+    pe = _mk({"paper_dual_track_enabled": False})
+    pe._latest_price["BTC-USDT"] = 102.0
+    pe._latest_tick_ts["BTC-USDT"] = time.time()
+    plan = {"size_usdt": 30, "leverage": 5, "stop_loss": 95, "tp_levels": [120]}
+    await pe._execute_decision({"action": "open_long", "symbol": "BTC-USDT",
+                                "confidence": 99, "plan": plan, "request_id": "r3"})
+    assert pe._books["idealized"]["positions"] == {}

@@ -152,17 +152,18 @@ class PaperExecutor(BaseAgent):
         if confidence < self.min_confidence and action in ('open_long', 'open_short'):
             return
 
-        # realistic only; idealized mirroring wired in T6
         if action in ('open_long', 'open_short') and position is None:
             if symbol in self._pending_limits:
                 # Already waiting on a limit fill — guard handled inside _open_paper
                 self.logger.info(
                     f"[PAPER] {norm_symbol} {action} 跳过：已有 pending limit"
                 )
+                await self._open_idealized(norm_symbol, action, plan, decision)
                 return
             if source == 'position_analyst':
                 return
             await self._open_paper(norm_symbol, action, plan, decision)
+            await self._open_idealized(norm_symbol, action, plan, decision)
         elif action in ('open_long', 'open_short') and position is not None:
             if source == 'position_analyst':
                 await self._add_paper(norm_symbol, action, size_pct, position)
@@ -618,6 +619,27 @@ class PaperExecutor(BaseAgent):
                 await self._close_paper(symbol, pos, reason='sl', exit_price=sl, book=book)
             elif tp and price <= tp:
                 await self._close_paper(symbol, pos, reason='tp', exit_price=tp, book=book)
+
+    def _tick_fresh(self, symbol: str) -> bool:
+        ts = self._latest_tick_ts.get(symbol)
+        return ts is not None and (time.time() - ts) <= self._tick_staleness_sec
+
+    async def _open_idealized(self, symbol: str, action: str,
+                              plan: Optional[dict], decision: dict):
+        """Idealized baseline: immediate market fill at fresh latest tick."""
+        if not self.dual_track_enabled:
+            return
+        if symbol in self._books["idealized"]["positions"]:
+            return
+        price = self._latest_price.get(symbol)
+        if not price or not self._tick_fresh(symbol):
+            return  # fail-safe: never fabricate an entry price
+        side = 'long' if action == 'open_long' else 'short'
+        await self._open_paper_at_price(
+            symbol=symbol, side=side, action=action,
+            plan=plan, decision=decision,
+            fill_price=float(price), entry_method='market', book='idealized',
+        )
 
     def _fee(self, notional: float) -> float:
         if self._cost_model:
