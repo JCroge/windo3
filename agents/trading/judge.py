@@ -2219,6 +2219,24 @@ class MultiJudge(BaseAgent):
 
         return ""
 
+    @staticmethod
+    def _summarize_provenance(tech: dict) -> dict:
+        """Return a metadata-only summary of the provenance block in tech_analysis.
+
+        This is WRITE-ONLY metadata: the result is stored in attribution but
+        must never be read by any gate, ranking, or veto logic.
+        """
+        prov = (tech or {}).get("provenance") or {}
+        if not prov:
+            return {"quality": "unknown", "weakest_confidence": None, "has_cross_exchange": False}
+        confs = [e.get("confidence", 0.0) for e in prov.values()]
+        weakest = min(confs) if confs else 0.0
+        has_cross = any(
+            ((e.get("source") or "").split("_", 1)[0] != "okx") for e in prov.values()
+        )
+        return {"quality": "known", "weakest_confidence": round(weakest, 4),
+                "has_cross_exchange": bool(has_cross)}
+
     def _build_attribution(self, tech: dict, action: str, score: float,
                            plan: dict, llm_result: dict = None,
                            entry_type: str = 'unknown') -> dict:
@@ -2296,7 +2314,7 @@ class MultiJudge(BaseAgent):
         else:
             tf_15m_entry_status = 'unavailable'
 
-        return {
+        attribution = {
             'entry_type': entry_type,
             'rule_signal_type': rule_signal_type,
             'signal_score': round(score, 1),
@@ -2353,6 +2371,8 @@ class MultiJudge(BaseAgent):
                                                      getattr(self, '_ev_bucket_min_trades', 10)),
             'ev_bucket_sparse': (plan or {}).get('ev_bucket_sparse', False),
         }
+        attribution['provenance'] = self._summarize_provenance(tech)
+        return attribution
 
     def _is_htf_aligned(self, tech: dict, action: str) -> bool:
         """Check if higher timeframe bias aligns with the action direction."""
@@ -3022,7 +3042,7 @@ class MultiJudge(BaseAgent):
                         break
             except Exception:
                 pass
-        return {
+        rejection_attribution = {
             'entry_regime': regime_snap['effective_regime'],
             'raw_regime': regime_snap.get('raw_regime', regime_snap['effective_regime']),
             'regime_confidence': regime_snap.get('confidence', 0),
@@ -3053,6 +3073,8 @@ class MultiJudge(BaseAgent):
                                                   getattr(self, '_ev_bucket_min_trades', 10)),
             'ev_bucket_sparse': plan_dict.get('ev_bucket_sparse', False),
         }
+        rejection_attribution['provenance'] = self._summarize_provenance(tech)
+        return rejection_attribution
 
     def _apply_short_gate_attribution(self, attribution: dict, gate: dict) -> dict:
         """Apply short gate classification metadata to attribution.

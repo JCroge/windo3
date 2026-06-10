@@ -159,6 +159,8 @@ class MultiTechAnalyst(BaseAgent):
             "llm_analysis": llm_analysis,
             # 透传数据质量信息给下游 Judge 做降级判断
             "data_quality": payload.get('data_quality', {}),
+            # 透传数据溯源信息给下游 Judge / Reviewer 做置信度分桶
+            "provenance": payload.get('provenance', {}),
         }
 
         await self.publish("tech_analysis", result, symbol=symbol)
