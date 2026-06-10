@@ -42,8 +42,10 @@ class PaperExecutor(BaseAgent):
         self._max_trade_amount = (config or {}).get('max_trade_amount', 10)
         self._mirror_risk = (config or {}).get('mirror_risk', True)
 
-        self._positions: dict = {}
-        self._equity: float = self._initial_equity
+        self._books = {
+            "realistic": {"positions": {}, "equity": self._initial_equity},
+            "idealized": {"positions": {}, "equity": self._initial_equity},
+        }
         self._latest_price: dict = {}
         self._halted: bool = False
         self._halt_state = get_halt_state()
@@ -55,6 +57,19 @@ class PaperExecutor(BaseAgent):
                                DEFAULT_PAPER_LIMIT_TICK_STALENESS_SEC)
         )
         self._latest_tick_ts: Dict[str, float] = {}
+
+    @property
+    def _positions(self) -> dict:
+        """Realistic-book positions (proxy: preserves all legacy references)."""
+        return self._books["realistic"]["positions"]
+
+    @property
+    def _equity(self) -> float:
+        return self._books["realistic"]["equity"]
+
+    @_equity.setter
+    def _equity(self, value: float) -> None:
+        self._books["realistic"]["equity"] = value
 
     async def setup(self):
         os.makedirs("data", exist_ok=True)
@@ -599,7 +614,9 @@ class PaperExecutor(BaseAgent):
         try:
             if os.path.exists(PAPER_POSITIONS_FILE):
                 with open(PAPER_POSITIONS_FILE) as f:
-                    self._positions = json.load(f)
+                    loaded = json.load(f)
+                    self._books["realistic"]["positions"].clear()
+                    self._books["realistic"]["positions"].update(loaded)
             if os.path.exists(PAPER_EQUITY_FILE):
                 with open(PAPER_EQUITY_FILE) as f:
                     data = json.load(f)
