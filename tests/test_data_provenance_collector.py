@@ -274,3 +274,108 @@ async def test_long_short_ratio_exception_returns_empty(monkeypatch):
     assert value == {}
     assert meta["source"] == "binance_fapi"
     assert meta["item_ts"] is None
+
+
+# ---------------------------------------------------------------------------
+# _full_collect emits provenance block
+# ---------------------------------------------------------------------------
+
+import asyncio as _asyncio
+
+
+def _aw(val):
+    """Return a coroutine that resolves to val."""
+    async def _coro(*_a, **_k):
+        return val
+    return _coro()
+
+
+@pytest.mark.asyncio
+async def test_full_collect_emits_provenance_block(monkeypatch):
+    import time as _t
+    c = _mk()
+
+    now = _t.time()
+    fresh_ts = int((now - 3000) * 1000)  # 50 min old — matches hourly feed
+
+    # --- stub the four _fetch_* helpers ---
+    monkeypatch.setattr(c, "_fetch_taker_ratio",
+        lambda s: _aw(({"buy_sell_ratio": 1.2}, {"source": "binance_fapi", "item_ts": fresh_ts})))
+    monkeypatch.setattr(c, "_fetch_oi_delta",
+        lambda s: _aw(({"current_usd": 1e9, "delta_1h_pct": 0.5, "delta_4h_pct": 1.0},
+                       {"source": "binance_fapi", "item_ts": fresh_ts})))
+    monkeypatch.setattr(c, "_fetch_big_trades",
+        lambda s: _aw(({}, {"source": "okx", "item_ts": None})))  # FAILED dim → confidence 0
+    monkeypatch.setattr(c, "_fetch_long_short_ratio",
+        lambda s: _aw(({"long_ratio": 0.55, "short_ratio": 0.45, "crowd_sentiment": "long"},
+                       {"source": "binance_fapi", "item_ts": fresh_ts})))
+
+    # --- stub _fetch_funding_history (returns plain list) ---
+    async def _fake_funding_history(s):
+        return [{"rate": 0.0001, "time": int(now * 1000)}]
+    monkeypatch.setattr(c, "_fetch_funding_history", _fake_funding_history)
+
+    # --- stub _fetch_orderbook / _fetch_liquidations (populate caches) ---
+    async def _fake_orderbook(s):
+        c._orderbook_cache[s] = {"asks": [[50000, 1]], "bids": [[49999, 1]],
+                                  "spread_pct": 0.002, "bid_depth_usd": 50000,
+                                  "ask_depth_usd": 50000}
+    async def _fake_liquidations(s):
+        c._liquidation_cache[s] = {"long_vol_usd": 0, "short_vol_usd": 0,
+                                    "net_direction": "short_squeezed", "recent_big": []}
+    monkeypatch.setattr(c, "_fetch_orderbook", _fake_orderbook)
+    monkeypatch.setattr(c, "_fetch_liquidations", _fake_liquidations)
+
+    # --- stub exchange (fetch_ohlcv, market, fetch_funding_rate) ---
+    now_ms = int(now * 1000)
+    fake_klines = [[now_ms - 3600000 * i, 49000, 51000, 48000, 50000 + i, 100]
+                   for i in range(5, -1, -1)]  # 6 rows newest-last
+
+    class _FakeExchange:
+        def fetch_ohlcv(self, *a, **k):
+            return fake_klines
+        def market(self, sym):
+            return {"swap": True}
+        def fetch_funding_rate(self, sym):
+            return {"fundingRate": 0.0001, "timestamp": now_ms}
+        def load_markets(self):
+            pass
+
+    c.exchange = _FakeExchange()
+
+    # --- stub _check_gaps / _fill_gaps to avoid side-effects ---
+    monkeypatch.setattr(c, "_check_gaps", lambda s, k: 0)
+
+    # --- capture publish ---
+    captured = {}
+    async def _cap(topic, payload, **kwargs):
+        captured[topic] = payload
+    monkeypatch.setattr(c, "publish", _cap)
+
+    await c._full_collect("BTC-USDT")
+
+    assert "market_data" in captured, "publish was not called with market_data"
+    md = captured["market_data"]
+
+    assert "provenance" in md, "provenance key missing from market_data payload"
+    prov = md["provenance"]
+
+    # taker_ratio: 50-min-old hourly feed → freshness ≈ 3000s
+    assert prov["taker_ratio"]["source"] == "binance_fapi"
+    assert prov["taker_ratio"]["freshness_sec"] == pytest.approx(3000, abs=10)
+    assert 0.0 <= prov["taker_ratio"]["confidence"] <= 1.0
+
+    # big_trades: failed dim (empty value) → confidence must be 0.0
+    assert prov["big_trades"]["confidence"] == 0.0
+
+    # oi_data and long_short_account populated → confidence > 0
+    assert prov["oi_data"]["source"] == "binance_fapi"
+    assert prov["long_short_account"]["confidence"] > 0.0
+
+    # funding_rate provenance present
+    assert "funding_rate" in prov
+    assert 0.0 <= prov["funding_rate"]["confidence"] <= 1.0
+
+    # flat values untouched
+    assert md["taker_ratio"] == {"buy_sell_ratio": 1.2}
+    assert md["big_trades"] == {}

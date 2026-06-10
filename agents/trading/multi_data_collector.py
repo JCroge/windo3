@@ -266,6 +266,7 @@ class MultiDataCollector(BaseAgent):
 
         # 2. 资金费率(当前)
         funding_rate = None
+        funding_item_ts = None
         try:
             base = symbol.split('-')[0]
             ccxt_sym = f"{base}/USDT:USDT"
@@ -273,6 +274,7 @@ class MultiDataCollector(BaseAgent):
             if market.get('swap'):
                 funding = await asyncio.to_thread(self.exchange.fetch_funding_rate, ccxt_sym)
                 funding_rate = funding.get('fundingRate')
+                funding_item_ts = funding.get('timestamp')  # ms, may be None
                 dimensions_ok += 1
         except Exception as e:
             self.logger.warning(f"[采集] {symbol} 资金费率失败: {e}")
@@ -283,22 +285,22 @@ class MultiDataCollector(BaseAgent):
             dimensions_ok += 1
 
         # 4. OI delta
-        oi_data, _oi_meta = await self._fetch_oi_delta(symbol)
+        oi_data, oi_meta = await self._fetch_oi_delta(symbol)
         if oi_data:
             dimensions_ok += 1
 
         # 5. Taker买卖比
-        taker_ratio, _taker_meta = await self._fetch_taker_ratio(symbol)
+        taker_ratio, taker_meta = await self._fetch_taker_ratio(symbol)
         if taker_ratio:
             dimensions_ok += 1
 
         # 6. 大单成交
-        big_trades, _bt_meta = await self._fetch_big_trades(symbol)
+        big_trades, bt_meta = await self._fetch_big_trades(symbol)
         if big_trades:
             dimensions_ok += 1
 
         # 7. 多空账户比
-        long_short, _ls_meta = await self._fetch_long_short_ratio(symbol)
+        long_short, ls_meta = await self._fetch_long_short_ratio(symbol)
         if long_short:
             dimensions_ok += 1
 
@@ -341,6 +343,37 @@ class MultiDataCollector(BaseAgent):
         # 软降级：低于 6/9 维度时标记 degraded，下游 Judge 在 degraded 时只输出 hold
         degraded = dimensions_ok < 6
 
+        # ── Provenance block ──────────────────────────────────────────────
+        _prov_now = time.time()
+        _PERIOD_SEC = {
+            "oi_data": 300,
+            "taker_ratio": 3600,
+            "long_short_account": 3600,
+            "big_trades": 60,
+            "funding_rate": 28800,
+        }
+        from utils.data_provenance import provenance_entry as _prov_entry
+        _prov_inputs = {
+            "oi_data": (oi_data, oi_meta),
+            "taker_ratio": (taker_ratio, taker_meta),
+            "long_short_account": (long_short, ls_meta),
+            "big_trades": (big_trades, bt_meta),
+        }
+        provenance = {}
+        for _dim, (_val, _meta) in _prov_inputs.items():
+            _meta = _meta or {}
+            provenance[_dim] = _prov_entry(
+                _meta.get("source", "unknown"), _meta.get("item_ts"), _prov_now,
+                period_sec=_PERIOD_SEC.get(_dim), native_venue="okx",
+                degraded=degraded or not _val,
+            )
+        provenance["funding_rate"] = _prov_entry(
+            "okx", funding_item_ts, _prov_now,
+            period_sec=_PERIOD_SEC["funding_rate"], native_venue="okx",
+            degraded=degraded or funding_rate is None,
+        )
+        # ─────────────────────────────────────────────────────────────────
+
         payload = {
             "symbol": symbol,
             "interval": self.interval,
@@ -366,7 +399,8 @@ class MultiDataCollector(BaseAgent):
                 "degraded": degraded,
                 "tf_15m_ok": tf_15m_ok,
                 "tf_15m_stale": tf_15m_stale,
-            }
+            },
+            "provenance": provenance,
         }
 
         if degraded:
