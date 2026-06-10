@@ -99,3 +99,26 @@ async def test_legacy_market_data_without_provenance_yields_empty(monkeypatch):
         "Expected empty dict for missing provenance, got: "
         f"{captured['tech_analysis'].get('provenance')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Judge._summarize_provenance
+# ---------------------------------------------------------------------------
+
+def test_summarize_provenance_known():
+    from agents.trading.judge import MultiJudge
+    tech = {"provenance": {
+        "taker_ratio": {"source": "binance_fapi", "freshness_sec": 3000, "confidence": 0.35},
+        "big_trades": {"source": "okx", "freshness_sec": 5, "confidence": 0.95},
+    }}
+    s = MultiJudge._summarize_provenance(tech)
+    assert s["weakest_confidence"] == pytest.approx(0.35)
+    assert s["has_cross_exchange"] is True
+    assert s["quality"] == "known"
+
+
+def test_summarize_provenance_unknown_when_missing():
+    from agents.trading.judge import MultiJudge
+    s = MultiJudge._summarize_provenance({})
+    assert s["quality"] == "unknown"
+    assert s["has_cross_exchange"] is False
