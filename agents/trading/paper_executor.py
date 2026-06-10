@@ -697,10 +697,10 @@ class PaperExecutor(BaseAgent):
     def _persist_state(self):
         try:
             from utils.atomic_io import atomic_write_json
-            for book, pos_file, eq_file in (
-                ("realistic", PAPER_POSITIONS_FILE, PAPER_EQUITY_FILE),
-                ("idealized", PAPER_POSITIONS_IDEAL_FILE, PAPER_EQUITY_IDEAL_FILE),
-            ):
+            books_to_persist = [("realistic", PAPER_POSITIONS_FILE, PAPER_EQUITY_FILE)]
+            if self.dual_track_enabled:
+                books_to_persist.append(("idealized", PAPER_POSITIONS_IDEAL_FILE, PAPER_EQUITY_IDEAL_FILE))
+            for book, pos_file, eq_file in books_to_persist:
                 positions = self._books[book]["positions"]
                 atomic_write_json(pos_file, positions)
                 locked = self._locked_margin(book)

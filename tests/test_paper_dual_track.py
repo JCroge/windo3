@@ -221,6 +221,21 @@ async def test_unfilled_realistic_leaves_idealized_to_self_sl():
     assert "NEAR-USDT" not in pe._books["idealized"]["positions"]
 
 
+def test_disabled_does_not_write_idealized_files(tmp_path, monkeypatch):
+    from agents.trading import paper_executor as pe_mod
+    monkeypatch.setattr(pe_mod, "PAPER_POSITIONS_FILE", str(tmp_path / "paper_positions.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_EQUITY_FILE", str(tmp_path / "paper_equity.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_POSITIONS_IDEAL_FILE", str(tmp_path / "paper_positions_idealized.json"))
+    monkeypatch.setattr(pe_mod, "PAPER_EQUITY_IDEAL_FILE", str(tmp_path / "paper_equity_idealized.json"))
+    pe = pe_mod.PaperExecutor({"paper_dual_track_enabled": False})
+    pe._books["realistic"]["positions"]["BTC-USDT"] = {"side": "long", "margin": 5}
+    pe._persist_state()
+    import os
+    assert os.path.exists(str(tmp_path / "paper_positions.json"))
+    assert not os.path.exists(str(tmp_path / "paper_positions_idealized.json"))
+    assert not os.path.exists(str(tmp_path / "paper_equity_idealized.json"))
+
+
 def test_reviewer_does_not_consume_idealized_or_paper():
     # Reviewer must not subscribe to paper streams nor read idealized files.
     import inspect
