@@ -219,3 +219,13 @@ async def test_unfilled_realistic_leaves_idealized_to_self_sl():
     await pe.on_message({"type": "price_tick", "symbol": "NEAR-USDT",
                          "payload": {"symbol": "NEAR-USDT", "price": 2.55}})
     assert "NEAR-USDT" not in pe._books["idealized"]["positions"]
+
+
+def test_reviewer_does_not_consume_idealized_or_paper():
+    # Reviewer must not subscribe to paper streams nor read idealized files.
+    import inspect
+    from agents.trading import reviewer as rv
+    src = inspect.getsource(rv)
+    assert "paper_execution_result" not in src
+    assert "paper_positions_idealized" not in src
+    assert "book='idealized'" not in src and 'book="idealized"' not in src
