@@ -106,10 +106,14 @@ class HaltState:
             os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
             from utils.atomic_io import atomic_write_json
             atomic_write_json(path, self.to_dict())
-        except Exception:
+        except Exception as e:
+            # P2-21: 原子写失败不退化为非原子裸写（可能写半截最关键的 halt 文件）。
+            # 只记录错误；文件损坏/缺失时 _load 仍 fail-closed（halt=True）兜底。
             try:
-                with open(path, 'w') as f:
-                    json.dump(self.to_dict(), f)
+                import logging
+                logging.getLogger('halt_state').error(
+                    f"halt_state 原子写失败，未持久化: {e}"
+                )
             except Exception:
                 pass
 
