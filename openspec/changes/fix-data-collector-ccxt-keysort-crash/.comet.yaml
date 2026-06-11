@@ -1,7 +1,7 @@
 workflow: full
 phase: build
-build_mode: null
-isolation: null
+build_mode: executing-plans
+isolation: branch
 verify_mode: null
 base_ref: 891aff95cc9a835654c3123bc86282c2f562cb87
 design_doc: docs/superpowers/specs/2026-06-11-fix-data-collector-ccxt-keysort-crash-design.md
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/fix-data-collector-ccxt-keysort-crash/.comet/handoff/design-context.json
 handoff_hash: d5bbaed794449d12c8d5f8d1b19f77201c8b0644c2f4167c97f0f15e26353ca8
+verify_command: python3 -m pytest -q
+build_command: python3 -m compileall -q agents utils
