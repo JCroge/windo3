@@ -1,9 +1,9 @@
 # Tasks
 
 ## 1. ccxt keysort 容 None shim (exchange-client-resilience)
-- [ ] 1.1 新增 `utils/ccxt_compat.py`：覆写 `ccxt.base.exchange.Exchange.keysort`，用 `key=lambda kv: (kv[0] is None, str(kv[0]))` 排序，安装一次（模块级幂等）
-- [ ] 1.2 `utils/exchange_factory.py` 顶部 `import utils.ccxt_compat`（确保任何 `create_exchange` 前 shim 已装）
-- [ ] 1.3 单测：`keysort({None: x, "a": y})` 不抛且 None 排首；全 str 键顺序与原 ccxt 一致；构造含 `id=None` 的 mock markets 走 `set_markets` 不抛
+- [x] 1.1 新增 `utils/ccxt_compat.py`：覆写 `ccxt.Exchange.keysort`，用 `key=lambda kv: (kv[0] is not None, str(kv[0]))` 排序（None 排首），安装一次（模块级幂等）
+- [x] 1.2 `utils/exchange_factory.py` 顶部 `import utils.ccxt_compat`（确保任何 `create_exchange` 前 shim 已装）
+- [x] 1.3 单测：`keysort({None: x, "a": y})` 不抛且 None 排首；全 str 键顺序与原 ccxt 一致；构造含 `id=None` 的 mock markets 走 `set_markets` 不抛
 
 ## 2. base.run() setup 失败不再静默 (agent-fault-visibility)
 - [ ] 2.1 `agents/base.py:run()` 把 `await self.setup()` 包 `try/except`，`logger.critical(f"Agent [{name}] setup 失败" + traceback.format_exc())` 后 `raise`

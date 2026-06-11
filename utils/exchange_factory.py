@@ -5,6 +5,7 @@
 
 import os
 import ccxt
+import utils.ccxt_compat  # noqa: F401  安装 keysort None-safe shim（import 即生效）
 from typing import Optional
 
 
