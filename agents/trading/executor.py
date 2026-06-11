@@ -120,13 +120,22 @@ class MultiExecutor(BaseAgent):
                     normalized, source=f"resume_symbol:{source}"
                 )
                 if cleared > 0:
+                    # P2-02: per-symbol halt 已清，但 clear_symbol_halt 不动全局
+                    # halt_state。若全局仍 halt，附 global_halt_active=True 让 TG
+                    # 诚实回显"全局仍 halt，请用 /resume"，消除恢复语义陷阱。
+                    # 防御性读取：缺 _halt_state（不应发生）默认 False，绝不让该提示
+                    # 特性拖垮核心 resume 流程。
+                    _hs = getattr(self, '_halt_state', None)
+                    global_halt_active = bool(_hs and not _hs.can_open_new)
                     await self.publish('risk_alert', {
                         'type': 'symbol_halt_cleared',
                         'symbol': normalized,
                         'source': source,
+                        'global_halt_active': global_halt_active,
                     })
                     self.logger.info(
                         f"[ResumeSymbol] {source} 解除 {normalized} per-symbol halt"
+                        f"（全局仍 halt={global_halt_active}）"
                     )
                 else:
                     await self.publish('risk_alert', {

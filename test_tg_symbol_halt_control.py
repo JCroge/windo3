@@ -256,6 +256,55 @@ class TestForceResumeClearsWithAudit:
         assert "force_resume_cleared_symbol_halts" not in types
 
 
+class TestResumeSymbolGlobalHaltHint:
+    """P2-02: /resume_symbol 清掉 per-symbol halt 后，若全局 halt 仍在，
+    symbol_halt_cleared 事件须带 global_halt_active=True，供 TG 诚实回显。"""
+
+    def _make_executor(self, *, global_halted: bool, cleared: int):
+        from agents.trading.executor import MultiExecutor
+        published = []
+
+        async def fake_publish(topic, payload, symbol=None):
+            published.append((topic, payload))
+
+        ex = MultiExecutor.__new__(MultiExecutor)
+        ex.logger = MagicMock()
+        ex._trading_halted = global_halted
+        ex._halt_state = MagicMock()
+        ex._halt_state.can_open_new = (not global_halted)
+        ex.publish = fake_publish
+        ex.executor = MagicMock()
+        ex.executor._normalize_symbol = lambda s: "XLM-USDT-SWAP"
+        ex.executor.clear_symbol_halt = MagicMock(return_value=cleared)
+        return ex, published
+
+    def _cleared_alert(self, published):
+        for t, p in published:
+            if t == "risk_alert" and p.get("type") == "symbol_halt_cleared":
+                return p
+        return None
+
+    @pytest.mark.asyncio
+    async def test_cleared_payload_flags_global_halt(self):
+        ex, published = self._make_executor(global_halted=True, cleared=1)
+        await ex.on_message({"type": "system_command", "payload": {
+            "command": "resume_symbol", "symbol": "XLM", "source": "telegram"
+        }})
+        alert = self._cleared_alert(published)
+        assert alert is not None, "应发布 symbol_halt_cleared"
+        assert alert.get("global_halt_active") is True
+
+    @pytest.mark.asyncio
+    async def test_no_hint_when_global_clear(self):
+        ex, published = self._make_executor(global_halted=False, cleared=1)
+        await ex.on_message({"type": "system_command", "payload": {
+            "command": "resume_symbol", "symbol": "XLM", "source": "telegram"
+        }})
+        alert = self._cleared_alert(published)
+        assert alert is not None
+        assert alert.get("global_halt_active") is False
+
+
 class TestCmdHalts:
     def _make_notifier(self):
         from agents.trading.telegram_notifier import TelegramNotifier

@@ -226,6 +226,8 @@ class TelegramNotifier(BaseAgent):
         # F-TG-002: 三种新 alert 类型独立分支(放在现有 alert 处理之前)
         if alert_type == 'symbol_halt_cleared':
             text = f"✅ {symbol} per-symbol halt 已解除 (来源: {payload.get('source', '?')})"
+            if payload.get('global_halt_active'):
+                text += "\n⚠️ 全局仍 halt，开新仓仍被阻断；请用 /resume（带对账）解除全局熔断"
             await self._send_message(text)
             return
 
