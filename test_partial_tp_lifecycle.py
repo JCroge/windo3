@@ -908,3 +908,52 @@ class TestAlgoMigration:
         assert pos['sl_sync_state'] == 'active'
 
 
+class TestAddPositionTpInvariant:
+    """P1-01: add_to_position 重算 TP 必须经 _set_position_tp 收口，
+    保证 take_profit == take_profit_levels[0]，加仓后不触发 tp_invariant_breach。"""
+
+    def _open_long(self, ex, entry=100.0):
+        pos = {
+            'symbol': 'X-USDT-SWAP', 'side': 'long', 'amount': 1.0,
+            'amount_usdt': 30.0, 'entry_price': entry,
+            'stop_loss': entry * 0.95, 'original_sl': entry * 0.95,
+            'take_profit': entry * 1.10,
+            'take_profit_levels': [entry * 1.10, entry * 1.20],
+            'tp_filled': 0, 'protection_state': 'protected', 'atr_pct': 0.02,
+            'leverage': 1,
+        }
+        ex.positions['X-USDT-SWAP'] = pos
+        return pos
+
+    def _wire_add(self, ex, fill_price):
+        # verified against executor.py:3080-3188
+        ex.can_open_new_okx = lambda: True
+        ex.is_symbol_halted = lambda s: False
+        ex.get_balance = MagicMock(return_value=1000.0)
+        ex.risk_manager.max_trade_amount = 30.0
+        ex.risk_manager.check_can_trade = MagicMock(return_value=(True, ''))
+        ex.balance_adapter = None  # → 走 exchange.fetch_balance()['USDT']['free']
+        ex.exchange.fetch_balance = MagicMock(return_value={'USDT': {'free': 100000.0}})
+        ex.exchange.set_leverage = MagicMock()
+        ex.caps = None
+        ex._build_open_order_params = MagicMock(return_value={})
+        ex._replace_protective_sl = MagicMock()
+        ex._save_positions = MagicMock()
+        ex.idempotency = None
+        ex.exchange.create_order = MagicMock(return_value={'id': 'ord1'})
+        # add_to_position 取价入口 = exchange.fetch_ticker(symbol)['last']（3112-3113）
+        ex.exchange.fetch_ticker = MagicMock(return_value={'last': fill_price})
+
+    def test_invariant_holds_after_add(self):
+        ex = _make_executor()
+        pos = self._open_long(ex, entry=100.0)
+        self._wire_add(ex, fill_price=110.0)
+        ex._halt_symbol = MagicMock()
+        ex.add_to_position('X-USDT-SWAP', 'long', size_pct=1.0)
+        assert pos['take_profit'] == pos['take_profit_levels'][0]
+        # 加仓后跑止损轮询不得触发 tp_invariant_breach
+        ex._update_trailing('X-USDT-SWAP', pos, pos['entry_price'])
+        for call in ex._halt_symbol.call_args_list:
+            assert call.kwargs.get('reason') != 'tp_invariant_breach'
+
+
