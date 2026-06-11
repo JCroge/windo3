@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: executing-plans
+isolation: branch
+verify_mode: null
+base_ref: e1333c58af0b36c61ac100f656f0e2cd31b20a03
+design_doc: docs/superpowers/specs/2026-06-11-fail-closed-robustness-hardening-design.md
+plan: docs/superpowers/plans/2026-06-11-fail-closed-robustness-hardening.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-11
+verified_at: null
+archived: false
+handoff_context: openspec/changes/fail-closed-robustness-hardening/.comet/handoff/design-context.json
+handoff_hash: 9b802dccc0b79189502d18c794cf1d00c8e1eec9fdd990d68f81fe6bf3646a75
