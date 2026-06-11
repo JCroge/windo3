@@ -234,3 +234,4 @@ class TestClassifyShortEntryRisk:
             'BTC-USDT', 'open_short', _good_plan(), tech, 60.0
         )
         assert result['metrics']['range_position_24h'] == 0.5
+        assert result['allowed'] is True

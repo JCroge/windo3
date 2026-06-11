@@ -2617,7 +2617,8 @@ class MultiJudge(BaseAgent):
         plan['probe_trigger_reason'] = 'rsi_overbought_momentum'
         plan['probe_evidence'] = {'type': 'momentum_probe_long', 'slot_type': 'probe_long'}
 
-    def _coalesce_float(self, *vals, default: float) -> float:
+    @staticmethod
+    def _coalesce_float(*vals, default: float) -> float:
         """Return first non-None value as float; only an absent (None) value
         falls back to default. Unlike `a or b or default`, a present 0.0 is
         preserved (not treated as falsy)."""
