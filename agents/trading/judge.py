@@ -2910,13 +2910,13 @@ class MultiJudge(BaseAgent):
 
         # ── Side-Aware Short Entry Gates (all regimes) ──
         if not is_long and self._short_regime_guard_enabled and not plan.get('is_probe'):
-            entry_timing = tech.get('entry_timing', {})
             short_gate = self._classify_short_entry_risk(
                 symbol, action, plan, tech, score, llm_result=None
             )
             if not short_gate['allowed']:
                 reason = short_gate['reason']
                 if reason == 'daily_bearish_required':
+                    entry_timing = tech.get('entry_timing', {})
                     confirm_15m = entry_timing.get('tf_15m_confirm_short', False)
                     rr_val = plan.get('effective_risk_reward_ratio',
                                       plan.get('risk_reward_ratio', 0))

@@ -261,6 +261,7 @@ class TestApplyRegimePolicyDelegation:
                 'effective_risk_reward_ratio': 3.0, 'size_usdt': 100.0, 'leverage': 5}
         reject = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, 60.0, tech)
         assert reject == 'range_position_too_low'
+        judge._record_rejected_plan.assert_called_once()
 
     def test_regime_matches_classify_reason(self):
         judge = self._make_regime_judge()
@@ -270,6 +271,7 @@ class TestApplyRegimePolicyDelegation:
                 'effective_risk_reward_ratio': 3.0, 'size_usdt': 100.0, 'leverage': 5}
         classify = judge._classify_short_entry_risk(
             'BTC-USDT', 'open_short', dict(plan), tech, 60.0, llm_result=None)
+        assert classify['reason'] == 'range_position_too_low'
         reject = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, 60.0, tech)
         assert reject == classify['reason']
 
@@ -292,3 +294,4 @@ class TestApplyRegimePolicyDelegation:
                 'effective_risk_reward_ratio': 3.0, 'size_usdt': 100.0, 'leverage': 5}
         reject = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, 60.0, tech)
         assert reject == 'daily_bearish_required'
+        judge._record_rejected_plan.assert_called_once()
