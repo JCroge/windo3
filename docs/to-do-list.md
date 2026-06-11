@@ -33,6 +33,17 @@
 |---|---|---|---|---|
 | DONE 2026-06-11 | P1 | P1-02 短单 gate `or`-falsy：`range_pos=0.0`（24h 锅底）被当 0.5，`range_position_too_low` gate 失效 | `MultiJudge` 新增 `@staticmethod _coalesce_float(*vals, default)`（仅 absent None 取默认，present 0.0 保留）；`_classify_short_entry_risk` + `_check_entry_position_policy` long overheat gate + attribution 写点三处统一改用 | `tests/test_short_main_path_risk_guard.py` `TestClassifyShortEntryRisk` 新增 3 case（含锅底拒单）；隔离基线 1073 passed |
 | DONE 2026-06-11 | P1（红线） | P1-03 短单结构 gate 第二份内联实现（`_apply_regime_policy`，默认值 1.0 vs 0.5 发散），违反单点收口红线 | `_apply_regime_policy` 短单段 delegate 到 `_classify_short_entry_risk`，删第二份实现，保留 `daily_bearish_required` probe 路由外壳；attribution 四字段（caller-owned）不回归 | `TestApplyRegimePolicyDelegation` 4 case（parity / probe 外壳 / 锅底）；comet change `fix-short-gate-or-falsy-single-source`，design `docs/superpowers/specs/2026-06-11-fix-short-gate-or-falsy-single-source-design.md` |
+| DONE 2026-06-11 | P1 | P1-01 加仓自我全局熔断：`add_to_position` 写 scalar `take_profit` 不更新 `take_profit_levels`/不经 `_set_position_tp` → 下轮 `_update_trailing` TP invariant 守卫 → `_halt_symbol` 无条件跳全局熔断 → 全系统停开仓不自愈 | `executor.py:add_to_position` 改为按每 level 距旧均价比例平移整个 `take_profit_levels` 并经 `_set_position_tp` 单点收口；tp_filled-safe | `test_partial_tp_lifecycle.py::TestAddPositionTpInvariant` 3 case（不变量/tp_filled==1/多级比例）；comet change `add-position-tp-sink-halt-recovery` |
+| DONE 2026-06-11 | P2 | P2-02 `/resume_symbol` 恢复语义陷阱：清 per-symbol halt 后全局 halt 仍在但运维以为已恢复 | `clear_symbol_halt` 签名不变；resume_symbol handler 防御读 `_halt_state` 给 `symbol_halt_cleared` 附 `global_halt_active`，TG 回显"全局仍 halt，请用 /resume" | `test_risk_alert_source_guard.py` / `test_tg_symbol_halt_control.py::TestResumeSymbolGlobalHaltHint` |
+| DONE 2026-06-11 | P2 | P2-03 非 matched resume 调不存在的 `Reconciler.reconcile`（latent）+ 无 reconciler 时 else 无条件恢复（fail-open） | `_handle_resume` 非 matched 一律 fail-closed 维持熔断 + warning，删死调用；绕过对账走 `/force_resume` | `test_halt_resume_ownership.py`（+2）+ `test_tg_symbol_halt_control.py` 两例按新契约改 |
+| DONE 2026-06-11 | P2 | P2-06 paper risk_alert 借用 live 共享 topic，隔离仅靠白名单未命中（脆性，latent） | `_handle_risk_alert` 顶部 `source=='paper_executor'` 结构性守卫 | `test_risk_alert_source_guard.py`（paper 不触发 live close / live 不受影响） |
+| DONE 2026-06-11 | P2 | P2-16 DLQ 增长/重要 topic 死信仅静默计数，无主动告警 | `orchestrator._maybe_alert_dlq_growth`：`_write_agent_health` 返回 dlq_size，`_health_loop` 增长时 publish `telegram_alert{bus_dlq_growth}`（30s cadence 限流） | `test_dlq_growth_alert.py`（增长发/不增长不发） |
+| DONE 2026-06-11 | P2 | P2-17 config_loader 失败兜底直读 env 风险限额，跳过 HARD_LIMITS clamp（fail-open） | `config_loader.clamp_to_hard_limits`（clamp 不 raise）+ executor 兜底复用 | `test_config_clamp_fallback.py`（超界 clamp / None 保持 / 界内不动） |
+| DONE 2026-06-11 | P2 | P2-20 event_journal 只 flush 不 fsync，断电丢最近关键事件 | `event_journal._write_line` write+flush 后加 `os.fsync(fileno())` | `test_event_journal_fsync.py` |
+| DONE 2026-06-11 | P2 | P2-21 halt_state._save 异常兜底非原子裸写最关键 halt 文件 | 删非原子裸写，改 logger 记录（损坏时 _load 仍 fail-closed） | `test_halt_state_atomic_save.py` |
+| DONE 2026-06-11 | 工具 | comet-archive delta→master 同步 `cp` 盲覆盖丢需求 | 改为应用 delta（ADDED 追加/MODIFIED 替换/REMOVED 删除）；重建被覆盖的 4 个 master spec（entry-drift-policy/tg-symbol-halt-control/risk-alert-routing/tg-status-enhancement） | 两份 comet skill（.claude/.cursor）已修；合成 fixture 4 例验证 |
+
+> 2026-06-11 两条线（P1-01/P2-02 + 6 robustness，与 P1-02/P1-03）已合并入 main，**全量实测 `1088 passed / 4 deselected / 1 warning`**。
 
 ## 第四次审计阻断（已闭环 2026-05-29）
 
