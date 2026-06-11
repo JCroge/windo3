@@ -2,6 +2,8 @@
 comet_change: add-position-tp-sink-halt-recovery
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
+status: final
 ---
 
 # 技术设计：加仓 TP 收口 + halt 恢复语义诚实

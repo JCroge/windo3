@@ -1,54 +1,36 @@
-# Capability: entry-drift-policy (delta)
-
-## ADDED Requirements
-
-### Requirement: Entry Drift Classification
-The system SHALL classify the relative drift between Judge plan's `entry_ref`
-anchor and the executor's live ticker price into one of four bands and act
-accordingly:
-
-- `accept` (drift ≤ 0.5%): proceed with the original plan unchanged
-- `small` (0.5% < drift ≤ 2%): recompute SL/TP by sl_pct/tp_pct ratios on the
-  new entry, re-check R:R against the plan's original floor; pass = accept
-  recomputed plan, fail = reject with reason `drift_rr_floor_fail`
-- `medium` (2% < drift ≤ 5%): recompute as above but with floor + 0.20
-  absolute bump
-- `abandon` (drift > 5%): reject with reason `drift_too_large`
-
-#### Scenario: 5/30 XLM stale plan abandons cleanly
-- **WHEN** Judge plan has entry_ref=0.2179 and executor sees live price 0.2336
-  (drift 7.2%)
-- **THEN** the drift gate returns decision=abandon, reason=drift_too_large
-- **AND** no order is submitted to the exchange
-- **AND** execution_result.v2 is published with status=rejected,
-  reason=drift_too_large
-
-#### Scenario: medium band recalculation passes when R:R clears bumped floor
-- **WHEN** drift is 3% and recomputed R:R is 2.30 with original floor 2.00
-- **THEN** the gate returns decision=recalc_pass, rr_floor_used=2.20
-
-#### Scenario: medium band recalculation fails when R:R below bumped floor
-- **WHEN** drift is 3% and recomputed R:R is 2.10 with original floor 2.00
-- **THEN** the gate returns decision=recalc_fail, reason=drift_rr_floor_fail
-
-### Requirement: Plan Field Fail-Safe
-The system SHALL accept the original plan and emit a
-`plan_missing_entry_ref` risk alert when the plan lacks any of `entry_ref`,
-`sl_pct`, or `tp_pct`. The drift_pct of such a fail-safe accept SHALL be 0.0
-to make the path identifiable in attribution downstream.
-
-### Requirement: Two-Gate Execution
-The drift gate SHALL run twice on the limit-then-market path:
-1. Gate 1: at executor entry, before any order submission
-2. Gate 2: after a 30s limit order timeout, before the fallback market order
-
-Both gates SHALL use the original `plan.entry_ref` as the drift baseline. The
-recomputed plan from Gate 1 SHALL NOT be passed as input to Gate 2.
+## MODIFIED Requirements
 
 ### Requirement: TP Field Single Source of Truth
 All writes to `position.take_profit` and `position.take_profit_levels` SHALL
-go through a single setter that enforces
-`position.take_profit == position.take_profit_levels[0]`. Direct mutation
-that violates this invariant SHALL halt the symbol and emit a
-`tp_invariant_breach` risk alert when partial_tp_1/partial_tp_2 is about to
-fire.
+go through the single setter `_set_position_tp(position, tp_first, tp_levels)`
+that enforces `position.take_profit == position.take_profit_levels[0]`. This
+applies to EVERY post-open write path that mutates TP, INCLUDING
+`add_to_position` (加仓), which recomputes TP against the new weighted-average
+entry. Writing scalar `take_profit` without the matching `take_profit_levels`
+update through the setter is prohibited. Direct mutation that violates this
+invariant SHALL halt the symbol and emit a `tp_invariant_breach` risk alert
+when partial_tp_1/partial_tp_2 is about to fire.
+
+When `add_to_position` recomputes TP after a successful add, it SHALL shift
+every element of `take_profit_levels` by that element's own
+distance-from-old-entry ratio applied to the new entry (mirroring the SL
+distance-ratio recompute), then write both fields via `_set_position_tp`. The
+shift SHALL preserve multi-level structure and SHALL NOT alter `tp_filled`. An
+add that occurs after a partial TP fill (`tp_filled > 0`) SHALL NOT breach the
+invariant.
+
+#### Scenario: 加仓后 TP 不变量保持，不触发误熔断
+- **WHEN** 一笔已开多仓 `take_profit_levels=[L0, L1]`、`take_profit==L0`、`protection_state=='protected'`
+- **AND** `add_to_position` 成功加仓推高加权均价
+- **THEN** `position.take_profit == position.take_profit_levels[0]`
+- **AND** 下一轮 `_update_trailing` MUST NOT 触发 `tp_invariant_breach` halt
+
+#### Scenario: 多级 TP 加仓后各级距离比例保持
+- **WHEN** 加仓前 `take_profit_levels` 各级距 old_entry 的比例为 `[d0, d1]`
+- **THEN** 加仓后各级距 new_entry 的比例仍为 `[d0, d1]`（按持仓方向取 ± 号），多级结构不被压平
+
+#### Scenario: partial-TP 已部分成交后加仓
+- **WHEN** `tp_filled == 1` 且 `add_to_position` 成功
+- **THEN** `tp_filled` MUST 仍为 1
+- **AND** `take_profit == take_profit_levels[0]` 不变量保持
+- **AND** MUST NOT 触发 `tp_invariant_breach` halt

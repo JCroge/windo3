@@ -2,6 +2,7 @@
 change: add-position-tp-sink-halt-recovery
 design-doc: docs/superpowers/specs/2026-06-11-add-position-tp-sink-halt-recovery-design.md
 base-ref: cf34aa61e6b886c0fbee055e89e239a9387de81e
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
 ---
 
 # 加仓 TP 收口 + halt 恢复语义诚实 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: cf34aa61e6b886c0fbee055e89e239a9387de81e
 
 **Tech Stack:** Python 3.9, pytest, OKX ccxt（mock）。测试落 `test_partial_tp_lifecycle.py`、`test_tg_symbol_halt_control.py`。
 
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
 ---
 
 ## File Structure
@@ -24,6 +26,7 @@ base-ref: cf34aa61e6b886c0fbee055e89e239a9387de81e
 - Test: `test_partial_tp_lifecycle.py` — 加仓 TP 不变量 + tp_filled==1 + 多级比例
 - Test: `test_tg_symbol_halt_control.py` — resume_symbol 全局 halt 回显
 
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
 ---
 
 ## Task 1: P1-01 加仓 TP 经 `_set_position_tp` 收口
@@ -115,6 +118,7 @@ git add executor.py test_partial_tp_lifecycle.py
 git commit -m "fix(executor): route add_to_position TP through _set_position_tp (P1-01)"
 ```
 
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
 ---
 
 ## Task 2: P1-01 边界 — tp_filled>0 与多级比例
@@ -162,6 +166,7 @@ git add test_partial_tp_lifecycle.py
 git commit -m "test(executor): add tp_filled>0 and multi-level ratio cases for add TP shift (P1-01)"
 ```
 
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
 ---
 
 ## Task 3: P2-02 halt 恢复语义诚实
@@ -251,6 +256,7 @@ git add agents/trading/executor.py agents/trading/telegram_notifier.py test_tg_s
 git commit -m "fix(tg): honest global-halt hint on /resume_symbol when global halt persists (P2-02)"
 ```
 
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
 ---
 
 ## Task 4: 回归 + 同构记录 + 收尾
@@ -279,6 +285,7 @@ git add openspec/changes/add-position-tp-sink-halt-recovery/tasks.md
 git commit -m "docs(comet): mark tasks complete + event_backtest isomorphism note"
 ```
 
+archived-with: 2026-06-11-add-position-tp-sink-halt-recovery
 ---
 
 ## Self-Review
