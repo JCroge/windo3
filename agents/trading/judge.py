@@ -2617,6 +2617,15 @@ class MultiJudge(BaseAgent):
         plan['probe_trigger_reason'] = 'rsi_overbought_momentum'
         plan['probe_evidence'] = {'type': 'momentum_probe_long', 'slot_type': 'probe_long'}
 
+    def _coalesce_float(self, *vals, default: float) -> float:
+        """Return first non-None value as float; only an absent (None) value
+        falls back to default. Unlike `a or b or default`, a present 0.0 is
+        preserved (not treated as falsy)."""
+        for v in vals:
+            if v is not None:
+                return float(v)
+        return float(default)
+
     def _classify_short_entry_risk(
         self,
         symbol: str,
@@ -2689,9 +2698,14 @@ class MultiJudge(BaseAgent):
         momentum = tech.get('momentum', {}) or {}
 
         daily_bias = trend.get('daily_bias', 'neutral')
-        range_pos = float(short_ctx.get('position_in_24h_range') or entry_ctx.get('position_in_24h_range') or 0.5)
-        pre_move = float(short_ctx.get('pre_12h_return_pct') or entry_ctx.get('pre_12h_return_pct') or 0.0)
-        rsi_val = float(indicators.get('rsi') or momentum.get('rsi') or 50)
+        range_pos = self._coalesce_float(
+            short_ctx.get('position_in_24h_range'),
+            entry_ctx.get('position_in_24h_range'), default=0.5)
+        pre_move = self._coalesce_float(
+            short_ctx.get('pre_12h_return_pct'),
+            entry_ctx.get('pre_12h_return_pct'), default=0.0)
+        rsi_val = self._coalesce_float(
+            indicators.get('rsi'), momentum.get('rsi'), default=50.0)
         htf_bearish = sum(
             1 for d in [trend.get('direction'), trend.get('higher_tf_bias'), trend.get('daily_bias')]
             if d == 'bearish'
