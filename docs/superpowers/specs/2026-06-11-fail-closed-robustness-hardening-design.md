@@ -2,6 +2,8 @@
 comet_change: fail-closed-robustness-hardening
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-11-fail-closed-robustness-hardening
+status: final
 ---
 
 # 技术设计：fail-closed / robustness 收口（6 项）

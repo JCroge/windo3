@@ -2,6 +2,7 @@
 change: fail-closed-robustness-hardening
 design-doc: docs/superpowers/specs/2026-06-11-fail-closed-robustness-hardening-design.md
 base-ref: e1333c58af0b36c61ac100f656f0e2cd31b20a03
+archived-with: 2026-06-11-fail-closed-robustness-hardening
 ---
 
 # fail-closed / robustness 收口（6 项）Implementation Plan
@@ -14,6 +15,7 @@ base-ref: e1333c58af0b36c61ac100f656f0e2cd31b20a03
 
 **Tech Stack:** Python 3.9, pytest。
 
+archived-with: 2026-06-11-fail-closed-robustness-hardening
 ---
 
 ## Task 1: P2-06 risk_alert source 守卫（最简，先做）
@@ -113,6 +115,7 @@ base-ref: e1333c58af0b36c61ac100f656f0e2cd31b20a03
 - [ ] **Step 3: 同构** 核对 event_backtest 无 resume/risk_alert/journal/halt/config 决策路径 → 记录理由
 - [ ] **Step 4: 勾选 change tasks.md，提交**
 
+archived-with: 2026-06-11-fail-closed-robustness-hardening
 ---
 
 ## Self-Review
