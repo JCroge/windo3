@@ -543,6 +543,11 @@ class MultiExecutor(BaseAgent):
 
     async def _handle_risk_alert(self, alert: dict):
         """处理RiskGuard风险警报"""
+        # P2-06: 结构性 source 守卫。paper 与 live 共用 risk_alert topic，
+        # paper 来源事件 MUST NOT 驱动任何 live 平仓/缩仓/halt——隔离靠此守卫，
+        # 不依赖"paper alert type 恰好不在 live 白名单内"的脆性巧合。
+        if alert.get('source') == 'paper_executor':
+            return
         alert_type = alert.get('type', '')
         scope = alert.get('scope', 'symbol')  # 'symbol' 或 'market'
         self.logger.warning(f"[风控警报] 收到: {alert_type} scope={scope}")
