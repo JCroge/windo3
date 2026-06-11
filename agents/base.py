@@ -50,7 +50,14 @@ class BaseAgent(ABC):
         self._start_time = time.time()
         self.logger.info(f"Agent [{self.name}] 启动")
 
-        await self.setup()
+        try:
+            await self.setup()
+        except Exception:
+            import traceback
+            self.logger.critical(
+                f"Agent [{self.name}] setup 失败\n{traceback.format_exc()}"
+            )
+            raise
 
         msg_task = asyncio.create_task(self._message_loop())
         tick_task = asyncio.create_task(self._periodic_loop())

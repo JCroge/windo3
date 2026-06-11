@@ -6,8 +6,8 @@
 - [x] 1.3 单测：`keysort({None: x, "a": y})` 不抛且 None 排首；全 str 键顺序与原 ccxt 一致；构造含 `id=None` 的 mock markets 走 `set_markets` 不抛
 
 ## 2. base.run() setup 失败不再静默 (agent-fault-visibility)
-- [ ] 2.1 `agents/base.py:run()` 把 `await self.setup()` 包 `try/except`，`logger.critical(f"Agent [{name}] setup 失败" + traceback.format_exc())` 后 `raise`
-- [ ] 2.2 单测：setup 抛异常 → 记录 CRITICAL 含 traceback 且异常重抛；正常 setup 不记录、继续进入 loops
+- [x] 2.1 `agents/base.py:run()` 把 `await self.setup()` 包 `try/except`，`logger.critical(f"Agent [{name}] setup 失败" + traceback.format_exc())` 后 `raise`
+- [x] 2.2 单测：setup 抛异常 → 记录 CRITICAL 含 traceback 且异常重抛；正常 setup 不记录、继续进入 loops
 
 ## 3. orchestrator 失败任务主动告警 (agent-fault-visibility)
 - [ ] 3.1 `_health_loop` 任务扫描里收集 `(agent_name, repr(exc))`（按 index 映射 `all_agents`，越界用 `unknown-agent`）
