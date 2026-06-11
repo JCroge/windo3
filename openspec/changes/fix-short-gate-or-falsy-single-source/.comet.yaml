@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/fix-short-gate-or-falsy-single-source/.comet/handoff/design-context.json
 handoff_hash: ab43687f7e82749166b12f7df91a749c69275a1875d0123f06b7c0ec6eeedf60
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q agents utils
+verify_command: python3 -m pytest -q

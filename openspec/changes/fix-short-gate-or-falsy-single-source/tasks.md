@@ -26,5 +26,6 @@
 - [x] `compileall agents utils` 通过
 
 ## 收尾
-- [ ] 更新 CLAUDE.md "当前事实" + `docs/to-do-list.md` 关闭 P1-02/P1-03（引用第五次审计报告）
-- [ ] delta spec 同步至 master（归档阶段）
+- [x] 更新 CLAUDE.md "当前事实" + `docs/to-do-list.md` 关闭 P1-02/P1-03（引用第五次审计报告；append-only，合并 main 后总基线以实跑为准）
+
+> 归档阶段（由 comet-archive 自动执行，不属 build 门控）：delta spec `short-main-path-risk-guard` 同步至 `openspec/specs/`。
