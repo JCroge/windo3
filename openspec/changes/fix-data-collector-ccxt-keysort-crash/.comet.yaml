@@ -1,0 +1,16 @@
+workflow: full
+phase: design
+build_mode: null
+isolation: null
+verify_mode: null
+base_ref: 891aff95cc9a835654c3123bc86282c2f562cb87
+design_doc: null
+plan: null
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-11
+verified_at: null
+archived: false
+handoff_context: openspec/changes/fix-data-collector-ccxt-keysort-crash/.comet/handoff/design-context.json
+handoff_hash: d5bbaed794449d12c8d5f8d1b19f77201c8b0644c2f4167c97f0f15e26353ca8

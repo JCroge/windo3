@@ -1,0 +1,15 @@
+{
+  "change": "fix-data-collector-ccxt-keysort-crash",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d5bbaed794449d12c8d5f8d1b19f77201c8b0644c2f4167c97f0f15e26353ca8",
+  "files": [
+    { "path": "openspec/changes/fix-data-collector-ccxt-keysort-crash/proposal.md", "sha256": "3c72ca5edb8709b02dac2d9ff9256220ba12a852f99bcdd8475f69c6d5d5ac0f" },
+    { "path": "openspec/changes/fix-data-collector-ccxt-keysort-crash/design.md", "sha256": "740014427886141eb496b2d39505b67b5558fb323f08355b486aea6e3c6000cc" },
+    { "path": "openspec/changes/fix-data-collector-ccxt-keysort-crash/tasks.md", "sha256": "6b59ee15e5b61aad50f394c2e388e14e31b57791c92d40a60dabea189cbbb4ae" },
+    { "path": "openspec/changes/fix-data-collector-ccxt-keysort-crash/specs/agent-fault-visibility/spec.md", "sha256": "4ffea3a0efd96e4a957b86e752dfa6fde9cdf7e27cfb44117f96483e77d0e915" },
+    { "path": "openspec/changes/fix-data-collector-ccxt-keysort-crash/specs/exchange-client-resilience/spec.md", "sha256": "47c981f57b7b31440e2cef5b0a466d27f5ab3201de6480ff416aa84fc2666dd7" }
+  ]
+}
