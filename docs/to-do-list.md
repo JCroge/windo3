@@ -25,6 +25,15 @@
 - 小额 live 灰度：GO（保持现有 cap，运维可接管）。
 - live 扩容：CONDITIONAL GO（解除 NO-GO 前置已完成；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置，并完成真实 TG 命令链与 drift gate 运维验收）。
 
+## 第五次审计阻断（处理中）
+
+> 第五次审计报告：`docs/generated_reports/系统性审计报告_20260610_第五次.md`。多 change 并行处理（P1-01/P2-02 与 P1-02/P1-03 分属不同 worktree）；合并入 main 后总基线以实跑为准。
+
+| 状态 | 优先级 | 事项 | 落地 | 验收证据 |
+|---|---|---|---|---|
+| DONE 2026-06-11 | P1 | P1-02 短单 gate `or`-falsy：`range_pos=0.0`（24h 锅底）被当 0.5，`range_position_too_low` gate 失效 | `MultiJudge` 新增 `@staticmethod _coalesce_float(*vals, default)`（仅 absent None 取默认，present 0.0 保留）；`_classify_short_entry_risk` + `_check_entry_position_policy` long overheat gate + attribution 写点三处统一改用 | `tests/test_short_main_path_risk_guard.py` `TestClassifyShortEntryRisk` 新增 3 case（含锅底拒单）；隔离基线 1073 passed |
+| DONE 2026-06-11 | P1（红线） | P1-03 短单结构 gate 第二份内联实现（`_apply_regime_policy`，默认值 1.0 vs 0.5 发散），违反单点收口红线 | `_apply_regime_policy` 短单段 delegate 到 `_classify_short_entry_risk`，删第二份实现，保留 `daily_bearish_required` probe 路由外壳；attribution 四字段（caller-owned）不回归 | `TestApplyRegimePolicyDelegation` 4 case（parity / probe 外壳 / 锅底）；comet change `fix-short-gate-or-falsy-single-source`，design `docs/superpowers/specs/2026-06-11-fix-short-gate-or-falsy-single-source-design.md` |
+
 ## 第四次审计阻断（已闭环 2026-05-29）
 
 | 状态 | 优先级 | 事项 | 落地 | 验收证据 |

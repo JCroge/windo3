@@ -201,3 +201,97 @@ class TestClassifyShortEntryRisk:
 
         assert gate['reason'] == 'rsi_too_low_for_short'
         assert gate['metrics']['rsi'] == pytest.approx(30.0)
+
+    def test_range_pos_zero_is_rejected_not_coalesced(self):
+        """P1-02: present range_pos=0.0 (24h 锅底) 必须 range_position_too_low，不得退化成 0.5。"""
+        judge = _make_judge()
+        tech = _good_tech()
+        tech['short_context']['position_in_24h_range'] = 0.0   # 价格在 24h 最低点
+        result = judge._classify_short_entry_risk(
+            'BTC-USDT', 'open_short', _good_plan(), tech, 60.0
+        )
+        assert result['allowed'] is False
+        assert result['reason'] == 'range_position_too_low'
+        assert result['metrics']['range_position_24h'] == 0.0
+
+    def test_pre_move_zero_present_preserved(self):
+        """P1-02: present pre_12h=0.0 保留为 0.0（0.0 <= max_pre_move(-0.01) 为 False → 不因 pre_move 拒）。"""
+        judge = _make_judge()
+        tech = _good_tech()
+        tech['short_context']['pre_12h_return_pct'] = 0.0
+        result = judge._classify_short_entry_risk(
+            'BTC-USDT', 'open_short', _good_plan(), tech, 60.0
+        )
+        assert result['allowed'] is True
+        assert result['metrics']['pre_12h_return_pct'] == 0.0
+
+    def test_absent_range_uses_default(self):
+        """absent（无 key）时回退默认 0.5（>=0.45 → 不因 range 拒）。"""
+        judge = _make_judge()
+        tech = _good_tech()
+        tech['short_context'].pop('position_in_24h_range', None)
+        result = judge._classify_short_entry_risk(
+            'BTC-USDT', 'open_short', _good_plan(), tech, 60.0
+        )
+        assert result['metrics']['range_position_24h'] == 0.5
+        assert result['allowed'] is True
+
+
+class TestApplyRegimePolicyDelegation:
+    """P1-03: _apply_regime_policy 短单段委托 _classify_short_entry_risk，保留 probe 外壳。"""
+
+    def _make_regime_judge(self, config=None):
+        judge = _make_judge(config)
+        # 隔离 side-aware 结构段：effective_regime 非 bullish，跳过 short_regime_guard 前置块
+        judge._regime_manager = MagicMock()
+        judge._regime_manager.snapshot.return_value = {'effective_regime': 'bearish'}
+        judge._record_rejected_plan = MagicMock()
+        judge._route_to_probe = MagicMock()
+        judge._can_route_probe_short = MagicMock(return_value=(False, 'not_eligible'))
+        judge._select_rr_floor = MagicMock(return_value=(1.2, 'default', 'default'))
+        judge._low_rr_max_position_pct = 1.0
+        judge._low_rr_max_leverage = 5
+        return judge
+
+    def test_regime_rejects_range_pos_zero(self):
+        judge = self._make_regime_judge()
+        tech = _good_tech()
+        tech['short_context']['position_in_24h_range'] = 0.0
+        plan = {'is_probe': False, 'risk_reward_ratio': 3.0,
+                'effective_risk_reward_ratio': 3.0, 'size_usdt': 100.0, 'leverage': 5}
+        reject = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, 60.0, tech)
+        assert reject == 'range_position_too_low'
+        judge._record_rejected_plan.assert_called_once()
+
+    def test_regime_matches_classify_reason(self):
+        judge = self._make_regime_judge()
+        tech = _good_tech()
+        tech['short_context']['position_in_24h_range'] = 0.0
+        plan = {'is_probe': False, 'risk_reward_ratio': 3.0,
+                'effective_risk_reward_ratio': 3.0, 'size_usdt': 100.0, 'leverage': 5}
+        classify = judge._classify_short_entry_risk(
+            'BTC-USDT', 'open_short', dict(plan), tech, 60.0, llm_result=None)
+        assert classify['reason'] == 'range_position_too_low'
+        reject = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, 60.0, tech)
+        assert reject == classify['reason']
+
+    def test_daily_bearish_probe_shell_routes_not_rejects(self):
+        judge = self._make_regime_judge()
+        judge._can_route_probe_short = MagicMock(return_value=(True, 'eligible'))
+        tech = _good_tech()
+        tech['trend']['daily_bias'] = 'bullish'
+        plan = {'is_probe': False, 'risk_reward_ratio': 3.0,
+                'effective_risk_reward_ratio': 3.0, 'size_usdt': 100.0, 'leverage': 5}
+        reject = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, 60.0, tech)
+        assert reject is None
+        judge._route_to_probe.assert_called_once()
+
+    def test_daily_bearish_probe_fail_rejects(self):
+        judge = self._make_regime_judge()
+        tech = _good_tech()
+        tech['trend']['daily_bias'] = 'bullish'
+        plan = {'is_probe': False, 'risk_reward_ratio': 3.0,
+                'effective_risk_reward_ratio': 3.0, 'size_usdt': 100.0, 'leverage': 5}
+        reject = judge._apply_regime_policy('BTC-USDT', 'open_short', plan, 60.0, tech)
+        assert reject == 'daily_bearish_required'
+        judge._record_rejected_plan.assert_called_once()
