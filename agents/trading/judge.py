@@ -2354,12 +2354,12 @@ class MultiJudge(BaseAgent):
             # ═══ Long Entry Position Guard attribution ═══
             'entry_position_status': 'normal',
             'entry_position_block_reason': '',
-            'entry_range_pos_24h': float((tech.get('entry_context')
-                                          or tech.get('short_context')
-                                          or {}).get('position_in_24h_range', 0.5) or 0.5),
-            'entry_pre_12h_return_pct': float((tech.get('entry_context')
-                                               or tech.get('short_context')
-                                               or {}).get('pre_12h_return_pct', 0.0) or 0.0),
+            'entry_range_pos_24h': self._coalesce_float(
+                (tech.get('entry_context') or tech.get('short_context')
+                 or {}).get('position_in_24h_range'), default=0.5),
+            'entry_pre_12h_return_pct': self._coalesce_float(
+                (tech.get('entry_context') or tech.get('short_context')
+                 or {}).get('pre_12h_return_pct'), default=0.0),
             'entry_prev_daily_return_pct': float((tech.get('entry_context')
                                                   or {}).get('prev_daily_return_pct', 0.0) or 0.0),
             'entry_position_policy': 'long_overheat_v1',
@@ -2773,7 +2773,7 @@ class MultiJudge(BaseAgent):
         is_long = ('long' in (action or ''))
 
         ctx = tech.get('entry_context') or tech.get('short_context') or {}
-        range_pos = float(ctx.get('position_in_24h_range', 0.5) or 0.5)
+        range_pos = self._coalesce_float(ctx.get('position_in_24h_range'), default=0.5)
         pre_move = float(ctx.get('pre_12h_return_pct', 0.0) or 0.0)
         prev_daily = float(ctx.get('prev_daily_return_pct', 0.0) or 0.0)
         result['metrics'] = {
