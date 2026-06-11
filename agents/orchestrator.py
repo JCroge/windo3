@@ -37,6 +37,7 @@ class Orchestrator:
         self._research_cycle_retries = {}
         self._latest_halts_snapshot: dict = {}    # F-TG-004
         self._health_write_interval: float = 30.0  # F-TG-004 秒
+        self._prev_dlq_size: int = 0  # P2-16: DLQ 增长告警基准
 
     def _default_config(self) -> dict:
         try:
@@ -325,13 +326,43 @@ class Orchestrator:
             }
             path = get_state_paths().agent_health
             atomic_write_json(path, health)
+            return dlq_size
         except Exception as e:
             self.logger.warning(f"[AgentHealth] 写入失败: {e}")
+            return None
+
+    async def _maybe_alert_dlq_growth(self, dlq_size):
+        """P2-16: DLQ 较上次增长时主动 telegram_alert（30s cadence 天然限流）。
+
+        DLQ 增长意味着 enqueue 失败或重要 topic 无订阅者——关键 wiring 断裂，
+        不得仅静默写入 agent_health.json。
+        """
+        if dlq_size is None:
+            return
+        if dlq_size > self._prev_dlq_size:
+            delta = dlq_size - self._prev_dlq_size
+            try:
+                from agents.message_bus import MessageBus
+                bus = self.bus or MessageBus.get_instance()
+                await bus.publish("orchestrator", "telegram_alert", {
+                    "level": "warning",
+                    "type": "bus_dlq_growth",
+                    "message": (
+                        f"消息总线 DLQ 增长 +{delta}（当前 {dlq_size}）；"
+                        f"可能有 enqueue 失败或重要 topic 无订阅者"
+                    ),
+                    "dlq_size": dlq_size,
+                    "delta": delta,
+                }, "broadcast")
+            except Exception as e:
+                self.logger.warning(f"[DLQ Alert] 发布失败: {e}")
+        self._prev_dlq_size = dlq_size
 
     async def _health_loop(self):
-        """F-TG-004: 每 N 秒写一次 agent_health.json。"""
+        """F-TG-004: 每 N 秒写一次 agent_health.json；P2-16: 顺带 DLQ 增长告警。"""
         while not self._shutdown_event.is_set():
-            self._write_agent_health()
+            dlq_size = self._write_agent_health()
+            await self._maybe_alert_dlq_growth(dlq_size)
             try:
                 await asyncio.wait_for(
                     self._shutdown_event.wait(),
