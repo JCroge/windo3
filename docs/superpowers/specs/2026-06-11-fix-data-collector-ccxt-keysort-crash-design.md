@@ -2,6 +2,8 @@
 comet_change: fix-data-collector-ccxt-keysort-crash
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
+status: final
 ---
 
 # Design: data_collector ccxt keysort 崩溃修复
