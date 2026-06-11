@@ -133,23 +133,25 @@ class TestHandleResumeClearsHaltedSymbols:
         ex._halt_state.confirm_resume.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_local_reconciler_matched_clears(self):
-        """本地 reconciler 通过时清 _halted_symbols。"""
+    async def test_nonmatched_with_reconciler_maintains_halt(self):
+        """P2-03: 非 matched 对账结果（即便 _reconciler 存在）维持熔断、不清 per-symbol halt，
+        且不再调用本地 reconcile（旧 local-reconciler 恢复路径已删）。"""
         from agents.trading.executor import MultiExecutor
 
         ex = MultiExecutor.__new__(MultiExecutor)
         ex.logger = MagicMock()
         ex._trading_halted = True
         ex._halt_state = MagicMock()
-        ex._reconciler = MagicMock()
-        ex._reconciler.reconcile.return_value = {"blocking_issues": []}
+        ex._reconciler = MagicMock()  # 存在也不再被调用
         ex.executor = MagicMock()
         ex.executor.positions = {}
         ex.executor.clear_symbol_halt = MagicMock(return_value=0)
 
-        await ex._handle_resume("telegram", {})  # 无 payload, 走本地 reconciler
+        await ex._handle_resume("telegram", {})  # 无 matched 对账结果
 
-        ex.executor.clear_symbol_halt.assert_called_once()
+        ex.executor.clear_symbol_halt.assert_not_called()
+        ex._reconciler.reconcile.assert_not_called()
+        assert ex._trading_halted is True
 
     @pytest.mark.asyncio
     async def test_local_reconciler_blocking_does_not_clear(self):
@@ -175,8 +177,8 @@ class TestHandleResumeClearsHaltedSymbols:
         assert ex._trading_halted is True
 
     @pytest.mark.asyncio
-    async def test_no_reconciler_clears(self):
-        """无 reconciler 直接恢复路径清。"""
+    async def test_nonmatched_no_reconciler_maintains_halt(self):
+        """P2-03: 非 matched + 无 reconciler 维持熔断、不清 per-symbol halt（旧 else 是 fail-open 自动恢复）。"""
         from agents.trading.executor import MultiExecutor
 
         ex = MultiExecutor.__new__(MultiExecutor)
@@ -189,7 +191,8 @@ class TestHandleResumeClearsHaltedSymbols:
 
         await ex._handle_resume("telegram", {})
 
-        ex.executor.clear_symbol_halt.assert_called_once()
+        ex.executor.clear_symbol_halt.assert_not_called()
+        assert ex._trading_halted is True
 
 
 class TestForceResumeClearsWithAudit:
