@@ -2910,59 +2910,27 @@ class MultiJudge(BaseAgent):
 
         # ── Side-Aware Short Entry Gates (all regimes) ──
         if not is_long and self._short_regime_guard_enabled and not plan.get('is_probe'):
-            trend = tech.get('trend', {})
-            short_ctx = tech.get('short_context', {})
             entry_timing = tech.get('entry_timing', {})
-            indicators = tech.get('indicators', {})
-
-            daily_bias = trend.get('daily_bias', 'neutral')
-            if getattr(self, '_short_live_require_daily_bearish', True) and daily_bias != 'bearish':
-                confirm_15m = entry_timing.get('tf_15m_confirm_short', False)
-                rr_val = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
-                probe_ok, probe_reason = self._can_route_probe_short(symbol, score, confirm_15m, rr_val)
-                if probe_ok:
-                    self._route_to_probe(plan, symbol)
+            short_gate = self._classify_short_entry_risk(
+                symbol, action, plan, tech, score, llm_result=None
+            )
+            if not short_gate['allowed']:
+                reason = short_gate['reason']
+                if reason == 'daily_bearish_required':
+                    confirm_15m = entry_timing.get('tf_15m_confirm_short', False)
+                    rr_val = plan.get('effective_risk_reward_ratio',
+                                      plan.get('risk_reward_ratio', 0))
+                    probe_ok, _ = self._can_route_probe_short(
+                        symbol, score, confirm_15m, rr_val)
+                    if probe_ok:
+                        self._route_to_probe(plan, symbol)
+                    else:
+                        self._record_rejected_plan(
+                            symbol, action, plan, score, 60, 'daily_bearish_required')
+                        return 'daily_bearish_required'
                 else:
-                    self._record_rejected_plan(symbol, action, plan, score, 60,
-                                              'daily_bearish_required')
-                    return 'daily_bearish_required'
-            elif not plan.get('is_probe'):
-                range_pos = short_ctx.get('position_in_24h_range', 1.0)
-                min_range = getattr(self, '_short_live_min_range_pos', 0.45)
-                if range_pos < min_range:
-                    self._record_rejected_plan(symbol, action, plan, score, 60,
-                                              'range_position_too_low')
-                    return 'range_position_too_low'
-
-                pre_move = short_ctx.get('pre_12h_return_pct', 0)
-                max_pre = getattr(self, '_short_live_max_pre_move', -0.01)
-                if pre_move <= max_pre:
-                    self._record_rejected_plan(symbol, action, plan, score, 60,
-                                              'pre_move_too_deep')
-                    return 'pre_move_too_deep'
-
-                rsi_val = indicators.get('rsi', tech.get('momentum', {}).get('rsi', 50))
-                min_rsi = getattr(self, '_short_live_min_rsi', 40)
-                if rsi_val < min_rsi:
-                    self._record_rejected_plan(symbol, action, plan, score, 60,
-                                              'rsi_too_low_for_short')
-                    return 'rsi_too_low_for_short'
-
-                min_score = getattr(self, '_short_live_min_score', 55)
-                if abs(score) < min_score:
-                    self._record_rejected_plan(symbol, action, plan, score, 60,
-                                              'short_score_too_low')
-                    return 'short_score_too_low'
-
-                htf_bearish = 0
-                for d in [trend.get('direction'), trend.get('higher_tf_bias'), trend.get('daily_bias')]:
-                    if d == 'bearish':
-                        htf_bearish += 1
-                min_htf = getattr(self, '_short_live_min_htf_votes', 2)
-                if htf_bearish < min_htf:
-                    self._record_rejected_plan(symbol, action, plan, score, 60,
-                                              'htf_votes_insufficient')
-                    return 'htf_votes_insufficient'
+                    self._record_rejected_plan(symbol, action, plan, score, 60, reason)
+                    return reason
 
         # ── Dynamic R:R Floor ──
         rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
