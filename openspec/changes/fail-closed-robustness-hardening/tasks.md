@@ -1,34 +1,34 @@
 # Tasks: fail-closed-robustness-hardening
 
 ## P2-03：非 matched resume 统一 fail-closed
-- [ ] `agents/trading/executor.py:_handle_resume` 合并 (b)+(c) 分支为单一 fail-closed：非 matched → `confirm_resume(reconcile_ok=False)` + 维持熔断 + warning；删除 `self._reconciler.reconcile(...)` 死调用
-- [ ] 核对 `test_halt_resume_ownership.py` / `test_reconciliation.py` 是否依赖旧 else 自动恢复；按新契约调整或补用例
-- [ ] 补用例：非 matched resume（含无 reconciler）维持熔断不恢复；matched 仍恢复；force_resume 仍可跳过
+- [x] `_handle_resume` 合并 (b)+(c) 为单一 fail-closed：非 matched → confirm_resume(reconcile_ok=False) + 维持熔断 + warning；删死 reconcile 调用（commit bdb4d94）
+- [x] 核对既有测试：`test_tg_symbol_halt_control.py` 两例（local-reconciler / no-reconciler 恢复）按新契约改为维持熔断（commit 55cc8c4）
+- [x] 补用例：非 matched（含无 reconciler）维持熔断；object()-reconciler 不抛 AttributeError；matched 仍恢复（test_halt_resume_ownership.py）
 
 ## P2-06：risk_alert source 守卫
-- [ ] `_handle_risk_alert` 顶部加 `if alert.get('source') == 'paper_executor': return`
-- [ ] 补用例：paper_executor 来源 risk_alert 不触发任何 live 平仓/缩仓；live 来源不受影响
+- [x] `_handle_risk_alert` 顶部加 paper_executor source 守卫（commit 6090692）
+- [x] 用例：paper 源不触发 live close；live 源不受影响（test_risk_alert_source_guard.py）
 
-## P2-16：DLQ 阈值告警
-- [ ] `agents/orchestrator.py` 加 `_prev_dlq_size`；`_write_agent_health` 在 dlq 增长时 publish `telegram_alert{type='bus_dlq_growth'}`
-- [ ] 补用例（`test_tg_status_enhancement.py`）：dlq_size 增长触发告警；不增长不告警
+## P2-16：DLQ 增长告警
+- [x] `orchestrator` 加 `_prev_dlq_size` + `_maybe_alert_dlq_growth`，`_write_agent_health` 返回 dlq_size，`_health_loop` 调用（commit 1a326ac）
+- [x] 用例：dlq 增长触发 telegram_alert；不增长不发（test_dlq_growth_alert.py）
 
 ## P2-17：config 兜底 HARD_LIMITS clamp
-- [ ] 根 `executor.py` config_loader except 兜底分支对 env 风险限额套 HARD_LIMITS clamp（复用 config_loader helper）；或失败 fail-closed
-- [ ] 补用例：config_loader 抛异常时风险限额仍被 clamp 到 HARD_LIMITS 内，不 fail-open
+- [x] config_loader 加 `clamp_to_hard_limits`（clamp 不 raise）；executor 兜底复用之（commit 681d65d）
+- [x] 用例：超界值被 clamp 到 HARD_LIMITS 内、None 保持、在界内不动（test_config_clamp_fallback.py）
 
 ## P2-20：event_journal fsync
-- [ ] `utils/event_journal.py` write+flush 后加 `os.fsync(self._fd.fileno())`
-- [ ] 补用例：写入后文件描述符被 fsync（mock os.fsync 断言调用）
+- [x] `event_journal._write_line` write+flush 后加 os.fsync（commit eedbeb9）
+- [x] 用例：append 关键事件后 os.fsync 被调（test_event_journal_fsync.py）
 
 ## P2-21：halt_state 删非原子裸写兜底
-- [ ] `utils/halt_state.py:_save` 删除 except 内非原子裸写，改 logger 记录失败
-- [ ] 补用例：atomic_write_json 失败时不产生半截文件（不再裸写）
+- [x] `halt_state._save` 删非原子裸写，改 logger（commit 9424e60）
+- [x] 用例：atomic 写失败时不再裸写 json.dump（test_halt_state_atomic_save.py）
 
 ## 同构与回归（CLAUDE.md 红线）
-- [ ] 核对 event_backtest 是否涉及 resume/risk_alert 路径（预计无，记录理由）
-- [ ] 全量 `python3 -m pytest -q` 全绿（基线 1071 + 新增用例上调）
-- [ ] `compileall executor.py agents utils` 通过
+- [x] event_backtest 无 resume/risk_alert/journal/halt/config 决策路径（grep 为空）→ 纯实现/agent 层，无同构对象需同步
+- [x] 全量 `python3 -m pytest -q` = `1081 passed / 4 deselected / 1 warning`（1071 + 10 新增）
+- [x] `compileall executor.py agents utils` 通过
 
 ## 归档阶段事项（非 build 勾选项，散文记录）
 

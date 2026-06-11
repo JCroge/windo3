@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/fail-closed-robustness-hardening/.comet/handoff/design-context.json
 handoff_hash: 9b802dccc0b79189502d18c794cf1d00c8e1eec9fdd990d68f81fe6bf3646a75
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q executor.py agents utils
+verify_command: python3 -m pytest -q
