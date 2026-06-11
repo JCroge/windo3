@@ -1,0 +1,15 @@
+{
+  "change": "add-position-tp-sink-halt-recovery",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d35e0f2e5b3873a6c4b5cd537fb4fb040932fe5642bceba8b0ee7f79c93ff283",
+  "files": [
+    { "path": "openspec/changes/add-position-tp-sink-halt-recovery/proposal.md", "sha256": "b64658f7e00509a0f222292371c2e72626dbf31b93cea8d40ae3b1917c1c39ea" },
+    { "path": "openspec/changes/add-position-tp-sink-halt-recovery/design.md", "sha256": "0931c66993d9d3f9e45b318b9da81fd1aa5172f50eb1ba5351d4f4b6fb7a0f14" },
+    { "path": "openspec/changes/add-position-tp-sink-halt-recovery/tasks.md", "sha256": "ca35af9fb29c933942a250ffa8ee9b6e2c8c1fed55e77bff4621396cf105109d" },
+    { "path": "openspec/changes/add-position-tp-sink-halt-recovery/specs/entry-drift-policy/spec.md", "sha256": "ab04196d929dcbeebe22541badf2438363ceb778ba761f995b302f9350c145c3" },
+    { "path": "openspec/changes/add-position-tp-sink-halt-recovery/specs/tg-symbol-halt-control/spec.md", "sha256": "34c00972607112b2e80dd0a01760fc2fc70da4d96d8627d6b4e2948d381cd0d5" }
+  ]
+}

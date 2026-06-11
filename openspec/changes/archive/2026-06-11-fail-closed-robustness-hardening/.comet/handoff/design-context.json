@@ -1,0 +1,16 @@
+{
+  "change": "fail-closed-robustness-hardening",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "9b802dccc0b79189502d18c794cf1d00c8e1eec9fdd990d68f81fe6bf3646a75",
+  "files": [
+    { "path": "openspec/changes/fail-closed-robustness-hardening/proposal.md", "sha256": "ffb904fefcf6d0531f075d34621b0603882c80f9e00ade52324b786b51ae6fdd" },
+    { "path": "openspec/changes/fail-closed-robustness-hardening/design.md", "sha256": "dcbdd5b7f5a6ee4878dc05b57becff6cdcf83a8990d93a9f40451bc3330264a1" },
+    { "path": "openspec/changes/fail-closed-robustness-hardening/tasks.md", "sha256": "d53cc4641abdb044d341d3d49c4c7efed900a1514ab4448a4f327bdbd57bac72" },
+    { "path": "openspec/changes/fail-closed-robustness-hardening/specs/risk-alert-routing/spec.md", "sha256": "8a511c35fe42fc3ab1c6e676d2811374fb2db3502287325188cc4d76409ed476" },
+    { "path": "openspec/changes/fail-closed-robustness-hardening/specs/tg-status-enhancement/spec.md", "sha256": "d22c4c4ad56a5566ac6dbd7e160c0eb272c919eafff22f31bfec7a5468fcb4a2" },
+    { "path": "openspec/changes/fail-closed-robustness-hardening/specs/tg-symbol-halt-control/spec.md", "sha256": "b3c8f98403e90e690a92745dcbb94d3208eb2361d3b90bd33018f3a403728b48" }
+  ]
+}

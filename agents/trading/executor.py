@@ -120,13 +120,22 @@ class MultiExecutor(BaseAgent):
                     normalized, source=f"resume_symbol:{source}"
                 )
                 if cleared > 0:
+                    # P2-02: per-symbol halt 已清，但 clear_symbol_halt 不动全局
+                    # halt_state。若全局仍 halt，附 global_halt_active=True 让 TG
+                    # 诚实回显"全局仍 halt，请用 /resume"，消除恢复语义陷阱。
+                    # 防御性读取：缺 _halt_state（不应发生）默认 False，绝不让该提示
+                    # 特性拖垮核心 resume 流程。
+                    _hs = getattr(self, '_halt_state', None)
+                    global_halt_active = bool(_hs and not _hs.can_open_new)
                     await self.publish('risk_alert', {
                         'type': 'symbol_halt_cleared',
                         'symbol': normalized,
                         'source': source,
+                        'global_halt_active': global_halt_active,
                     })
                     self.logger.info(
                         f"[ResumeSymbol] {source} 解除 {normalized} per-symbol halt"
+                        f"（全局仍 halt={global_halt_active}）"
                     )
                 else:
                     await self.publish('risk_alert', {
@@ -507,33 +516,23 @@ class MultiExecutor(BaseAgent):
             self.logger.info(f"[解除熔断] 通过{source}触发，对账通过")
             return
 
-        if self._reconciler:
-            try:
-                result = self._reconciler.reconcile(
-                    executor_positions=self.executor.positions
-                )
-                blocking = result.get('blocking_issues', [])
-                if not blocking:
-                    self._halt_state.confirm_resume(resume_by=source, reconcile_ok=True)
-                    self._trading_halted = False
-                    self._safe_clear_symbol_halt(None, source=f"_handle_resume:{source}")  # F-TG-001
-                    self.logger.info(f"[解除熔断] 通过{source}触发，本地对账通过")
-                else:
-                    self._halt_state.confirm_resume(resume_by=source, reconcile_ok=False)
-                    self.logger.warning(
-                        f"[熔断维持] 对账失败: {len(blocking)}个阻断问题 — {blocking}"
-                    )
-            except Exception as e:
-                self._halt_state.confirm_resume(resume_by=source, reconcile_ok=False)
-                self.logger.error(f"[熔断维持] 对账异常: {e}")
-        else:
-            self._halt_state.confirm_resume(resume_by=source, reconcile_ok=True)
-            self._trading_halted = False
-            self._safe_clear_symbol_halt(None, source=f"_handle_resume:{source}")  # F-TG-001
-            self.logger.info(f"[解除熔断] 通过{source}触发（无reconciler，直接恢复）")
+        # P2-03: 非 matched 对账结果一律 fail-closed 维持熔断。常规 resume 的唯一恢复
+        # 条件是带 matched 对账结果（见上分支）；想绕过对账恢复须走 /force_resume。
+        # 不再调用 PnL 账本 Reconciler 上不存在的 reconcile（历史重构遗留 bug，AttributeError
+        # 被 except 吞），也不再在无 reconciler 时无条件恢复（旧 else 的 fail-open 隐患）。
+        self._halt_state.confirm_resume(resume_by=source, reconcile_ok=False)
+        self.logger.warning(
+            f"[熔断维持] {source} resume 未带 matched 对账结果，维持熔断；"
+            f"如需跳过对账请用 /force_resume"
+        )
 
     async def _handle_risk_alert(self, alert: dict):
         """处理RiskGuard风险警报"""
+        # P2-06: 结构性 source 守卫。paper 与 live 共用 risk_alert topic，
+        # paper 来源事件 MUST NOT 驱动任何 live 平仓/缩仓/halt——隔离靠此守卫，
+        # 不依赖"paper alert type 恰好不在 live 白名单内"的脆性巧合。
+        if alert.get('source') == 'paper_executor':
+            return
         alert_type = alert.get('type', '')
         scope = alert.get('scope', 'symbol')  # 'symbol' 或 'market'
         self.logger.warning(f"[风控警报] 收到: {alert_type} scope={scope}")

@@ -82,6 +82,12 @@ class EventJournal:
             self._current_date = today
         self._fd.write(line + "\n")
         self._fd.flush()
+        # P2-20: 落盘到磁盘（非仅 OS page cache），断电不丢最近关键事件。
+        # journal 只记低频 critical topic，fsync 成本可接受。
+        try:
+            os.fsync(self._fd.fileno())
+        except OSError:
+            pass
 
     def _list_files(self) -> list:
         try:

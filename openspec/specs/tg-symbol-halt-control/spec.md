@@ -121,3 +121,52 @@
 - **WHEN** `_handle_resume` 清掉 3 个 symbol
 - **THEN** logger.info 输出 MUST 含数量 "3"
 - **AND** MUST 列出所有 3 个 symbol
+
+### Requirement: resume_symbol 全局 halt 仍在时必须诚实回显
+系统 SHALL 在 `/resume_symbol <SYMBOL>` 清掉 per-symbol halt 后，若全局
+`HaltState.halted` 仍为 true，使 TG 回显 MUST 明确告知"per-symbol halt 已清，但全局仍 halt，需 `/resume`
+（带对账）才能恢复开新仓"，避免运维误以为已恢复交易（恢复语义陷阱）。该回显 MUST
+由 TG / MultiExecutor agent 层基于其持有的 `halt_state` 判断生成。MUST NOT 改变
+`clear_symbol_halt` 的返回类型（保持返回 int 项数，兼容既有调用方与测试）。MUST NOT
+清除、绕过或修改全局 `HaltState`（深度 halt 语义重构属独立后续 change，本需求只补
+回显诚实性）。
+
+#### Scenario: 清 per-symbol 但全局仍 halt
+- **WHEN** `_halted_symbols={"XLM-USDT-SWAP":{...}}` 且全局 `HaltState.halted==true`
+- **AND** TG 收到 `/resume_symbol XLM`
+- **THEN** per-symbol halt 被清（`clear_symbol_halt` 返回 1）
+- **AND** 全局 `HaltState.halted` MUST 仍为 true
+- **AND** TG 回显 MUST 含"全局仍 halt"提示与 `/resume` 指引
+
+#### Scenario: 清 per-symbol 且全局未 halt 不附加提示
+- **WHEN** `_halted_symbols={"XLM-USDT-SWAP":{...}}` 且全局 `HaltState.halted==false`
+- **AND** TG 收到 `/resume_symbol XLM`
+- **THEN** TG 回显正常确认解除该 symbol，MUST NOT 附加全局 halt 提示
+
+#### Scenario: clear_symbol_halt 返回类型不变
+- **WHEN** 任意 `/resume_symbol` 或 `_handle_resume` 调用 `clear_symbol_halt`
+- **THEN** `clear_symbol_halt` 返回值 MUST 仍为 int（被清项数），既有调用方与测试不破
+
+### Requirement: 全局 resume 非 matched 对账结果时必须 fail-closed 维持熔断
+系统 SHALL 保证：`MultiExecutor._handle_resume` 处理常规 `resume`（非 force_resume）时，唯一允许
+恢复交易的条件 MUST 是 `payload.reconciliation_result.status == 'matched'`。任何非 matched 的情形——包括
+缺 `reconciliation_result`、status 非 matched、或无本地对账器——MUST fail-closed：
+`confirm_resume(reconcile_ok=False)` 维持熔断 + 记 warning，MUST NOT 恢复交易。
+
+系统 MUST NOT 在该路径调用 PnL 账本对账器 `utils/reconciliation.py:Reconciler` 上不存在的
+`reconcile` 方法。绕过对账恢复 MUST 经独立的 `/force_resume` 路径显式授权，常规 `/resume`
+MUST NOT 提供无对账的恢复。
+
+#### Scenario: 非 matched resume 维持熔断
+- **WHEN** `_handle_resume` 收到 `reconciliation_result` 缺失或 status != 'matched'
+- **THEN** MUST 调 `confirm_resume(reconcile_ok=False)` 维持熔断
+- **AND** MUST NOT 恢复交易（`_trading_halted` 不被置 False）
+- **AND** MUST NOT 抛 AttributeError（不调不存在的 reconcile）
+
+#### Scenario: 无本地对账器也不无条件恢复
+- **WHEN** `_handle_resume` 非 matched 且 `self._reconciler` 为 None
+- **THEN** MUST 维持熔断（fail-closed），MUST NOT `confirm_resume(reconcile_ok=True)`
+
+#### Scenario: matched 仍正常恢复
+- **WHEN** `reconciliation_result.status == 'matched'`
+- **THEN** MUST `confirm_resume(reconcile_ok=True)` + 清 per-symbol halt + 恢复交易

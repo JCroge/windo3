@@ -110,11 +110,19 @@ class ContractExecutor:
             _cap = _cfg.get('effective_balance_cap')
             _baseline_mode = _cfg.get('drawdown_baseline_mode', 'session_start')
         except Exception as e:
-            self.logger.warning(f"config_loader 加载失败，使用 env 兜底: {e}")
-            max_amount = float(os.getenv('MAX_TRADE_AMOUNT', 10))
-            max_dd = float(os.getenv('MAX_DRAWDOWN_PCT', 20))
-            max_daily = abs(float(os.getenv('MAX_DAILY_LOSS', 50)))
-            _cap = float(os.getenv('EFFECTIVE_BALANCE_CAP', 0)) or None
+            self.logger.warning(f"config_loader 加载失败，使用 env 兜底（HARD_LIMITS clamp）: {e}")
+            # P2-17: env 兜底也必须经 HARD_LIMITS clamp，杜绝风险限额 fail-open 到未约束值。
+            from utils.config_loader import clamp_to_hard_limits
+            _fb = clamp_to_hard_limits({
+                'max_trade_amount': float(os.getenv('MAX_TRADE_AMOUNT', 10)),
+                'max_drawdown_pct': float(os.getenv('MAX_DRAWDOWN_PCT', 20)),
+                'daily_pnl_hard_stop': -abs(float(os.getenv('MAX_DAILY_LOSS', 50))),
+                'effective_balance_cap': (float(os.getenv('EFFECTIVE_BALANCE_CAP', 0)) or None),
+            })
+            max_amount = _fb['max_trade_amount']
+            max_dd = _fb['max_drawdown_pct']
+            max_daily = abs(_fb['daily_pnl_hard_stop'])
+            _cap = _fb['effective_balance_cap']
             _baseline_mode = os.getenv('DRAWDOWN_BASELINE_MODE', 'session_start')
         self.risk_manager = RiskManager(
             max_trade_amount=max_amount,
@@ -3176,11 +3184,17 @@ class ContractExecutor:
                     position['stop_loss'] = new_entry * (1 + sl_dist_pct)
                 position['original_sl'] = position['stop_loss']  # 重置1R基准
             if old_tp and old_entry > 0:
-                tp_dist_pct = abs(old_tp - old_entry) / old_entry
-                if side == 'long':
-                    position['take_profit'] = new_entry * (1 + tp_dist_pct)
-                else:
-                    position['take_profit'] = new_entry * (1 - tp_dist_pct)
+                # P1-01: 按每个 level 各自距旧均价比例平移整个 take_profit_levels，
+                # 经 _set_position_tp 单一收口写入，保证 take_profit==levels[0] 不变量
+                # 在加仓后保持（否则下一轮 _update_trailing 会误判 tp_invariant_breach
+                # 并触发全局熔断）。take_profit_levels 不收缩、tp_filled 不动。
+                old_levels = position.get('take_profit_levels') or [old_tp]
+                new_levels = []
+                for lvl in old_levels:
+                    dist = abs(lvl - old_entry) / old_entry
+                    new_levels.append(new_entry * (1 + dist) if side == 'long'
+                                      else new_entry * (1 - dist))
+                self._set_position_tp(position, new_levels[0], new_levels)
 
             # 加仓后更新交易所SL条件单（旧单数量/价格不匹配）
             new_sl = position.get('stop_loss')
