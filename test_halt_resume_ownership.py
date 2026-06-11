@@ -100,6 +100,39 @@ class TestResumeOwnership:
         )
         assert executor._trading_halted is True
 
+    def test_executor_resume_no_reconciler_nonmatched_stays_halted(self):
+        """P2-03: 无 reconciler + 非 matched → fail-closed 维持熔断（旧 else 分支是 fail-open 自动恢复）"""
+        from agents.trading.executor import MultiExecutor
+        executor = MultiExecutor.__new__(MultiExecutor)
+        executor.logger = MagicMock()
+        executor._trading_halted = True
+        executor._halt_state = MagicMock()
+        executor._halt_state.can_open_new = False
+        executor._reconciler = None
+        payload = {'command': 'resume', 'source': 'telegram'}  # 无 matched 对账结果
+        _run_async(executor._handle_resume('telegram', payload))
+        executor._halt_state.confirm_resume.assert_called_once_with(
+            resume_by='telegram', reconcile_ok=False
+        )
+        assert executor._trading_halted is True
+
+    def test_executor_resume_pnl_reconciler_no_attributeerror(self):
+        """P2-03: _reconciler 是无 reconcile 方法的对象（像真实 PnL Reconciler），非 matched 不抛 AttributeError 且维持熔断"""
+        from agents.trading.executor import MultiExecutor
+        executor = MultiExecutor.__new__(MultiExecutor)
+        executor.logger = MagicMock()
+        executor._trading_halted = True
+        executor._halt_state = MagicMock()
+        executor._halt_state.can_open_new = False
+        executor._reconciler = object()  # 无 reconcile 方法，模拟真实 PnL Reconciler
+        executor.executor = MagicMock()
+        payload = {'command': 'resume', 'source': 'telegram'}
+        _run_async(executor._handle_resume('telegram', payload))  # 不得抛 AttributeError
+        executor._halt_state.confirm_resume.assert_called_once_with(
+            resume_by='telegram', reconcile_ok=False
+        )
+        assert executor._trading_halted is True
+
     def test_telegram_resume_does_not_directly_change_halt_state(self):
         """AC-P0-004: Telegram /resume 不直接最终改 HaltState"""
         from agents.trading.telegram_notifier import TelegramNotifier

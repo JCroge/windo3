@@ -516,30 +516,15 @@ class MultiExecutor(BaseAgent):
             self.logger.info(f"[解除熔断] 通过{source}触发，对账通过")
             return
 
-        if self._reconciler:
-            try:
-                result = self._reconciler.reconcile(
-                    executor_positions=self.executor.positions
-                )
-                blocking = result.get('blocking_issues', [])
-                if not blocking:
-                    self._halt_state.confirm_resume(resume_by=source, reconcile_ok=True)
-                    self._trading_halted = False
-                    self._safe_clear_symbol_halt(None, source=f"_handle_resume:{source}")  # F-TG-001
-                    self.logger.info(f"[解除熔断] 通过{source}触发，本地对账通过")
-                else:
-                    self._halt_state.confirm_resume(resume_by=source, reconcile_ok=False)
-                    self.logger.warning(
-                        f"[熔断维持] 对账失败: {len(blocking)}个阻断问题 — {blocking}"
-                    )
-            except Exception as e:
-                self._halt_state.confirm_resume(resume_by=source, reconcile_ok=False)
-                self.logger.error(f"[熔断维持] 对账异常: {e}")
-        else:
-            self._halt_state.confirm_resume(resume_by=source, reconcile_ok=True)
-            self._trading_halted = False
-            self._safe_clear_symbol_halt(None, source=f"_handle_resume:{source}")  # F-TG-001
-            self.logger.info(f"[解除熔断] 通过{source}触发（无reconciler，直接恢复）")
+        # P2-03: 非 matched 对账结果一律 fail-closed 维持熔断。常规 resume 的唯一恢复
+        # 条件是带 matched 对账结果（见上分支）；想绕过对账恢复须走 /force_resume。
+        # 不再调用 PnL 账本 Reconciler 上不存在的 reconcile（历史重构遗留 bug，AttributeError
+        # 被 except 吞），也不再在无 reconciler 时无条件恢复（旧 else 的 fail-open 隐患）。
+        self._halt_state.confirm_resume(resume_by=source, reconcile_ok=False)
+        self.logger.warning(
+            f"[熔断维持] {source} resume 未带 matched 对账结果，维持熔断；"
+            f"如需跳过对账请用 /force_resume"
+        )
 
     async def _handle_risk_alert(self, alert: dict):
         """处理RiskGuard风险警报"""
