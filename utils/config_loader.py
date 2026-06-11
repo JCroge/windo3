@@ -326,6 +326,20 @@ def _validate_hard_limits(cfg: dict):
             )
 
 
+def clamp_to_hard_limits(cfg: dict) -> dict:
+    """把风险限额 clamp 到 HARD_LIMITS 区间内（非破坏 None），返回新 dict。
+
+    与 _validate_hard_limits（超界 raise 拒绝启动）不同：本函数 clamp 而非 raise，
+    供 config_loader 加载失败时的 env 兜底路径使用，杜绝风险限额 fail-open 到未约束值。
+    """
+    out = dict(cfg)
+    for key, (lo, hi) in HARD_LIMITS.items():
+        if key not in out or out[key] is None:
+            continue
+        out[key] = max(lo, min(hi, out[key]))
+    return out
+
+
 def _validate_live_mode(cfg: dict):
     """live 模式凭证校验：USE_TESTNET=false 时关键凭证不能为空"""
     if cfg.get("use_testnet"):

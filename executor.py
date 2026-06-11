@@ -110,11 +110,19 @@ class ContractExecutor:
             _cap = _cfg.get('effective_balance_cap')
             _baseline_mode = _cfg.get('drawdown_baseline_mode', 'session_start')
         except Exception as e:
-            self.logger.warning(f"config_loader 加载失败，使用 env 兜底: {e}")
-            max_amount = float(os.getenv('MAX_TRADE_AMOUNT', 10))
-            max_dd = float(os.getenv('MAX_DRAWDOWN_PCT', 20))
-            max_daily = abs(float(os.getenv('MAX_DAILY_LOSS', 50)))
-            _cap = float(os.getenv('EFFECTIVE_BALANCE_CAP', 0)) or None
+            self.logger.warning(f"config_loader 加载失败，使用 env 兜底（HARD_LIMITS clamp）: {e}")
+            # P2-17: env 兜底也必须经 HARD_LIMITS clamp，杜绝风险限额 fail-open 到未约束值。
+            from utils.config_loader import clamp_to_hard_limits
+            _fb = clamp_to_hard_limits({
+                'max_trade_amount': float(os.getenv('MAX_TRADE_AMOUNT', 10)),
+                'max_drawdown_pct': float(os.getenv('MAX_DRAWDOWN_PCT', 20)),
+                'daily_pnl_hard_stop': -abs(float(os.getenv('MAX_DAILY_LOSS', 50))),
+                'effective_balance_cap': (float(os.getenv('EFFECTIVE_BALANCE_CAP', 0)) or None),
+            })
+            max_amount = _fb['max_trade_amount']
+            max_dd = _fb['max_drawdown_pct']
+            max_daily = abs(_fb['daily_pnl_hard_stop'])
+            _cap = _fb['effective_balance_cap']
             _baseline_mode = os.getenv('DRAWDOWN_BASELINE_MODE', 'session_start')
         self.risk_manager = RiskManager(
             max_trade_amount=max_amount,
