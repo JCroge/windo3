@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: subagent-driven-development
+isolation: worktree
+verify_mode: null
+base_ref: 913342fa7a008c41d2b9606d9b26f2568101442f
+design_doc: docs/superpowers/specs/2026-06-11-fix-short-gate-or-falsy-single-source-design.md
+plan: docs/superpowers/plans/2026-06-11-fix-short-gate-or-falsy-single-source.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-11
+verified_at: null
+archived: false
+handoff_context: openspec/changes/fix-short-gate-or-falsy-single-source/.comet/handoff/design-context.json
+handoff_hash: ab43687f7e82749166b12f7df91a749c69275a1875d0123f06b7c0ec6eeedf60

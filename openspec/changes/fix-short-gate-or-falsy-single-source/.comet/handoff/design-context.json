@@ -1,0 +1,14 @@
+{
+  "change": "fix-short-gate-or-falsy-single-source",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "ab43687f7e82749166b12f7df91a749c69275a1875d0123f06b7c0ec6eeedf60",
+  "files": [
+    { "path": "openspec/changes/fix-short-gate-or-falsy-single-source/proposal.md", "sha256": "09d1d906fa41ec80bfb009c427d19eb5500a4ad64d071b1233398fcf76861e56" },
+    { "path": "openspec/changes/fix-short-gate-or-falsy-single-source/design.md", "sha256": "e724e723545c948ec53a3997a4e6a8c99e829fe35d8a8005ef7f3b526e40f5d5" },
+    { "path": "openspec/changes/fix-short-gate-or-falsy-single-source/tasks.md", "sha256": "7d6adf87388d448318b44fba5a9ceb6b7ea515764136a34eba4c05ea36511c6c" },
+    { "path": "openspec/changes/fix-short-gate-or-falsy-single-source/specs/short-main-path-risk-guard/spec.md", "sha256": "3e466ec3a5171fcec63924f13a17fe3a12da806f58319fd6ee85ae666601e8b3" }
+  ]
+}
