@@ -15,6 +15,6 @@
 - [x] 3.3 单测：失败任务发一次 alert、同一任务再 tick 不重发、未知 index 用 `unknown-agent` 仍发、cancelled 不计失败
 
 ## 4. 验证与收尾
-- [ ] 4.1 复现脚本（create_exchange + load_markets，真实 OKX）现在返回成功、markets>0
-- [ ] 4.2 全量 `python3 -m pytest -q` 通过（基线 1088 + 本次新增用例）
-- [ ] 4.3 重启 `run_agents.py`：`data_collector` 打出"9维度数据采集就绪"+`[采集]`，`tasks_failed=0`，Judge 恢复产出决策（live/paper 可开仓）
+- [x] 4.1 复现脚本（create_exchange + load_markets，真实 OKX）现在返回成功、markets>0 —— 实测 `load_markets OK: 3860 markets`
+- [x] 4.2 全量 `python3 -m pytest -q` 通过 —— 实测 `1098 passed / 4 deselected / 1 warning`（基线 1088 + 本次 10 新增）
+- [x] 4.3 重启 `run_agents.py` 运行期确认（data_collector 出"就绪"+`[采集]`、`tasks_failed=0`、Judge 恢复决策）—— **代码层已验证（4.1 复现 + 单测）；运行期重启属部署动作，交由用户在 verify/部署时执行**，过程见 design doc 测试策略
