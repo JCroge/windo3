@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-06-10）**：主入口为 `run_agents.py`，全量回归 `1010 passed / 4 deselected / 1 warning`。R:R Floor 选择收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，Entry Drift Hybrid Policy 收敛到 `executor._classify_entry_drift` / `_recompute_plan_for_drift`，Short Main Path Risk Guard Parity 把短单结构性风险 gate 收敛到 `Judge._classify_short_entry_risk`（main path 与 deferred 三路径共用同一份语义）。OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 2026-05-29 T0/T1/T6 PASS。TG Graceful Ops 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id` 和 `/status` health 行。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-06-11）**：主入口为 `run_agents.py`，全量回归 `1088 passed / 4 deselected / 1 warning`（第五次审计阻断项闭环后）。各策略 gate 均单点收口：R:R Floor → `Judge._select_rr_floor`、Long Entry Position Guard → `Judge._check_entry_position_policy`、Entry Drift Hybrid Policy → `executor._classify_entry_drift` / `_recompute_plan_for_drift`、短单结构性风险 gate → `Judge._classify_short_entry_risk`（main path 与 deferred 三路径共用同一份语义）、Position TP 写入 → `_set_position_tp`。OKX 真实 testnet 语义验收：long_short_mode T0-T15 13 PASS / 3 SKIP + net_mode 子账户 T0/T2/T3 3 PASS（2026-05-28）+ owner-tag 补验 T0/T1/T6 PASS（2026-05-29）。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
@@ -469,168 +469,22 @@ CREATE TABLE klines (
 
 ## MVP开发路线
 
-### Phase 1: 数据基础 ✅ (2026-05-06完成)
-- K线数据采集器
-- SQLite存储
+> 已完成阶段的逐项实现细节迁至 `docs/handoff.md`（完整历史演进），各特性设计见 `docs/superpowers/specs/` 与 `docs/audit_remediation_*`。下表仅留里程碑与**彼时**测试基线（历史快照，非当前基线；当前基线见 `CLAUDE.md` 与 `docs/to-do-list.md`）。
 
-### Phase 2: 技术分析 ✅ (2026-05-06完成)
-- 技术指标计算（indicators.py）
-- 策略基类设计（strategy_base.py）
-- 稳健策略实现（optimize_1h.py）
+| 阶段 | 完成 | 里程碑要点 | 彼时基线 |
+|---|---|---|---|
+| Phase 1–4 | 2026-05-06 | 数据采集/SQLite、技术指标+策略、回测引擎（1h 周期最优、反欺骗胜率 83%）、实盘执行器+风控+OKX 验证 | — |
+| Phase 5 | 2026-05-07 | 多 Agent 系统：消息总线、两层研判（6 研判 Agent）、交易层 9 维度采集/解读/Judge 计划、P0 风控（Reviewer、Daily Hard Stop、优雅停机、状态持久化） | — |
+| Phase 6 | 2026-05-07~17 | 智能增强：Telegram、方向决策修复、入场质量（R:R≥1.5、负面催化否决、price-in）、日线多周期共振、Judge 主驱动、MA alignment、持仓三角决策（PositionAnalyst+BehavioralCritic）、PnL 追踪 | — |
+| Phase 7 | 2026-05-19 | 4h RSI 二级衰减、逻辑账户拆分（`EFFECTIVE_BALANCE_CAP`）、Paper Trading 全并行 | — |
+| Phase 8 | 2026-05-21 | 市场 Regime 优化：RegimeManager、CounterfactualLedger、Short Regime Guard + Probe Short、Low R:R Extra Slot | 329 |
+| R:R Floor Policy | 2026-05-26 | 单一 `Judge._select_rr_floor`，五分支 floor 策略 + `long_aligned_low_rr` | 551 |
+| Long Entry Position Guard | 2026-05-26 | 单一 `Judge._check_entry_position_policy`，long overheat 四路径共用 + EV bucket 修正 | 575 |
+| 分批止盈生命周期收敛（1+2+3） | 2026-05-27 | TP/SL owner 收敛、`_replace_protective_sl` 单一入口、重启 algo 迁移 | 618 |
+| OKX 真实 testnet 语义验收 | 2026-05-27~28 | T0–T15 真实链路；`cancel_algos` 序列化 bug（mock 不可覆盖，印证「mock pass ≠ live ready」红线） | — |
+| 第三~五次审计整改 | 2026-05-28~06-11 | 保护单/close cause/真实 PnL 账本/owner-tag SL/reduce 失败传播/Entry Drift Hybrid/Pullback Paper Parity/Short Main Path Guard/研究层流动性硬过滤/Paper Dual-Track/Data Source Provenance + 6 项 fail-closed 加固；逐项见 `docs/handoff.md` 与 `docs/audit_remediation_*` | 807→1088 |
 
-### Phase 3: 回测验证 ✅ (2026-05-06完成)
-- 回测引擎（backtest.py）
-- 多时间周期测试（compare_timeframes.py）
-- 参数优化（optimize_1h.py）
-- 样本外验证（validate_out_of_sample.py）
-
-**关键发现**：
-- 1小时周期最优，1分钟/15分钟不盈利
-- 反欺骗机制使胜率从46.67%提升至83.3%
-- 最佳参数：MA 7/25，RSI阈值75，成交量因子1.0
-- 样本外验证通过，策略稳健
-
-### Phase 4: 实盘交易系统 ✅ (2026-05-06完成)
-- 合约执行器（executor.py）
-- 风控管理器（risk_manager.py）
-- 实时交易系统（live_trading.py）
-- OKX真实账户验证通过
-
-### Phase 5: 多Agent系统 ✅ (2026-05-07完成)
-
-**Phase 5a - 基础框架**：
-- 消息总线（asyncio Queue，支持topic:symbol路由）
-- Agent基类 + 编排器
-- Claude API客户端（OpenAI兼容格式，中转站支持）
-- 5个核心交易Agent：DataCollector、TechAnalyst、Judge、Executor、RiskGuard
-- LLM降级机制
-
-**Phase 5b - 两层研判架构**：
-- 研判层6个Agent：MarketScanner、SentimentResearcher、NewsResearcher、Synthesizer、Censor、SymbolRouter
-- 交易层5个Agent升级为多标的并行处理
-- 两阶段决策：Synthesizer初选 → Censor谏言 → Synthesizer终选
-- 标的轮换协议（旧标的平仓、新标的接入）
-- 数据源：OKX 324合约扫描 + 恐贪指数 + CoinGecko热度 + Binance Taker比 + 6家RSS新闻
-
-**Phase 5c - 交易层深度升级（2026-05-07）**：
-- DataCollector 9维度采集：K线(多周期) + Orderbook 20档 + 资金费率历史 + OI delta + 爆仓订单 + Taker买卖比 + 大单检测 + 多空账户比 + 实时价格流
-- TechAnalyst 9维度信号解读：趋势结构 + 关键价位(含orderbook墙) + 动量(RSI背离) + 资金流向(OI背离/费率极值) + 微观结构(鲸鱼/深度偏向) + 散户反指 + 风险评估
-- Judge 精确交易计划：7维度加权评分 + 基于支撑阻力的止盈止损 + 动态杠杆1-20x + RSI极端值保护 + 反欺骗/反人性决策
-- 反欺骗验证通过：诱多陷阱识别、恐慌底部反人性做多、假突破拒绝、杠杆过热拒绝、主力洗盘识别
-
-**Phase 5d - P0风控增强（2026-05-07）**：
-- ReviewerAgent：交易历史追踪 + 滚动窗口指标（胜率/盈亏比） + 策略衰减检测
-- Daily Hard Stop：双重熔断（单日亏损≤-50 USDT 或 连续3次亏损）
-- Graceful Shutdown：SIGINT/SIGTERM信号处理 + 状态保存 + 优雅停机
-- RiskGuard状态持久化：持仓追踪/价格缓存/熔断状态重启恢复
-- Executor/RiskGuard升级：动态杠杆+限价单+条件单 + risk_alert接入强制平仓
-
-**Phase 6 - 智能增强（2026-05-07~08）**：
-- P1-A Telegram通知：TelegramNotifier实时推送+每日摘要+零配置降级
-- contractSize修复：`amount = (size_usdt * leverage) / (price * contract_size)` + `amount_to_precision()`
-- 方向决策修复（2026-05-08）：_compute_score重写，RSI极端值硬性保护+趋势强度衰减+条件化散户反指+RSI背离权重提升
-- 系统逻辑校验：止损最小距离1.5%、组合回撤用保证金计算、止盈orderbook墙逻辑修复
-
-**Phase 6e - 入场质量优化（2026-05-09）**：
-- Post-mortem修复：correlation_risk改用保证金计算（非名义价值），Judge force_close冷却300s
-- R:R门槛：`risk_reward_ratio < 1.5` → hold（参考Freqtrade minimal_roi原则）
-- 负面催化剂否决：synthesizer近4h新闻关键词检测 → confidence=0 → censor reject（veto层设计）
-- 30min新闻轮询：DataCollector新增`_tick_news()`，发布`news_snapshot`消息到交易层
-- price-in检测：Judge订阅`news_snapshot`，近4h有新闻+价格移动>3% → score×0.5
-
-**Phase 6f - 日线多周期升级（2026-05-09）**：
-- DataCollector：`_collect_1d()` 每慢周期采集30根日线K线，payload新增`klines_1d`
-- TechAnalyst：`_analyze_trend()` 新增日线偏向+`daily_near_resistance/support`检测（距20日高低点**1.5%**以内）
-- TechAnalyst：多周期共振投票（1h+4h+1d三周期一致+20强度，矛盾-20）；4h RSI计算
-- TechAnalyst：`_analyze_levels()` 新增日线swing支撑阻力（更可靠的止损止盈锚点）
-- Judge：接近日线阻力区（1.5%以内）做多信号衰减70%（防假突破）；接近日线支撑区（1.5%以内）做空信号衰减70%（防反弹陷阱）
-- Judge：止损优先用日线价位锚点（daily_support/daily_resistance）
-- Synthesizer：放开标的限制（含XAU/CL等非加密标的），波动率范围扩至50%，成交量门槛降至$30M
-- MarketScanner：并发enrichment（asyncio.gather替代串行循环）
-
-**Phase 6g - Judge主驱动修复（2026-05-09）**：
-- 根因：rule_signal（回测83%胜率的MA交叉信号）未参与评分，系统永远hold
-- 修复：rule_signal触发时给±35基础分，确保过30分入场门槛
-- LLM从一票否决改为仓位修正：rule_signal触发时LLM最多降30%仓位，不能阻止入场
-- 无rule_signal时保持原有保守逻辑（LLM可否决弱信号）
-
-**Phase 6h - MA alignment信号 + Symbol sync修复（2026-05-11）**：
-- 根因：MA crossover是点事件，crossover后下一根K线entry_short=0，score≈0，系统永远hold
-- 修复：tech_analyst.py新增`ma_aligned_long/short`（MA fast/slow已对齐≥3根K线），judge.py给±20基础分作为次驱动
-- Symbol sync修复：executor.py sync_positions将OKX格式`BASE/USDT:USDT`自动转换为内部格式`BASE-USDT-SWAP`，防止每次sync循环删除并重建持仓
-- 首次成功开仓：LAYER-USDT short @ 0.12171，3x杠杆
-- 止损止盈计算修复（2026-05-13）：SL距离ATR封顶（2.5倍ATR，max 5%，Turtle Traders方法论）；TP下限=SL×1.5（保证R:R≥1.5）；R:R硬性门槛1.5（不因confidence高而放松）。根因：旧公式用confidence动态计算min_rr，LLM提升confidence到65时min_rr降至0.538，R:R=0.6即可通过
-
-**Phase 6i - 持仓管理三角决策 + flash_move修复（2026-05-12）**：
-- PositionAnalyst：6因子规则评分（趋势对齐/动量变化/时间衰减/浮盈状态/成交量确认/剩余R:R），每30min评估所有持仓
-- BehavioralCritic：LLM检测7种认知偏差（loss_aversion/sunk_cost/anchoring/fomo/disposition/overconfidence/panic），LLM不可用时规则降级
-- 裁决引擎（内嵌PositionAnalyst）：5条硬性覆盖规则 + 4级severity裁决矩阵（none/low/medium/high）
-- flash_move修复：从全平所有持仓改为只平触发标的（单币闪崩≠系统性风险）
-- Synthesizer扩容：初选上限3→12，增加机会面供Censor筛选
-- 持仓监控补充：DataCollector自动将持仓标的纳入监控（即使不在SymbolRouter活跃列表）
-- 交易层Agent数量：7→9（新增PositionAnalyst + BehavioralCritic）
-
-### ✅ Phase 7: 4h RSI 衰减 + 逻辑账户拆分 + Paper Trading（2026-05-19完成）
-- **4h RSI 二级保护**（`judge.py _compute_score` 末尾）：1h RSI 未触发硬cap但 4h RSI ≥70/≤30 时 score×0.5。根因 ZEC 事故（1h RSI=64 但 4h=73.9 仍开多 20x→-135 USDT）
-- **逻辑账户拆分**（`utils/config_loader.py` + `judge.py _calc_risk_budget`）：新增 `EFFECTIVE_BALANCE_CAP` 环境变量，真实余额 6020 USDT 但风控按 1000 USDT 计算，单笔 max_loss 250→50 与 Daily Hard Stop -50 对齐。cap=None 时等价旧逻辑
-- **Paper Trading 全并行**（`agents/trading/paper_executor.py` 新建 ~340 行）：与 MultiExecutor 并行运行，订阅同 `trade_decision:*` 和 `price_tick:*`，独立 in-memory 余额持久化到 `data/paper_*`，发布独立 topic `paper_execution_result` 不污染实盘
-- **交易层Agent数量**：9→10（新增 PaperExecutor）
-
-### ✅ Phase 8: 市场 Regime 优化（2026-05-21完成）
-- **RegimeManager**（`utils/market_regime.py`）：BTC/ETH bias + 全标的趋势共识 → bullish/bearish/mixed/choppy，2次确认切换 + 30min min_hold 防抖
-- **CounterfactualLedger**（`utils/counterfactual_ledger.py`）：仅追踪被 Judge 拒绝且已形成 plan 的信号，记录 shadow_tp/shadow_sl/shadow_expired/shadow_invalidated
-- **Short Regime Guard**（`agents/trading/judge.py`）：牛市普通做空拦截，强做空（score≤-70, htf≥2, rr≥1.8, 15m confirm）放行
-- **Probe Short**：牛市中允许小仓位探针做空（30% position, 3x leverage, 24h cooldown），同时要求 pending probe 与流动性检查
-- **Low R:R Extra Slot**（`utils/candidate_ranker.py`）：低 R:R 多头使用独立额外槽位，不挤占主槽位，rank score 打 70% 折扣
-- **验证**：329 passed / 4 deselected / 0 failed
-
-### ✅ R:R Floor Policy 修复（2026-05-26完成）
-- **背景**：INJ-USDT 类信号（R:R≈1.45, score=45, choppy regime, trend bullish, daily bullish）被默认 1.50 floor 拦截。Judge 主路径直接对比 `min_rr_threshold`，`_apply_regime_policy` 又重写一份 if/else，两边可能漂移。
-- **统一函数**（`agents/trading/judge.py: _select_rr_floor(action, plan, tech, score)`）：唯一入口，主路径与 deferred 路径共用，按顺序匹配 `probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` 五个分支并返回 `(min_rr, rr_policy, rr_floor_reason)`。修改 R:R floor **必须改这一处**。
-- **新策略 `long_aligned_low_rr`**：mixed/choppy regime 下，仅当 `trend.direction=bullish` AND (`htf_bias=bullish` OR `daily_bias=bullish`) AND 未 `block_long` AND `|score|≥min_deferred_signal_score` 时使用 `RR_FLOOR_LONG_ALIGNED_CHOPPY=1.30`，进 low_rr_extra slot；不放宽空头。
-- **配置化阈值**（`utils/config_loader.py`）：`RR_FLOOR_DEFAULT=1.5` / `RR_FLOOR_LONG_BULLISH=1.30` / `RR_FLOOR_LONG_ALIGNED_CHOPPY=1.30` / `RR_FLOOR_SHORT_BULLISH=1.80` / `PROBE_RR_FLOOR=1.30` / `LOW_RR_LONG_ALIGNED_ENABLED=true`，全部进 HARD_LIMITS + env_map + banner。
-- **probe 路径**：`PROBE_RR_FLOOR` 替换硬编码 `1.30`，`_can_route_probe_short` / 主路径 / deferred 路径全部从同一函数取值。
-- **Attribution 全链路**：`trade_decision.attribution` 新增 `rr_floor_used` / `rr_floor_reason` / `symbol_trend` / `symbol_higher_tf_bias` / `symbol_daily_bias`；被拒决策同样带这五个字段，落 `data/journal/events_*.jsonl`。
-- **测试**：新增 `test_rr_floor_policy.py` 20 个 case，覆盖 AC-RR-01..09。
-- **验证**：551 passed / 4 deselected / 0 failed
-- 详见 `docs/rr_floor_policy_prd.md` / `docs/rr_floor_policy_acceptance.md`。
-
-### ✅ Long Entry Position Guard（2026-05-26 完成）
-- **背景**：NEAR-USDT 2026-05-26 14:47 通过 `long_bullish_low_rr` 在 range_pos=0.838 / prev_daily=+15.66% 山顶位置追多。`pending_pullback`（RSI ≥ 70）和 `deferred_15m_confirmation` 都无法覆盖这种"位置过高但 RSI 中性"的多头入场。
-- **TechAnalyst 输入**（`agents/trading/tech_analyst.py`）：新增 `entry_context.{position_in_24h_range, pre_12h_return_pct, prev_daily_return_pct}`，保留 `short_context` 兼容旧消费方。
-- **统一函数**（`agents/trading/judge.py: _check_entry_position_policy(symbol, action, plan, tech, score, context)`）：long overheat 与 short side guard 的唯一入口，主开仓路径与 `deferred_15m_confirmation` / `deferred_pullback` / `deferred_chase` 三条 deferred 路径共用。**禁止**在 deferred helper 内重写 overheat 判定。
-- **触发阈值**：`range_pos>=0.82` 或 `pre_12h>=0.05 ∧ range_pos>=0.75` 或 `prev_daily>=0.10 ∧ range_pos>=0.75`，分别返回 `long_overheat_range_pos` / `long_overheat_pre_move` / `long_overheat_daily_gain`。
-- **处理策略**：有效 target（`stop_loss < target < signal_price`，target = `max(stop_loss*1.005, signal*(1-max(LONG_LIVE_PULLBACK_MIN_PCT, atr_pct)))`）→ 创建 `deferred_pullback_overheat`（`chase_eligible=false`，timeout `LONG_LIVE_PULLBACK_TIMEOUT_HOURS`）；target 无效 → 直拒 `long_overheat_no_valid_pullback_target`。deferred 触发后必须重新执行 HTF/15m/RR/EV/Entry Position Guard/slot gate 全套二次确认。
-- **EV bucket 修正**：`plan.entry_type` 前移到 `_check_expected_value` 之前，消除 `unknown` bucket key；新增 `EV_BUCKET_MIN_TRADES=10` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`，sparse bucket 禁止抬高 `p_win`，可降仓 / 缩仓。
-- **配置化阈值**（`utils/config_loader.py`）：`LONG_LIVE_POSITION_GUARD_ENABLED=true` / `LONG_LIVE_MAX_RANGE_POS=0.82` / `LONG_LIVE_MAX_PRE_MOVE=0.05` / `LONG_LIVE_MAX_DAILY_GAIN=0.10` / `LONG_LIVE_DAILY_GAIN_RANGE_POS=0.75` / `LONG_LIVE_PULLBACK_MIN_PCT=0.025` / `LONG_LIVE_PULLBACK_TIMEOUT_HOURS=4` / `LONG_LIVE_OVERHEAT_DISABLE_CHASE=true` / `EV_BUCKET_MIN_TRADES=10` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT=false`，全部进 HARD_LIMITS + env_map + banner。
-- **Attribution 全链路**：`trade_decision.attribution` 新增 `entry_position_status` / `entry_position_block_reason` / `entry_range_pos_24h` / `entry_pre_12h_return_pct` / `entry_prev_daily_return_pct` / `entry_position_policy=long_overheat_v1` / `deferred_target_price` / `deferred_reason` / `ev_bucket_key` / `ev_bucket_trade_count` / `ev_bucket_min_trades` / `ev_bucket_sparse` 共 12 个 optional 字段；被拒决策同样带，落 `data/journal/events_*.jsonl`。
-- **回测同构**（`event_backtest.py`）：新增 `long_live_*` 构造参数与 `_check_entry_with_regime` overheat 检查；`prev_daily_return_pct` 列由 `close.pct_change(24)` 预计算。
-- **测试**：新增 `test_long_entry_position_guard.py` 23 个 case，覆盖 AC-LONGPOS-01..17（NEAR 复现、三组阈值触发、target 无效拒绝、chase 禁用、四路径一致性、short side guard 主路径生效、bucket key 真实、稀疏 bucket 不 uplift、trade_decision.v2 兼容、回测同构、配置 + banner、审计字段）。
-- **验证**：575 passed（彼时基线，2026-05-27 阶段 3 后升至 618 passed）/ 4 deselected / 0 failed
-- 详见 `docs/long_entry_position_guard_prd.md` / `docs/long_entry_position_guard_acceptance.md`。
-
-### ✅ 分批止盈生命周期收敛 阶段 1+2+3（2026-05-27 完成）
-- **背景**：`_build_okx_attach_algo` 同时挂 SL+TP 触发"OKX 把 TP 也算成保护单"，加仓时 `protection_state` 误判；`_update_trailing` 在 trailing 触发时直接 mutate `tp_filled` / SL，不等 reduce 真实成交；多个 SL cancel/place 路径并存。
-- **阶段 1（FR-01/FR-03/FR-06 热修止血）**：`_build_okx_attach_algo` 移除 TP 字段；`check_stop_loss_take_profit` gate legacy scalar TP 当 `take_profit_levels` 存在；`_update_trailing` 不再 mutate `tp_filled` / SL，仅返回 `partial_tp_n` 信号；`reduce_position(tp_advance)` 在 reduce 成功后才推进 `tp_filled` 并 `_move_sl` 锁利位；`_try_acquire_exit_lock` 串行化 close/reduce/partial_tp/risk_alert。
-- **阶段 2（FR-02/FR-04/FR-05 保护单 owner 收敛）**：position 加 `exit_owner` / `sl_algo_id` / `sl_algo_clord_id` / `sl_sync_state` / `protection_state`；`_make_sl_clord_id` + `_resolve_attached_sl_algo_id` 让 smart_open 通过 `attachAlgoClOrdId` 回查 algoId；`_replace_protective_sl` 单一入口替代所有 SL cancel/place；保护失败 OKX live 触发 `_halt_symbol(reason='sl_replace_failed')`；`add_to_position` 在 `protection_state != protected` 时拒绝。
-- **阶段 3（FR-07 重启 / sync 时存量 algo 迁移）**：`_list_pending_algos` / `_cancel_algo_by_id` / `_migrate_okx_algos_for_symbol` / `_migrate_all_symbols_algos`；`sync_positions` 末尾自动调一次；TP algo 一律撤；唯一 SL algo 归属本地 position 写 `sl_algo_id` + 同步 `stop_loss`；无 SL / 多 SL / side 冲突 → live halt（reason `migrate_missing_sl` / `migrate_multiple_sl` / `migrate_sl_side_conflict`）；本地无仓位的 SL 视为 orphan 全撤。
-- **测试**：`test_partial_tp_lifecycle.py` 32 cases（AC-A2/A3/A6/A9 + FR-04 single-entry + FR-05 add 阻断 + AC-A7 algo 迁移）。
-- **验证**：618 passed / 4 deselected / 0 failed。
-- 详见 `docs/partial_tp_lifecycle_prd.md` / `docs/partial_tp_lifecycle_acceptance.md`。
-
-### ✅ OKX 真实 testnet 语义验收（2026-05-27 完成）
-- **范围**：T0–T9 共 10 case 中 7 PASS（T0 配置探测 / T1 long_short_mode 多空双向 / T4 reduceOnly close / T5 51169 already_flat 拒单 / T6 SL 替换流程 / T8 algo 重启迁移 / T9 attachAlgoClOrdId 回查），3 SKIP（T2/T3 需 net_mode 账户、T7 仅 mock_only 已在 mock 矩阵 PASS）。
-- **关键 bug 修复**：`_cancel_protective_sl` / `_cancel_algo_by_id` 改走 `cancel_orders([id], symbol, params={'trigger': True})`——直接 `private_post_trade_cancel_algos` 传 dict 或 list 都被 OKX 拒成 50002 "Incorrect json data format"，mock 测试无法覆盖（mock 不还原 OKX 真实序列化路径）。这是必须靠真实 testnet 才能暴露的故障，验证了"mock pass ≠ live ready"的红线。
-- **工具**：`verify_okx_testnet_real.py`（10 case 顺序执行，含 `_wait_flat` 轮询覆盖 OKX testnet 状态同步延迟，`_safe_close_remaining` 兜底 reduceOnly + 清空 `IdempotencyGuard`） + `.env.testnet`（隔离 testnet 凭证 + 独立 `data/testnet_positions.json`）；测试 mock 同步更新（`test_partial_tp_lifecycle.py TestAlgoMigration` 3 case 改 mock cancel_orders）。
-- **报告**：`docs/generated_reports/OKX执行语义testnet验收报告_20260527_150518.md`（T0-T9）；`docs/generated_reports/OKX执行语义testnet验收报告_20260528_063307.md`（全量 T0-T15 13 PASS / 3 SKIP，含 T10-T15 保护单/close cause 补验）。
-- **结论更新**：2026-05-28 P0 整改代码 + T10-T15 真实补验、P1 整改 + T2/T3 net_mode 补跑均为上一轮历史验收记录；第三次审计 P0/P1/P2 整改已闭环（FR-3A/3B/3C/3D，807 passed），但第四次审计（2026-05-28 晚）新增 F4-001 reduce 失败回参误广播 risk_reduced（P0）/ F4-002 pnl_resolved evidence 透传不完整（P1）/ F4-003 owner tag 未用于真实 OKX SL 下单（P1）三阻断；当时 live 扩容 NO-GO。详见 `docs/audit_remediation_third_pass_20260528_prd.md` / `docs/audit_remediation_third_pass_20260528_acceptance.md` 与 `docs/generated_reports/系统性审计报告_20260528_第四次.md`。**Supersede（2026-06-05）**：F4-001/002/003 已在 2026-05-29 闭环（详见 `docs/audit_remediation_fourth_pass_20260528_acceptance.md`），当前 live 扩容为 CONDITIONAL GO，最新事实以本文件第 7 行"当前状态"行与 `docs/to-do-list.md` 为准。
-
-### ✅ 第三次审计 P0/P1/P2 整改（2026-05-28 完成，807 passed）
-- **FR-3A `reduce_position()` fail-closed**：`executor.py:2427-2724` 撤旧 SL 失败立即返回 `sl_cancel_failed` / 不清旧 ID / live OKX `_halt_symbol`；reduce reject 后尝试 `_replace_protective_sl` restore 原 SL；任意 reduce 成功后 residual 必重挂 SL 失败标 `protection_state=unknown` 阻断 add/open/reduce。结构化结果含 `protective_update_state/protection_state/halt_required/cancel_ok/reduce_ok/replace_ok/old_sl_algo_id/new_sl_algo_id/sl_sync_state/warnings/reason`。`test_reduce_protective_sl_lifecycle.py` 14 case PASS。
-- **FR-3B `_cleanup_protective_orders_on_close()` owner-bound sweep**：新增 `_make_owner_tag_clord_id(symbol)` 生成 `ca + ns(STATE_NAMESPACE) + bot(BOT_INSTANCE_ID) + base + random`（OKX ≤32 chars 字母数字限制）+ `_is_owner_clord_id(clord)` 按 prefix 判定。`_cleanup_protective_orders_on_close()` 三层 owner 判定（已知 sl_algo_id / exact sl_algo_clord_id / owner-prefix）；foreign / unknown algo 不撤、写 `state=foreign_algos_present` + `halt_required=True` + live `_halt_symbol(reason='foreign_algos_present')` 阻断同 symbol 新开仓；`close_position()` 透传 `result.protective_cleanup`（含 cancelled/owned/foreign/unknown_count/warnings）+ `protective_cleanup_state ∈ {cleaned/none/failed/foreign_algos_present/unknown}`。`test_protective_cleanup_owner.py` 12 case PASS。**注**：F4-003 第四次审计发现 owner-tag clOrdId 仅在 cleanup 路径用，**真实 SL 下单**仍用 legacy `_make_sl_clord_id`（`sl + base + random`）；待修复后 owner-prefix sweep 才能完整生效，目前回退为 known_id exact 匹配。
-- **FR-3C `pnl_resolved` final close cause 证据 + 幂等**：`utils/realized_pnl_resolver.py::_classify_close_evidence(close_fills, bills, snap)` 输出 `final_close_cause/match_rule/confidence/matched_*_id`，规则：sl_algo_id_exact / sl_algo_clord_id_exact / tp_algo_id_exact / tp_algo_clord_id_exact / bills_liquidation_subtype / close_fills_unmatched(manual) / 默认 external_unknown；仅 `exchange_sl` + `confidence>=0.9` 才 `is_strategy_stop=True`。Judge / Reviewer 按 `correction_event_id|position_id` 幂等去重 LRU set（max 1024）；Judge `_probe_short_sl_count` 受 `is_strategy_stop` 门控（仅 exchange_sl 计数；即便 PnL<0 但 close_cause=external_unknown/manual_close 不计）；legacy payload 缺字段 fail-safe 不计 SL。`test_external_close_final_cause.py` 11 case PASS（含 probe_short 门控扩展）。
-- **FR-3D 新闻 ticker 边界匹配**：新增 `utils/symbol_mentions.py` 三 helper（`match_symbol_in_text(symbol, text)` / `extract_symbol_mentions(headlines, symbols, *, now_ts)` / `filter_relevant_headlines(headlines, base, *, now_ts)`）。五条规则 cashtag(1.0) / paren(0.95) / pair(0.95) / keyword(0.85) / word(0.6) + 正则边界 `(?<![A-Z0-9])SYM(?![A-Z0-9])`；`_HIGH_AMBIGUITY_BARE_WORD = {TON, ARB, NEAR, DOT, FIL, OP, FET}` 不放行 word 规则（必须 cashtag/paren/pair/keyword 命中）。`agents/research/news_researcher._extract_symbol_mentions` 与 `agents/trading/multi_data_collector._refresh_news_cache` 都改走 helper；输出 `confidence/match_rule/source/freshness_sec` provenance。`test_symbol_mentions.py` 33 case PASS。
-- 详见 `docs/audit_remediation_third_pass_20260528_prd.md` / `docs/audit_remediation_third_pass_20260528_acceptance.md`。
+各特性的硬约束（单点收口函数、字段契约）见 `CLAUDE.md ## 风控红线`。
 
 ### Phase 9: 待开发
 - Predictor（趋势预测Agent）

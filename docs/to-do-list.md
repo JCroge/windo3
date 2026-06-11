@@ -2,7 +2,7 @@
 
 更新日期：2026-06-10
 来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成；2026-06-03 Pullback Entry Paper Parity 完成；2026-06-05 Short Main Path Risk Guard Parity 完成；2026-06-07 研究层低流动性硬过滤器上线（2026-06-10 补 OpenSpec/verify 流程闭环）；2026-06-10 Paper Dual-Track Simulation 完成（idealized vs realistic 双轨 + /paper_gap，comet 全流程归档）；2026-06-10 Data Source Provenance 完成（跨源 source/freshness_sec/confidence 穿透至 tech_analysis + Judge attribution + Reviewer 分桶，observability-only，comet 全流程归档）。
-当前基线：`1066 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
+当前基线：`1088 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
 
 最新整改文档：
 
@@ -93,7 +93,7 @@
 | DONE 2026-06-10 | 数据源 provenance（观测+穿透） | `utils/data_provenance.py` 单函数 `derive_confidence`；collector 为 OI/taker/long_short/big_trades/funding 捕获 `source`/`freshness_sec`（捡回被丢弃的 API item timestamp）/`confidence`（freshness+跨所+degraded 派生），非破坏并行 provenance block 入 market_data；tech_analyst 透传进 tech_analysis；Judge `_summarize_provenance` 写 attribution（metadata-only，决策不变）；Reviewer `_provenance_bucket` 按 native/cross × low/high 分桶 | comet 全流程归档 `openspec/changes/archive/2026-06-10-data-source-provenance`，master spec `data-source-provenance`（8 需求）；1035→1066 tests。**注**：news mention provenance 此前已由 `utils/symbol_mentions.py` 覆盖（FR-3D）；本项覆盖行情维度字段 |
 | OPEN | Judge 对弱信号降权（provenance 后续） | 基于已铺出的 provenance（weakest_confidence / has_cross_exchange），让 Judge 对陈旧/跨所/低置信信号降权或门控 | 策略改动，须事件回测验证（CLAUDE.md 红线）；依赖 provenance 数据先累积。详见 `docs/superpowers/specs/2026-06-10-data-source-provenance-design.md` Out of Scope |
 | OPEN | Agent health supervisor | Orchestrator 增加 setup failure、loop alive、queue backlog、DLQ、LLM degraded、data degraded 状态 | Telegram `/status` 或 health 输出能看见关键 agent 健康状态 |
-| OPEN | 文档瘦身 | `CLAUDE.md`、`docs/architecture.md`、`docs/handoff.md` 历史流水迁出或压缩 | 规则文档只保留当前事实和硬约束，旧测试数仅在历史上下文出现 |
+| DONE 2026-06-11 | 文档瘦身 | `CLAUDE.md` 40→18KB（当前事实段去逐基线 changelog，六红线章节保留）、`docs/architecture.md` 62→43KB（MVP 路线压成里程碑表）、`docs/handoff.md` 47→15KB（温和压缩 + 补全 2026-05-27 后里程碑，成为唯一历史家） | 规则文档只剩当前事实+硬约束；旧测试数仅在里程碑表「彼时基线」列出现；当前基线单点声明于 CLAUDE/to-do-list |
 | OPEN | 策略层深度优化提案（先观察） | 详见 `docs/strategy_optimization_proposal_20260602.md` 5 项发现（Exit Strategy 系统止损 20% 胜率 / ma_aligned 直接开仓 -9.14U / R:R poor bucket 全亏 / Regime choppy 主导 / BTC 14 分钟连续开 16 单）；2026-06-03 决定先归档观察，等 paper realistic 数据累计后回看 | paper realistic 数据足够后再决策实施或归档 |
 
 ## 已关闭
