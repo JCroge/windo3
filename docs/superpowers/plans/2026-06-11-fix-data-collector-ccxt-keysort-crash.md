@@ -15,7 +15,6 @@ archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 
 **Tech Stack:** Python 3.9 / asyncio / ccxt / pytest（`asyncio_mode = auto`）。测试放仓库根 `test_*.py`（与多数现有测试一致）。
 
-archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 ---
 
 ## File Structure
@@ -26,7 +25,6 @@ archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 - `agents/orchestrator.py` — **改**。新增 `_collect_task_stats()`（纯函数 seam）、`_maybe_alert_task_failure()`；`__init__` 加去重 set；`_health_loop` 调新告警。
 - `test_ccxt_compat.py` / `test_base_setup_guard.py` / `test_agent_task_failure_alert.py` — **新增**测试。
 
-archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 ---
 
 ## Task 1: ccxt keysort 容 None shim (`exchange-client-resilience`)
@@ -125,7 +123,6 @@ git commit -m "fix(exchange): ccxt keysort 容 None 键 shim，修 OKX null-id �
 
 - [ ] **Step 7: 勾选 tasks.md 1.1/1.2/1.3**
 
-archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 ---
 
 ## Task 2: base.run() setup 失败不再静默 (`agent-fault-visibility`)
@@ -217,7 +214,6 @@ git commit -m "fix(base): run() 包 setup try/except 打 traceback 再抛，根�
 
 - [ ] **Step 6: 勾选 tasks.md 2.1/2.2**
 
-archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 ---
 
 ## Task 3: orchestrator 失败任务去重告警 (`agent-fault-visibility`)
@@ -405,7 +401,6 @@ git commit -m "feat(orchestrator): 失败 agent 任务发去重 telegram_alert{a
 
 - [ ] **Step 9: 勾选 tasks.md 3.1/3.2/3.3**
 
-archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 ---
 
 ## Task 4: 端到端验证与收尾
@@ -443,7 +438,6 @@ git add openspec/changes/fix-data-collector-ccxt-keysort-crash/tasks.md
 git commit -m "docs(comet): mark build tasks complete (1088+ passed, load_markets 恢复)"
 ```
 
-archived-with: 2026-06-11-fix-data-collector-ccxt-keysort-crash
 ---
 
 ## Self-Review
