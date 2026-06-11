@@ -921,6 +921,7 @@ class TestAddPositionTpInvariant:
             'take_profit_levels': [entry * 1.10, entry * 1.20],
             'tp_filled': 0, 'protection_state': 'protected', 'atr_pct': 0.02,
             'leverage': 1,
+            'highest_price': entry, 'lowest_price': entry,
         }
         ex.positions['X-USDT-SWAP'] = pos
         return pos
@@ -955,5 +956,29 @@ class TestAddPositionTpInvariant:
         ex._update_trailing('X-USDT-SWAP', pos, pos['entry_price'])
         for call in ex._halt_symbol.call_args_list:
             assert call.kwargs.get('reason') != 'tp_invariant_breach'
+
+    def test_add_after_partial_tp_fill(self):
+        ex = _make_executor()
+        pos = self._open_long(ex, entry=100.0)
+        pos['tp_filled'] = 1  # TP1 已部分成交
+        self._wire_add(ex, fill_price=112.0)
+        ex._halt_symbol = MagicMock()
+        ex.add_to_position('X-USDT-SWAP', 'long', size_pct=1.0)
+        assert pos['tp_filled'] == 1
+        assert pos['take_profit'] == pos['take_profit_levels'][0]
+        ex._update_trailing('X-USDT-SWAP', pos, pos['entry_price'])
+        for call in ex._halt_symbol.call_args_list:
+            assert call.kwargs.get('reason') != 'tp_invariant_breach'
+
+    def test_multi_level_ratios_preserved(self):
+        ex = _make_executor()
+        pos = self._open_long(ex, entry=100.0)  # levels=[110,120] → 距 10%/20%
+        self._wire_add(ex, fill_price=120.0)
+        ex._halt_symbol = MagicMock()
+        ex.add_to_position('X-USDT-SWAP', 'long', size_pct=1.0)
+        new_entry = pos['entry_price']
+        levels = pos['take_profit_levels']
+        assert abs((levels[0] - new_entry) / new_entry - 0.10) < 1e-9
+        assert abs((levels[1] - new_entry) / new_entry - 0.20) < 1e-9
 
 
