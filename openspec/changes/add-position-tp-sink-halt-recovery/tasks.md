@@ -22,8 +22,11 @@
 - [x] 全量 `python3 -m pytest -q` = `1071 passed / 4 deselected / 1 warning`（1066 基线 + 5 新增）
 - [x] `compileall executor.py agents utils` 通过
 
-## 收尾（归档阶段处理，并发避让）
-- [ ] 〔archive〕更新 CLAUDE.md "当前事实" + `docs/to-do-list.md` 关闭 P1-01/P2-02（引用第五次审计报告）
-      ⚠️ 并发避让：另一窗口正改 P1-02/P1-03（judge.py）。这两份共享文档延到 archive 阶段
-      只追加 P1-01/P2-02 独立行，不碰 P1-02/P1-03 行；记忆文件（非分支隔离）暂不动，待两线落地后统一。
-- [ ] 〔archive〕delta spec 同步至 master（comet-archive 自动，本 change 只动 entry-drift-policy + tg-symbol-halt-control）
+## 归档阶段事项（非 build 勾选项，散文记录）
+
+> 以下在 comet-archive 阶段处理，不计入 build 完成勾选：
+>
+> - delta spec 同步至 master：comet-archive 自动执行（本 change 只动 `entry-drift-policy` + `tg-symbol-halt-control`）。
+> - CLAUDE.md "当前事实" + `docs/to-do-list.md` 关闭 P1-01/P2-02（引用第五次审计报告）。
+>   ⚠️ **并发避让**：另一窗口正改 P1-02/P1-03（judge.py）。这两份共享文档延到 archive，
+>   只追加 P1-01/P2-02 独立行，不碰 P1-02/P1-03 行；记忆文件（非分支隔离）暂不动，待两线落地后统一。

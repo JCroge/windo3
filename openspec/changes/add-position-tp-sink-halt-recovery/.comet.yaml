@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/add-position-tp-sink-halt-recovery/.comet/handoff/design-context.json
 handoff_hash: d35e0f2e5b3873a6c4b5cd537fb4fb040932fe5642bceba8b0ee7f79c93ff283
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q executor.py agents utils
+verify_command: python3 -m pytest -q
