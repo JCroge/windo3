@@ -38,6 +38,8 @@ class Orchestrator:
         self._latest_halts_snapshot: dict = {}    # F-TG-004
         self._health_write_interval: float = 30.0  # F-TG-004 秒
         self._prev_dlq_size: int = 0  # P2-16: DLQ 增长告警基准
+        self._alerted_failed_tasks: set = set()  # 已告警失败任务标识，防重复
+        self._latest_failed_tasks: list = []     # 最近一次扫描的失败任务 [(agent, repr)]
 
     def _default_config(self) -> dict:
         try:
@@ -282,6 +284,34 @@ class Orchestrator:
         except Exception as e:
             self.logger.warning(f"[Orchestrator] _on_halts_snapshot 异常: {e}")
 
+    def _collect_task_stats(self):
+        """返回 (tasks_alive, failed)；failed=[(agent_name, repr(exc))]。
+
+        index 映射 all_agents = _research_agents + _trading_agents（与 _tasks 前缀对齐）；
+        越界（research/cmd/health 等附加 task）用 'unknown-agent'。纯函数，不写文件，便于单测。
+        """
+        all_agents = self._research_agents + self._trading_agents
+        tasks_alive = 0
+        failed = []
+        for i, t in enumerate(self._tasks):
+            try:
+                if not t.done():
+                    tasks_alive += 1
+                    continue
+                cancelled = getattr(t, "cancelled", None)
+                if callable(cancelled) and cancelled() is True:
+                    continue
+                try:
+                    exc = t.exception()
+                except asyncio.CancelledError:
+                    continue
+                if exc is not None:
+                    name = all_agents[i].name if i < len(all_agents) else "unknown-agent"
+                    failed.append((name, repr(exc)))
+            except Exception:
+                pass  # 单个 task 异常不影响整体计数
+        return tasks_alive, failed
+
     def _write_agent_health(self):
         """F-TG-004: 写 data/<ns_>agent_health.json。失败 logger.warning 不抛。"""
         try:
@@ -289,24 +319,9 @@ class Orchestrator:
             from utils.atomic_io import atomic_write_json
             from agents.message_bus import MessageBus
 
-            tasks_alive = 0
-            tasks_failed = 0
-            for t in self._tasks:
-                try:
-                    if t.done():
-                        cancelled = getattr(t, "cancelled", None)
-                        if callable(cancelled) and cancelled() is True:
-                            continue
-                        try:
-                            task_exc = t.exception()
-                        except asyncio.CancelledError:
-                            continue
-                        if task_exc is not None:
-                            tasks_failed += 1
-                    else:
-                        tasks_alive += 1
-                except Exception:
-                    pass  # 单个 task 异常不影响整体计数
+            tasks_alive, failed = self._collect_task_stats()
+            tasks_failed = len(failed)
+            self._latest_failed_tasks = failed
 
             agents_registered = len(self._research_agents) + len(self._trading_agents)
 
@@ -358,11 +373,38 @@ class Orchestrator:
                 self.logger.warning(f"[DLQ Alert] 发布失败: {e}")
         self._prev_dlq_size = dlq_size
 
+    async def _maybe_alert_task_failure(self, failed):
+        """失败 agent 任务首次出现时发 telegram_alert（去重；仅可见性，不自动重启）。
+
+        agent 任务在 setup/run 阶段崩溃退出原本只静默计入 tasks_failed，
+        本告警让运维即时可见（Agent health supervisor）。
+        """
+        if not failed:
+            return
+        for agent_name, err in failed:
+            key = f"{agent_name}:{err}"
+            if key in self._alerted_failed_tasks:
+                continue
+            self._alerted_failed_tasks.add(key)
+            try:
+                from agents.message_bus import MessageBus
+                bus = self.bus or MessageBus.get_instance()
+                await bus.publish("orchestrator", "telegram_alert", {
+                    "level": "critical",
+                    "type": "agent_task_failed",
+                    "agent": agent_name,
+                    "error": err,
+                    "message": f"Agent [{agent_name}] 任务已崩溃退出：{err}",
+                }, "broadcast")
+            except Exception as e:
+                self.logger.warning(f"[TaskFail Alert] 发布失败: {e}")
+
     async def _health_loop(self):
-        """F-TG-004: 每 N 秒写一次 agent_health.json；P2-16: 顺带 DLQ 增长告警。"""
+        """F-TG-004: 每 N 秒写一次 agent_health.json；P2-16: 顺带 DLQ 增长告警；失败任务告警。"""
         while not self._shutdown_event.is_set():
             dlq_size = self._write_agent_health()
             await self._maybe_alert_dlq_growth(dlq_size)
+            await self._maybe_alert_task_failure(self._latest_failed_tasks)
             try:
                 await asyncio.wait_for(
                     self._shutdown_event.wait(),

@@ -10,9 +10,9 @@
 - [x] 2.2 单测：setup 抛异常 → 记录 CRITICAL 含 traceback 且异常重抛；正常 setup 不记录、继续进入 loops
 
 ## 3. orchestrator 失败任务主动告警 (agent-fault-visibility)
-- [ ] 3.1 `_health_loop` 任务扫描里收集 `(agent_name, repr(exc))`（按 index 映射 `all_agents`，越界用 `unknown-agent`）
-- [ ] 3.2 新增 `_maybe_alert_task_failure(failed)`：对未告警过的失败任务发 `telegram_alert {type:"agent_task_failed", agent, error}`，用 `_alerted_failed_tasks` set 去重；`agent_health.json` schema 不变
-- [ ] 3.3 单测：失败任务发一次 alert、同一任务再 tick 不重发、未知 index 用 `unknown-agent` 仍发
+- [x] 3.1 抽出 `_collect_task_stats()`（纯函数 seam）收集 `(agent_name, repr(exc))`（按 index 映射 `all_agents`，越界用 `unknown-agent`）；`_write_agent_health` 复用
+- [x] 3.2 新增 `_maybe_alert_task_failure(failed)`：对未告警过的失败任务发 `telegram_alert {type:"agent_task_failed", agent, error}`，用 `_alerted_failed_tasks` set 去重；`agent_health.json` schema 不变
+- [x] 3.3 单测：失败任务发一次 alert、同一任务再 tick 不重发、未知 index 用 `unknown-agent` 仍发、cancelled 不计失败
 
 ## 4. 验证与收尾
 - [ ] 4.1 复现脚本（create_exchange + load_markets，真实 OKX）现在返回成功、markets>0
