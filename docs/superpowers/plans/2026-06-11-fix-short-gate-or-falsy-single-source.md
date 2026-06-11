@@ -2,6 +2,7 @@
 change: fix-short-gate-or-falsy-single-source
 design-doc: docs/superpowers/specs/2026-06-11-fix-short-gate-or-falsy-single-source-design.md
 base-ref: 79795b84929ea8367947d83d44ed9cc71d0d65fc
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
 ---
 
 # 短单 gate `or`-falsy 修复 + 单点收口归位 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 79795b84929ea8367947d83d44ed9cc71d0d65fc
 
 **Tech Stack:** Python 3, pytest, MagicMock；`agents/trading/judge.py` 单文件 + `tests/test_short_main_path_risk_guard.py`。
 
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
 ---
 
 ## File Structure
@@ -26,6 +28,7 @@ base-ref: 79795b84929ea8367947d83d44ed9cc71d0d65fc
   - `_apply_regime_policy` 短单结构段（2897-2950）→ delegate 到 `_classify_short_entry_risk`
 - `tests/test_short_main_path_risk_guard.py` — P1-02 锅底回归 + P1-03 delegate parity / probe 外壳 / 默认值一致性。
 
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
 ---
 
 ## Task 1: `_coalesce_float` helper + P1-02 短单 gate 修复
@@ -130,6 +133,7 @@ git add agents/trading/judge.py tests/test_short_main_path_risk_guard.py
 git commit -m "fix(judge): _classify_short_entry_risk 用哨兵合并替代 or-falsy，锅底 range_pos=0.0 正确拒空 (P1-02)"
 ```
 
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
 ---
 
 ## Task 2: 兄弟 `or`-falsy 点改用 helper（2761 + 2359）
@@ -189,6 +193,7 @@ git add agents/trading/judge.py
 git commit -m "fix(judge): long overheat gate + attribution 写点统一改用 _coalesce_float，根除同类 or-falsy (P1-02 兄弟点)"
 ```
 
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
 ---
 
 ## Task 3: P1-03 — `_apply_regime_policy` delegate 到 canonical
@@ -314,6 +319,7 @@ git add agents/trading/judge.py tests/test_short_main_path_risk_guard.py
 git commit -m "refactor(judge): _apply_regime_policy 短单段 delegate 到 _classify_short_entry_risk，消除第二份实现+默认值发散 (P1-03)"
 ```
 
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
 ---
 
 ## Task 4: 同构记录 + 全量回归 + compileall
@@ -345,6 +351,7 @@ git add openspec/changes/fix-short-gate-or-falsy-single-source/tasks.md
 git commit -m "docs(tasks): 勾选短单 gate 修复实现项 + 记录 event_backtest 同构结论"
 ```
 
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
 ---
 
 ## Self-Review

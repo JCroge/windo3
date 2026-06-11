@@ -2,6 +2,8 @@
 comet_change: fix-short-gate-or-falsy-single-source
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-11-fix-short-gate-or-falsy-single-source
+status: final
 ---
 
 # 技术设计：短单 gate `or`-falsy 修复 + `_apply_regime_policy` 单点收口归位

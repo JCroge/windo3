@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-11-fix-short-gate-or-falsy
 branch_status: handled
 created_at: 2026-06-11
 verified_at: 2026-06-11
-archived: false
+archived: true
 handoff_context: openspec/changes/fix-short-gate-or-falsy-single-source/.comet/handoff/design-context.json
 handoff_hash: ab43687f7e82749166b12f7df91a749c69275a1875d0123f06b7c0ec6eeedf60
 build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q agents utils
