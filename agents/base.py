@@ -25,6 +25,8 @@ class BaseAgent(ABC):
         self._start_time = 0
         self._last_alive_ts = 0.0   # 心跳：message loop 每迭代刷新（告警信号，与业务节奏无关）
         self._last_work_ts = 0.0    # 业务进度：处理到消息时刷新（仅 /health 展示，永不告警）
+        self._tick_enter_ts = 0.0   # tick 前盖（tick-loop 挂死检测信号）
+        self._tick_exit_ts = 0.0    # tick 后盖（正常返回才更新）
 
     def init_llm(self):
         if self.llm is None:
@@ -92,7 +94,9 @@ class BaseAgent(ABC):
         """独立周期任务，不阻塞消息消费"""
         while self._running and not self._should_stop:
             try:
+                self._tick_enter_ts = time.time()
                 await self.tick()
+                self._tick_exit_ts = time.time()
             except asyncio.CancelledError:
                 break
             except Exception as e:
