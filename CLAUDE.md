@@ -5,10 +5,10 @@
 - 当前系统是多 Agent 加密货币趋势交易系统，不是跨交易所套利系统。
 - 生产、paper、testnet、实盘验收主入口统一为 `python3 run_agents.py`。
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
-- 当前基线：`1102 passed / 4 deselected / 1 warning`（2026-06-12，第五次审计 + ccxt keysort 崩溃修复 + Agent 故障可见性 + 持仓同步瞬时重试，全部合并入 main 后全量实测）。
+- 当前基线：`1135 passed / 4 deselected / 1 warning`（2026-06-12，第五次审计 + ccxt keysort 崩溃修复 + Agent 故障可见性 + 持仓同步瞬时重试 + Agent Health Supervisor，全部合并入 main 后全量实测）。
 - 当前 Go/No-Go：小额 live 灰度 GO（维持现有 cap）；live 扩容 CONDITIONAL GO，扩容前置 = 运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置 + 真实 TG 命令链与 drift gate 运维验收。
 - OKX 验收状态：mock 执行语义 10 case PASS；真实 testnet long_short_mode 13 PASS（T0/T1/T4/T5/T6/T8–T15，T2/T3/T7 SKIP）+ net_mode 子账户 T0/T2/T3 3 PASS。
-- TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap`。
+- TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap /health`。
 - 各特性的单点收口函数与硬约束见下方「风控红线」；当前待办看 `docs/to-do-list.md`，最新审计报告看 `docs/generated_reports/系统性审计报告_20260610_第五次.md`，完整历史演进与逐基线里程碑看 `docs/handoff.md`。
 
 ## 快速命令
@@ -124,6 +124,7 @@ Reviewer / RiskGuard
 - 研究层流动性硬过滤必须改 `MarketScanner._apply_liquidity_hard_filter` + `_liquidity_rejection_reason` 单一函数（2026-06-07），在 enrichment 之后、发布 `research_market_data` 之前生效，禁止在调用点重写门槛或把流动性判定下沉给 Censor / LLM prompt。门槛是 `volume_24h` 与 `open_interest_usd` 双 gate（默认 50M / 10M），缺 OI 必须 fail-closed 剔除，不允许放行未证明深度的标的。粗筛 `min_volume_24h`（默认 5M）是交易所扫描广度的便宜首过，不能与该 live 安全 gate 合并。`liquidity_filter` summary 必须随 payload 发布，degraded `last_good` 兜底必须复用已过滤候选并带上一次 summary，禁止在降级路径重新引入被剔除的低流动性标的。门槛只能经 `RESEARCH_MIN_VOLUME_24H_USDT` / `RESEARCH_MIN_OPEN_INTEREST_USD` 调参，不能放宽 Judge / RiskGuard / Executor。详见 `docs/superpowers/specs/2026-06-07-research-liquidity-hard-filter-design.md`。
 - Paper 双轨账本必须经 `book ∈ {realistic, idealized}` 维度单点收口（2026-06-10）：所有持仓/equity 访问走 `self._books[book]`，`_positions`/`_equity` 只是 realistic 的代理 property，禁止在 book 参数化的 helper 内用代理 property 写 equity（会把 idealized 记到 realistic）。realistic 行为必须零回归：`paper_dual_track_enabled` disabled 时 outcome 与现状等价且不产生任何 idealized 文件。idealized 只在 `_tick_fresh` 时市价开仓，缺/陈旧 tick 跳过不伪造价；idealized 退出 = 镜像策略 close/reduce/add（仅当持有）+ 自走 SL/TP，使 `limit_discipline_value` 只隔离入场效应。`_pending_limits` 仅 realistic 且永不序列化。对比层 `paper_dual_track_report.py` 是 paper-only 纯函数，**严禁**被 live Reviewer 消费（`tests/test_paper_dual_track.py::test_reviewer_does_not_consume_idealized_or_paper` 守卫）。状态用分离文件：realistic 维持原 flat `paper_positions.json` 格式不变（telegram reader 依赖）。详见 `docs/superpowers/specs/2026-06-10-paper-dual-track-sim-design.md`。
 - 数据源 provenance 必须经 `utils/data_provenance.py::derive_confidence` 单函数派生 confidence（2026-06-10），禁止在调用点写 bespoke 置信度评分；新增维度走 `provenance_entry`。provenance 是 **observability-only metadata**：`MultiJudge._summarize_provenance` 写入 `attribution.provenance` 与 `ReviewerAgent._provenance_bucket` 必须是 write-only，**严禁**任何 gate/rank/veto/halt/daily-stop 读取 provenance / weakest_confidence / has_cross_exchange / provenance_bucket（"Judge 对弱信号降权"是独立后续 change，须回测）。collector 的 `market_data["provenance"]` 是非破坏并行 block，flat 字段值不得改动；provenance 必须穿透 `collector → tech_analysis → Judge attribution → trade record → Reviewer`，任一层 legacy 缺 provenance 必须 fail-safe 当 `unknown`。freshness 必须取 API item timestamp（非 fetch time）以反映真实数据年龄。详见 `docs/superpowers/specs/2026-06-10-data-source-provenance-design.md`。
+- Agent 健康聚合必须经 `utils/health_snapshot.py::build_health_snapshot` 单一纯函数派生四维度（loop-alive / queue backlog / LLM degraded / data degraded），2026-06-12。健康快照是 **observability-only write-only**：写入 `agent_health.json` 与驱动 Orchestrator `_maybe_alert_health_transitions` 边沿告警 + `/status`/`/health` 展示，**严禁**任何 gate/rank/veto/halt/daily-stop 读取健康状态做交易决策（与 provenance 同性质）。loop-alive 告警只看 `BaseAgent._last_alive_ts`（message loop 0.5s 心跳，与业务节奏解耦，零误报）；`_last_work_ts` 仅展示绝不告警。告警边沿触发 + 恢复通知、四维度独立、持续不健康静默；DLQ/`agent_task_failed`/Judge `risk_alert{llm_degraded}`（决策路径）各自独立，不并入此机。详见 `docs/superpowers/specs/2026-06-12-agent-health-supervisor-design.md`。
 
 ## Exchange 规则
 

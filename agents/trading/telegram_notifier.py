@@ -481,6 +481,7 @@ class TelegramNotifier(BaseAgent):
             '/pnl': self._cmd_pnl,                            # F-TG-003
             '/pnl_id': self._cmd_pnl_id,                      # F-TG-003
             '/paper_gap': self._cmd_paper_gap,                # paper dual-track gap
+            '/health': self._cmd_health,                      # #95 agent health detail
         }
         handlers_with_args = {'/resume_symbol', '/pnl', '/pnl_id', '/paper_gap'}  # 需要 args 的命令
 
@@ -516,6 +517,74 @@ class TelegramNotifier(BaseAgent):
         except Exception:
             return None
 
+    @staticmethod
+    def _format_health_summary(health) -> str:
+        """#95: /status 末尾健康总括行，只列异常维度。"""
+        if not health:
+            return "─ 健康: ?（快照缺失）"
+        bad = []
+        n_stall = health.get("loop_health", {}).get("stalled_count", 0)
+        if n_stall:
+            bad.append(f"{n_stall} stall")
+        n_backlog = health.get("queue_health", {}).get("backlogged_count", 0)
+        if n_backlog:
+            bad.append(f"{n_backlog} backlog")
+        if health.get("llm_health", {}).get("degraded", False):
+            bad.append("LLM降级")
+        dh = health.get("data_health", {})
+        if dh.get("degraded", False) or dh.get("stale", False):
+            bad.append("data降级")
+        if not bad:
+            return "─ 健康: ✓"
+        return "─ 健康: ⚠ " + " / ".join(bad)
+
+    @staticmethod
+    def _format_health_detail(health, now=None) -> str:
+        """#95: /health per-dimension 明细。"""
+        if not health:
+            return "🩺 健康快照缺失（orchestrator 未写入或文件不可读）"
+        now = now if now is not None else time.time()
+        lines = ["🩺 Agent 健康明细"]
+
+        loop = health.get("loop_health", {})
+        if loop.get("stalled_count", 0):
+            lines.append(f"Loop:  ⚠ {loop['stalled_count']} stalled")
+            for s in loop.get("stalled", []):
+                lines.append(f"  • {s.get('name', '?')} 空闲 {s.get('idle_sec', '?')}s")
+        else:
+            lines.append("Loop:  ✓")
+
+        q = health.get("queue_health", {})
+        if q.get("backlogged_count", 0):
+            lines.append(f"Queue: ⚠ {q['backlogged_count']} backlog")
+            for s in q.get("backlogged", []):
+                lines.append(f"  • {s.get('name', '?')} pending {s.get('pending', '?')}")
+        else:
+            lines.append(f"Queue: ✓ (max pending {q.get('max_pending', 0)})")
+
+        llm = health.get("llm_health", {})
+        if llm.get("degraded", False):
+            lines.append("LLM:   ⚠ 降级")
+            for s in llm.get("degraded_agents", []):
+                lines.append(f"  • {s.get('name', '?')} 连续失败 {s.get('consecutive_failures', '?')}")
+        else:
+            lines.append("LLM:   ✓")
+
+        d = health.get("data_health", {})
+        if d.get("degraded", False) or d.get("stale", False):
+            tag = "降级" if d.get("degraded") else "陈旧"
+            syms = ", ".join(d.get("degraded_symbols", [])) or "—"
+            lines.append(f"Data:  ⚠ {tag}（{syms}）")
+        else:
+            ago = d.get("last_collect_ago_sec")
+            ago_str = f"上次采集 {int(ago)}s 前" if ago is not None else "尚未采集"
+            lines.append(f"Data:  ✓ {ago_str}")
+
+        ts = health.get("ts")
+        if ts:
+            lines.append(f"（快照 {int(now - ts)}s 前）")
+        return "\n".join(lines)
+
     async def _cmd_halts(self):
         """F-TG-002: 列出当前 per-symbol halt。"""
         health = self._read_agent_health() or {}
@@ -535,6 +604,11 @@ class TelegramNotifier(BaseAgent):
             lines.append(f"  reason: {reason}")
             lines.append(f"  halted: {self._format_elapsed(elapsed)} ago")
         await self._send_message("\n".join(lines))
+
+    async def _cmd_health(self):
+        """#95: 展示 agent 健康明细。"""
+        health = self._read_agent_health()
+        await self._send_message(self._format_health_detail(health))
 
     # ==================== PnL Correction Helpers (F-TG-003) ====================
 
@@ -798,6 +872,7 @@ class TelegramNotifier(BaseAgent):
                 suffix = f" …+{len(halts) - 5}" if len(halts) > 5 else ""
                 halt_str = ", ".join(s.split("-")[0] for s in short_list)  # 取 base 简写
                 text += f"\n─ Per-symbol halt: {len(halts)} ({halt_str}{suffix})"
+            text += f"\n{self._format_health_summary(health)}"
         else:
             text += "\n─ Health: ?（agent_health.json 缺失）"
 

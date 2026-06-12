@@ -37,6 +37,12 @@ class MultiDataCollector(BaseAgent):
         self.interval = config.get('interval', '1h')
         self._active_symbols = []
         self._symbol_health = {}
+        self._latest_data_health = {
+            "ts": None,
+            "any_degraded": False,
+            "degraded_symbols": [],
+            "last_collect_ts": None,
+        }
         self._last_kline_time = {}
         self._counters = {"price": 0, "mid": 0, "low": 0, "slow": 0, "news": 0}
         self._max_consecutive_failures = 3
@@ -410,6 +416,7 @@ class MultiDataCollector(BaseAgent):
 
         await self.publish("market_data", payload, symbol=symbol)
         self._record_success(symbol)
+        self._update_data_health(symbol, degraded)
         price_str = f"{payload['latest_price']:.2f}" if payload['latest_price'] else "N/A"
         self.logger.info(
             f"[采集] {symbol} 价格={price_str} "
@@ -729,6 +736,24 @@ class MultiDataCollector(BaseAgent):
             return klines
 
     # ═══ 健康监控 ═══
+
+    def _update_data_health(self, symbol: str, degraded: bool):
+        """更新聚合数据健康态（供 health_snapshot builder 读取）。
+
+        维护"当前 degraded 的 symbol 集合"与"最近一次成功采集时间"。
+        observability-only，不影响采集/决策。
+        """
+        h = self._latest_data_health
+        now = time.time()
+        h["ts"] = now
+        h["last_collect_ts"] = now
+        degraded_set = set(h["degraded_symbols"])
+        if degraded:
+            degraded_set.add(symbol)
+        else:
+            degraded_set.discard(symbol)
+        h["degraded_symbols"] = sorted(degraded_set)
+        h["any_degraded"] = len(degraded_set) > 0
 
     def _init_health(self, symbol: str):
         self._symbol_health[symbol] = {

@@ -40,6 +40,13 @@ class Orchestrator:
         self._prev_dlq_size: int = 0  # P2-16: DLQ 增长告警基准
         self._alerted_failed_tasks: set = set()  # 已告警失败任务标识，防重复
         self._latest_failed_tasks: list = []     # 最近一次扫描的失败任务 [(agent, repr)]
+        self._latest_health_snapshot = None      # #95: Task5 供告警状态机复用
+        self._health_alert_state = {"loop": False, "queue": False,
+                                    "llm": False, "data": False}
+        cfg = self.config or {}
+        self._stall_timeout_sec = cfg.get("agent_stall_timeout_sec", 60)
+        self._backlog_warn_pending = cfg.get("queue_backlog_warn_pending", 200)
+        self._data_stale_timeout_sec = cfg.get("data_stale_timeout_sec", 180)
 
     def _default_config(self) -> dict:
         try:
@@ -313,11 +320,12 @@ class Orchestrator:
         return tasks_alive, failed
 
     def _write_agent_health(self):
-        """F-TG-004: 写 data/<ns_>agent_health.json。失败 logger.warning 不抛。"""
+        """F-TG-004 + #95: 写 data/<ns_>agent_health.json（含四维度健康）。失败 logger.warning 不抛。"""
         try:
             from utils.state_paths import get_state_paths
             from utils.atomic_io import atomic_write_json
             from agents.message_bus import MessageBus
+            from utils.health_snapshot import build_health_snapshot
 
             tasks_alive, failed = self._collect_task_stats()
             tasks_failed = len(failed)
@@ -328,19 +336,30 @@ class Orchestrator:
             try:
                 bus = MessageBus.get_instance()
                 dlq_size = len(getattr(bus, '_dead_letter', []))
+                bus_metrics = bus.get_metrics()
             except Exception:
                 dlq_size = 0
+                bus_metrics = {}
 
-            health = {
-                'ts': time.time(),
+            base_stats = {
                 'agents_registered': agents_registered,
                 'tasks_alive': tasks_alive,
                 'tasks_failed': tasks_failed,
                 'halted_symbols': dict(self._latest_halts_snapshot),
                 'bus_dlq_size': dlq_size,
             }
+            snapshot = build_health_snapshot(
+                self._research_agents + self._trading_agents,
+                bus_metrics,
+                time.time(),
+                stall_timeout_sec=getattr(self, '_stall_timeout_sec', 60),
+                backlog_warn_pending=getattr(self, '_backlog_warn_pending', 200),
+                data_stale_timeout_sec=getattr(self, '_data_stale_timeout_sec', 180),
+                base_stats=base_stats,
+            )
+            self._latest_health_snapshot = snapshot
             path = get_state_paths().agent_health
-            atomic_write_json(path, health)
+            atomic_write_json(path, snapshot)
             return dlq_size
         except Exception as e:
             self.logger.warning(f"[AgentHealth] 写入失败: {e}")
@@ -399,12 +418,67 @@ class Orchestrator:
             except Exception as e:
                 self.logger.warning(f"[TaskFail Alert] 发布失败: {e}")
 
+    @staticmethod
+    def _health_dim_status(snapshot):
+        """从 snapshot 抽出四维度 (dim, unhealthy, warn_message)。"""
+        loop = snapshot.get("loop_health", {})
+        queue = snapshot.get("queue_health", {})
+        llm = snapshot.get("llm_health", {})
+        data = snapshot.get("data_health", {})
+
+        loop_bad = loop.get("stalled_count", 0) > 0
+        queue_bad = queue.get("backlogged_count", 0) > 0
+        llm_bad = bool(llm.get("degraded", False))
+        data_bad = bool(data.get("degraded", False) or data.get("stale", False))
+
+        loop_names = ", ".join(s["name"] for s in loop.get("stalled", []))
+        queue_names = ", ".join(f"{s['name']}({s['pending']})" for s in queue.get("backlogged", []))
+        llm_names = ", ".join(s["name"] for s in llm.get("degraded_agents", []))
+        data_syms = ", ".join(data.get("degraded_symbols", [])) or ("stale" if data.get("stale") else "")
+
+        return [
+            ("loop", loop_bad, f"🩺 健康监控：{loop.get('stalled_count', 0)} 个 agent loop 卡死（{loop_names}）"),
+            ("queue", queue_bad, f"🩺 健康监控：{queue.get('backlogged_count', 0)} 个 agent 队列积压（{queue_names}）"),
+            ("llm", llm_bad, f"🩺 健康监控：LLM 降级（{llm_names}）"),
+            ("data", data_bad, f"🩺 健康监控：数据降级（{data_syms}）"),
+        ]
+
+    async def _maybe_alert_health_transitions(self, snapshot):
+        """四维度健康↔不健康跳变各发一次 telegram_alert（边沿 + 恢复，持续期间静默）。
+
+        observability-only：不自动 halt / 不影响决策。DLQ 与 task_failed 不并入此机，
+        各自语义独立。Judge 的 risk_alert{llm_degraded} 是决策路径，与此告警互不替代。
+        """
+        if not snapshot:
+            return
+        from agents.message_bus import MessageBus
+        try:
+            bus = self.bus or MessageBus.get_instance()
+        except Exception:
+            return
+        for dim, unhealthy, message in self._health_dim_status(snapshot):
+            prev = self._health_alert_state.get(dim, False)
+            if unhealthy and not prev:
+                payload = {"level": "warning", "type": f"health_{dim}", "message": message}
+            elif not unhealthy and prev:
+                payload = {"level": "info", "type": f"health_{dim}_recovered",
+                           "message": f"🩺 健康监控：{dim} 已恢复"}
+            else:
+                self._health_alert_state[dim] = unhealthy
+                continue
+            try:
+                await bus.publish("orchestrator", "telegram_alert", payload, "broadcast")
+            except Exception as e:
+                self.logger.warning(f"[Health Alert] 发布失败 ({dim}): {e}")
+            self._health_alert_state[dim] = unhealthy
+
     async def _health_loop(self):
-        """F-TG-004: 每 N 秒写一次 agent_health.json；P2-16: 顺带 DLQ 增长告警；失败任务告警。"""
+        """F-TG-004: 写 agent_health.json；P2-16: DLQ 增长 + 失败任务告警；#95: 四维度跳变告警。"""
         while not self._shutdown_event.is_set():
             dlq_size = self._write_agent_health()
             await self._maybe_alert_dlq_growth(dlq_size)
             await self._maybe_alert_task_failure(self._latest_failed_tasks)
+            await self._maybe_alert_health_transitions(self._latest_health_snapshot)
             try:
                 await asyncio.wait_for(
                     self._shutdown_event.wait(),
