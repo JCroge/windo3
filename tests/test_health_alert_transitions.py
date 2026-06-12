@@ -43,3 +43,58 @@ def test_write_agent_health_includes_four_dimensions(tmp_path, monkeypatch):
     assert "llm_health" in snap
     assert "data_health" in snap
     assert snap["llm_health"]["degraded"] is False
+
+
+class _CapturingBus:
+    def __init__(self):
+        self.published = []
+
+    async def publish(self, sender, topic, payload, to, **kwargs):
+        self.published.append((topic, payload))
+
+
+def _snap_with(loop=False, queue=False, llm=False, data=False):
+    return {
+        "loop_health": {"stalled_count": 1 if loop else 0,
+                        "stalled": [{"name": "judge", "idle_sec": 99}] if loop else []},
+        "queue_health": {"backlogged_count": 1 if queue else 0,
+                         "max_pending": 300 if queue else 0,
+                         "backlogged": [{"name": "reviewer", "pending": 300}] if queue else []},
+        "llm_health": {"degraded": llm,
+                       "degraded_agents": [{"name": "tech", "consecutive_failures": 4}] if llm else []},
+        "data_health": {"degraded": data, "stale": False,
+                        "degraded_symbols": ["ETH-USDT"] if data else [], "present": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_alert_fires_once_on_edge_then_silent(tmp_path, monkeypatch):
+    orch = _make_orch(tmp_path, monkeypatch)
+    bus = _CapturingBus()
+    orch.bus = bus
+    await orch._maybe_alert_health_transitions(_snap_with(llm=True))
+    await orch._maybe_alert_health_transitions(_snap_with(llm=True))
+    types = [p["type"] for _, p in bus.published]
+    assert types.count("health_llm") == 1
+    assert "health_llm_recovered" not in types
+
+
+@pytest.mark.asyncio
+async def test_alert_recovery_fires_once(tmp_path, monkeypatch):
+    orch = _make_orch(tmp_path, monkeypatch)
+    bus = _CapturingBus()
+    orch.bus = bus
+    await orch._maybe_alert_health_transitions(_snap_with(llm=True))
+    await orch._maybe_alert_health_transitions(_snap_with(llm=False))
+    types = [p["type"] for _, p in bus.published]
+    assert types == ["health_llm", "health_llm_recovered"]
+
+
+@pytest.mark.asyncio
+async def test_dimensions_independent(tmp_path, monkeypatch):
+    orch = _make_orch(tmp_path, monkeypatch)
+    bus = _CapturingBus()
+    orch.bus = bus
+    await orch._maybe_alert_health_transitions(_snap_with(loop=True, data=True))
+    types = sorted(p["type"] for _, p in bus.published)
+    assert types == ["health_data", "health_loop"]
