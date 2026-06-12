@@ -47,6 +47,7 @@ class Orchestrator:
         self._stall_timeout_sec = cfg.get("agent_stall_timeout_sec", 60)
         self._backlog_warn_pending = cfg.get("queue_backlog_warn_pending", 200)
         self._data_stale_timeout_sec = cfg.get("data_stale_timeout_sec", 180)
+        self._tick_stall_timeout_sec = cfg.get("agent_tick_stall_timeout_sec", 120)
 
     def _default_config(self) -> dict:
         try:
@@ -427,18 +428,27 @@ class Orchestrator:
         llm = snapshot.get("llm_health", {})
         data = snapshot.get("data_health", {})
 
-        loop_bad = loop.get("stalled_count", 0) > 0
+        n_msg_stall = loop.get("stalled_count", 0)
+        n_tick_stall = loop.get("tick_stalled_count", 0)
+        loop_bad = n_msg_stall > 0 or n_tick_stall > 0
         queue_bad = queue.get("backlogged_count", 0) > 0
         llm_bad = bool(llm.get("degraded", False))
         data_bad = bool(data.get("degraded", False) or data.get("stale", False))
 
-        loop_names = ", ".join(s["name"] for s in loop.get("stalled", []))
+        loop_parts = []
+        if n_msg_stall:
+            _mn = ", ".join(s.get("name") for s in loop.get("stalled", []))
+            loop_parts.append(f"message-loop 卡死 {n_msg_stall}（{_mn}）")
+        if n_tick_stall:
+            _tn = ", ".join(s.get("name") for s in loop.get("tick_stalled", []))
+            loop_parts.append(f"tick 卡死 {n_tick_stall}（{_tn}）")
+        loop_msg = "🩺 健康监控：agent loop 异常 — " + "；".join(loop_parts)
         queue_names = ", ".join(f"{s['name']}({s['pending']})" for s in queue.get("backlogged", []))
         llm_names = ", ".join(s["name"] for s in llm.get("degraded_agents", []))
         data_syms = ", ".join(data.get("degraded_symbols", [])) or ("stale" if data.get("stale") else "")
 
         return [
-            ("loop", loop_bad, f"🩺 健康监控：{loop.get('stalled_count', 0)} 个 agent loop 卡死（{loop_names}）"),
+            ("loop", loop_bad, loop_msg),
             ("queue", queue_bad, f"🩺 健康监控：{queue.get('backlogged_count', 0)} 个 agent 队列积压（{queue_names}）"),
             ("llm", llm_bad, f"🩺 健康监控：LLM 降级（{llm_names}）"),
             ("data", data_bad, f"🩺 健康监控：数据降级（{data_syms}）"),

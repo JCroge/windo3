@@ -167,6 +167,8 @@ def test_health_thresholds_in_defaults_and_hard_limits():
     assert HARD_LIMITS["agent_stall_timeout_sec"] == (10, 3600)
     assert HARD_LIMITS["queue_backlog_warn_pending"] == (50, 1000)
     assert HARD_LIMITS["data_stale_timeout_sec"] == (30, 3600)
+    assert DEFAULTS["agent_tick_stall_timeout_sec"] == 120
+    assert HARD_LIMITS["agent_tick_stall_timeout_sec"] == (30, 3600)
 
 
 def test_tick_stall_detected():
