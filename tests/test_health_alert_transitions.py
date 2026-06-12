@@ -53,10 +53,12 @@ class _CapturingBus:
         self.published.append((topic, payload))
 
 
-def _snap_with(loop=False, queue=False, llm=False, data=False):
+def _snap_with(loop=False, queue=False, llm=False, data=False, tick=False):
     return {
         "loop_health": {"stalled_count": 1 if loop else 0,
-                        "stalled": [{"name": "judge", "idle_sec": 99}] if loop else []},
+                        "stalled": [{"name": "judge", "idle_sec": 99}] if loop else [],
+                        "tick_stalled_count": 1 if tick else 0,
+                        "tick_stalled": [{"name": "reviewer", "tick_sec": 200}] if tick else []},
         "queue_health": {"backlogged_count": 1 if queue else 0,
                          "max_pending": 300 if queue else 0,
                          "backlogged": [{"name": "reviewer", "pending": 300}] if queue else []},
@@ -121,3 +123,15 @@ async def test_no_alert_on_empty_snapshot(tmp_path, monkeypatch):
     await orch._maybe_alert_health_transitions(None)
     await orch._maybe_alert_health_transitions({})
     assert bus.published == []
+
+
+@pytest.mark.asyncio
+async def test_tick_stall_fires_loop_alert(tmp_path, monkeypatch):
+    orch = _make_orch(tmp_path, monkeypatch)
+    bus = _CapturingBus()
+    orch.bus = bus
+    await orch._maybe_alert_health_transitions(_snap_with(tick=True))
+    types = [p["type"] for _, p in bus.published]
+    assert types == ["health_loop"]
+    msg = [p["message"] for _, p in bus.published][0]
+    assert "tick" in msg

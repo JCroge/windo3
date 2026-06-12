@@ -2,7 +2,8 @@ import pytest
 from utils.health_snapshot import build_health_snapshot
 
 NOW = 1_000_000.0
-CFG = dict(stall_timeout_sec=60, backlog_warn_pending=200, data_stale_timeout_sec=180)
+CFG = dict(stall_timeout_sec=60, backlog_warn_pending=200, data_stale_timeout_sec=180,
+           tick_stall_timeout_sec=120)
 BASE = dict(agents_registered=2, tasks_alive=4, tasks_failed=0,
             halted_symbols={}, bus_dlq_size=0)
 
@@ -18,9 +19,12 @@ class _FakeLLM:
 
 
 class _FakeAgent:
-    def __init__(self, name, alive_ts=NOW, llm=None, data_health=None):
+    def __init__(self, name, alive_ts=NOW, llm=None, data_health=None,
+                 tick_enter_ts=0.0, tick_exit_ts=0.0):
         self.name = name
         self._last_alive_ts = alive_ts
+        self._tick_enter_ts = tick_enter_ts
+        self._tick_exit_ts = tick_exit_ts
         self.llm = llm
         if data_health is not None:
             self._latest_data_health = data_health
@@ -32,6 +36,7 @@ def _snap(agents, bus_metrics, base=None):
         stall_timeout_sec=CFG["stall_timeout_sec"],
         backlog_warn_pending=CFG["backlog_warn_pending"],
         data_stale_timeout_sec=CFG["data_stale_timeout_sec"],
+        tick_stall_timeout_sec=CFG["tick_stall_timeout_sec"],
         base_stats=base or BASE,
     )
 
@@ -162,3 +167,36 @@ def test_health_thresholds_in_defaults_and_hard_limits():
     assert HARD_LIMITS["agent_stall_timeout_sec"] == (10, 3600)
     assert HARD_LIMITS["queue_backlog_warn_pending"] == (50, 1000)
     assert HARD_LIMITS["data_stale_timeout_sec"] == (30, 3600)
+    assert DEFAULTS["agent_tick_stall_timeout_sec"] == 120
+    assert HARD_LIMITS["agent_tick_stall_timeout_sec"] == (30, 3600)
+
+
+def test_tick_stall_detected():
+    agents = [_FakeAgent("stuck", tick_enter_ts=NOW - 200, tick_exit_ts=NOW - 260)]
+    s = _snap(agents, {"_dlq_size": 0})
+    lh = s["loop_health"]
+    assert lh["tick_stalled_count"] == 1
+    assert lh["tick_stalled"][0]["name"] == "stuck"
+    assert lh["tick_stalled"][0]["tick_sec"] == 200
+
+
+def test_tick_stall_exact_boundary_not_stalled():
+    a = [_FakeAgent("edge", tick_enter_ts=NOW - 120, tick_exit_ts=NOW - 130)]
+    assert _snap(a, {"_dlq_size": 0})["loop_health"]["tick_stalled_count"] == 0
+    a2 = [_FakeAgent("over", tick_enter_ts=NOW - 121, tick_exit_ts=NOW - 130)]
+    assert _snap(a2, {"_dlq_size": 0})["loop_health"]["tick_stalled_count"] == 1
+
+
+def test_tick_mid_within_budget_not_stalled():
+    a = [_FakeAgent("busy", tick_enter_ts=NOW - 30, tick_exit_ts=NOW - 90)]
+    assert _snap(a, {"_dlq_size": 0})["loop_health"]["tick_stalled_count"] == 0
+
+
+def test_tick_between_ticks_not_stalled():
+    a = [_FakeAgent("idle", tick_enter_ts=NOW - 500, tick_exit_ts=NOW - 100)]
+    assert _snap(a, {"_dlq_size": 0})["loop_health"]["tick_stalled_count"] == 0
+
+
+def test_tick_unstarted_skipped():
+    a = [_FakeAgent("fresh", tick_enter_ts=0.0, tick_exit_ts=0.0)]
+    assert _snap(a, {"_dlq_size": 0})["loop_health"]["tick_stalled_count"] == 0

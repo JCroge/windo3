@@ -73,6 +73,7 @@ HARD_LIMITS = {
     "agent_stall_timeout_sec": (10, 3600),
     "queue_backlog_warn_pending": (50, 1000),
     "data_stale_timeout_sec": (30, 3600),
+    "agent_tick_stall_timeout_sec": (30, 3600),
 }
 
 
@@ -175,6 +176,7 @@ DEFAULTS = {
     "agent_stall_timeout_sec": 60,
     "queue_backlog_warn_pending": 200,
     "data_stale_timeout_sec": 180,
+    "agent_tick_stall_timeout_sec": 120,
 }
 
 
@@ -308,6 +310,7 @@ def _read_env_overrides() -> dict:
         "AGENT_STALL_TIMEOUT_SEC": ("agent_stall_timeout_sec", float),
         "QUEUE_BACKLOG_WARN_PENDING": ("queue_backlog_warn_pending", int),
         "DATA_STALE_TIMEOUT_SEC": ("data_stale_timeout_sec", float),
+        "AGENT_TICK_STALL_TIMEOUT_SEC": ("agent_tick_stall_timeout_sec", float),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
