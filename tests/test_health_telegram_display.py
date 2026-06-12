@@ -82,3 +82,32 @@ def test_detail_shows_offenders():
 def test_detail_missing_snapshot():
     s = TelegramNotifier._format_health_detail(None, now=2000.0)
     assert "健康快照缺失" in s
+
+
+def test_detail_shows_queue_offenders():
+    health = {
+        "ts": 1990.0,
+        "loop_health": {"stalled_count": 0, "stalled": []},
+        "queue_health": {"backlogged_count": 1, "max_pending": 300,
+                         "backlogged": [{"name": "reviewer", "pending": 300}]},
+        "llm_health": {"degraded": False, "degraded_agents": []},
+        "data_health": {"degraded": False, "stale": False, "last_collect_ago_sec": 5,
+                        "degraded_symbols": [], "present": True},
+    }
+    s = TelegramNotifier._format_health_detail(health, now=2000.0)
+    assert "Queue: ⚠ 1 backlog" in s
+    assert "reviewer pending 300" in s
+
+
+def test_detail_tolerates_missing_offender_fields():
+    # schema 漂移：offender 缺字段不应 crash，用 '?' 兜底
+    health = {
+        "ts": 1990.0,
+        "loop_health": {"stalled_count": 1, "stalled": [{}]},
+        "queue_health": {"backlogged_count": 0, "max_pending": 0, "backlogged": []},
+        "llm_health": {"degraded": False, "degraded_agents": []},
+        "data_health": {"degraded": False, "stale": False, "last_collect_ago_sec": 1,
+                        "degraded_symbols": [], "present": True},
+    }
+    s = TelegramNotifier._format_health_detail(health, now=2000.0)
+    assert "?" in s   # 缺 name/idle_sec 用 '?' 兜底，不抛

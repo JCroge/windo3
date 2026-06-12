@@ -543,15 +543,14 @@ class TelegramNotifier(BaseAgent):
         """#95: /health per-dimension 明细。"""
         if not health:
             return "🩺 健康快照缺失（orchestrator 未写入或文件不可读）"
-        import time as _t
-        now = now if now is not None else _t.time()
+        now = now if now is not None else time.time()
         lines = ["🩺 Agent 健康明细"]
 
         loop = health.get("loop_health", {})
         if loop.get("stalled_count", 0):
             lines.append(f"Loop:  ⚠ {loop['stalled_count']} stalled")
             for s in loop.get("stalled", []):
-                lines.append(f"  • {s['name']} 空闲 {s['idle_sec']}s")
+                lines.append(f"  • {s.get('name', '?')} 空闲 {s.get('idle_sec', '?')}s")
         else:
             lines.append("Loop:  ✓")
 
@@ -559,7 +558,7 @@ class TelegramNotifier(BaseAgent):
         if q.get("backlogged_count", 0):
             lines.append(f"Queue: ⚠ {q['backlogged_count']} backlog")
             for s in q.get("backlogged", []):
-                lines.append(f"  • {s['name']} pending {s['pending']}")
+                lines.append(f"  • {s.get('name', '?')} pending {s.get('pending', '?')}")
         else:
             lines.append(f"Queue: ✓ (max pending {q.get('max_pending', 0)})")
 
@@ -567,7 +566,7 @@ class TelegramNotifier(BaseAgent):
         if llm.get("degraded", False):
             lines.append("LLM:   ⚠ 降级")
             for s in llm.get("degraded_agents", []):
-                lines.append(f"  • {s['name']} 连续失败 {s.get('consecutive_failures', '?')}")
+                lines.append(f"  • {s.get('name', '?')} 连续失败 {s.get('consecutive_failures', '?')}")
         else:
             lines.append("LLM:   ✓")
 
