@@ -40,6 +40,13 @@ class Orchestrator:
         self._prev_dlq_size: int = 0  # P2-16: DLQ 增长告警基准
         self._alerted_failed_tasks: set = set()  # 已告警失败任务标识，防重复
         self._latest_failed_tasks: list = []     # 最近一次扫描的失败任务 [(agent, repr)]
+        self._latest_health_snapshot = None      # #95: Task5 供告警状态机复用
+        self._health_alert_state = {"loop": False, "queue": False,
+                                    "llm": False, "data": False}
+        cfg = self.config or {}
+        self._stall_timeout_sec = cfg.get("agent_stall_timeout_sec", 60)
+        self._backlog_warn_pending = cfg.get("queue_backlog_warn_pending", 200)
+        self._data_stale_timeout_sec = cfg.get("data_stale_timeout_sec", 180)
 
     def _default_config(self) -> dict:
         try:
@@ -313,11 +320,12 @@ class Orchestrator:
         return tasks_alive, failed
 
     def _write_agent_health(self):
-        """F-TG-004: 写 data/<ns_>agent_health.json。失败 logger.warning 不抛。"""
+        """F-TG-004 + #95: 写 data/<ns_>agent_health.json（含四维度健康）。失败 logger.warning 不抛。"""
         try:
             from utils.state_paths import get_state_paths
             from utils.atomic_io import atomic_write_json
             from agents.message_bus import MessageBus
+            from utils.health_snapshot import build_health_snapshot
 
             tasks_alive, failed = self._collect_task_stats()
             tasks_failed = len(failed)
@@ -328,19 +336,30 @@ class Orchestrator:
             try:
                 bus = MessageBus.get_instance()
                 dlq_size = len(getattr(bus, '_dead_letter', []))
+                bus_metrics = bus.get_metrics()
             except Exception:
                 dlq_size = 0
+                bus_metrics = {}
 
-            health = {
-                'ts': time.time(),
+            base_stats = {
                 'agents_registered': agents_registered,
                 'tasks_alive': tasks_alive,
                 'tasks_failed': tasks_failed,
                 'halted_symbols': dict(self._latest_halts_snapshot),
                 'bus_dlq_size': dlq_size,
             }
+            snapshot = build_health_snapshot(
+                self._research_agents + self._trading_agents,
+                bus_metrics,
+                time.time(),
+                stall_timeout_sec=getattr(self, '_stall_timeout_sec', 60),
+                backlog_warn_pending=getattr(self, '_backlog_warn_pending', 200),
+                data_stale_timeout_sec=getattr(self, '_data_stale_timeout_sec', 180),
+                base_stats=base_stats,
+            )
+            self._latest_health_snapshot = snapshot
             path = get_state_paths().agent_health
-            atomic_write_json(path, health)
+            atomic_write_json(path, snapshot)
             return dlq_size
         except Exception as e:
             self.logger.warning(f"[AgentHealth] 写入失败: {e}")

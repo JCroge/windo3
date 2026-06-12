@@ -16,7 +16,7 @@ def _loop_health(agents, now, stall_timeout_sec):
             continue
         idle = now - ts
         if idle > stall_timeout_sec:
-            stalled.append({"name": a.name, "idle_sec": int(idle)})
+            stalled.append({"name": getattr(a, "name", None), "idle_sec": int(idle)})
     return {"stalled_count": len(stalled), "stalled": stalled}
 
 
@@ -42,7 +42,7 @@ def _llm_health(agents):
         llm = getattr(a, "llm", None)
         if llm is not None and getattr(llm, "degraded", False):
             degraded_agents.append({
-                "name": a.name,
+                "name": getattr(a, "name", None),
                 "consecutive_failures": getattr(llm, "consecutive_failures", None),
             })
     return {"degraded": len(degraded_agents) > 0,
@@ -50,7 +50,7 @@ def _llm_health(agents):
 
 
 def _data_health(agents, now, data_stale_timeout_sec):
-    collector = next((a for a in agents if a.name == COLLECTOR_NAME), None)
+    collector = next((a for a in agents if getattr(a, "name", None) == COLLECTOR_NAME), None)
     if collector is None or not hasattr(collector, "_latest_data_health"):
         return {"degraded": False, "stale": False,
                 "last_collect_ago_sec": None, "degraded_symbols": [],
