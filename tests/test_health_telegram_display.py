@@ -1,4 +1,3 @@
-import pytest
 from agents.trading.telegram_notifier import TelegramNotifier
 
 
@@ -43,3 +42,43 @@ def test_summary_data_stale_counts():
         "data_health": {"degraded": False, "stale": True},
     }
     assert "data降级" in _summary(health)
+
+
+def _detail(health):
+    return TelegramNotifier._format_health_detail(health, now=2000.0)
+
+
+def test_detail_all_green():
+    health = {
+        "ts": 1990.0,
+        "loop_health": {"stalled_count": 0, "stalled": []},
+        "queue_health": {"backlogged_count": 0, "max_pending": 12, "backlogged": []},
+        "llm_health": {"degraded": False, "degraded_agents": []},
+        "data_health": {"degraded": False, "stale": False, "last_collect_ago_sec": 23,
+                        "degraded_symbols": [], "present": True},
+    }
+    s = _detail(health)
+    assert "🩺 Agent 健康明细" in s
+    assert "Loop:  ✓" in s
+    assert "Queue: ✓" in s
+    assert "LLM:   ✓" in s
+    assert "Data:  ✓" in s
+
+
+def test_detail_shows_offenders():
+    health = {
+        "ts": 1990.0,
+        "loop_health": {"stalled_count": 1, "stalled": [{"name": "judge", "idle_sec": 73}]},
+        "queue_health": {"backlogged_count": 0, "max_pending": 5, "backlogged": []},
+        "llm_health": {"degraded": True, "degraded_agents": [{"name": "tech", "consecutive_failures": 4}]},
+        "data_health": {"degraded": False, "stale": False, "last_collect_ago_sec": 9,
+                        "degraded_symbols": [], "present": True},
+    }
+    s = _detail(health)
+    assert "judge 空闲 73s" in s
+    assert "tech 连续失败 4" in s
+
+
+def test_detail_missing_snapshot():
+    s = TelegramNotifier._format_health_detail(None, now=2000.0)
+    assert "健康快照缺失" in s
