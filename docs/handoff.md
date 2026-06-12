@@ -5,7 +5,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-06-11 第五次审计阻断项（P1-01 加仓 TP 自我熔断 / P1-02·P1-03 短单 gate or-falsy + 单点收口 / P2-02）+ 6 项 fail-closed 加固，其后再合并 ccxt keysort 崩溃修复（OKX null-id 市场致 `load_markets` 崩溃，恢复 3860 markets）+ Agent 故障可见性（setup 失败打 traceback + `agent_task_failed` 去重告警）两 change，全部合并入 main，全量实测基线 `1098 passed / 4 deselected / 1 warning`。在此之前已完成：第四次审计 F4-001/002/003（2026-05-29 闭环，真实 OKX owner-tag T0/T1/T6 PASS）、TG Graceful Ops（`/halts` `/resume_symbol` `/pnl` `/pnl_id`）、Entry Drift Hybrid Policy、Pullback Entry Paper Parity、Short Main Path Risk Guard Parity、研究层低流动性硬过滤器、Paper Dual-Track Simulation（`/paper_gap`）、Data Source Provenance。
+**当前阶段**：2026-06-11 第五次审计阻断项（P1-01 加仓 TP 自我熔断 / P1-02·P1-03 短单 gate or-falsy + 单点收口 / P2-02）+ 6 项 fail-closed 加固，其后再合并 ccxt keysort 崩溃修复（OKX null-id 市场致 `load_markets` 崩溃，恢复 3860 markets）+ Agent 故障可见性（setup 失败打 traceback + `agent_task_failed` 去重告警）两 change，全部合并入 main；2026-06-12 再加 OKX 持仓同步瞬时重试（`sync_positions` 对 `ccxt.NetworkError` 有界重试，止 ERROR 刷屏），全量实测基线 `1102 passed / 4 deselected / 1 warning`。在此之前已完成：第四次审计 F4-001/002/003（2026-05-29 闭环，真实 OKX owner-tag T0/T1/T6 PASS）、TG Graceful Ops（`/halts` `/resume_symbol` `/pnl` `/pnl_id`）、Entry Drift Hybrid Policy、Pullback Entry Paper Parity、Short Main Path Risk Guard Parity、研究层低流动性硬过滤器、Paper Dual-Track Simulation（`/paper_gap`）、Data Source Provenance。
 **下一阶段**：live 扩容为 CONDITIONAL GO。扩容前需将 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置，完成真实 TG 命令链与 drift gate 运维验收，并继续每日复核 `data/live_position_lifecycle.json` 与 OKX algo 残留。
 
 ## 重大决策：放弃套利策略（2026-05-06）
