@@ -12,6 +12,10 @@ from typing import Any, Dict, List, Literal, Optional
 from risk_manager import RiskManager
 from utils.logger import setup_logger
 
+# 持仓同步瞬时错误重试（fetch_positions 偶发 OKX 网络/超时抖动）
+_POS_SYNC_RETRY_ATTEMPTS = 3
+_POS_SYNC_RETRY_BACKOFFS = (0.5, 1.0)  # 第1/2次失败后退避秒数
+
 # ---------------------------------------------------------------------------
 # Entry Drift Hybrid Policy — threshold constants
 # ---------------------------------------------------------------------------
@@ -2633,10 +2637,37 @@ class ContractExecutor:
             self.logger.warning(f"撤单失败: {e}")
             return False
 
+    def _fetch_positions_with_retry(self):
+        """fetch_positions() 的有界重试：吸收 OKX 瞬时网络/超时抖动。
+
+        只重试 ccxt.NetworkError（含 RequestTimeout/ExchangeNotAvailable/DDoSProtection）；
+        非瞬时异常（认证、参数等）直接抛出，由调用方按 ERROR 处理。
+        本方法经 asyncio.to_thread 在线程内调用，time.sleep 不阻塞事件循环。
+        """
+        last_exc = None
+        for attempt in range(1, _POS_SYNC_RETRY_ATTEMPTS + 1):
+            try:
+                return self.exchange.fetch_positions()
+            except ccxt.NetworkError as e:
+                last_exc = e
+                if attempt < _POS_SYNC_RETRY_ATTEMPTS:
+                    delay = _POS_SYNC_RETRY_BACKOFFS[min(attempt - 1, len(_POS_SYNC_RETRY_BACKOFFS) - 1)]
+                    self.logger.warning(
+                        f"[仓位同步] fetch_positions 第{attempt}/{_POS_SYNC_RETRY_ATTEMPTS}次失败"
+                        f"({type(e).__name__})，{delay}s后重试"
+                    )
+                    time.sleep(delay)
+                else:
+                    self.logger.warning(
+                        f"[仓位同步] fetch_positions 第{attempt}/{_POS_SYNC_RETRY_ATTEMPTS}次失败"
+                        f"({type(e).__name__})，重试耗尽"
+                    )
+        raise last_exc
+
     def sync_positions(self) -> dict:
         """从交易所同步真实持仓，以交易所为准。返回新发现的持仓列表"""
         try:
-            exchange_positions = self.exchange.fetch_positions()
+            exchange_positions = self._fetch_positions_with_retry()
             active = {}
             for pos in exchange_positions:
                 if pos['contracts'] and float(pos['contracts']) > 0:
@@ -2730,7 +2761,7 @@ class ContractExecutor:
             return self.positions.copy()
 
         except Exception as e:
-            self.logger.error(f"仓位同步失败: {e}")
+            self.logger.error(f"仓位同步失败: {type(e).__name__}: {e}")
             self._last_sync_result = []
             return self.positions.copy()
 
