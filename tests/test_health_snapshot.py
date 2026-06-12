@@ -118,3 +118,37 @@ def test_data_health_never_collected_not_stale():
     s = _snap(agents, {"_dlq_size": 0})
     assert s["data_health"]["stale"] is False
     assert s["data_health"]["last_collect_ago_sec"] is None
+
+
+def test_loop_stall_exact_boundary_not_stalled():
+    # idle == stall_timeout_sec (60) → 不算 stall（严格 > 才算）
+    agents = [_FakeAgent("edge", alive_ts=NOW - 60)]
+    s = _snap(agents, {"_dlq_size": 0})
+    assert s["loop_health"]["stalled_count"] == 0
+    # 略超阈值才算（61 > 60）
+    agents2 = [_FakeAgent("over", alive_ts=NOW - 61)]
+    s2 = _snap(agents2, {"_dlq_size": 0})
+    assert s2["loop_health"]["stalled_count"] == 1
+
+
+def test_queue_backlog_exact_boundary_not_flagged():
+    # pending == backlog_warn_pending (200) → 不算 backlog（严格 >）
+    s = _snap([_FakeAgent("judge")], {"reviewer": {"pending": 200}, "_dlq_size": 0})
+    assert s["queue_health"]["backlogged_count"] == 0
+    assert s["queue_health"]["max_pending"] == 200
+    # 201 才算
+    s2 = _snap([_FakeAgent("judge")], {"reviewer": {"pending": 201}, "_dlq_size": 0})
+    assert s2["queue_health"]["backlogged_count"] == 1
+
+
+def test_loop_multiple_stalled_agents():
+    agents = [
+        _FakeAgent("a", alive_ts=NOW - 200),
+        _FakeAgent("b", alive_ts=NOW - 100),
+        _FakeAgent("healthy", alive_ts=NOW - 5),
+    ]
+    s = _snap(agents, {"_dlq_size": 0})
+    lh = s["loop_health"]
+    assert lh["stalled_count"] == 2
+    names = {x["name"] for x in lh["stalled"]}
+    assert names == {"a", "b"}
