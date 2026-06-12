@@ -516,6 +516,27 @@ class TelegramNotifier(BaseAgent):
         except Exception:
             return None
 
+    @staticmethod
+    def _format_health_summary(health) -> str:
+        """#95: /status 末尾健康总括行，只列异常维度。"""
+        if not health:
+            return "─ 健康: ?（快照缺失）"
+        bad = []
+        n_stall = health.get("loop_health", {}).get("stalled_count", 0)
+        if n_stall:
+            bad.append(f"{n_stall} stall")
+        n_backlog = health.get("queue_health", {}).get("backlogged_count", 0)
+        if n_backlog:
+            bad.append(f"{n_backlog} backlog")
+        if health.get("llm_health", {}).get("degraded", False):
+            bad.append("LLM降级")
+        dh = health.get("data_health", {})
+        if dh.get("degraded", False) or dh.get("stale", False):
+            bad.append("data降级")
+        if not bad:
+            return "─ 健康: ✓"
+        return "─ 健康: ⚠ " + " / ".join(bad)
+
     async def _cmd_halts(self):
         """F-TG-002: 列出当前 per-symbol halt。"""
         health = self._read_agent_health() or {}
@@ -798,6 +819,7 @@ class TelegramNotifier(BaseAgent):
                 suffix = f" …+{len(halts) - 5}" if len(halts) > 5 else ""
                 halt_str = ", ".join(s.split("-")[0] for s in short_list)  # 取 base 简写
                 text += f"\n─ Per-symbol halt: {len(halts)} ({halt_str}{suffix})"
+            text += f"\n{self._format_health_summary(health)}"
         else:
             text += "\n─ Health: ?（agent_health.json 缺失）"
 
