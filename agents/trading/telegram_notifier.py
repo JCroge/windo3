@@ -523,7 +523,8 @@ class TelegramNotifier(BaseAgent):
         if not health:
             return "─ 健康: ?（快照缺失）"
         bad = []
-        n_stall = health.get("loop_health", {}).get("stalled_count", 0)
+        loop = health.get("loop_health", {})
+        n_stall = loop.get("stalled_count", 0) + loop.get("tick_stalled_count", 0)
         if n_stall:
             bad.append(f"{n_stall} stall")
         n_backlog = health.get("queue_health", {}).get("backlogged_count", 0)
@@ -547,10 +548,19 @@ class TelegramNotifier(BaseAgent):
         lines = ["🩺 Agent 健康明细"]
 
         loop = health.get("loop_health", {})
-        if loop.get("stalled_count", 0):
-            lines.append(f"Loop:  ⚠ {loop['stalled_count']} stalled")
+        n_stall = loop.get("stalled_count", 0)
+        n_tick = loop.get("tick_stalled_count", 0)
+        if n_stall or n_tick:
+            parts = []
+            if n_stall:
+                parts.append(f"{n_stall} message-loop")
+            if n_tick:
+                parts.append(f"{n_tick} tick")
+            lines.append(f"Loop:  ⚠ {' + '.join(parts)} stalled")
             for s in loop.get("stalled", []):
-                lines.append(f"  • {s.get('name', '?')} 空闲 {s.get('idle_sec', '?')}s")
+                lines.append(f"  • {s.get('name', '?')} message-loop 空闲 {s.get('idle_sec', '?')}s")
+            for s in loop.get("tick_stalled", []):
+                lines.append(f"  • {s.get('name', '?')} tick 卡死 {s.get('tick_sec', '?')}s")
         else:
             lines.append("Loop:  ✓")
 
