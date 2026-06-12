@@ -1,0 +1,14 @@
+{
+  "change": "agent-tick-stall-detection",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "57dc0def887919cdeca45268e766e764aa76f467c2afd3ac68c3cea132fdf1e6",
+  "files": [
+    { "path": "openspec/changes/agent-tick-stall-detection/proposal.md", "sha256": "2324b74542af5d502b5c6a9bade3e52186817a2a504d2764a65e61e64565f6e8" },
+    { "path": "openspec/changes/agent-tick-stall-detection/design.md", "sha256": "d1b133a9033062383bdcbbcb699104fefb4c8ade28e354a167b914b98deb3819" },
+    { "path": "openspec/changes/agent-tick-stall-detection/tasks.md", "sha256": "d080e364b8f109ba1599d9435189170076e8ea7b2f9918c81071f18ec96f7f0b" },
+    { "path": "openspec/changes/agent-tick-stall-detection/specs/agent-health-supervisor/spec.md", "sha256": "ae5f44dac5d5e86b881fd54b10b5ef32ae46458ec44f0629945ad9ebead5a4d4" }
+  ]
+}
