@@ -473,7 +473,7 @@ class Orchestrator:
             self._health_alert_state[dim] = unhealthy
 
     async def _health_loop(self):
-        """F-TG-004: 每 N 秒写一次 agent_health.json；P2-16: 顺带 DLQ 增长告警；失败任务告警。"""
+        """F-TG-004: 写 agent_health.json；P2-16: DLQ 增长 + 失败任务告警；#95: 四维度跳变告警。"""
         while not self._shutdown_event.is_set():
             dlq_size = self._write_agent_health()
             await self._maybe_alert_dlq_growth(dlq_size)

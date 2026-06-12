@@ -98,3 +98,26 @@ async def test_dimensions_independent(tmp_path, monkeypatch):
     await orch._maybe_alert_health_transitions(_snap_with(loop=True, data=True))
     types = sorted(p["type"] for _, p in bus.published)
     assert types == ["health_data", "health_loop"]
+
+
+@pytest.mark.asyncio
+async def test_alert_refires_after_recovery_oscillation(tmp_path, monkeypatch):
+    # unhealthy -> healthy -> unhealthy 必须再次告警
+    orch = _make_orch(tmp_path, monkeypatch)
+    bus = _CapturingBus()
+    orch.bus = bus
+    await orch._maybe_alert_health_transitions(_snap_with(llm=True))   # 告警
+    await orch._maybe_alert_health_transitions(_snap_with(llm=False))  # 恢复
+    await orch._maybe_alert_health_transitions(_snap_with(llm=True))   # 再次告警
+    types = [p["type"] for _, p in bus.published]
+    assert types == ["health_llm", "health_llm_recovered", "health_llm"]
+
+
+@pytest.mark.asyncio
+async def test_no_alert_on_empty_snapshot(tmp_path, monkeypatch):
+    orch = _make_orch(tmp_path, monkeypatch)
+    bus = _CapturingBus()
+    orch.bus = bus
+    await orch._maybe_alert_health_transitions(None)
+    await orch._maybe_alert_health_transitions({})
+    assert bus.published == []
