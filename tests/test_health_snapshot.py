@@ -152,3 +152,13 @@ def test_loop_multiple_stalled_agents():
     assert lh["stalled_count"] == 2
     names = {x["name"] for x in lh["stalled"]}
     assert names == {"a", "b"}
+
+
+def test_health_thresholds_in_defaults_and_hard_limits():
+    from utils.config_loader import DEFAULTS, HARD_LIMITS
+    assert DEFAULTS["agent_stall_timeout_sec"] == 60
+    assert DEFAULTS["queue_backlog_warn_pending"] == 200
+    assert DEFAULTS["data_stale_timeout_sec"] == 180
+    assert HARD_LIMITS["agent_stall_timeout_sec"] == (10, 3600)
+    assert HARD_LIMITS["queue_backlog_warn_pending"] == (50, 1000)
+    assert HARD_LIMITS["data_stale_timeout_sec"] == (30, 3600)

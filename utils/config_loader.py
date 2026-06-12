@@ -69,6 +69,10 @@ HARD_LIMITS = {
     # Research liquidity hard filter
     "research_min_volume_24h_usdt": (0.0, 10_000_000_000.0),
     "research_min_open_interest_usd": (0.0, 10_000_000_000.0),
+    # Agent health supervisor (#95) — observability-only 阈值
+    "agent_stall_timeout_sec": (10, 3600),
+    "queue_backlog_warn_pending": (50, 1000),
+    "data_stale_timeout_sec": (30, 3600),
 }
 
 
@@ -167,6 +171,10 @@ DEFAULTS = {
     # Research liquidity hard filter: enforced before LLM candidate selection
     "research_min_volume_24h_usdt": 50_000_000,
     "research_min_open_interest_usd": 10_000_000,
+    # Agent health supervisor (#95)
+    "agent_stall_timeout_sec": 60,
+    "queue_backlog_warn_pending": 200,
+    "data_stale_timeout_sec": 180,
 }
 
 
@@ -296,6 +304,10 @@ def _read_env_overrides() -> dict:
         # Research liquidity hard filter
         "RESEARCH_MIN_VOLUME_24H_USDT": ("research_min_volume_24h_usdt", float),
         "RESEARCH_MIN_OPEN_INTEREST_USD": ("research_min_open_interest_usd", float),
+        # Agent health supervisor (#95)
+        "AGENT_STALL_TIMEOUT_SEC": ("agent_stall_timeout_sec", float),
+        "QUEUE_BACKLOG_WARN_PENDING": ("queue_backlog_warn_pending", int),
+        "DATA_STALE_TIMEOUT_SEC": ("data_stale_timeout_sec", float),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
