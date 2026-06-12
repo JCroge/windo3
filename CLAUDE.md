@@ -5,7 +5,7 @@
 - 当前系统是多 Agent 加密货币趋势交易系统，不是跨交易所套利系统。
 - 生产、paper、testnet、实盘验收主入口统一为 `python3 run_agents.py`。
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
-- 当前基线：`1088 passed / 4 deselected / 1 warning`（2026-06-11，第五次审计阻断项 P1-01/P1-02/P1-03/P2-02 + 6 项 fail-closed 加固闭环后实测）。
+- 当前基线：`1098 passed / 4 deselected / 1 warning`（2026-06-11，第五次审计阻断项 P1-01/P1-02/P1-03/P2-02 + 6 项 fail-closed 加固后，再叠加 ccxt keysort 崩溃修复 + Agent 故障可见性两 change，合并入 main 后全量实测）。
 - 当前 Go/No-Go：小额 live 灰度 GO（维持现有 cap）；live 扩容 CONDITIONAL GO，扩容前置 = 运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置 + 真实 TG 命令链与 drift gate 运维验收。
 - OKX 验收状态：mock 执行语义 10 case PASS；真实 testnet long_short_mode 13 PASS（T0/T1/T4/T5/T6/T8–T15，T2/T3/T7 SKIP）+ net_mode 子账户 T0/T2/T3 3 PASS。
 - TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap`。

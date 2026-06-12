@@ -5,7 +5,7 @@
 ## 项目状态
 
 **开始日期**：2026-05-06
-**当前阶段**：2026-06-11 第五次审计阻断项（P1-01 加仓 TP 自我熔断 / P1-02·P1-03 短单 gate or-falsy + 单点收口 / P2-02）+ 6 项 fail-closed 加固合并入 main，全量实测基线 `1088 passed / 4 deselected / 1 warning`。在此之前已完成：第四次审计 F4-001/002/003（2026-05-29 闭环，真实 OKX owner-tag T0/T1/T6 PASS）、TG Graceful Ops（`/halts` `/resume_symbol` `/pnl` `/pnl_id`）、Entry Drift Hybrid Policy、Pullback Entry Paper Parity、Short Main Path Risk Guard Parity、研究层低流动性硬过滤器、Paper Dual-Track Simulation（`/paper_gap`）、Data Source Provenance。
+**当前阶段**：2026-06-11 第五次审计阻断项（P1-01 加仓 TP 自我熔断 / P1-02·P1-03 短单 gate or-falsy + 单点收口 / P2-02）+ 6 项 fail-closed 加固，其后再合并 ccxt keysort 崩溃修复（OKX null-id 市场致 `load_markets` 崩溃，恢复 3860 markets）+ Agent 故障可见性（setup 失败打 traceback + `agent_task_failed` 去重告警）两 change，全部合并入 main，全量实测基线 `1098 passed / 4 deselected / 1 warning`。在此之前已完成：第四次审计 F4-001/002/003（2026-05-29 闭环，真实 OKX owner-tag T0/T1/T6 PASS）、TG Graceful Ops（`/halts` `/resume_symbol` `/pnl` `/pnl_id`）、Entry Drift Hybrid Policy、Pullback Entry Paper Parity、Short Main Path Risk Guard Parity、研究层低流动性硬过滤器、Paper Dual-Track Simulation（`/paper_gap`）、Data Source Provenance。
 **下一阶段**：live 扩容为 CONDITIONAL GO。扩容前需将 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置，完成真实 TG 命令链与 drift gate 运维验收，并继续每日复核 `data/live_position_lifecycle.json` 与 OKX algo 残留。
 
 ## 重大决策：放弃套利策略（2026-05-06）
@@ -113,6 +113,7 @@ RegimeManager（bullish/bearish/mixed/choppy + 2 次确认 + 30min min_hold）�
 | Paper Dual-Track Simulation | 2026-06-10 | PaperExecutor `book ∈ {realistic, idealized}` + `/paper_gap`，量化限价漏单成本（不进 live Reviewer） | 1035 | `docs/superpowers/specs/2026-06-10-paper-dual-track-sim-design.md` |
 | Data Source Provenance | 2026-06-10 | 跨源 `source/freshness_sec/confidence` 穿透至 tech_analysis + Judge attribution + Reviewer 分桶（observability-only） | 1066 | `docs/superpowers/specs/2026-06-10-data-source-provenance-design.md` |
 | 第五次审计 P1-01/P1-02/P1-03/P2-02 + 6 项 fail-closed 加固 | 2026-06-11 | 加仓 TP 单点收口防自我熔断 / 短单 gate or-falsy 哨兵合并 + 单点收口 / resume 语义诚实回显 / DLQ 告警 / config clamp / fsync / 原子写 | 1088 | `docs/generated_reports/系统性审计报告_20260610_第五次.md` + `docs/superpowers/specs/2026-06-11-*-design.md` |
+| ccxt keysort 崩溃修复 + Agent 故障可见性 | 2026-06-11 | `utils/ccxt_compat.py` 容 None 键 shim 修 OKX null-id 市场致 `load_markets` 崩溃（恢复 3860 markets）/ `base.run()` setup try-except 打 traceback / orchestrator 对失败 agent 任务发去重 `telegram_alert{agent_task_failed}` | 1098 | comet changes `fix-data-collector-ccxt-keysort-crash`、`agent-fault-visibility`（master spec `exchange-client-resilience` / `agent-fault-visibility`） |
 
 ## 技术债务
 
