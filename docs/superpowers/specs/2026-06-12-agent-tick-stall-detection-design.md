@@ -2,6 +2,8 @@
 comet_change: agent-tick-stall-detection
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-12-agent-tick-stall-detection
+status: final
 ---
 
 # Agent Tick-Loop Stall Detection — Design

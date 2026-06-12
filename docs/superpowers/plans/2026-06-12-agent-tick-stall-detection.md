@@ -1,6 +1,7 @@
 ---
 change: agent-tick-stall-detection
 design-doc: docs/superpowers/specs/2026-06-12-agent-tick-stall-detection-design.md
+archived-with: 2026-06-12-agent-tick-stall-detection
 ---
 
 # Agent Tick-Loop Stall Detection Implementation Plan
@@ -17,6 +18,7 @@ design-doc: docs/superpowers/specs/2026-06-12-agent-tick-stall-detection-design.
 
 **关键设计事实**：最长健康单次 tick = ReviewerAgent 60s（研判层 on_message 驱动不阻塞 tick；3600s/1800s 都是 1s tick + 计数器）。扁平阈值 120s（2×）零误报。
 
+archived-with: 2026-06-12-agent-tick-stall-detection
 ---
 
 ## Task 1: BaseAgent tick 埋点
@@ -114,6 +116,7 @@ git commit -m "feat(base): _periodic_loop tick 埋点 _tick_enter_ts/_tick_exit_
 ```
 末尾加：`Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
 
+archived-with: 2026-06-12-agent-tick-stall-detection
 ---
 
 ## Task 2: health_snapshot tick-stall 检测
@@ -243,6 +246,7 @@ git commit -m "feat(health): _loop_health 增加 tick-loop 挂死检测 (agent-t
 ```
 末尾加 Co-Authored-By 行。
 
+archived-with: 2026-06-12-agent-tick-stall-detection
 ---
 
 ## Task 3: config 阈值 + Orchestrator 接线与告警
@@ -345,6 +349,7 @@ git commit -m "feat(orchestrator): tick-stall 阈值 + loop 维度并入 tick �
 ```
 末尾加 Co-Authored-By 行。
 
+archived-with: 2026-06-12-agent-tick-stall-detection
 ---
 
 ## Task 4: Telegram /health + /status 展示
@@ -434,6 +439,7 @@ git commit -m "feat(tg): /health+/status 展示 tick 卡死（并入 loop） (ag
 ```
 末尾加 Co-Authored-By 行。
 
+archived-with: 2026-06-12-agent-tick-stall-detection
 ---
 
 ## Task 5: 全量回归 + 收尾
@@ -462,6 +468,7 @@ git commit -m "docs(comet): mark tasks complete (agent-tick-stall-detection, <�
 ```
 末尾加 Co-Authored-By 行。
 
+archived-with: 2026-06-12-agent-tick-stall-detection
 ---
 
 ## Self-Review
