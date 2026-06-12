@@ -1,16 +1,16 @@
 workflow: hotfix
-phase: verify
+phase: archive
 build_mode: direct
 isolation: branch
 verify_mode: full
 base_ref: 47cb2d433af23f8b160c042f9a6d423fbb41b26e
 design_doc: null
 plan: null
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-12-fix-okx-position-sync-transient-retry-verify.md
 branch_status: handled
 created_at: 2026-06-12
-verified_at: null
+verified_at: 2026-06-12
 archived: false
 verify_command: python3 -m pytest -q
 build_command: python3 -m compileall -q executor.py
