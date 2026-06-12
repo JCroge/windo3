@@ -355,6 +355,7 @@ class Orchestrator:
                 stall_timeout_sec=getattr(self, '_stall_timeout_sec', 60),
                 backlog_warn_pending=getattr(self, '_backlog_warn_pending', 200),
                 data_stale_timeout_sec=getattr(self, '_data_stale_timeout_sec', 180),
+                tick_stall_timeout_sec=getattr(self, '_tick_stall_timeout_sec', 120),
                 base_stats=base_stats,
             )
             self._latest_health_snapshot = snapshot

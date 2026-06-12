@@ -8,16 +8,19 @@ observability-only：把 agents 实例字段 + bus 指标聚合成 snapshot dict
 COLLECTOR_NAME = "multi_data_collector"
 
 
-def _loop_health(agents, now, stall_timeout_sec):
+def _loop_health(agents, now, stall_timeout_sec, tick_stall_timeout_sec):
     stalled = []
+    tick_stalled = []
     for a in agents:
         ts = getattr(a, "_last_alive_ts", 0.0) or 0.0
-        if ts <= 0.0:
-            continue
-        idle = now - ts
-        if idle > stall_timeout_sec:
-            stalled.append({"name": getattr(a, "name", None), "idle_sec": int(idle)})
-    return {"stalled_count": len(stalled), "stalled": stalled}
+        if ts > 0.0 and (now - ts) > stall_timeout_sec:
+            stalled.append({"name": getattr(a, "name", None), "idle_sec": int(now - ts)})
+        enter = getattr(a, "_tick_enter_ts", 0.0) or 0.0
+        exit_ts = getattr(a, "_tick_exit_ts", 0.0) or 0.0
+        if enter > 0.0 and enter > exit_ts and (now - enter) > tick_stall_timeout_sec:
+            tick_stalled.append({"name": getattr(a, "name", None), "tick_sec": int(now - enter)})
+    return {"stalled_count": len(stalled), "stalled": stalled,
+            "tick_stalled_count": len(tick_stalled), "tick_stalled": tick_stalled}
 
 
 def _queue_health(bus_metrics, backlog_warn_pending):
@@ -72,7 +75,7 @@ def _data_health(agents, now, data_stale_timeout_sec):
 
 def build_health_snapshot(agents, bus_metrics, now, *,
                           stall_timeout_sec, backlog_warn_pending,
-                          data_stale_timeout_sec, base_stats):
+                          data_stale_timeout_sec, tick_stall_timeout_sec, base_stats):
     """聚合健康快照。
 
     agents: 可迭代 BaseAgent（research + trading），只读其实例字段。
@@ -84,7 +87,7 @@ def build_health_snapshot(agents, bus_metrics, now, *,
     agents = list(agents)
     snapshot = dict(base_stats)
     snapshot["ts"] = now
-    snapshot["loop_health"] = _loop_health(agents, now, stall_timeout_sec)
+    snapshot["loop_health"] = _loop_health(agents, now, stall_timeout_sec, tick_stall_timeout_sec)
     snapshot["queue_health"] = _queue_health(bus_metrics, backlog_warn_pending)
     snapshot["llm_health"] = _llm_health(agents)
     snapshot["data_health"] = _data_health(agents, now, data_stale_timeout_sec)
