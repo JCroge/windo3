@@ -1,8 +1,8 @@
 workflow: hotfix
-phase: build
+phase: verify
 build_mode: direct
 isolation: branch
-verify_mode: light
+verify_mode: full
 base_ref: 716a64af623be70650182f7553ac60413910740d
 design_doc: null
 plan: null
