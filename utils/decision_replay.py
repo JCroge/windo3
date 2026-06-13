@@ -16,46 +16,25 @@ from unittest import mock
 from utils.archetype_cooldown import ArchetypeCooldown
 
 
-class _RegimeStub:
-    """RegimeManager 的只读替身，从快照还原。
+def _restore_regime(snap, config=None):
+    """还原一个【真实】RegimeManager（不重写其逻辑），从快照灌入内部状态。
 
-    决策路径读取 `.snapshot()`、`._effective_regime`、`._raw_regime`、
-    `._confidence`，并调用 `is_short_allowed` / `is_probe_short_eligible`。
-    回放时不重算 regime，只回放当时的 effective_regime 快照。
+    L2 核心：回放复用真实代码，不要第二份实现。决策路径调用的
+    `snapshot()` / `is_short_allowed()` / `is_probe_short_eligible()` 都只读
+    `self._effective_regime` 等内部字段（+ 入参），所以还原这些字段后真实方法即可忠实运行。
+    构造后覆盖 7 个内部字段，使其与 `_load_state()` 读到的磁盘状态无关。
     """
-
-    def __init__(self, snap):
-        self._snap = dict(snap or {})
-        self._effective_regime = self._snap.get("effective_regime")
-        self._raw_regime = self._snap.get("raw_regime", self._effective_regime)
-        self._confidence = self._snap.get("confidence", 0)
-        self._candidate_regime = self._snap.get("candidate_regime")
-        self._candidate_count = self._snap.get("candidate_count", 0)
-        self._last_changed_at = self._snap.get("last_changed_at", 0.0)
-        self._min_hold_sec = self._snap.get("min_hold_sec", 0)
-        self._basis = self._snap.get("basis", {})
-
-    def snapshot(self):
-        snap = dict(self._snap)
-        snap.setdefault("effective_regime", self._effective_regime)
-        snap.setdefault("raw_regime", self._raw_regime)
-        snap.setdefault("confidence", self._confidence)
-        return snap
-
-    def is_short_allowed(self, score, htf_bearish_votes, effective_rr,
-                         confirm_15m_short, daily_bias):
-        # 回放当时 regime：非 bullish 一律放行，bullish 走与生产同构的强空判定。
-        if self._effective_regime != "bullish":
-            return True, ""
-        if (score <= -70 and htf_bearish_votes >= 2
-                and confirm_15m_short and effective_rr >= 1.8):
-            if daily_bias == "bullish":
-                return True, "degrade_to_probe"
-            return True, "short_bullish_strong"
-        return False, "short_regime_guard"
-
-    def is_probe_short_eligible(self, *a, **k):
-        return False
+    from utils.market_regime import RegimeManager
+    snap = dict(snap or {})
+    rm = RegimeManager(config=config or {}, logger=None)
+    rm._effective_regime = snap.get("effective_regime", rm._effective_regime)
+    rm._raw_regime = snap.get("raw_regime", rm._effective_regime)
+    rm._confidence = snap.get("confidence", rm._confidence)
+    rm._candidate_regime = snap.get("candidate_regime")
+    rm._candidate_count = snap.get("candidate_count", 0)
+    rm._last_changed_at = snap.get("last_changed_at", 0.0)
+    rm._basis = snap.get("basis", {})
+    return rm
 
 
 def restore_state(judge, snap, symbol=None):
@@ -81,7 +60,8 @@ def restore_state(judge, snap, symbol=None):
     sym_state = snap.get("_symbol_state") or {}
     judge._symbol_state = {symbol: dict(sym_state)} if (symbol and sym_state) else {}
     judge._available_balance = snap.get("_available_balance", 0.0)
-    judge._regime_manager = _RegimeStub(snap.get("_regime_manager"))
+    judge._regime_manager = _restore_regime(snap.get("_regime_manager"),
+                                            config=getattr(judge, "config", {}))
 
 
 async def replay_decision(record, config=None):
