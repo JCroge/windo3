@@ -1,0 +1,16 @@
+{
+  "change": "deterministic-replay-golden-master",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1025e29cc03601b30be6a5222a838596255df231c823b47fad1d5cc9a04c8ce2",
+  "files": [
+    { "path": "openspec/changes/deterministic-replay-golden-master/proposal.md", "sha256": "ef4466f6480dd2296795baa578db9ff8ddcad8a733103fff7f21db6dfaac32b9" },
+    { "path": "openspec/changes/deterministic-replay-golden-master/design.md", "sha256": "67755203028018e0d32e67ea0b0d6bbb412cca3d125c950535dc95f062862458" },
+    { "path": "openspec/changes/deterministic-replay-golden-master/tasks.md", "sha256": "d4af19a2f448d38d070b25763d21db8e3094b3dde988f62930f016f317d699b9" },
+    { "path": "openspec/changes/deterministic-replay-golden-master/specs/decision-state-snapshot/spec.md", "sha256": "7ba4b7ae6627bce941c3c773f4d67bb452631105fe17711233f564bad6be13b8" },
+    { "path": "openspec/changes/deterministic-replay-golden-master/specs/deterministic-replay-harness/spec.md", "sha256": "6e43ee905fc8efdeb819bf600b4c6531b6a0e801d8e0d23aff94083d14d791b9" },
+    { "path": "openspec/changes/deterministic-replay-golden-master/specs/replay-report-driver/spec.md", "sha256": "9a8a21a8eed7a66ff9b8814a8c6024a43bae0e9cc1c4e82b8b8dab8696c1a697" }
+  ]
+}
