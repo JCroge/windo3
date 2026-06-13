@@ -272,13 +272,14 @@ class ResearchSynthesizer(BaseAgent):
         try:
             self._market_context = self._build_research_summary(candidates, sentiment_data, news_data)
             from agents.llm_client import SYNTHESIS_SCHEMA
-            result = await self.ask_claude_json(SYNTHESIS_PROMPT, self._market_context, schema=SYNTHESIS_SCHEMA)
-            selected = result.get('selected_symbols', [])[:self._max_symbols]
-            market_regime = result.get('market_regime', 'unknown')
+            # max_tokens=6000：12 标的+理由的 JSON 远超默认 2000，否则被截断→解析空
+            result = await self.ask_claude_json(SYNTHESIS_PROMPT, self._market_context,
+                                                schema=SYNTHESIS_SCHEMA, max_tokens=6000)
         except Exception as e:
             self.logger.warning(f"LLM研判失败或上下文构造失败，规则降级: {e}")
-            selected = self._rule_fallback(candidates)
-            market_regime = 'unknown'
+            result = None
+        # 异常/截断/空结果统一走规则降级，保证初选永不产空
+        selected, market_regime = self._select_preliminary(result, candidates)
 
         # 负面催化剂否决：有近4h负面新闻的标的直接降confidence至0
         # 设计原则：新闻做veto层而非加分层（参考Freqtrade news-filter）
@@ -323,7 +324,8 @@ class ResearchSynthesizer(BaseAgent):
 
         try:
             from agents.llm_client import FINAL_SYNTHESIS_SCHEMA
-            result = await self.ask_claude_json(FINAL_DECISION_PROMPT, user_msg, schema=FINAL_SYNTHESIS_SCHEMA)
+            result = await self.ask_claude_json(FINAL_DECISION_PROMPT, user_msg,
+                                                schema=FINAL_SYNTHESIS_SCHEMA, max_tokens=6000)
             final_selected = result.get('final_symbols', [])[:self._max_symbols]
             market_regime = result.get('market_regime', preliminary['market_regime'])
             censor_response = result.get('censor_response', '')
@@ -522,6 +524,16 @@ class ResearchSynthesizer(BaseAgent):
                     self.logger.warning(f"[研判] {symbol} 检测到负面催化剂: '{kw}' in '{title[:60]}'")
                     return True
         return False
+
+    def _select_preliminary(self, result, candidates):
+        """初选取值：LLM 结果有效且非空则用之；否则（异常/截断/空 selected）
+        统一回退规则降级，保证初选永不产出空候选（有候选数据时）。"""
+        if result:
+            selected = result.get('selected_symbols', [])[:self._max_symbols]
+            if selected:
+                return selected, result.get('market_regime', 'unknown')
+        self.logger.warning("[研判·初选] LLM 无有效候选（空/截断），规则降级")
+        return self._rule_fallback(candidates), 'unknown'
 
     def _rule_fallback(self, candidates: list) -> list:
         """LLM不可用时的规则降级选币"""
