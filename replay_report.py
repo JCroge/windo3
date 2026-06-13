@@ -20,6 +20,8 @@ import os
 import datetime
 from collections import defaultdict
 
+from utils.cf_honesty_gate import summarize_bucket
+
 
 def load_trade_history(path='data/trade_history.json'):
     try:
@@ -136,6 +138,30 @@ def generate_report(start_ts, end_ts, window_label='custom'):
         'bucket_pf': bucket_metrics,
     }
     return report
+
+
+def build_cf_report(resolved_rows, *, min_sample=30, lowconf_sample=100):
+    """按 reject_reason|regime|side 分桶，每桶过诚实 gate + 偏差带。
+    observability-only。"""
+    groups = defaultdict(list)
+    for r in resolved_rows:
+        key = f"{r.get('reject_reason')}|{r.get('effective_regime')}|{r.get('side')}"
+        groups[key].append(r)
+    buckets = {}
+    for key, rows in groups.items():
+        wins = sum(1 for r in rows if r.get("outcome") == "tp")
+        losses = sum(1 for r in rows if r.get("outcome") == "sl")
+        samples = [r["net_usdt"] for r in rows if r.get("net_usdt") is not None]
+        verdict = summarize_bucket(wins=wins, losses=losses, net_usdt_samples=samples,
+                                   min_sample=min_sample, lowconf_sample=lowconf_sample)
+        ambiguous = sum(1 for r in rows if r.get("price_ambiguous"))
+        verdict["bias_band"] = {
+            "ambiguous_count": ambiguous,
+            "ambiguous_pct": (ambiguous / len(rows)) if rows else 0.0,
+        }
+        verdict["sources"] = sorted({r.get("source") for r in rows})
+        buckets[key] = verdict
+    return {"buckets": buckets, "total": len(resolved_rows)}
 
 
 def main():

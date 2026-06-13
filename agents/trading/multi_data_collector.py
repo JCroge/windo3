@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 from agents.base import BaseAgent
 from utils.symbol import to_internal
 from utils.symbol_mentions import filter_relevant_headlines
+from utils.tick_capture import OneSecBarStore
+from utils.state_paths import get_state_paths
 
 load_dotenv()
 
@@ -49,6 +51,12 @@ class MultiDataCollector(BaseAgent):
         self._orderbook_cache = {}
         self._liquidation_cache = {}
         self._news_cache = {}  # {symbol: {"headlines": [...], "fetched_at": ts}}
+        # 前向 1s OHLC 采集（observability-only，fail-safe，绝不干扰采集）
+        self._tick_store = OneSecBarStore(
+            db_path=get_state_paths().klines_1s,
+            enabled=config.get('tick_capture_enabled', True),
+        )
+        self._tick_1s_accum = {}  # symbol -> {"sec": int, "o","h","l","c"}
 
     async def setup(self):
         from utils.exchange_factory import create_exchange
@@ -436,9 +444,30 @@ class MultiDataCollector(BaseAgent):
                 "ask": float(ticker.get('ask', 0) or 0),
                 "volume_24h": float(ticker.get('quoteVolume', 0) or 0),
             }
+            self._capture_1s_tick(symbol, payload["price"], payload["timestamp"])
             await self.publish("price_tick", payload, symbol=symbol)
         except Exception as e:
             self.logger.warning(f"[价格] {symbol} ticker失败: {e}")
+
+    def _capture_1s_tick(self, symbol, price, ts):
+        """聚合 1s OHLC 桶，秒切换时落上一秒 bar。observability-only，绝不干扰采集。"""
+        if getattr(self, "_tick_store", None) is None:
+            return
+        try:
+            sec = int(ts)
+            acc = self._tick_1s_accum.get(symbol)
+            if acc is None or acc["sec"] != sec:
+                if acc is not None:
+                    self._tick_store.record_bar(symbol, acc["sec"] * 1000,
+                                                acc["o"], acc["h"], acc["l"], acc["c"])
+                self._tick_1s_accum[symbol] = {"sec": sec, "o": price, "h": price,
+                                               "l": price, "c": price}
+            else:
+                acc["h"] = max(acc["h"], price)
+                acc["l"] = min(acc["l"], price)
+                acc["c"] = price
+        except Exception:
+            pass  # observability-only, never disrupt collection
 
     async def _fetch_orderbook(self, symbol: str):
         try:
