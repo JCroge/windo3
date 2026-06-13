@@ -15,6 +15,8 @@ from utils.archetype_cooldown import ArchetypeCooldown
 from utils.candidate_ranker import CandidateRanker
 from utils.market_regime import RegimeManager
 from utils.counterfactual_ledger import CounterfactualLedger
+from utils.decision_tape import DecisionTape, build_bundle
+from utils.state_paths import get_state_paths
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -144,6 +146,12 @@ class MultiJudge(BaseAgent):
         self._counterfactual_ledger = CounterfactualLedger(
             enabled=config.get('counterfactual_ledger_enabled', True) if config else True,
             logger=self.logger,
+        )
+        # ═══ Counterfactual Replay: decision tape (observability-only, fail-safe) ═══
+        self._decision_tape = DecisionTape(
+            path=get_state_paths().decision_replay_tape,
+            enabled=config.get('decision_tape_enabled', True) if config else True,
+            retention_days=config.get('decision_tape_retention_days', 90) if config else 90,
         )
         self._symbol_tech_cache = {}
         self._short_regime_guard_enabled = config.get('short_regime_guard_enabled', True) if config else True
@@ -1966,6 +1974,22 @@ class MultiJudge(BaseAgent):
         if 'position_scale' not in decision:
             decision['position_scale'] = decision.get('attribution', {}).get('position_scale', 1.0)
 
+        # Counterfactual replay: tape the accepted open decision (observability-only).
+        # Guarded: tape absence (e.g. partial construction in tests) must never break the decision path.
+        if action in ("open_long", "open_short") and getattr(self, "_decision_tape", None) is not None:
+            self._decision_tape.record_decision(build_bundle(
+                symbol=symbol, decision="accept",
+                request_id=decision.get("request_id"),
+                tech_analysis=self._symbol_tech_cache.get(symbol) or {},
+                price_at_decision=(plan or {}).get("entry_ref"),
+                regime_state=getattr(self._regime_manager, "_effective_regime", None),
+                llm_output=None, llm_audit_ref=None,
+                trade_decision_output={
+                    "plan": decision.get("plan"),
+                    "attribution": decision.get("attribution"),
+                },
+            ))
+
         await self.publish("trade_decision", decision, symbol=symbol)
         self.logger.info(
             f"[决策] {symbol} {action} slot={slot_type} req={req_id} "
@@ -2973,6 +2997,18 @@ class MultiJudge(BaseAgent):
             symbol, side, plan, regime, score, confidence, reason,
             attribution=attr
         )
+        # Counterfactual replay: tape the rejected plan (observability-only).
+        # Guarded: tape absence (e.g. partial construction in tests) must never break the decision path.
+        if getattr(self, "_decision_tape", None) is not None:
+            self._decision_tape.record_decision(build_bundle(
+                symbol=symbol, decision="reject",
+                request_id=(attr or {}).get("request_id") if isinstance(attr, dict) else None,
+                tech_analysis={},
+                price_at_decision=(plan or {}).get("entry_ref") or (plan or {}).get("entry_price"),
+                regime_state=regime,
+                llm_output=None, llm_audit_ref=None,
+                trade_decision_output={"reject_reason": reason, "attribution": attr},
+            ))
 
     def _rejection_attribution(self, action: str, plan: dict, blocked_by: str,
                                dispatch_path: str = '', tech: dict = None) -> dict:
