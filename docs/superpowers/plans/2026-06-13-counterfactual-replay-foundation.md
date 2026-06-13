@@ -2,6 +2,7 @@
 change: counterfactual-replay-foundation
 design-doc: docs/superpowers/specs/2026-06-13-counterfactual-replay-foundation-design.md
 base-ref: 7ea92f6078657a39f696ca3bb6d534f978d782dc
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 # Counterfactual Replay Foundation 实施计划
@@ -16,6 +17,7 @@ base-ref: 7ea92f6078657a39f696ca3bb6d534f978d782dc
 
 **红线（贯穿全程）:** observability-only write-only——任何 gate/veto/halt/rank/daily-stop 严禁读决策磁带/反事实 PnL/tick；Task 8 守卫测试强制。零回归：flag 全关 == 现状，基线 1149 不降。
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 1: 配置项与状态路径接线
@@ -117,6 +119,7 @@ git add utils/config_loader.py utils/state_paths.py tests/test_cf_foundation_con
 git commit -m "feat(cf): config + state paths for replay foundation (decision tape / tick / honesty gate)"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 2: 决策磁带 writer（utils/decision_tape.py）
@@ -303,6 +306,7 @@ git add utils/decision_tape.py tests/test_decision_tape.py
 git commit -m "feat(cf): decision tape writer (self-contained LLM inline, fail-safe, retention)"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 3: Judge 决策点接线（accept + reject）
@@ -383,6 +387,7 @@ git add agents/trading/judge.py tests/test_judge_decision_tape_wiring.py
 git commit -m "feat(cf): wire decision tape at Judge accept publish + reject record"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 4: 1s tick 采集 → klines_1s.db
@@ -515,6 +520,7 @@ git add utils/tick_capture.py tests/test_tick_capture.py
 git commit -m "feat(cf): 1s aggregated bar store -> klines_1s.db (isolated, fail-safe)"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 5: 反事实 PnL 引擎（utils/counterfactual_pnl.py）
@@ -693,6 +699,7 @@ git add utils/counterfactual_pnl.py tests/test_counterfactual_pnl.py
 git commit -m "feat(cf): counterfactual PnL engine (CostModel + SL-first + bias band + funding approx)"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 6: 诚实性 gate（Wilson + bootstrap + 三档）
@@ -826,6 +833,7 @@ git add utils/cf_honesty_gate.py tests/test_cf_honesty_gate.py
 git commit -m "feat(cf): honesty gate (Wilson + deterministic bootstrap + 3-tier sample)"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 7: 集成——tick 采集接线 + 被拒单报表
@@ -914,6 +922,7 @@ git add replay_report.py agents/trading/multi_data_collector.py tests/test_cf_re
 git commit -m "feat(cf): rejected-signal report (buckets + honesty gate + bias band) + 1s tick wiring"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 8: 红线守卫测试（observability-only）
@@ -972,6 +981,7 @@ git add tests/test_cf_red_line_guard.py
 git commit -m "test(cf): red-line guard — decision/risk paths must not read CF products"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 9: 文档与红线声明
@@ -998,6 +1008,7 @@ git add CLAUDE.md docs/to-do-list.md
 git commit -m "docs(cf): red-line declaration + to-do-list roadmap for replay lab"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Task 10: 全量验证与零回归
@@ -1028,6 +1039,7 @@ git add -A
 git commit -m "chore(cf): full regression green — replay foundation L1 complete"
 ```
 
+archived-with: 2026-06-13-counterfactual-replay-foundation
 ---
 
 ## Self-Review 结论

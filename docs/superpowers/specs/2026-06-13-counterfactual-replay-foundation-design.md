@@ -2,6 +2,8 @@
 comet_change: counterfactual-replay-foundation
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-13-counterfactual-replay-foundation
+status: final
 ---
 
 # Counterfactual Replay Foundation — 技术设计 (L1 + 原料地基)

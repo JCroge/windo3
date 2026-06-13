@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-13-counterfactual-replay-f
 branch_status: handled
 created_at: 2026-06-13
 verified_at: 2026-06-13
-archived: false
+archived: true
 handoff_context: openspec/changes/counterfactual-replay-foundation/.comet/handoff/design-context.json
 handoff_hash: 0781174ddb322f6826a10b8a04d6970d9874134d4f6b98f7184026596d6dd627
 verify_command: python3 -m pytest -q
