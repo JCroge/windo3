@@ -68,6 +68,8 @@ class StatePaths:
     live_order_events: str
     live_position_lifecycle: str
     agent_health: str
+    decision_replay_tape: str
+    klines_1s: str
 
     @classmethod
     def for_namespace(cls, namespace: Optional[str] = None) -> 'StatePaths':
@@ -82,6 +84,8 @@ class StatePaths:
             live_order_events=f'data/{p}live_order_events.jsonl',
             live_position_lifecycle=f'data/{p}live_position_lifecycle.json',
             agent_health=f'data/{p}agent_health.json',
+            decision_replay_tape=f'data/{p}decision_replay_tape.jsonl',
+            klines_1s=f'data/{p}klines_1s.db',
         )
 
     def as_banner_lines(self) -> list:

@@ -74,6 +74,11 @@ HARD_LIMITS = {
     "queue_backlog_warn_pending": (50, 1000),
     "data_stale_timeout_sec": (30, 3600),
     "agent_tick_stall_timeout_sec": (30, 3600),
+    # Counterfactual replay foundation (L1 observability)
+    "cf_min_sample": (1, 1000),
+    "cf_lowconf_sample": (1, 5000),
+    "decision_tape_retention_days": (1, 3650),
+    "tick_capture_retention_days": (1, 3650),
 }
 
 
@@ -177,6 +182,13 @@ DEFAULTS = {
     "queue_backlog_warn_pending": 200,
     "data_stale_timeout_sec": 180,
     "agent_tick_stall_timeout_sec": 120,
+    # Counterfactual replay foundation (L1 observability)
+    "decision_tape_enabled": True,
+    "tick_capture_enabled": True,
+    "cf_min_sample": 30,
+    "cf_lowconf_sample": 100,
+    "decision_tape_retention_days": 90,
+    "tick_capture_retention_days": 30,
 }
 
 
@@ -311,6 +323,13 @@ def _read_env_overrides() -> dict:
         "QUEUE_BACKLOG_WARN_PENDING": ("queue_backlog_warn_pending", int),
         "DATA_STALE_TIMEOUT_SEC": ("data_stale_timeout_sec", float),
         "AGENT_TICK_STALL_TIMEOUT_SEC": ("agent_tick_stall_timeout_sec", float),
+        # Counterfactual replay foundation (L1 observability)
+        "DECISION_TAPE_ENABLED": ("decision_tape_enabled", _to_bool),
+        "TICK_CAPTURE_ENABLED": ("tick_capture_enabled", _to_bool),
+        "CF_MIN_SAMPLE": ("cf_min_sample", int),
+        "CF_LOWCONF_SAMPLE": ("cf_lowconf_sample", int),
+        "DECISION_TAPE_RETENTION_DAYS": ("decision_tape_retention_days", int),
+        "TICK_CAPTURE_RETENTION_DAYS": ("tick_capture_retention_days", int),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
