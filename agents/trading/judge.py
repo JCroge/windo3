@@ -1988,6 +1988,7 @@ class MultiJudge(BaseAgent):
                     "plan": decision.get("plan"),
                     "attribution": decision.get("attribution"),
                 },
+                state_snapshot=self._capture_state_snapshot(symbol),
             ))
 
         await self.publish("trade_decision", decision, symbol=symbol)
@@ -2984,6 +2985,30 @@ class MultiJudge(BaseAgent):
 
         return None
 
+    def _capture_state_snapshot(self, symbol: str) -> dict:
+        """白名单采集决策时跨决策可变状态（observability-only）。不 pickle 整个对象。"""
+        ac = getattr(self, "_archetype_cooldown", None)
+        rm = getattr(self, "_regime_manager", None)
+        return {
+            "_open_positions": list(getattr(self, "_open_positions", set())),
+            "_pending_open_symbols": list(getattr(self, "_pending_open_symbols", set())),
+            "_position_slots": dict(getattr(self, "_position_slots", {})),
+            "_pending_open_slots": dict(getattr(self, "_pending_open_slots", {})),
+            "_archetype_cooldown": {
+                "_history": getattr(ac, "_history", {}),
+                "_cooldown_until": getattr(ac, "_cooldown_until", {}),
+            } if ac is not None else None,
+            "_recent_wins": getattr(self, "_recent_wins", 0),
+            "_total_completed_trades": getattr(self, "_total_completed_trades", 0),
+            "_recent_win_rate": getattr(self, "_recent_win_rate", None),
+            "_probe_short_active": getattr(self, "_probe_short_active", None),
+            "_probe_short_sl_count": getattr(self, "_probe_short_sl_count", 0),
+            "_probe_short_cooldown_until": getattr(self, "_probe_short_cooldown_until", 0.0),
+            "_symbol_state": dict(getattr(self, "_symbol_state", {}).get(symbol, {})),
+            "_available_balance": getattr(self, "_available_balance", 0.0),
+            "_regime_manager": rm.snapshot() if rm is not None and hasattr(rm, "snapshot") else None,
+        }
+
     def _record_rejected_plan(self, symbol: str, action: str, plan: dict,
                               score: float, confidence: float, reason: str,
                               attribution: dict = None):
@@ -3008,6 +3033,7 @@ class MultiJudge(BaseAgent):
                 regime_state=regime,
                 llm_output=None, llm_audit_ref=None,
                 trade_decision_output={"reject_reason": reason, "attribution": attr},
+                state_snapshot=self._capture_state_snapshot(symbol),
             ))
 
     def _rejection_attribution(self, action: str, plan: dict, blocked_by: str,

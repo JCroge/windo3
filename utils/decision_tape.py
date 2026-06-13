@@ -10,10 +10,23 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = "decision_replay_record.v1"
 
 
+def _jsonable(v):
+    """递归把 set→sorted list，保证 JSON 可序列化。"""
+    if isinstance(v, set):
+        return sorted(_jsonable(x) for x in v)
+    if isinstance(v, dict):
+        return {k: _jsonable(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    return v
+
+
 def build_bundle(*, symbol, decision, request_id, tech_analysis, price_at_decision,
-                 regime_state, llm_output, llm_audit_ref, trade_decision_output):
+                 regime_state, llm_output, llm_audit_ref, trade_decision_output,
+                 state_snapshot=None):
     """构建一条 decision_replay_record。llm_output 内联（self-contained），
-    llm_audit_ref 仅 best-effort 指针。"""
+    llm_audit_ref 仅 best-effort 指针。state_snapshot 含决策前跨决策可变状态，
+    存在时 replayable=True。"""
     return {
         "schema_version": SCHEMA_VERSION,
         "request_id": request_id,
@@ -26,6 +39,8 @@ def build_bundle(*, symbol, decision, request_id, tech_analysis, price_at_decisi
         "llm_output_inline": llm_output,
         "llm_audit_ref": llm_audit_ref,
         "trade_decision_output": trade_decision_output,
+        "state_snapshot_before_decision": _jsonable(state_snapshot) if state_snapshot is not None else None,
+        "replayable": state_snapshot is not None,
     }
 
 
