@@ -2,7 +2,7 @@
 
 更新日期：2026-06-10
 来源：2026-05-24 系统性审计、全量测试、OKX mock 验收、docs 清理；2026-05-25 OKX posMode 执行故障复核与代码落地；2026-05-26 R:R Floor Policy 修复 + Long Entry Position Guard 上线；2026-05-27 OKX 真实 testnet T0-T9 语义验收 PASS；2026-05-28 系统性审计复核 + P0/P1 历史整改 + 真实已实现 PnL 账本 Phase 1+2+3 落地；2026-05-28 第三次审计 P0/P1/P2 整改完成；2026-05-29 第四次审计 F4-001/002/003 整改完成（解除 live 扩容 NO-GO 前置）；2026-06-01 TG Graceful Ops 与 Entry Drift Hybrid Policy 完成；2026-06-03 Pullback Entry Paper Parity 完成；2026-06-05 Short Main Path Risk Guard Parity 完成；2026-06-07 研究层低流动性硬过滤器上线（2026-06-10 补 OpenSpec/verify 流程闭环）；2026-06-10 Paper Dual-Track Simulation 完成（idealized vs realistic 双轨 + /paper_gap，comet 全流程归档）；2026-06-10 Data Source Provenance 完成（跨源 source/freshness_sec/confidence 穿透至 tech_analysis + Judge attribution + Reviewer 分桶，observability-only，comet 全流程归档）。
-当前基线：`1146 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
+当前基线：`1149 passed / 4 deselected / 1 warning`。OKX 真实 testnet T0/T1/T6 PASS（owner-tag clOrdId 验证）。live 扩容为 CONDITIONAL GO；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
 
 最新整改文档：
 

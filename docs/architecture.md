@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-06-11）**：主入口为 `run_agents.py`，全量回归 `1088 passed / 4 deselected / 1 warning`（第五次审计阻断项闭环后）。各策略 gate 均单点收口：R:R Floor → `Judge._select_rr_floor`、Long Entry Position Guard → `Judge._check_entry_position_policy`、Entry Drift Hybrid Policy → `executor._classify_entry_drift` / `_recompute_plan_for_drift`、短单结构性风险 gate → `Judge._classify_short_entry_risk`（main path 与 deferred 三路径共用同一份语义）、Position TP 写入 → `_set_position_tp`。OKX 真实 testnet 语义验收：long_short_mode T0-T15 13 PASS / 3 SKIP + net_mode 子账户 T0/T2/T3 3 PASS（2026-05-28）+ owner-tag 补验 T0/T1/T6 PASS（2026-05-29）。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-06-13）**：主入口为 `run_agents.py`，全量回归 `1149 passed / 4 deselected / 1 warning`（第五次审计阻断项闭环 + Agent Health Supervisor + tick-loop 挂死检测 + bot LLM env 隔离后）。各策略 gate 均单点收口：R:R Floor → `Judge._select_rr_floor`、Long Entry Position Guard → `Judge._check_entry_position_policy`、Entry Drift Hybrid Policy → `executor._classify_entry_drift` / `_recompute_plan_for_drift`、短单结构性风险 gate → `Judge._classify_short_entry_risk`（main path 与 deferred 三路径共用同一份语义）、Position TP 写入 → `_set_position_tp`。OKX 真实 testnet 语义验收：long_short_mode T0-T15 13 PASS / 3 SKIP + net_mode 子账户 T0/T2/T3 3 PASS（2026-05-28）+ owner-tag 补验 T0/T1/T6 PASS（2026-05-29）。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
