@@ -32,3 +32,16 @@ def test_halt_and_riskguard_do_not_read_tape():
         src = _src(mp)
         assert "decision_tape" not in src, mp
         assert "DecisionTape" not in src, mp
+
+
+def test_decision_paths_do_not_read_replay_products():
+    """L2：决策/风控路径严禁读回放 harness / driver / 状态快照产物。
+    Judge 写 state_snapshot（经 _capture_state_snapshot，允许），但不得读回放产物做决策。"""
+    for mp in ["agents.trading.judge", "agents.trading.executor", "executor",
+               "agents.trading.portfolio_risk_guard", "agents.trading.reviewer"]:
+        src = _src(mp)
+        # 精确匹配回放 harness 模块（注意 Judge 写 decision_replay_tape 是允许的写路径，不能误捕）
+        assert "utils.decision_replay" not in src, mp
+        assert "cf_replay_driver" not in src, mp
+        # Judge 写快照用 _capture_state_snapshot；但任何路径都不得【读】回放磁带字段
+        assert "state_snapshot_before_decision" not in src, mp
