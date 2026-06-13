@@ -41,6 +41,8 @@ def restore_state(judge, snap, symbol=None):
     """从决策前快照还原 MultiJudge 实例状态（决策路径读取的字段子集）。"""
     judge._open_positions = set(snap.get("_open_positions", []))
     judge._pending_open_symbols = set(snap.get("_pending_open_symbols", []))
+    # _pending_open_ts 是 state（非 config）：还原而非清空，使 _sweep_stale_pending 忠实
+    judge._pending_open_ts = dict(snap.get("_pending_open_ts", {}))
     judge._position_slots = dict(snap.get("_position_slots", {}))
     judge._pending_open_slots = dict(snap.get("_pending_open_slots", {}))
 

@@ -2992,6 +2992,7 @@ class MultiJudge(BaseAgent):
         return {
             "_open_positions": list(getattr(self, "_open_positions", set())),
             "_pending_open_symbols": list(getattr(self, "_pending_open_symbols", set())),
+            "_pending_open_ts": dict(getattr(self, "_pending_open_ts", {})),
             "_position_slots": dict(getattr(self, "_position_slots", {})),
             "_pending_open_slots": dict(getattr(self, "_pending_open_slots", {})),
             "_archetype_cooldown": {
