@@ -192,16 +192,18 @@ class LLMClient:
     def __init__(self):
         self.logger = setup_logger('llm_client')
 
-        self.api_key = os.getenv('ANTHROPIC_API_KEY')
-        self.base_url = os.getenv('ANTHROPIC_BASE_URL', 'https://api.anthropic.com')
-        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+        # bot 专用 LLM 配置：用独立变量名，与宿主 CLI（Claude Code）的 ANTHROPIC_* 隔离，
+        # 避免 CLI 的模型/代理通过同名 env 劫持 bot（不回退读 ANTHROPIC_*）。
+        self.api_key = os.getenv('BOT_LLM_API_KEY')
+        self.base_url = os.getenv('BOT_LLM_BASE_URL', 'https://api.anthropic.com')
+        self.model = os.getenv('BOT_LLM_MODEL', 'claude-opus-4-6')
 
         self.available = False
         self.client = None
         self._unavailable_reason = None
 
         if not self.api_key:
-            self._unavailable_reason = "ANTHROPIC_API_KEY 未配置"
+            self._unavailable_reason = "BOT_LLM_API_KEY 未配置"
             self.logger.warning(f"LLM 不可用（{self._unavailable_reason}），所有 LLM 调用将走规则降级")
         else:
             try:
