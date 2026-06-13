@@ -2,6 +2,8 @@
 comet_change: deterministic-replay-golden-master
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-14-deterministic-replay-golden-master
+status: final
 ---
 
 # Deterministic Replay + Golden Master — 技术设计 (L2)

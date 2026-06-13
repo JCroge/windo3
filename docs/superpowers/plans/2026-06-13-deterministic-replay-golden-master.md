@@ -2,6 +2,7 @@
 change: deterministic-replay-golden-master
 design-doc: docs/superpowers/specs/2026-06-13-deterministic-replay-golden-master-design.md
 base-ref: ad24914fa7e5d75d647ac77c452d80d415926172
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 # Deterministic Replay + Golden Master (L2) 实施计划
@@ -18,6 +19,7 @@ base-ref: ad24914fa7e5d75d647ac77c452d80d415926172
 
 **红线（贯穿）:** observability-only write-only；Task 5 守卫。零回归：`DECISION_TAPE_ENABLED=false` == L1 行为，基线 1185 不降。
 
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 ## Task 1: 决策状态快照采集
@@ -181,6 +183,7 @@ git commit -m "feat(replay): capture pre-decision state snapshot into tape (whit
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 ## Task 2: 回放 harness — 状态还原 + mock + replay_decision
@@ -365,6 +368,7 @@ git commit -m "feat(replay): deterministic replay harness (restore state + mock 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 ## Task 3: golden-master 三层比对
@@ -487,6 +491,7 @@ git commit -m "feat(replay): golden-master 3-tier compare (discrete byte / conti
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 ## Task 4: 端到端 replay-report driver
@@ -633,6 +638,7 @@ git commit -m "feat(replay): end-to-end rejected-signal report driver (klines 24
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 ## Task 5: 红线守卫扩展 + 文档 + 记忆
@@ -675,6 +681,7 @@ git commit -m "docs(replay): L2 red-line guard + roadmap update
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 ## Task 6: 全量验证与零回归
@@ -698,6 +705,7 @@ git add -A
 git commit -m "chore(replay): L2 full regression green — deterministic replay + golden master complete"
 ```
 
+archived-with: 2026-06-14-deterministic-replay-golden-master
 ---
 
 ## Self-Review 结论
