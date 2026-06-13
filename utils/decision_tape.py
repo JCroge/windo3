@@ -30,17 +30,25 @@ def build_bundle(*, symbol, decision, request_id, tech_analysis, price_at_decisi
 
 
 class DecisionTape:
-    def __init__(self, path, enabled=True, retention_days=90):
+    def __init__(self, path, enabled=True, retention_days=90, prune_every=500):
         self.path = path
         self.enabled = enabled
         self.retention_days = retention_days
+        # Throttle: pruning rewrites the whole file (O(n)); doing it every write is
+        # O(n^2) and runs in the async decision loop. Prune at most once per
+        # `prune_every` writes so the hot path stays cheap.
+        self.prune_every = max(1, int(prune_every))
+        self._writes_since_prune = 0
         self.drop_count = 0
 
     def record_decision(self, bundle):
         if not self.enabled:
             return
         try:
-            self._maybe_prune()
+            self._writes_since_prune += 1
+            if self._writes_since_prune >= self.prune_every:
+                self._writes_since_prune = 0
+                self._maybe_prune()
             self._append_raw(bundle)
         except Exception as e:
             self.drop_count += 1

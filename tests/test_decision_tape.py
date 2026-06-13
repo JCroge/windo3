@@ -59,7 +59,7 @@ def test_flag_off_writes_nothing(tmp_path):
 
 def test_retention_prunes_old(tmp_path):
     p = str(tmp_path / "tape.jsonl")
-    dt = DecisionTape(path=p, enabled=True, retention_days=1)
+    dt = DecisionTape(path=p, enabled=True, retention_days=1, prune_every=1)
     old = build_bundle(symbol="A-USDT", decision="accept", request_id="old",
                        tech_analysis={}, price_at_decision=1.0, regime_state="x",
                        llm_output=None, llm_audit_ref=None, trade_decision_output={})
@@ -68,7 +68,27 @@ def test_retention_prunes_old(tmp_path):
     fresh = build_bundle(symbol="B-USDT", decision="accept", request_id="new",
                          tech_analysis={}, price_at_decision=1.0, regime_state="x",
                          llm_output=None, llm_audit_ref=None, trade_decision_output={})
-    dt.record_decision(fresh)  # triggers prune
+    dt.record_decision(fresh)  # prune_every=1 → triggers prune
     rows = _read(p)
     ids = {r["request_id"] for r in rows}
     assert "new" in ids and "old" not in ids
+
+
+def test_prune_throttled_not_every_write(tmp_path):
+    # prune runs at most once per prune_every writes — old record survives until then.
+    p = str(tmp_path / "tape.jsonl")
+    dt = DecisionTape(path=p, enabled=True, retention_days=1, prune_every=3)
+    old = build_bundle(symbol="A-USDT", decision="accept", request_id="old",
+                       tech_analysis={}, price_at_decision=1.0, regime_state="x",
+                       llm_output=None, llm_audit_ref=None, trade_decision_output={})
+    old["timestamp"] = time.time() - 3 * 86400
+    dt._append_raw(old)
+    for i in range(2):  # 2 writes < prune_every=3 → no prune yet
+        dt.record_decision(build_bundle(symbol="B-USDT", decision="accept", request_id=f"w{i}",
+                                        tech_analysis={}, price_at_decision=1.0, regime_state="x",
+                                        llm_output=None, llm_audit_ref=None, trade_decision_output={}))
+    assert "old" in {r["request_id"] for r in _read(p)}  # still present
+    dt.record_decision(build_bundle(symbol="B-USDT", decision="accept", request_id="w2",
+                                    tech_analysis={}, price_at_decision=1.0, regime_state="x",
+                                    llm_output=None, llm_audit_ref=None, trade_decision_output={}))
+    assert "old" not in {r["request_id"] for r in _read(p)}  # 3rd write triggers prune
