@@ -217,3 +217,50 @@ def _install_config_flags(judge, config):
     judge.exchange = None
     # 决策磁带：回放期间禁写（observability-only），避免污染真实 tape
     judge._decision_tape = None
+
+
+_DISCRETE = ("action", "confidence", "dispatch_path")
+_DISCRETE_ATTR = ("entry_type", "slot_type", "is_probe", "is_low_rr",
+                  "short_gate_decision", "short_gate_reason", "rr_policy", "rr_floor_used",
+                  "entry_position_status", "entry_position_block_reason", "blocked_by")
+_CONTINUOUS = ("size_usdt", "entry_ref", "stop_loss", "leverage")
+_INFORMATIONAL = ("reasoning", "key_factors", "risk_warnings")
+_TOL = 0.005
+
+
+def _rel_close(a, b, tol=_TOL):
+    if a is None or b is None:
+        return a == b
+    if a == 0:
+        return abs(b) <= tol
+    return abs(a - b) / abs(a) <= tol
+
+
+def compare_decision(recorded, replayed):
+    """三层比对：离散字节级 fail / 连续 <0.5% fail / reasoning 仅信息。
+    返回 {"match": bool, "diffs": [{"field","recorded","replayed"[,"informational"]}]}"""
+    diffs = []
+    match = True
+    for f in _DISCRETE:
+        if recorded.get(f) != replayed.get(f):
+            diffs.append({"field": f, "recorded": recorded.get(f), "replayed": replayed.get(f)})
+            match = False
+    ra, pa = recorded.get("attribution") or {}, replayed.get("attribution") or {}
+    for f in _DISCRETE_ATTR:
+        if ra.get(f) != pa.get(f):
+            diffs.append({"field": f"attribution.{f}", "recorded": ra.get(f), "replayed": pa.get(f)})
+            match = False
+    rp, pp = recorded.get("plan") or {}, replayed.get("plan") or {}
+    for f in _CONTINUOUS:
+        if not _rel_close(rp.get(f), pp.get(f)):
+            diffs.append({"field": f"plan.{f}", "recorded": rp.get(f), "replayed": pp.get(f)})
+            match = False
+    rtp, ptp = rp.get("take_profit") or [], pp.get("take_profit") or []
+    if len(rtp) != len(ptp) or any(not _rel_close(x, y) for x, y in zip(rtp, ptp)):
+        diffs.append({"field": "plan.take_profit", "recorded": rtp, "replayed": ptp})
+        match = False
+    for f in _INFORMATIONAL:
+        if recorded.get(f) != replayed.get(f):
+            diffs.append({"field": f, "recorded": recorded.get(f),
+                          "replayed": replayed.get(f), "informational": True})
+    return {"match": match, "diffs": diffs}
