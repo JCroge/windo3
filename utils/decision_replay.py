@@ -100,10 +100,16 @@ async def replay_decision(record, config=None):
     judge.publish = _capture_publish
     judge._update_balance = _noop_balance
     judge._ask_llm = _inject_llm
+    # ranked accept 经延迟 task 发布；回放时不挂真实 timer，改在决策后同步驱动 flush。
+    judge._schedule_rank_flush = lambda: None
 
     ts = record["timestamp"]
     with mock.patch("time.time", return_value=ts):
         await judge._make_decision(symbol, record["tech_analysis"])
+        # 若 _make_decision 把 accept 候选入队等延迟 flush（ranking_enabled），
+        # 同步驱动真实 _flush_ranked_candidates 复现开仓发布。
+        if not captured and getattr(judge, "_candidate_ranker", None) is not None:
+            await judge._flush_ranked_candidates()
 
     return captured[0] if captured else None
 
@@ -210,6 +216,20 @@ def _install_config_flags(judge, config):
     judge._processed_resolution_ids = set()
     judge._processed_resolution_max = 1024
 
+    # ── Ranking（真实 CandidateRanker，不重写）：accept 路径读 _compute_rank_score
+    #    并经 add_candidate + 延迟 flush 发布，回放须用真实 ranker 才能复现开仓决策 ──
+    from utils.candidate_ranker import CandidateRanker
+    ranking_enabled = g("ranking_enabled", True)
+    low_rr_extra = g("low_rr_extra_slot", 1)
+    judge._candidate_ranker = CandidateRanker(
+        max_slots=judge._max_concurrent_positions,
+        enabled=ranking_enabled,
+        low_rr_extra_slot=low_rr_extra if g("low_rr_slot_enabled", True) else 0,
+        logger=judge.logger,
+    )
+    judge._rank_flush_delay = g("rank_flush_delay", 5.0)
+    judge._rank_flush_task = None
+
     # ── 缓存 / 杂项 plain init state ──
     judge._symbol_tech_cache = {}
     judge._news_snapshot = {}
@@ -217,6 +237,10 @@ def _install_config_flags(judge, config):
     judge.exchange = None
     # 决策磁带：回放期间禁写（observability-only），避免污染真实 tape
     judge._decision_tape = None
+    # 反事实账本：reject 路径（含 EV/RR/guard 等）都会调 _record_rejected_plan，
+    # 回放须用【禁用】ledger 让其早返回，不写盘也不污染真实反事实流水。
+    from utils.counterfactual_ledger import CounterfactualLedger
+    judge._counterfactual_ledger = CounterfactualLedger(enabled=False, logger=judge.logger)
 
 
 _DISCRETE = ("action", "confidence", "dispatch_path")

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from utils.decision_replay import restore_state, replay_decision
+from utils.decision_replay import restore_state, replay_decision, compare_decision
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +41,73 @@ def _fixture_record():
     }
 
 
+def _accept_fixture_record():
+    """A crafted record that legitimately produces an open_long through the REAL
+    _make_decision (no harness/judge weakening). The tech is strong-bullish and
+    clears every open gate: rule_signal entry_long (score ~96, locks direction),
+    3/3 HTF votes bullish, RSI 56 (not overbought), high liquidity, 15m confirmed
+    long, range position 0.5 (not overheated), and a winning rolling track record
+    (8/14 ~57%) so the EV gate passes with effective R:R ~1.39. The accept is
+    buffered into the real CandidateRanker and published by the deferred flush the
+    harness drives synchronously — this is the proof the ranker fix works.
+    """
+    snap = {
+        "_open_positions": [], "_pending_open_symbols": [],
+        "_position_slots": {}, "_pending_open_slots": {},
+        "_archetype_cooldown": {"_history": {}, "_cooldown_until": {}},
+        # Rolling track record -> _get_p_win returns rolling 0.57 (>= 10 trades),
+        # so the EV gate sees a realistic edge instead of the 0.40 cold-start prior.
+        "_recent_wins": 8, "_total_completed_trades": 14, "_recent_win_rate": 0.57,
+        "_probe_short_active": None, "_probe_short_sl_count": 0,
+        "_probe_short_cooldown_until": 0.0,
+        "_symbol_state": {}, "_available_balance": 1000.0,
+        "_regime_manager": {"effective_regime": "bullish", "confidence": 70, "basis": {}},
+    }
+    price = 50000.0
+    tech = {
+        "indicators": {"price": price, "rsi": 56},
+        "trend": {
+            "direction": "bullish", "strength": 82,
+            "higher_tf_bias": "bullish", "daily_bias": "bullish",
+            "change_24h_pct": 2.0,
+            "daily_near_resistance": False, "daily_near_support": False,
+            "tf_4h_rsi": 58,
+        },
+        "momentum": {"rsi": 56, "rsi_divergence": None, "volume_ratio": 1.4,
+                     "atr_pct": 0.02},
+        "rule_signal": {"entry_long": True, "entry_short": False,
+                        "ma_aligned_long": True, "ma_aligned_short": False},
+        "levels": {"support": [49000.0, 48000.0], "resistance": [52000.0, 54000.0]},
+        "risk": {"liquidity_score": 80},
+        "microstructure": {"whale_direction": "accumulating"},
+        "money_flow": {"oi_price_divergence": "bullish", "taker_pressure": "buy"},
+        "crowd": {"contrarian_signal": "neutral"},
+        "entry_timing": {
+            "tf_15m_available": True,
+            "tf_15m_confirm_long": True, "tf_15m_block_long": False,
+            "tf_15m_bias": "bullish", "tf_15m_rsi": 55,
+            "tf_15m_recent_closes": "up",
+        },
+        "entry_context": {
+            "position_in_24h_range": 0.5,
+            "pre_12h_return_pct": 0.01,
+            "prev_daily_return_pct": 0.02,
+        },
+    }
+    return {
+        "schema_version": "decision_replay_record.v1",
+        "request_id": "rep-accept-1", "timestamp": 1700000000.0, "symbol": "BTC-USDT",
+        "decision": "accept", "tech_analysis": tech,
+        "price_at_decision": price, "regime_state": "bullish",
+        "llm_output_inline": {"action": "open_long", "confidence": 75,
+                              "reasoning": "strong bullish confluence",
+                              "key_factors": [], "risk_warnings": []},
+        "llm_audit_ref": None,
+        "trade_decision_output": {},
+        "state_snapshot_before_decision": snap, "replayable": True,
+    }
+
+
 def test_restore_state_sets_fields():
     from agents.trading.judge import MultiJudge
     j = MultiJudge.__new__(MultiJudge)
@@ -57,3 +124,23 @@ def test_replay_captures_published_decision():
     assert captured is not None
     assert captured["symbol"] == "BTC-USDT"
     assert captured["action"] in ("open_long", "open_short", "hold", "close")
+
+
+def test_replay_accepted_open_does_not_crash_and_captures_open():
+    """L2 proof: a real accepted open replays end-to-end through _make_decision
+    (no crash on the ranked-accept deferred-flush path) and captures an open."""
+    rec = _accept_fixture_record()
+    captured = asyncio.run(replay_decision(rec, config={}))
+    assert captured is not None, "ranked accept must publish (ranker fix)"
+    assert captured["action"] in ("open_long", "open_short")
+    assert captured.get("plan") is not None
+
+
+def test_replay_accepted_open_is_deterministic():
+    """Golden-master: replaying the same accept twice yields a matching decision
+    (request_id/uuid noise is excluded from compare_decision)."""
+    rec = _accept_fixture_record()
+    d1 = asyncio.run(replay_decision(rec, config={}))
+    d2 = asyncio.run(replay_decision(rec, config={}))
+    assert d1 is not None and d2 is not None
+    assert compare_decision(d1, d2)["match"] is True
