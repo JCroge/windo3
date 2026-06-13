@@ -1,0 +1,16 @@
+{
+  "change": "counterfactual-replay-foundation",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "0781174ddb322f6826a10b8a04d6970d9874134d4f6b98f7184026596d6dd627",
+  "files": [
+    { "path": "openspec/changes/counterfactual-replay-foundation/proposal.md", "sha256": "d8ca2524553065e74d736ec6a546ea128cc4674e4b2c7cb97ab02c21971ce696" },
+    { "path": "openspec/changes/counterfactual-replay-foundation/design.md", "sha256": "819f7981faa8ef3836208ff8c720ed7f0905142a359462a4f06ccc7f98c1c9ff" },
+    { "path": "openspec/changes/counterfactual-replay-foundation/tasks.md", "sha256": "2350071efac36588095cb50e0eb10003bff8e76979418e4e650f37bb3b9a7f78" },
+    { "path": "openspec/changes/counterfactual-replay-foundation/specs/counterfactual-pnl/spec.md", "sha256": "d7475677c9e9bd0d282408e2a43d2a3758e1a2b73a4a6e0b5d5a461f0e570b80" },
+    { "path": "openspec/changes/counterfactual-replay-foundation/specs/decision-replay-tape/spec.md", "sha256": "7dba5a0e9eeb3dcfc0e32cab4f6cab66fa3b156f90d55602355f34326fb5278d" },
+    { "path": "openspec/changes/counterfactual-replay-foundation/specs/tick-snapshot-capture/spec.md", "sha256": "c02d1b1cef8eeffe2c338cfb8f99162730ef7079965d23eeb1d8875bc8a0e157" }
+  ]
+}
