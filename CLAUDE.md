@@ -5,7 +5,7 @@
 - 当前系统是多 Agent 加密货币趋势交易系统，不是跨交易所套利系统。
 - 生产、paper、testnet、实盘验收主入口统一为 `python3 run_agents.py`。
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
-- 当前基线：`1149 passed / 4 deselected / 1 warning`（2026-06-13，第五次审计 + ccxt keysort 崩溃修复 + Agent 故障可见性 + 持仓同步瞬时重试 + Agent Health Supervisor + tick-loop 挂死检测 + bot LLM env 隔离（`BOT_LLM_*` 与 Claude Code `ANTHROPIC_*` 解耦），全部合并入 main 后全量实测）。
+- 当前基线：`1223 passed / 4 deselected / 1 warning`（2026-06-14；1149 之上叠加**反事实策略实验室 L1-L4**（5 个 comet change：`counterfactual-replay-foundation` / `deterministic-replay-golden-master` / `perturbation-replay-per-decision` / `sequential-portfolio-perturbation` / `perturbation-knob-sweep`，observability-only），全部合并入 main 后全量实测）。1149 由第五次审计 + ccxt keysort 修复 + Agent 故障可见性 + 持仓同步重试 + Agent Health Supervisor + tick-loop 挂死检测 + bot LLM env 隔离构成。
 - 当前 Go/No-Go：小额 live 灰度 GO（维持现有 cap）；live 扩容 CONDITIONAL GO，扩容前置 = 运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置 + 真实 TG 命令链与 drift gate 运维验收。
 - OKX 验收状态：mock 执行语义 10 case PASS；真实 testnet long_short_mode 13 PASS（T0/T1/T4/T5/T6/T8–T15，T2/T3/T7 SKIP）+ net_mode 子账户 T0/T2/T3 3 PASS。
 - TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap /health`。
