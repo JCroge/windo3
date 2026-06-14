@@ -43,5 +43,6 @@ def test_decision_paths_do_not_read_replay_products():
         # 精确匹配回放 harness 模块（注意 Judge 写 decision_replay_tape 是允许的写路径，不能误捕）
         assert "utils.decision_replay" not in src, mp
         assert "cf_replay_driver" not in src, mp
+        assert "perturbation_replay" not in src, mp
         # Judge 写快照用 _capture_state_snapshot；但任何路径都不得【读】回放磁带字段
         assert "state_snapshot_before_decision" not in src, mp
