@@ -2,6 +2,7 @@
 change: perturbation-knob-sweep
 design-doc: docs/superpowers/specs/2026-06-14-perturbation-knob-sweep-design.md
 base-ref: b850e70e19a0b8de46946569cc4735fd61bfdf59
+archived-with: 2026-06-14-perturbation-knob-sweep
 ---
 
 # Knob Sweep + Direction Recommend (L4) 实施计划
@@ -16,6 +17,7 @@ base-ref: b850e70e19a0b8de46946569cc4735fd61bfdf59
 
 **红线:** observability-only write-only（Task 3 守卫）；绝不自动应用。零回归：基线 1217 不降。
 
+archived-with: 2026-06-14-perturbation-knob-sweep
 ---
 
 ## Task 1: 扫描引擎 utils/knob_sweep.py :: sweep_knob
@@ -118,6 +120,7 @@ git commit -m "feat(L4): knob sweep engine (1D grid over L3b build_delta_report)
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-perturbation-knob-sweep
 ---
 
 ## Task 2: 方向推荐器 recommend_direction（含多重比较守卫）
@@ -240,6 +243,7 @@ git commit -m "feat(L4): direction recommender (gate + rank + multiple-compariso
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-perturbation-knob-sweep
 ---
 
 ## Task 3: 红线守卫 + 文档
@@ -261,6 +265,7 @@ git commit -m "docs(L4): red-line guard + roadmap (lab L1-L4 complete)
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-perturbation-knob-sweep
 ---
 
 ## Task 4: 全量验证
@@ -269,6 +274,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - [ ] **Step 2: 全量** — `python3 -m pytest -q` → ≥ 1217 + 新增（~8），无 failure
 - [ ] **Step 3: tasks.md 全勾 + 最终提交** — `git add -A && git commit -m "chore(L4): full regression green — counterfactual lab complete"`
 
+archived-with: 2026-06-14-perturbation-knob-sweep
 ---
 
 ## Self-Review

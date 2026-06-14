@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-14-perturbation-knob-sweep
 branch_status: handled
 created_at: 2026-06-14
 verified_at: 2026-06-14
-archived: false
+archived: true
 handoff_context: openspec/changes/perturbation-knob-sweep/.comet/handoff/design-context.json
 handoff_hash: 6c1372856bf88009dc4f25b6af48594010dda198898040fb8595e62a1b0b3bcb
 build_command: python3 -m compileall -q utils

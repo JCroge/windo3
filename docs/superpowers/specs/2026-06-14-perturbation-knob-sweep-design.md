@@ -2,6 +2,8 @@
 comet_change: perturbation-knob-sweep
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-14-perturbation-knob-sweep
+status: final
 ---
 
 # Knob Sweep + Direction Recommend (L4) — 技术设计
