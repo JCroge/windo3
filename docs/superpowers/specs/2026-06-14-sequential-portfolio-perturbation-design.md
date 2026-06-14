@@ -2,6 +2,8 @@
 comet_change: sequential-portfolio-perturbation
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-14-sequential-portfolio-perturbation
+status: final
 ---
 
 # Sequential Portfolio Perturbation (L3b) — 技术设计

@@ -2,6 +2,7 @@
 change: sequential-portfolio-perturbation
 design-doc: docs/superpowers/specs/2026-06-14-sequential-portfolio-perturbation-design.md
 base-ref: 9d1ed0f81d2a38cac3f50b02fd4579b242bfe7d3
+archived-with: 2026-06-14-sequential-portfolio-perturbation
 ---
 
 # Sequential Portfolio Perturbation (L3b) 实施计划
@@ -18,6 +19,7 @@ base-ref: 9d1ed0f81d2a38cac3f50b02fd4579b242bfe7d3
 
 **红线:** observability-only write-only（Task 4 守卫）；CF 决策绝不 publish 真实 bus。零回归：基线 1208 不降。
 
+archived-with: 2026-06-14-sequential-portfolio-perturbation
 ---
 
 ## Task 1: CF 组合状态机 utils/cf_portfolio.py
@@ -233,6 +235,7 @@ git commit -m "feat(L3b): counterfactual portfolio sim (slot/equity/EV/independe
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-sequential-portfolio-perturbation
 ---
 
 ## Task 2: 序列 driver utils/sequential_perturbation.py :: run_arm
@@ -354,6 +357,7 @@ git commit -m "feat(L3b): sequential perturbation driver (time-ordered replay + 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-sequential-portfolio-perturbation
 ---
 
 ## Task 3: delta 报表 + baseline 序列保真自检
@@ -462,6 +466,7 @@ git commit -m "feat(L3b): baseline-vs-perturbed delta report + baseline sequence
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-sequential-portfolio-perturbation
 ---
 
 ## Task 4: 红线守卫 + 文档
@@ -484,6 +489,7 @@ git commit -m "docs(L3b): red-line guard + roadmap update (L3 complete)
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-sequential-portfolio-perturbation
 ---
 
 ## Task 5: 全量验证
@@ -492,6 +498,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - [ ] **Step 2: 全量** — `python3 -m pytest -q` → ≥ 1208 + 新增（~12），无 failure
 - [ ] **Step 3: tasks.md 全勾 + 最终提交** — `git add -A && git commit -m "chore(L3b): full regression green"`
 
+archived-with: 2026-06-14-sequential-portfolio-perturbation
 ---
 
 ## Self-Review

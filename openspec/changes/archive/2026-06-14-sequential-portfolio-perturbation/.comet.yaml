@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-14-sequential-portfolio-pe
 branch_status: handled
 created_at: 2026-06-14
 verified_at: 2026-06-14
-archived: false
+archived: true
 handoff_context: openspec/changes/sequential-portfolio-perturbation/.comet/handoff/design-context.json
 handoff_hash: 6dc2a5b5e08e6d13fcd204db2de1d2993e7110eefc8671d04507c64eacbf6750
 build_command: python3 -m compileall -q utils
