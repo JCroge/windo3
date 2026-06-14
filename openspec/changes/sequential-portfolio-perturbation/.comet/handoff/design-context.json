@@ -1,0 +1,16 @@
+{
+  "change": "sequential-portfolio-perturbation",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "6dc2a5b5e08e6d13fcd204db2de1d2993e7110eefc8671d04507c64eacbf6750",
+  "files": [
+    { "path": "openspec/changes/sequential-portfolio-perturbation/proposal.md", "sha256": "d51deca7306ce1b2f97259ffa915ad639d9884c2718be3f6017dedf8a7c45d02" },
+    { "path": "openspec/changes/sequential-portfolio-perturbation/design.md", "sha256": "2d9b35098804f32a24693dd9dfa7e36d4fe2373e8ac1844ccc3523cd746bbb37" },
+    { "path": "openspec/changes/sequential-portfolio-perturbation/tasks.md", "sha256": "f8b243c3d422c5897ddc044b3bcf2bc88775783e2b054fdd21343dbd2b352990" },
+    { "path": "openspec/changes/sequential-portfolio-perturbation/specs/counterfactual-portfolio-sim/spec.md", "sha256": "d7a0dc90f1328395f45d47dfa3a1c2bb0113c6ed9b6281da67f05a6f3d1afc09" },
+    { "path": "openspec/changes/sequential-portfolio-perturbation/specs/perturbation-delta-report/spec.md", "sha256": "0128b7e96d7bbf6981d4b895fe16fb23455889f5b955b0ca04ee536b22b53243" },
+    { "path": "openspec/changes/sequential-portfolio-perturbation/specs/sequential-perturbation-driver/spec.md", "sha256": "2c89c57981e747f743ea55dd33f0411f62d1ec8c2e4ed540b846024a328a4fc8" }
+  ]
+}
