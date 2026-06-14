@@ -1,0 +1,15 @@
+{
+  "change": "perturbation-replay-per-decision",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "6a67521d9becc771955601b77ab0e5776ff53f958686e4f8f77a0d711a032ef7",
+  "files": [
+    { "path": "openspec/changes/perturbation-replay-per-decision/proposal.md", "sha256": "c84e28aec5fb4add879ea0c2130ed638e9d4ff22f0cd447e36dac81db731db08" },
+    { "path": "openspec/changes/perturbation-replay-per-decision/design.md", "sha256": "0d754657890963f1b33405f65e0a13204b7a745352661e4e87caac690293032f" },
+    { "path": "openspec/changes/perturbation-replay-per-decision/tasks.md", "sha256": "bc45c89233a024f50e2f6e8141fec66e83e50c763916956d5525d83725ab5962" },
+    { "path": "openspec/changes/perturbation-replay-per-decision/specs/knob-perturbation-engine/spec.md", "sha256": "a183ffc33d64edc4c9861b94615886ac0caa1915d6f71c8989d4c4485d14fa0f" },
+    { "path": "openspec/changes/perturbation-replay-per-decision/specs/perturbation-flip-report/spec.md", "sha256": "8e74369177e79ec6b217b64eacd72e6f8bee27795a9650e4cf3d56403223454a" }
+  ]
+}
