@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: null
@@ -7,7 +7,7 @@ base_ref: 21581226fc7ad387e7c211b97283e5136bccd0d7
 design_doc: docs/superpowers/specs/2026-06-14-perturbation-replay-per-decision-design.md
 plan: docs/superpowers/plans/2026-06-14-perturbation-replay-per-decision.md
 verify_result: pending
-verification_report: null
+verification_report: docs/superpowers/reports/2026-06-14-perturbation-replay-per-decision-verify.md
 branch_status: pending
 created_at: 2026-06-14
 verified_at: null
