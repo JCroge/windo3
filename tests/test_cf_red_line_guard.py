@@ -44,5 +44,7 @@ def test_decision_paths_do_not_read_replay_products():
         assert "utils.decision_replay" not in src, mp
         assert "cf_replay_driver" not in src, mp
         assert "perturbation_replay" not in src, mp
+        assert "cf_portfolio" not in src, mp
+        assert "sequential_perturbation" not in src, mp
         # Judge 写快照用 _capture_state_snapshot；但任何路径都不得【读】回放磁带字段
         assert "state_snapshot_before_decision" not in src, mp
