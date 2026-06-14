@@ -5,37 +5,35 @@ from utils.cf_portfolio import CounterfactualPortfolio
 
 
 def _inject_cf_state(record, cf):
-    """把 CF 组合实时状态注入 record 供 L2 replay_decision 还原真实 _make_decision。
+    """把 CF 组合【实时累计】状态注入 record 供 L2 replay_decision 还原真实 _make_decision。
 
-    regime 取录制快照（CF 不重算 regime）。EV gate 读的滚动战绩（_recent_wins /
-    _total_completed_trades）是【录制时的真实先验 + CF 序列内累计的增量】之和：
-    CF 从空组合起步，序列第一笔决策时 CF 自身战绩为 0，必须叠加录制先验，
-    否则 EV gate 退回冷启动 40% 先验 → 与真实系统决策发散（baseline 失真）。
-    cooldown 同理叠加录制历史。这是先验叠加，非 to_snapshot 缺字段。"""
+    regime 取录制快照（市场状态固定，CF 不重算 regime）。EV gate / cooldown 读的
+    战绩直接用 CF 自身累计（cf.to_snapshot）——CF 在序列起点已被 _seed_cf_prior 灌入
+    录制初始先验，之后各臂用【自己估算的 CF 结果】累计。两臂从同一先验各自级联，
+    故 baseline_fidelity 真实反映 CF-sim 跟不跟得住现实，perturbed 的级联不被掩盖。
+    （绝不 per-record 注入 reality 当时的演化计数——那会人为抬高 fidelity 并掩盖级联。）"""
     recorded_snap = record.get("state_snapshot_before_decision") or {}
-    regime = recorded_snap.get("_regime_manager")
-    snap = cf.to_snapshot(regime_snapshot=regime)
-
-    base_wins = recorded_snap.get("_recent_wins", 0) or 0
-    base_total = recorded_snap.get("_total_completed_trades", 0) or 0
-    wins = snap["_recent_wins"] + base_wins
-    total = snap["_total_completed_trades"] + base_total
-    snap["_recent_wins"] = wins
-    snap["_total_completed_trades"] = total
-    snap["_recent_win_rate"] = (wins / total) if total else None
-
-    rec_ac = recorded_snap.get("_archetype_cooldown") or {}
-    cf_ac = snap.get("_archetype_cooldown") or {"_history": {}, "_cooldown_until": {}}
-    merged_hist = dict(rec_ac.get("_history", {}))
-    merged_hist.update(cf_ac.get("_history", {}))
-    merged_cd = dict(rec_ac.get("_cooldown_until", {}))
-    merged_cd.update(cf_ac.get("_cooldown_until", {}))
-    snap["_archetype_cooldown"] = {"_history": merged_hist, "_cooldown_until": merged_cd}
-
+    snap = cf.to_snapshot(regime_snapshot=recorded_snap.get("_regime_manager"))
     new_rec = dict(record)
     new_rec["state_snapshot_before_decision"] = snap
     new_rec["replayable"] = True
     return new_rec
+
+
+def _seed_cf_prior(cf, first_record):
+    """序列起点用第一条 record 录制的滚动战绩 + cooldown 作为 CF 的【固定初始先验】
+    （= 磁带窗口之前的真实战绩），之后各臂用自己累计的 CF 结果叠加。
+    EV gate 起步不退冷启动 40% 先验，且两臂共享同一先验使 delta 干净。"""
+    snap = (first_record or {}).get("state_snapshot_before_decision") or {}
+    cf._recent_wins = snap.get("_recent_wins", 0) or 0
+    cf._total_completed_trades = snap.get("_total_completed_trades", 0) or 0
+    ac = snap.get("_archetype_cooldown") or {}
+    # 原地更新（保留 ArchetypeCooldown._history 的 defaultdict(list) 类型，
+    # 否则 record_result 的 self._history[k].append 会 KeyError）
+    cf._cf_cooldown._history.clear()
+    cf._cf_cooldown._history.update(ac.get("_history", {}))
+    cf._cf_cooldown._cooldown_until.clear()
+    cf._cf_cooldown._cooldown_until.update(ac.get("_cooldown_until", {}))
 
 
 async def run_arm(records, config, price_loader, *, initial_equity=1000.0, max_slots=3,
@@ -44,6 +42,8 @@ async def run_arm(records, config, price_loader, *, initial_equity=1000.0, max_s
     cf = CounterfactualPortfolio(initial_equity=initial_equity, max_slots=max_slots,
                                  price_loader=price_loader, daily_pnl_hard_stop=daily_pnl_hard_stop,
                                  consecutive_loss_limit=consecutive_loss_limit)
+    if recs:
+        _seed_cf_prior(cf, recs[0])  # 固定初始先验（磁带窗口前真实战绩），之后 CF 自累计
     decisions = []
     cf_open_count = 0
     equity_curve = []
