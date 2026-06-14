@@ -1,0 +1,15 @@
+{
+  "change": "perturbation-knob-sweep",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "6c1372856bf88009dc4f25b6af48594010dda198898040fb8595e62a1b0b3bcb",
+  "files": [
+    { "path": "openspec/changes/perturbation-knob-sweep/proposal.md", "sha256": "e53f8e9bd8927ff49fe13e99859e5cf56f0bb274064170ef169c631a9ada9b06" },
+    { "path": "openspec/changes/perturbation-knob-sweep/design.md", "sha256": "9f85955e79dd9fd0237024d4c725b814419f8b50e77c898df85362f40d91fbda" },
+    { "path": "openspec/changes/perturbation-knob-sweep/tasks.md", "sha256": "818bd8f1b8c13e52c43a34491d004f9b8124f3d7506b1bb1f667086db5790031" },
+    { "path": "openspec/changes/perturbation-knob-sweep/specs/direction-recommender/spec.md", "sha256": "c555c9ca967d25a11a45f8934833ad2144e96a78640b57e3230200eea4b60f53" },
+    { "path": "openspec/changes/perturbation-knob-sweep/specs/knob-sweep-engine/spec.md", "sha256": "c605a4438735a17576e5827e92ef2edd21f678cdd06f6d48e913fc9ba2194214" }
+  ]
+}
