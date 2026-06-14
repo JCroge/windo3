@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-14-perturbation-replay-per
 branch_status: handled
 created_at: 2026-06-14
 verified_at: 2026-06-14
-archived: false
+archived: true
 handoff_context: openspec/changes/perturbation-replay-per-decision/.comet/handoff/design-context.json
 handoff_hash: 6a67521d9becc771955601b77ab0e5776ff53f958686e4f8f77a0d711a032ef7
 build_command: python3 -m compileall -q utils

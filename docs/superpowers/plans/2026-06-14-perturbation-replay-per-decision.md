@@ -2,6 +2,7 @@
 change: perturbation-replay-per-decision
 design-doc: docs/superpowers/specs/2026-06-14-perturbation-replay-per-decision-design.md
 base-ref: 21581226fc7ad387e7c211b97283e5136bccd0d7
+archived-with: 2026-06-14-perturbation-replay-per-decision
 ---
 
 # Per-Decision Perturbation Replay (L3a) 实施计划
@@ -18,6 +19,7 @@ base-ref: 21581226fc7ad387e7c211b97283e5136bccd0d7
 
 **红线:** observability-only write-only（Task 3 守卫）。零回归：基线 1201 不降。
 
+archived-with: 2026-06-14-perturbation-replay-per-decision
 ---
 
 ## Task 1: 扰动引擎 utils/perturbation_replay.py
@@ -169,6 +171,7 @@ git commit -m "feat(perturbation): per-decision knob perturbation engine (baseli
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-perturbation-replay-per-decision
 ---
 
 ## Task 2: 翻转分桶报表
@@ -279,6 +282,7 @@ git commit -m "feat(perturbation): flip report (buckets + Wilson CI + honesty ve
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-perturbation-replay-per-decision
 ---
 
 ## Task 3: 红线守卫 + 文档
@@ -309,6 +313,7 @@ git commit -m "docs(perturbation): L3a red-line guard + roadmap update
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-14-perturbation-replay-per-decision
 ---
 
 ## Task 4: 全量验证
@@ -321,6 +326,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 git add -A && git commit -m "chore(perturbation): L3a full regression green"
 ```
 
+archived-with: 2026-06-14-perturbation-replay-per-decision
 ---
 
 ## Self-Review

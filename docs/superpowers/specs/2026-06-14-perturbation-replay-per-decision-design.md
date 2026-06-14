@@ -2,6 +2,8 @@
 comet_change: perturbation-replay-per-decision
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-14-perturbation-replay-per-decision
+status: final
 ---
 
 # Per-Decision Perturbation Replay (L3a) — 技术设计
