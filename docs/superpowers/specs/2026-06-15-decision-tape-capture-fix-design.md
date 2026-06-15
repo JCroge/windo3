@@ -43,9 +43,11 @@ chokepoint 分两类：直接路径（tech+llm 在 scope）vs `_gate_and_publish
 - `_make_decision` 顶部：`self._symbol_llm_cache[symbol] = None`（per-decision reset）。
 - `_ask_llm`（~1218）之后：`self._symbol_llm_cache[symbol] = llm_result`。
 - symbol 退出清理（~378，tech cache pop 处）：`self._symbol_llm_cache.pop(s, None)`。
-- 两个 chokepoint 统一读 cache：`tech_analysis=self._symbol_tech_cache.get(symbol) or {}`、`llm_output=self._symbol_llm_cache.get(symbol)`。
+- 两个 chokepoint 统一读 cache：`tech_analysis=getattr(self,"_symbol_tech_tape_cache",{}).get(symbol) or {}`、`llm_output=getattr(self,"_symbol_llm_cache",{}).get(symbol)`。
 
 reset、set、read 都发生在**同一次** `_make_decision` 内 → 覆盖所有直接 reject（rr_below_floor / quality_gate / ev_gate = 全部 909 阻断单）+ 即时 accept + `_gate_and_publish_open` 内部 reject。rule-only open 路径因 per-decision reset 取到 None，**诚实**反映"无 LLM 参与"，绝不串上一次 stale LLM。
+
+**D1.1 — tech 必须用专属侧信道 `_symbol_tech_tape_cache`（observability-only 不变量修正，最终审查发现）**：现有 `_symbol_tech_cache` **不是纯侧信道**——它被 live 决策读取（`_regime_manager.update`、`is_probe_short_eligible`、probe-short 流动性 gate）。若 tape/flush 代码写它，会把磁带捕获的（可能 stale 的）tech 灌进 live 决策输入，违反 observability-only。故新增专属 `self._symbol_tech_tape_cache`（镜像 `_symbol_llm_cache`）：`_make_decision` 顶部 `[symbol]=tech` 捕获决策时点 tech、symbol 退出 pop、两个 chokepoint 读它、flush re-prime 写它。`_symbol_tech_cache` 自此**只**由 live 消息处理器写（`= msg['payload']`），tape 代码绝不写。守卫测试 `test_flush_does_not_mutate_live_tech_cache` 锁定 flush 不写 live cache。
 
 **为何选 cache 而非穿透形参**：替代方案是给 `_record_rejected_plan` / `_gate_and_publish_open` 加 `tech`/`llm` 形参并穿透 10+ 调用点——改动面大、触碰更多决策红线行、ranked 路径还需额外持久化。cache 方案 chokepoint 零分叉、不改决策函数签名、复用已验证模式。
 
@@ -54,7 +56,7 @@ reset、set、read 都发生在**同一次** `_make_decision` 内 → 覆盖所�
 ranked 候选在 `_make_decision` 入队、在 `_flush_ranked_candidates` 延迟派发。若期间同 symbol 又跑一次 `_make_decision`，cache 被 reset → flush 读到串味 llm。补丁：
 
 - 入队（~1816）：`rank_candidate['llm_output'] = llm_result`、`rank_candidate['tech'] = tech`（此刻在 scope）。
-- `_flush_ranked_candidates` 派发每个候选前 re-prime cache：`self._symbol_llm_cache[symbol] = candidate.get('llm_output')`、tech 同理。
+- `_flush_ranked_candidates` 派发每个候选前 re-prime **tape 侧信道**：`self._symbol_llm_cache[symbol] = candidate.get('llm_output')`、`self._symbol_tech_tape_cache[symbol] = candidate.get('tech')`（**绝不写 live `_symbol_tech_cache`**，见 D1.1）。
 
 chokepoint 仍只读 cache、逻辑不分叉；flush 逐候选串行 re-prime，无串味。`_candidate_ranker.enabled=false`（当前默认）时此路不走，补丁是开启时的保真冗余。
 
