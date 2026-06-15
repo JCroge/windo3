@@ -7,7 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "decision_replay_record.v1"
+SCHEMA_VERSION = "decision_replay_record.v2"
 
 
 def _jsonable(v):
@@ -40,7 +40,7 @@ def build_bundle(*, symbol, decision, request_id, tech_analysis, price_at_decisi
         "llm_audit_ref": llm_audit_ref,
         "trade_decision_output": trade_decision_output,
         "state_snapshot_before_decision": _jsonable(state_snapshot) if state_snapshot is not None else None,
-        "replayable": state_snapshot is not None,
+        "replayable": state_snapshot is not None and bool(tech_analysis),
     }
 
 

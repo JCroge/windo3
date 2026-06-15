@@ -10,13 +10,25 @@ def test_jsonable_set_to_sorted_list():
 
 def test_build_bundle_with_snapshot_marks_replayable():
     snap = {"_open_positions": ["BTC-USDT"], "_available_balance": 1000.0}
+    # replayable 真实性守卫（schema v2）：需有快照【且】tech 非空，故此处给真实 tech。
     b = build_bundle(symbol="BTC-USDT", decision="accept", request_id="r1",
-                     tech_analysis={}, price_at_decision=1.0, regime_state="bullish",
+                     tech_analysis={"indicators": {"price": 1.0}}, price_at_decision=1.0,
+                     regime_state="bullish",
                      llm_output=None, llm_audit_ref=None, trade_decision_output={},
                      state_snapshot=snap)
     assert b["state_snapshot_before_decision"] == snap
     assert b["replayable"] is True
     json.dumps(b)
+
+
+def test_build_bundle_snapshot_but_empty_tech_not_replayable():
+    # 新契约：有快照但 tech 空（如历史 v1 空记录）-> 不可回放。
+    snap = {"_open_positions": ["BTC-USDT"], "_available_balance": 1000.0}
+    b = build_bundle(symbol="BTC-USDT", decision="reject", request_id="r1b",
+                     tech_analysis={}, price_at_decision=1.0, regime_state="bullish",
+                     llm_output=None, llm_audit_ref=None, trade_decision_output={},
+                     state_snapshot=snap)
+    assert b["replayable"] is False
 
 
 def test_build_bundle_without_snapshot_not_replayable():
