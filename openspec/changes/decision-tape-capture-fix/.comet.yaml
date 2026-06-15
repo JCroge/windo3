@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: null
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/decision-tape-capture-fix/.comet/handoff/design-context.json
 handoff_hash: c31f764e02c1def24dade491283724b02b5091abb5e0f82cc6e622be5afbe9d3
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q agents utils tests
+verify_command: python3 -m pytest -q
