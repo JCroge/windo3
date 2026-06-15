@@ -2,6 +2,7 @@
 复用 kline schema，写独立 db 不污染主 klines.db。
 observability-only：仅供反事实回放价格精度，严禁交易决策读取。"""
 import os
+import time
 import sqlite3
 import logging
 
@@ -9,9 +10,15 @@ logger = logging.getLogger(__name__)
 
 
 class OneSecBarStore:
-    def __init__(self, db_path, enabled=True):
+    def __init__(self, db_path, enabled=True, retention_days=30, prune_every=2000):
         self.db_path = db_path
         self.enabled = enabled
+        self.retention_days = retention_days
+        # Throttle: pruning runs a DELETE; doing it on every 1s-bar write (hot path,
+        # per-symbol per-second) would flood the DB. Prune at most once per
+        # `prune_every` writes so collection stays cheap (mirrors DecisionTape).
+        self.prune_every = max(1, int(prune_every))
+        self._writes_since_prune = 0
         self.drop_count = 0
         if self.enabled:
             try:
@@ -50,6 +57,27 @@ class OneSecBarStore:
                 conn.commit()
             finally:
                 conn.close()
+            # Throttled retention prune AFTER the write is committed, so a prune
+            # failure never loses the just-written bar.
+            self._writes_since_prune += 1
+            if self._writes_since_prune >= self.prune_every:
+                self._writes_since_prune = 0
+                self._maybe_prune()
         except Exception as e:
             self.drop_count += 1
             logger.warning(f"[TickCapture] drop (#{self.drop_count}): {e}")
+
+    def _maybe_prune(self):
+        """删除早于 retention 窗口的 1s bar，使 klines_1s.db 有界。
+        fail-safe：异常仅 log + 计数，绝不传播进采集路径。"""
+        try:
+            cutoff_ms = int((time.time() - self.retention_days * 86400) * 1000)
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute("DELETE FROM klines WHERE open_time < ?", (cutoff_ms,))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            self.drop_count += 1
+            logger.warning(f"[TickCapture] prune failed (#{self.drop_count}): {e}")
