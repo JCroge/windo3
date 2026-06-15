@@ -4,8 +4,9 @@
 
 ## 系统状态
 
-- 最新本地验证（2026-06-14）：`1223 passed / 4 deselected / 1 warning`。
+- 最新本地验证（2026-06-15）：`1234 passed / 4 deselected / 1 warning`。
 - 最新能力：**反事实策略实验室 L1-L4**（2026-06-14 建成，observability-only）——拿真实决策磁带喂真实 Judge 代码、扰动任意非 LLM 旋钮、量化整策略 PnL/胜率/回撤 delta、自动诚实方向推荐（证据不足拒答不杜撰，绝不自动改线上 config）。模块：`utils/{decision_tape,decision_replay,counterfactual_pnl,cf_honesty_gate,perturbation_replay,cf_portfolio,sequential_perturbation,knob_sweep}.py` + `cf_replay_driver.py`；红线守卫 `tests/test_cf_red_line_guard.py`。详见 `docs/architecture.md` 与各层 `docs/superpowers/specs/2026-06-1[34]-*-design.md`。
+- 修复（2026-06-15 `decision-tape-capture-fix`）：实验室此前因决策磁带把 tech/llm 写死为空而空转，已修复为经专属侧信道捕获真实输入（schema v2，observability-only）；OS 重启后已生产生效，新磁带累积 ≥数百笔后用 `cf_direction_recommendation.py` 跑 L2 终验 + L4 方向推荐。
 - live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。第四次审计 F4-001/002/003 阻断已在 2026-05-29 代码与单测闭环，真实 OKX owner-tag 补验 T0/T1/T6 PASS；TG 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id`，Entry Drift Hybrid Policy 对 open 路径执行 4 档 drift gate；Pullback Entry Paper Parity 对齐 paper/live 限价撮合契约；Short Main Path Risk Guard Parity 把短单结构性风险 gate 收敛到 `_classify_short_entry_risk` 单一函数，main 与 deferred 三路径共用。live 扩容为 CONDITIONAL GO，扩容前需要把 `BOT_INSTANCE_ID` 写入 systemd / pm2 等启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
 - OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 子账户跑 T0/T1/T4/T5/T6/T8/T9/T10/T11/T12/T13/T14/T15 13 PASS（T2/T3 SKIP、T7 SKIP mock_only），net_mode 切换后单独跑 T0/T2/T3 3 PASS。第四次审计 F4 owner-tag 补验 2026-05-29 完成：T0/T1/T6 PASS，真实 SL `algoClOrdId` 含 owner-tag prefix。
 - 最新能力：Short Main Path Risk Guard Parity 让 main path `open_short` 与 deferred 路径用同一短单结构性风险 gate；`short_gate_version` / `short_gate_decision` / `short_gate_reason` / `llm_short_reversal_risk` 写入 attribution 供 Reviewer 切片。TG Graceful Ops `/halts` `/resume_symbol` `/pnl` `/pnl_id` 与 `/status` health 行；Entry Drift Hybrid Policy 在开仓限价前和 fallback 前执行 4 档 drift gate，`execution_result.v2.attribution.entry_drift` 暴露 band/decision/drift_pct。
@@ -53,7 +54,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 ## 常用验证
 
 ```bash
-python3 -m pytest -q                       # 默认回归（当前验证 1223 passed）
+python3 -m pytest -q                       # 默认回归（当前验证 1234 passed）
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（需 .env.testnet）
