@@ -55,6 +55,7 @@ class MultiDataCollector(BaseAgent):
         self._tick_store = OneSecBarStore(
             db_path=get_state_paths().klines_1s,
             enabled=config.get('tick_capture_enabled', True),
+            retention_days=config.get('tick_capture_retention_days', 30),
         )
         self._tick_1s_accum = {}  # symbol -> {"sec": int, "o","h","l","c"}
 
