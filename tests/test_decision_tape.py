@@ -1,5 +1,5 @@
 import json, os, time
-from utils.decision_tape import DecisionTape, build_bundle
+from utils.decision_tape import DecisionTape, build_bundle, SCHEMA_VERSION
 
 
 def _read(path):
@@ -19,7 +19,7 @@ def test_accept_record_written(tmp_path):
     assert rows[0]["decision"] == "accept"
     assert rows[0]["symbol"] == "BTC-USDT"
     assert rows[0]["llm_output_inline"]["action"] == "open_long"
-    assert rows[0]["schema_version"] == "decision_replay_record.v1"
+    assert rows[0]["schema_version"] == "decision_replay_record.v2"
 
 
 def test_reject_record_written(tmp_path):
@@ -92,3 +92,34 @@ def test_prune_throttled_not_every_write(tmp_path):
                                     tech_analysis={}, price_at_decision=1.0, regime_state="x",
                                     llm_output=None, llm_audit_ref=None, trade_decision_output={}))
     assert "old" not in {r["request_id"] for r in _read(p)}  # 3rd write triggers prune
+
+
+def _snap():
+    return {"_available_balance": 1000.0}
+
+
+def test_replayable_requires_nonempty_tech():
+    # 有快照但 tech 空 -> 不可回放
+    b = build_bundle(symbol="BTC-USDT", decision="reject", request_id="r",
+                     tech_analysis={}, price_at_decision=1.0, regime_state="choppy",
+                     llm_output=None, llm_audit_ref=None,
+                     trade_decision_output={}, state_snapshot=_snap())
+    assert b["replayable"] is False
+    # 有快照且 tech 非空 -> 可回放
+    b2 = build_bundle(symbol="BTC-USDT", decision="reject", request_id="r",
+                      tech_analysis={"indicators": {"price": 1.0}}, price_at_decision=1.0,
+                      regime_state="choppy", llm_output={"action": "hold"}, llm_audit_ref=None,
+                      trade_decision_output={}, state_snapshot=_snap())
+    assert b2["replayable"] is True
+
+
+def test_missing_snapshot_not_replayable():
+    b = build_bundle(symbol="BTC-USDT", decision="reject", request_id="r",
+                     tech_analysis={"indicators": {}}, price_at_decision=1.0,
+                     regime_state="choppy", llm_output=None, llm_audit_ref=None,
+                     trade_decision_output={}, state_snapshot=None)
+    assert b["replayable"] is False
+
+
+def test_schema_version_is_v2():
+    assert SCHEMA_VERSION == "decision_replay_record.v2"
