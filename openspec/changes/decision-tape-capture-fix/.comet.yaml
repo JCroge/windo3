@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: subagent-driven-development
+isolation: branch
+verify_mode: null
+base_ref: 07e2730c64a75d440c7fc3dddd4722e61f8d129f
+design_doc: docs/superpowers/specs/2026-06-15-decision-tape-capture-fix-design.md
+plan: docs/superpowers/plans/2026-06-15-decision-tape-capture-fix.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-15
+verified_at: null
+archived: false
+handoff_context: openspec/changes/decision-tape-capture-fix/.comet/handoff/design-context.json
+handoff_hash: c31f764e02c1def24dade491283724b02b5091abb5e0f82cc6e622be5afbe9d3

@@ -1,0 +1,14 @@
+{
+  "change": "decision-tape-capture-fix",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "c31f764e02c1def24dade491283724b02b5091abb5e0f82cc6e622be5afbe9d3",
+  "files": [
+    { "path": "openspec/changes/decision-tape-capture-fix/proposal.md", "sha256": "fd9605323f08c97added55a80b120cd55ceb28a540d846db3171cc9d2780f5e6" },
+    { "path": "openspec/changes/decision-tape-capture-fix/design.md", "sha256": "65f97f641791b3b023a9c53ea361ab92d8acad078bb01d0bf7244c47c1a5dacd" },
+    { "path": "openspec/changes/decision-tape-capture-fix/tasks.md", "sha256": "fcf37be521d4e0d9e187db47d00d9043f23a54964c2c2bd3d2c2e3317e3aa08a" },
+    { "path": "openspec/changes/decision-tape-capture-fix/specs/decision-replay-tape/spec.md", "sha256": "4781bc2919370b3dcd64843d93319b1c3086feb5eb88286d99519eb247688a8b" }
+  ]
+}
