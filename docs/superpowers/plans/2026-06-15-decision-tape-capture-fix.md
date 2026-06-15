@@ -2,6 +2,7 @@
 change: decision-tape-capture-fix
 design-doc: docs/superpowers/specs/2026-06-15-decision-tape-capture-fix-design.md
 base-ref: 07e2730c64a75d440c7fc3dddd4722e61f8d129f
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 # Decision Tape Capture Fix Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 07e2730c64a75d440c7fc3dddd4722e61f8d129f
 
 **Tech Stack:** Python 3.9 / asyncio / pytest。改动文件：`agents/trading/judge.py`、`utils/decision_tape.py`、`tests/`。
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ## File Structure
@@ -24,6 +26,7 @@ base-ref: 07e2730c64a75d440c7fc3dddd4722e61f8d129f
 - `tests/test_judge_decision_tape_wiring.py` — chokepoint 捕获 cache 单测（已存在，扩展）。
 - `tests/test_decision_tape_capture.py` — **新增**，端到端 record→replay 复现拒因 + perturb 翻转。
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ### Task 1: decision_tape — replayable 真实性守卫 + schema v2
@@ -102,6 +105,7 @@ git add utils/decision_tape.py tests/test_decision_tape.py
 git commit -m "fix(tape): replayable requires non-empty tech + schema v2"
 ```
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ### Task 2: judge — `_symbol_llm_cache` 生命周期（init / reset / pop）
@@ -207,6 +211,7 @@ git add agents/trading/judge.py tests/test_judge_decision_tape_wiring.py
 git commit -m "fix(judge): capture real tech+llm into decision tape via _symbol_llm_cache (reject path)"
 ```
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ### Task 3: judge — accept chokepoint 读 llm cache
@@ -256,6 +261,7 @@ git add agents/trading/judge.py tests/test_judge_decision_tape_wiring.py
 git commit -m "fix(judge): accept-path tape reads llm from cache (no hardcoded None)"
 ```
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ### Task 4: judge — 延迟 ranked 路径 re-prime（保真补丁）
@@ -318,6 +324,7 @@ git add agents/trading/judge.py tests/test_judge_decision_tape_wiring.py
 git commit -m "fix(judge): ranked-flush re-primes llm/tech cache from candidate (faithful deferred capture)"
 ```
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ### Task 5: 端到端 record→replay — 复现拒因 + perturb 翻转
@@ -413,6 +420,7 @@ git add tests/test_decision_tape_capture.py
 git commit -m "test(tape): end-to-end record->replay reproduces reject + perturb flip"
 ```
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ### Task 6: 决策不变性 + 红线守卫 + 全量回归
@@ -447,6 +455,7 @@ git add -A
 git commit -m "test(tape): red-line guard + decision invariance + full regression for capture fix"
 ```
 
+archived-with: 2026-06-15-decision-tape-capture-fix
 ---
 
 ## Self-Review

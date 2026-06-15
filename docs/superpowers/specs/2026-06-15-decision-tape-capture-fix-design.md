@@ -2,6 +2,8 @@
 comet_change: decision-tape-capture-fix
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-15-decision-tape-capture-fix
+status: final
 ---
 
 # Decision Tape Capture Fix — Technical Design
