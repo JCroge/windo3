@@ -1823,6 +1823,8 @@ class MultiJudge(BaseAgent):
                     # Buffer into ranker for Top-N selection
                     if self._candidate_ranker.enabled:
                         rank_candidate['decision'] = decision
+                        rank_candidate['llm_output'] = llm_result
+                        rank_candidate['tech'] = tech
                         self._candidate_ranker.add_candidate(rank_candidate)
                         self._schedule_rank_flush()
                         self.logger.info(
@@ -2037,6 +2039,11 @@ class MultiJudge(BaseAgent):
             decision = candidate['decision']
             symbol = decision['symbol']
             state = self._get_state(symbol)
+            # 延迟派发：用候选入队时挂载的 llm/tech re-prime cache，避免读到被新决策 reset 的串味值
+            if hasattr(self, "_symbol_llm_cache"):
+                self._symbol_llm_cache[symbol] = candidate.get('llm_output')
+            if hasattr(self, "_symbol_tech_cache") and candidate.get('tech') is not None:
+                self._symbol_tech_cache[symbol] = candidate.get('tech')
             decision['entry_type'] = decision.get('entry_type', 'ranking_selected')
             published = await self._gate_and_publish_open(symbol, decision, state)
             if published:

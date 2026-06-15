@@ -96,3 +96,13 @@ def test_accept_tape_reads_llm_cache_not_hardcoded_none():
     # 两个录制点都应从 _symbol_llm_cache 取；accept 点不得再硬编码 llm_output=None
     assert src.count("_symbol_llm_cache") >= 3
     assert "llm_output=None, llm_audit_ref=None" not in src
+
+
+def test_ranked_candidate_carries_llm_and_tech_for_faithful_flush():
+    import inspect
+    src = inspect.getsource(judge_mod)
+    # 入队时把 llm_result + tech 挂到候选；flush 派发前用候选值 re-prime cache
+    assert "rank_candidate['llm_output']" in src or 'rank_candidate["llm_output"]' in src
+    assert "rank_candidate['tech']" in src or 'rank_candidate["tech"]' in src
+    flush = src[src.index("async def _flush_ranked_candidates"):]
+    assert "_symbol_llm_cache[symbol] = candidate" in flush
