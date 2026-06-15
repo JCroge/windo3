@@ -58,3 +58,33 @@ def test_missing_tape_does_not_break_reject(tmp_path):
         {"entry_ref": 100.0, "stop_loss": 105.0, "take_profit": [90.0], "leverage": 5},
         score=-50, confidence=60, reason="short_gate", attribution={"request_id": "r2"},
     )  # must not raise
+
+
+def test_reject_path_captures_tech_and_llm_from_cache(tmp_path):
+    tape_path = str(tmp_path / "tape.jsonl")
+    j = _partial_judge(tape_path)
+    j._symbol_tech_cache = {"BTC-USDT": {"indicators": {"price": 100.0}}}
+    j._symbol_llm_cache = {"BTC-USDT": {"action": "open_long", "confidence": 70,
+                                        "reasoning": "r", "key_factors": [], "risk_warnings": []}}
+    j._record_rejected_plan(
+        "BTC-USDT", "open_long",
+        {"entry_ref": 100.0, "stop_loss": 95.0, "take_profit": [110.0], "leverage": 5},
+        score=50, confidence=60, reason="rr_below_floor:1.39<1.50",
+        attribution={"request_id": "req-x"},
+    )
+    import json
+    rows = [json.loads(l) for l in open(tape_path) if l.strip()]
+    assert rows[0]["tech_analysis"] == {"indicators": {"price": 100.0}}
+    assert rows[0]["llm_output_inline"]["action"] == "open_long"
+    assert rows[0]["replayable"] is True
+
+
+def test_reject_capture_defensive_when_caches_absent(tmp_path):
+    # partial judge with NO cache attributes must NOT raise (red-line: tape never breaks decision)
+    tape_path = str(tmp_path / "tape.jsonl")
+    j = _partial_judge(tape_path)  # does not set _symbol_tech_cache / _symbol_llm_cache
+    j._record_rejected_plan(
+        "ETH-USDT", "open_short",
+        {"entry_ref": 100.0, "stop_loss": 105.0, "take_profit": [90.0], "leverage": 5},
+        score=-50, confidence=60, reason="rr_below_floor", attribution={"request_id": "r2"},
+    )  # must not raise

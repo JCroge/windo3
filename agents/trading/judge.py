@@ -154,6 +154,7 @@ class MultiJudge(BaseAgent):
             retention_days=config.get('decision_tape_retention_days', 90) if config else 90,
         )
         self._symbol_tech_cache = {}
+        self._symbol_llm_cache = {}
         self._short_regime_guard_enabled = config.get('short_regime_guard_enabled', True) if config else True
         self._probe_short_enabled = config.get('probe_short_enabled', True) if config else True
         self._low_rr_slot_enabled = config.get('low_rr_slot_enabled', True) if config else True
@@ -376,6 +377,8 @@ class MultiJudge(BaseAgent):
                 if removed_state and removed_state.get('deferred_entry'):
                     self.logger.info(f"[Judge] {s} 移除，取消延迟入场")
                 self._symbol_tech_cache.pop(s, None)
+                if hasattr(self, "_symbol_llm_cache"):
+                    self._symbol_llm_cache.pop(s, None)
             if msg['payload'].get('removed'):
                 self._regime_manager.update(self._symbol_tech_cache)
             return
@@ -643,6 +646,9 @@ class MultiJudge(BaseAgent):
 
     async def _make_decision(self, symbol: str, tech: dict):
         await self._update_balance()
+        # 决策磁带：本次决策的 LLM 输出按 symbol 重置，rule-only 路径保持 None（诚实）
+        if hasattr(self, "_symbol_llm_cache"):
+            self._symbol_llm_cache[symbol] = None
 
         # 数据质量门槛：降级数据下不开仓（dimensions_ok < 6/9）
         data_quality = tech.get('data_quality', {})
@@ -1216,6 +1222,8 @@ class MultiJudge(BaseAgent):
             plan = self._build_plan(tech, action, price, confidence, score)
 
             llm_result = await self._ask_llm(symbol, tech, score)
+            if hasattr(self, "_symbol_llm_cache"):
+                self._symbol_llm_cache[symbol] = llm_result
 
             # LLM作为修正因子，不作为否决权
             # rule_signal触发时（score含±35基础分），LLM只能降低仓位，不能阻止入场
@@ -3029,10 +3037,10 @@ class MultiJudge(BaseAgent):
             self._decision_tape.record_decision(build_bundle(
                 symbol=symbol, decision="reject",
                 request_id=(attr or {}).get("request_id") if isinstance(attr, dict) else None,
-                tech_analysis={},
+                tech_analysis=getattr(self, "_symbol_tech_cache", {}).get(symbol) or {},
                 price_at_decision=(plan or {}).get("entry_ref") or (plan or {}).get("entry_price"),
                 regime_state=regime,
-                llm_output=None, llm_audit_ref=None,
+                llm_output=getattr(self, "_symbol_llm_cache", {}).get(symbol), llm_audit_ref=None,
                 trade_decision_output={"reject_reason": reason, "attribution": attr},
                 state_snapshot=self._capture_state_snapshot(symbol),
             ))
