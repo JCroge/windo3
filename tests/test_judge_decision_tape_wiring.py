@@ -63,7 +63,7 @@ def test_missing_tape_does_not_break_reject(tmp_path):
 def test_reject_path_captures_tech_and_llm_from_cache(tmp_path):
     tape_path = str(tmp_path / "tape.jsonl")
     j = _partial_judge(tape_path)
-    j._symbol_tech_cache = {"BTC-USDT": {"indicators": {"price": 100.0}}}
+    j._symbol_tech_tape_cache = {"BTC-USDT": {"indicators": {"price": 100.0}}}
     j._symbol_llm_cache = {"BTC-USDT": {"action": "open_long", "confidence": 70,
                                         "reasoning": "r", "key_factors": [], "risk_warnings": []}}
     j._record_rejected_plan(
@@ -106,3 +106,12 @@ def test_ranked_candidate_carries_llm_and_tech_for_faithful_flush():
     assert "rank_candidate['tech']" in src or 'rank_candidate["tech"]' in src
     flush = src[src.index("async def _flush_ranked_candidates"):]
     assert "_symbol_llm_cache[symbol] = candidate" in flush
+
+
+def test_flush_does_not_mutate_live_tech_cache():
+    import inspect
+    src = inspect.getsource(judge_mod)
+    flush = src[src.index("async def _flush_ranked_candidates"):]
+    # 观测性不变量：flush 只能写 tape 侧 cache，绝不写 live 决策读取的 _symbol_tech_cache
+    assert "_symbol_tech_cache[symbol] =" not in flush
+    assert "_symbol_tech_tape_cache[symbol] =" in flush

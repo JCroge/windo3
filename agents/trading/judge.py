@@ -155,6 +155,7 @@ class MultiJudge(BaseAgent):
         )
         self._symbol_tech_cache = {}
         self._symbol_llm_cache = {}
+        self._symbol_tech_tape_cache = {}
         self._short_regime_guard_enabled = config.get('short_regime_guard_enabled', True) if config else True
         self._probe_short_enabled = config.get('probe_short_enabled', True) if config else True
         self._low_rr_slot_enabled = config.get('low_rr_slot_enabled', True) if config else True
@@ -379,6 +380,8 @@ class MultiJudge(BaseAgent):
                 self._symbol_tech_cache.pop(s, None)
                 if hasattr(self, "_symbol_llm_cache"):
                     self._symbol_llm_cache.pop(s, None)
+                if hasattr(self, "_symbol_tech_tape_cache"):
+                    self._symbol_tech_tape_cache.pop(s, None)
             if msg['payload'].get('removed'):
                 self._regime_manager.update(self._symbol_tech_cache)
             return
@@ -649,6 +652,8 @@ class MultiJudge(BaseAgent):
         # 决策磁带：本次决策的 LLM 输出按 symbol 重置，rule-only 路径保持 None（诚实）
         if hasattr(self, "_symbol_llm_cache"):
             self._symbol_llm_cache[symbol] = None
+        if hasattr(self, "_symbol_tech_tape_cache"):
+            self._symbol_tech_tape_cache[symbol] = tech
 
         # 数据质量门槛：降级数据下不开仓（dimensions_ok < 6/9）
         data_quality = tech.get('data_quality', {})
@@ -1990,7 +1995,7 @@ class MultiJudge(BaseAgent):
             self._decision_tape.record_decision(build_bundle(
                 symbol=symbol, decision="accept",
                 request_id=decision.get("request_id"),
-                tech_analysis=self._symbol_tech_cache.get(symbol) or {},
+                tech_analysis=getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {},
                 price_at_decision=(plan or {}).get("entry_ref"),
                 regime_state=getattr(self._regime_manager, "_effective_regime", None),
                 llm_output=getattr(self, "_symbol_llm_cache", {}).get(symbol), llm_audit_ref=None,
@@ -2042,8 +2047,8 @@ class MultiJudge(BaseAgent):
             # 延迟派发：用候选入队时挂载的 llm/tech re-prime cache，避免读到被新决策 reset 的串味值
             if hasattr(self, "_symbol_llm_cache"):
                 self._symbol_llm_cache[symbol] = candidate.get('llm_output')
-            if hasattr(self, "_symbol_tech_cache") and candidate.get('tech') is not None:
-                self._symbol_tech_cache[symbol] = candidate.get('tech')
+            if hasattr(self, "_symbol_tech_tape_cache") and candidate.get('tech') is not None:
+                self._symbol_tech_tape_cache[symbol] = candidate.get('tech')
             decision['entry_type'] = decision.get('entry_type', 'ranking_selected')
             published = await self._gate_and_publish_open(symbol, decision, state)
             if published:
@@ -3044,7 +3049,7 @@ class MultiJudge(BaseAgent):
             self._decision_tape.record_decision(build_bundle(
                 symbol=symbol, decision="reject",
                 request_id=(attr or {}).get("request_id") if isinstance(attr, dict) else None,
-                tech_analysis=getattr(self, "_symbol_tech_cache", {}).get(symbol) or {},
+                tech_analysis=getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {},
                 price_at_decision=(plan or {}).get("entry_ref") or (plan or {}).get("entry_price"),
                 regime_state=regime,
                 llm_output=getattr(self, "_symbol_llm_cache", {}).get(symbol), llm_audit_ref=None,
