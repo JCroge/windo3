@@ -88,3 +88,11 @@ def test_reject_capture_defensive_when_caches_absent(tmp_path):
         {"entry_ref": 100.0, "stop_loss": 105.0, "take_profit": [90.0], "leverage": 5},
         score=-50, confidence=60, reason="rr_below_floor", attribution={"request_id": "r2"},
     )  # must not raise
+
+
+def test_accept_tape_reads_llm_cache_not_hardcoded_none():
+    import inspect
+    src = inspect.getsource(judge_mod)
+    # 两个录制点都应从 _symbol_llm_cache 取；accept 点不得再硬编码 llm_output=None
+    assert src.count("_symbol_llm_cache") >= 3
+    assert "llm_output=None, llm_audit_ref=None" not in src

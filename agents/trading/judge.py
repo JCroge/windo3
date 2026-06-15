@@ -1991,7 +1991,7 @@ class MultiJudge(BaseAgent):
                 tech_analysis=self._symbol_tech_cache.get(symbol) or {},
                 price_at_decision=(plan or {}).get("entry_ref"),
                 regime_state=getattr(self._regime_manager, "_effective_regime", None),
-                llm_output=None, llm_audit_ref=None,
+                llm_output=getattr(self, "_symbol_llm_cache", {}).get(symbol), llm_audit_ref=None,
                 trade_decision_output={
                     "plan": decision.get("plan"),
                     "attribution": decision.get("attribution"),
