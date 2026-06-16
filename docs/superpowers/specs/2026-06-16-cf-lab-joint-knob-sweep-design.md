@@ -84,7 +84,7 @@ effective_threshold = actionable_min_pnl × (1 + value_penalty_k × M)      # M 
 
 返回：`{interactions: [{combo:(a,b), interaction, classification, delta_ab, delta_a, delta_b}], anchor_ok, effective_threshold, fidelity_note}`。
 
-> 首发 `compute_interactions` 只做 **2 旋钮 pairwise** 交互。引擎 `sweep_grid` 通用支持 N 轴扫描，但 N>2 的完整高阶交互分解留作未来（与 proposal 非目标一致）。N>2 时 `compute_interactions` 对每一对旋钮固定其它轴在 base 上做 pairwise，或直接拒答——首发实现取「仅当恰好 2 个非 base 轴时计算」，其余标 `skipped:higher_order`。
+> 首发 `compute_interactions` 只做 **2 旋钮 pairwise** 交互。引擎 `sweep_grid` 通用支持 N 轴扫描，但 N>2 的完整高阶交互分解留作未来（与 proposal 非目标一致）。组合按非 base 轴数分类：0 轴 = anchor（不入 interactions 列，仅做自检）；1 轴 = `edge`（纯单旋钮效果，入列但 interaction=None，供 joint 公式查找）；恰好 2 轴 = 计算 interaction；**≥3 轴标 `skipped:higher_order`**。
 
 ## 多维孤峰守卫（recommend_direction_nd）
 
