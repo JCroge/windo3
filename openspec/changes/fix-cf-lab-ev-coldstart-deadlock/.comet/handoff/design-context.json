@@ -1,0 +1,17 @@
+{
+  "change": "fix-cf-lab-ev-coldstart-deadlock",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "2dd9dcb92307a6d75e22a0f302bc29de04fdb7bc5902b8ee296b5ba7d197645a",
+  "files": [
+    { "path": "openspec/changes/fix-cf-lab-ev-coldstart-deadlock/proposal.md", "sha256": "d3e2119f4769fac3ac5c228e9ffa14af8fe3bb4452829ce5f382cf5224aab223" },
+    { "path": "openspec/changes/fix-cf-lab-ev-coldstart-deadlock/design.md", "sha256": "4ed7db38b18e8d19c84e174e046534d143647febe5b93dfe26d2587c8a715b4e" },
+    { "path": "openspec/changes/fix-cf-lab-ev-coldstart-deadlock/tasks.md", "sha256": "9c634b60fe738d8a6e0e9ef4d45ddab450f16f65b2d17cb4368c5ed04900bff5" },
+    { "path": "openspec/changes/fix-cf-lab-ev-coldstart-deadlock/specs/counterfactual-portfolio-sim/spec.md", "sha256": "9dd7560af83e72447ccf05a6ccdc90d8d5fa0440814906a606ae5992de8b22ca" },
+    { "path": "openspec/changes/fix-cf-lab-ev-coldstart-deadlock/specs/perturbation-delta-report/spec.md", "sha256": "9ea99a758db90c65597427d3e0040468e4975ac0064e352ecc15f585f9352de2" },
+    { "path": "openspec/changes/fix-cf-lab-ev-coldstart-deadlock/specs/replay-report-driver/spec.md", "sha256": "bbbb55de7c32fab27f1cd130e3c4c90f56ab00374c567b35dccce0e22c14e2a3" },
+    { "path": "openspec/changes/fix-cf-lab-ev-coldstart-deadlock/specs/sequential-perturbation-driver/spec.md", "sha256": "04acc0d66798cf0b94c454047957383b4573fb2e46ba28b16c98b421128ffa82" }
+  ]
+}

@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: subagent-driven-development
+isolation: branch
+verify_mode: null
+base_ref: 561cf11da2fea6b9597e609cdd72106be42209c0
+design_doc: docs/superpowers/specs/2026-06-16-fix-cf-lab-ev-coldstart-deadlock-design.md
+plan: docs/superpowers/plans/2026-06-16-fix-cf-lab-ev-coldstart-deadlock.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-16
+verified_at: null
+archived: false
+handoff_context: openspec/changes/fix-cf-lab-ev-coldstart-deadlock/.comet/handoff/design-context.json
+handoff_hash: 2dd9dcb92307a6d75e22a0f302bc29de04fdb7bc5902b8ee296b5ba7d197645a
