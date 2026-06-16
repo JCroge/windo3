@@ -67,3 +67,30 @@ def test_delta_report_low_fidelity_untrustworthy():
                       price_loader=_price_loader_tp, fidelity_threshold=0.8))
     assert rep["metadata"]["untrustworthy"] is True
     assert rep.get("delta") is None
+
+
+from utils.cf_portfolio import CounterfactualPortfolio
+from utils.sequential_perturbation import _seed_cf_prior
+
+
+def test_seed_warms_rolling_window_from_recorded_rate():
+    cf = CounterfactualPortfolio(initial_equity=1000.0, rolling_window_size=20)
+    rec = {"state_snapshot_before_decision": {
+        "_recent_win_rate": 0.45, "_recent_wins": 9, "_total_completed_trades": 52,
+        "_archetype_cooldown": {"_history": {}, "_cooldown_until": {}}}}
+    _seed_cf_prior(cf, rec)
+    assert len(cf._cf_win_window) == 20
+    assert cf.to_snapshot()["_recent_win_rate"] == 0.45
+
+
+def test_seed_window_evicted_by_cf_results_after_full_turnover():
+    cf = CounterfactualPortfolio(initial_equity=1000.0, rolling_window_size=20)
+    rec = {"state_snapshot_before_decision": {
+        "_recent_win_rate": 0.45, "_recent_wins": 9, "_total_completed_trades": 52,
+        "_archetype_cooldown": {"_history": {}, "_cooldown_until": {}}}}
+    _seed_cf_prior(cf, rec)
+    for _ in range(20):
+        cf._open["X-USDT"] = {"resolved_ts": 1.0, "net_usdt": 1.0,
+                              "archetype": "t", "created_at": 0.0}
+        cf.resolve_due(2.0)
+    assert cf.to_snapshot()["_recent_win_rate"] == 1.0

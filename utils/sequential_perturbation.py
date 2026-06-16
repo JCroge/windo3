@@ -27,6 +27,14 @@ def _seed_cf_prior(cf, first_record):
     snap = (first_record or {}).get("state_snapshot_before_decision") or {}
     cf._recent_wins = snap.get("_recent_wins", 0) or 0
     cf._total_completed_trades = snap.get("_total_completed_trades", 0) or 0
+    # 用录制滚动胜率暖启动 CF 窗口(= 磁带窗口前真实滚动率), 破 EV gate 冷启动死锁;
+    # CF 自身结算结果之后 FIFO 逐步挤出合成种子。
+    rate = snap.get("_recent_win_rate")
+    cf._cf_win_window.clear()
+    if rate is not None:
+        n = cf.rolling_window_size
+        wins = round(float(rate) * n)
+        cf._cf_win_window.extend([True] * wins + [False] * (n - wins))
     ac = snap.get("_archetype_cooldown") or {}
     # 原地更新（保留 ArchetypeCooldown._history 的 defaultdict(list) 类型，
     # 否则 record_result 的 self._history[k].append 会 KeyError）
