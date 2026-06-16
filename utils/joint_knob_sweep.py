@@ -37,7 +37,10 @@ def compute_interactions(grid_result, base_values, *, actionable_min_pnl=0.0,
         combo = c["combo"]
         non_base = _non_base_axes(combo, base_values)
         if len(non_base) != 2:
-            if len(non_base) >= 1:  # 非 anchor、非 edge 的高阶点
+            if len(non_base) == 1:                       # edge: 纯单旋钮效果
+                interactions.append({"combo": combo, "interaction": None,
+                                     "classification": "edge"})
+            elif len(non_base) >= 3:                      # 高阶: 首发不做
                 interactions.append({"combo": combo, "interaction": None,
                                      "classification": "skipped:higher_order"})
             continue

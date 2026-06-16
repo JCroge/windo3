@@ -59,6 +59,18 @@ def test_anchor_fail_when_base_base_nonzero():
     assert out["anchor_ok"] is False
 
 
+def test_edge_combos_labeled_edge():
+    gr = _gr([({"rr_floor_default": 1.5, "min_confidence": 60}, 0.0),    # anchor
+              ({"rr_floor_default": 1.3, "min_confidence": 60}, 4.0),    # edge (1 axis)
+              ({"rr_floor_default": 1.5, "min_confidence": 40}, 6.0),    # edge (1 axis)
+              ({"rr_floor_default": 1.3, "min_confidence": 40}, 10.0)])  # joint
+    out = compute_interactions(gr, BV, actionable_min_pnl=1.0, value_penalty_k=0.0)
+    edges = [i for i in out["interactions"] if i["classification"] == "edge"]
+    assert len(edges) == 2
+    # anchor 不入列
+    assert all(i["combo"] != {"rr_floor_default": 1.5, "min_confidence": 60} for i in out["interactions"])
+
+
 def test_higher_order_skipped():
     # 3 个非 base 轴 → skipped:higher_order（首发只做 2 轴 pairwise）
     bv3 = {"a": 0, "b": 0, "c": 0}
