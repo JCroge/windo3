@@ -2,6 +2,7 @@
 change: fix-cf-lab-symbol-state-injection
 design-doc: docs/superpowers/specs/2026-06-16-fix-cf-lab-symbol-state-injection-design.md
 base-ref: 3d683d87e3acebdea5b5f3194e28506652343265
+archived-with: 2026-06-16-fix-cf-lab-symbol-state-injection
 ---
 
 # CF Lab Symbol-State Injection Fix Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 3d683d87e3acebdea5b5f3194e28506652343265
 
 **Tech Stack:** Python 3.9, pytest, asyncio。`utils/sequential_perturbation.py`。
 
+archived-with: 2026-06-16-fix-cf-lab-symbol-state-injection
 ---
 
 ### Task 1: `_inject_cf_state` 保留录制 `_symbol_state`
@@ -84,6 +86,7 @@ git commit -m "fix(cf): _inject_cf_state preserves recorded _symbol_state (signa
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-symbol-state-injection
 ---
 
 ### Task 2: 坐实 sequential fidelity + 回归
@@ -158,6 +161,7 @@ git commit -m "test(cf): sequential baseline fidelity restored to >=0.85 + regre
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-symbol-state-injection
 ---
 
 ## Self-Review

@@ -1,17 +1,17 @@
 workflow: full
-phase: verify
+phase: archive
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: null
 base_ref: 3d683d87e3acebdea5b5f3194e28506652343265
 design_doc: docs/superpowers/specs/2026-06-16-fix-cf-lab-symbol-state-injection-design.md
 plan: docs/superpowers/plans/2026-06-16-fix-cf-lab-symbol-state-injection.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-16-fix-cf-lab-symbol-state-injection-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-06-16
-verified_at: null
-archived: false
+verified_at: 2026-06-16
+archived: true
 handoff_context: openspec/changes/fix-cf-lab-symbol-state-injection/.comet/handoff/design-context.json
 handoff_hash: 6749e3e28184e83f3194949743b6e41550c16a156cf94280ae10c5e205f99bd0
 build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q utils
