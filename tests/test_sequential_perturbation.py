@@ -71,6 +71,25 @@ def test_delta_report_low_fidelity_untrustworthy():
 
 from utils.cf_portfolio import CounterfactualPortfolio
 from utils.sequential_perturbation import _seed_cf_prior
+from utils.sequential_perturbation import _gate_of_recorded, _gate_of_replayed
+
+
+def test_gate_extraction_prefix():
+    rec = {"decision": "reject",
+           "trade_decision_output": {"reject_reason": "rr_below_floor:1.37<1.50"}}
+    assert _gate_of_recorded(rec) == "rr_below_floor"
+    rec_acc = {"decision": "accept", "trade_decision_output": {}}
+    assert _gate_of_recorded(rec_acc) == "accept"
+    assert _gate_of_replayed({"action": "open_long"}) == "accept"
+    d = {"action": "hold", "attribution": {"blocked_by": "ev_gate:EV=-0.41"}}
+    assert _gate_of_replayed(d) == "ev_gate"
+
+
+def test_changed_gate_counts_as_non_reproduction():
+    recorded = {"action": "hold", "attribution": {"blocked_by": "ev_gate:x"}}
+    rec = {"decision": "reject",
+           "trade_decision_output": {"reject_reason": "rr_below_floor:1.37<1.50"}}
+    assert _gate_of_replayed(recorded) != _gate_of_recorded(rec)
 
 
 def test_seed_warms_rolling_window_from_recorded_rate():
