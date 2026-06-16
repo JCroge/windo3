@@ -26,9 +26,13 @@ def load_records():
             if not line:
                 continue
             try:
-                recs.append(json.loads(line))
+                r = json.loads(line)
             except Exception:
                 continue
+            # 按内容判定可回放, 不盲信 stale replayable: 旧 v1 空记录写入时即标 true。
+            tech = r.get("tech_analysis")
+            if r.get("schema_version") == "decision_replay_record.v2" and tech:
+                recs.append(r)
     return recs
 
 
