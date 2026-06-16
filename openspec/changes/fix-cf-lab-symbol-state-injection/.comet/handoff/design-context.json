@@ -1,0 +1,14 @@
+{
+  "change": "fix-cf-lab-symbol-state-injection",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "6749e3e28184e83f3194949743b6e41550c16a156cf94280ae10c5e205f99bd0",
+  "files": [
+    { "path": "openspec/changes/fix-cf-lab-symbol-state-injection/proposal.md", "sha256": "d317b466c9bd0d71b016fb188fba9af0acec66a05138bba29ba6922fb778dad2" },
+    { "path": "openspec/changes/fix-cf-lab-symbol-state-injection/design.md", "sha256": "9657e231a692f162d7edb214a68e09289925bab12a6e10d96f6ae6b70e356a54" },
+    { "path": "openspec/changes/fix-cf-lab-symbol-state-injection/tasks.md", "sha256": "ca693a68226afa48108d6a3e88aee670bdbc31c3121e5b393cf8d492834cbf9b" },
+    { "path": "openspec/changes/fix-cf-lab-symbol-state-injection/specs/sequential-perturbation-driver/spec.md", "sha256": "33b4096ebaea4fd39bbae4affb5e83e0666b666a24ddc91c3d836e56baf4c2fa" }
+  ]
+}
