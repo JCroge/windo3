@@ -172,6 +172,7 @@ def test_recommend_isolated_spike():
               ({"rr_floor_default": 1.3, "min_confidence": 40}, 100.0)])
     out = recommend_direction_nd(gr, BV, actionable_min_pnl=1.0, value_penalty_k=0.0)
     assert out["verdict"] == "no_actionable_direction"
+    assert out["reason"] == "isolated_spike"
     assert out.get("isolated_spike") is True
 
 

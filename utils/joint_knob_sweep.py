@@ -167,6 +167,8 @@ def recommend_direction_nd(grid_result, base_values, *, knob_grids=None,
 
     bp = best["delta"]["net_pnl"]
     neighbor_combos = _axis_neighbors(best["combo"], knob_grids)
+    # combo dict 相等比对依赖取值类型一致：邻居与 combo 的旋钮值均直接源自
+    # 同一 knob_grids（sweep_grid 原样存入），无序列化往返，故类型恒一致。
     nb_deltas = [c["delta"]["net_pnl"] for c in trustworthy
                  if c["combo"] in neighbor_combos]
     coherent = any(d >= bp * coherence_frac for d in nb_deltas) if nb_deltas else False
