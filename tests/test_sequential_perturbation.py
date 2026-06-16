@@ -113,3 +113,78 @@ def test_seed_window_evicted_by_cf_results_after_full_turnover():
                               "archetype": "t", "created_at": 0.0}
         cf.resolve_due(2.0)
     assert cf.to_snapshot()["_recent_win_rate"] == 1.0
+
+
+import json
+import os as _os
+from utils.sequential_perturbation import build_delta_report as _build_delta_report
+
+_TAPE = _os.path.join(_os.path.dirname(__file__), "..", "data", "decision_replay_tape.jsonl")
+_KLINES = _os.path.join(_os.path.dirname(__file__), "..", "data", "klines_1s.db")
+
+
+def _load_v2_rr(limit=None):
+    if not _os.path.exists(_TAPE):
+        pytest.skip("no live tape available")
+    out = []
+    for line in open(_TAPE):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if r.get("schema_version") != "decision_replay_record.v2":
+            continue
+        if not (r.get("tech_analysis") or {}):
+            continue
+        out.append(r)
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def _e2e_loader(symbol, created_at, window_sec):
+    import sqlite3
+    if not _os.path.exists(_KLINES):
+        return []
+    lo, hi = int(created_at * 1000), int((created_at + window_sec) * 1000)
+    conn = sqlite3.connect(_KLINES)
+    try:
+        rows = conn.execute(
+            "SELECT open_time,high,low,close FROM klines WHERE symbol=? "
+            "AND open_time>=? AND open_time<=? ORDER BY open_time",
+            (symbol, lo, hi)).fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+    return [{"open_time": t, "high": h, "low": l, "close": c} for t, h, l, c in rows]
+
+
+def test_relaxing_floor_breaks_deadlock_perturbed_opens():
+    # End-to-end on the real live tape: prove the EV cold-start deadlock is broken.
+    # Relaxing ONLY `rr_floor_default` (and leaving the EV gate fully intact) is the
+    # DISCRIMINATING test. Pre-fix, the CF EV gate cold-started at the 40% fallback win
+    # rate, so EV<floor blocked every perturbed open no matter how far R:R was relaxed
+    # -> perturbed_cf_open_count == 0 and the assertion fails. Post-fix, the sequence is
+    # warm-seeded from the recorded prior (0.45 rolling rate via `_seed_cf_prior`), so
+    # once the R:R floor is relaxed the +EV setups clear the EV gate and open CF
+    # positions -> perturbed_cf_open_count > 0 and the assertion passes.
+    #
+    # Do NOT disable the EV gate here: setting ev_min_threshold=-999 makes the test pass
+    # even on UNFIXED code (cold p_win becomes irrelevant when the threshold is -999),
+    # so it would no longer validate the EV cold-start fix at all. The floor-only
+    # perturbation is exactly what couples the assertion to the seeded warm prior.
+    #
+    # Replays the FULL set of v2-with-tech records (~630) x 2 arms, so this takes
+    # 1-2 minutes; the baseline window contains no opens (baseline_cf_open_count == 0).
+    recs = _load_v2_rr()
+    if not recs:
+        pytest.skip("no v2 tape records")
+    perturbed = {"rr_floor_default": 0.3}
+    rep = asyncio.run(_build_delta_report(
+        recs, {}, perturbed, _e2e_loader, fidelity_threshold=0.0))
+    print("perturbed_cf_open_count=", rep["metadata"]["perturbed_cf_open_count"])
+    assert rep["metadata"]["perturbed_cf_open_count"] > 0
