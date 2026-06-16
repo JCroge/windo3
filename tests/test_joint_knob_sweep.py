@@ -71,6 +71,16 @@ def test_edge_combos_labeled_edge():
     assert all(i["combo"] != {"rr_floor_default": 1.5, "min_confidence": 60} for i in out["interactions"])
 
 
+def test_missing_edge_skipped():
+    # joint (1.3,40) present but edge (1.5,40) absent → skipped:missing_edge
+    gr = _gr([({"rr_floor_default": 1.5, "min_confidence": 60}, 0.0),    # anchor
+              ({"rr_floor_default": 1.3, "min_confidence": 60}, 4.0),    # edge_A only
+              ({"rr_floor_default": 1.3, "min_confidence": 40}, 10.0)])  # joint, edge_B missing
+    out = compute_interactions(gr, BV, actionable_min_pnl=1.0, value_penalty_k=0.0)
+    inter = next(i for i in out["interactions"] if i["combo"] == {"rr_floor_default": 1.3, "min_confidence": 40})
+    assert inter["classification"] == "skipped:missing_edge"
+
+
 def test_higher_order_skipped():
     # 3 个非 base 轴 → skipped:higher_order（首发只做 2 轴 pairwise）
     bv3 = {"a": 0, "b": 0, "c": 0}

@@ -30,7 +30,8 @@ def compute_interactions(grid_result, base_values, *, actionable_min_pnl=0.0,
     # 自检锚点：(base,base) 组合
     base_combo = dict(base_values)
     anchor_delta = _delta_of(grid_result, base_combo)
-    anchor_ok = anchor_delta is not None and abs(anchor_delta["net_pnl"]) <= threshold
+    anchor_tol = max(threshold, 1e-9)
+    anchor_ok = anchor_delta is not None and abs(anchor_delta["net_pnl"]) <= anchor_tol
 
     interactions = []
     for c in combos:
