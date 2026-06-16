@@ -4,11 +4,11 @@
   "mode": "compact",
   "canonical_spec": "openspec",
   "generated_by": "comet-handoff.sh",
-  "context_hash": "611a6729795c6ff8cf0b3da31c17d490f77a315d1d7b63a4d0dbe2d65a8925b2",
+  "context_hash": "ef65b6a11cf99175b11ee353e4247f598e8acc8f3b1b9059879bf018df7b0461",
   "files": [
     { "path": "openspec/changes/cf-lab-joint-knob-sweep/proposal.md", "sha256": "c73e752b5e9aaa42e17ce180c9023a1b277e4c2ac919aa50b3706bd2ca31a3be" },
     { "path": "openspec/changes/cf-lab-joint-knob-sweep/design.md", "sha256": "dbc9407e8f5814d649ace29d670b7d2e6191d55a7bbd51da98a4e274db2da6c8" },
     { "path": "openspec/changes/cf-lab-joint-knob-sweep/tasks.md", "sha256": "b67a3f8bde8108e9063fa00e3f20c14c7867af23ff8dd6b696c26d257519085a" },
-    { "path": "openspec/changes/cf-lab-joint-knob-sweep/specs/joint-knob-sweep/spec.md", "sha256": "c91afd70b8e8cba9bcfaeb160a6f415f6911decf42918e1ec8896653df8ae309" }
+    { "path": "openspec/changes/cf-lab-joint-knob-sweep/specs/joint-knob-sweep/spec.md", "sha256": "2d20241a53c83998e5b86a5a1ee014bcc83cc4b1d97183fe627fd1d28b51d000" }
   ]
 }

@@ -1,7 +1,7 @@
 workflow: full
-phase: build
-build_mode: null
-isolation: null
+phase: verify
+build_mode: subagent-driven-development
+isolation: branch
 verify_mode: null
 base_ref: 6c2b84cf0610ea5b407bd3841362b4bd18ebc91d
 design_doc: docs/superpowers/specs/2026-06-16-cf-lab-joint-knob-sweep-design.md
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/cf-lab-joint-knob-sweep/.comet/handoff/design-context.json
 handoff_hash: ef65b6a11cf99175b11ee353e4247f598e8acc8f3b1b9059879bf018df7b0461
+verify_command: python3 -m pytest -q
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q utils/joint_knob_sweep.py utils/sequential_perturbation.py cf_direction_recommendation.py
