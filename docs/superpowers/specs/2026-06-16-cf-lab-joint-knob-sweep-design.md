@@ -2,6 +2,8 @@
 comet_change: cf-lab-joint-knob-sweep
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
+status: final
 ---
 
 # Design Doc — cf-lab-joint-knob-sweep（多旋钮联合扫描 + 交互效应检验）

@@ -2,6 +2,7 @@
 change: cf-lab-joint-knob-sweep
 design-doc: docs/superpowers/specs/2026-06-16-cf-lab-joint-knob-sweep-design.md
 base-ref: c2d2e767729bbdf790284a68d6790e8b0553a5d1
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 # 多旋钮联合扫描 + 交互效应检验 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: c2d2e767729bbdf790284a68d6790e8b0553a5d1
 
 **Tech Stack:** Python 3.9 / asyncio / pytest / itertools.product。复用 `run_arm`、`_gate_of_recorded`、`_max_drawdown`、`_FIDELITY_NOTE`。
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ### Task 1: 纯提取 `_summarize_arm`（可信模块重构，行为不变）
@@ -99,6 +101,7 @@ git commit -m "refactor(cf): extract _summarize_arm from build_delta_report (joi
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ### Task 2: `compute_interactions` 纯函数（交互项 + 三判定 + 自检锚点）
@@ -275,6 +278,7 @@ git commit -m "feat(cf): compute_interactions — 2-way 交互项 + 协同/可�
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ### Task 3: `sweep_grid` 笛卡尔积扫描（baseline 单次复用）
@@ -410,6 +414,7 @@ git commit -m "feat(cf): sweep_grid — 多旋钮笛卡尔积扫描, baseline �
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ### Task 4: `recommend_direction_nd` 多维孤峰守卫
@@ -566,6 +571,7 @@ git commit -m "feat(cf): recommend_direction_nd — 多维轴邻居孤峰守卫 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ### Task 5: 红线守卫扩展（禁生产链路 import 新模块）
@@ -597,6 +603,7 @@ git commit -m "test(cf): 红线守卫显式禁生产链路 import joint_knob_swe
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ### Task 6: Driver — 真实磁带两轴联合扫描段
@@ -654,6 +661,7 @@ git commit -m "feat(cf): driver 增 rr_floor × min_confidence 两轴联合扫�
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ### Task 7: 全量回归 + 勾选 tasks.md
@@ -679,6 +687,7 @@ git commit -m "chore(comet): cf-lab-joint-knob-sweep tasks complete (全量回�
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-cf-lab-joint-knob-sweep
 ---
 
 ## Self-Review
