@@ -2,6 +2,8 @@
 comet_change: fix-cf-lab-replay-config-parity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-16-fix-cf-lab-replay-config-parity
+status: final
 ---
 
 # Design Doc — fix-cf-lab-replay-config-parity

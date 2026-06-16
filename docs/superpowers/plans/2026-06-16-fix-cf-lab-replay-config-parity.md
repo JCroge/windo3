@@ -2,6 +2,7 @@
 change: fix-cf-lab-replay-config-parity
 design-doc: docs/superpowers/specs/2026-06-16-fix-cf-lab-replay-config-parity-design.md
 base-ref: 21159c5210513b04775999458a05acade3fb2995
+archived-with: 2026-06-16-fix-cf-lab-replay-config-parity
 ---
 
 # CF Lab Replay Config Parity Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 21159c5210513b04775999458a05acade3fb2995
 
 **Tech Stack:** Python 3.9, pytest, asyncio。`utils/decision_replay.py`、`utils/decision_tape.py`、`agents/trading/judge.py`(仅录制点传 config)。
 
+archived-with: 2026-06-16-fix-cf-lab-replay-config-parity
 ---
 
 ### Task 1: production_base_config + replay_decision 用生产基线
@@ -102,6 +104,7 @@ git commit -m "feat(cf): replay uses production config baseline (config_snapshot
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-replay-config-parity
 ---
 
 ### Task 2: decision_tape 录 config_snapshot (schema v3)
@@ -173,6 +176,7 @@ git commit -m "feat(cf): tape records config_snapshot at decision time (schema v
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-replay-config-parity
 ---
 
 ### Task 3: 坐实保真 + perturbation 叠加 + 全量回归
@@ -270,6 +274,7 @@ git commit -m "test(cf): production baseline restores L2 fidelity (>=0.85) + per
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-replay-config-parity
 ---
 
 ## Self-Review
