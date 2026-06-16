@@ -12,6 +12,7 @@ import json
 import sqlite3
 
 from utils.knob_sweep import sweep_knob, recommend_direction
+from utils.joint_knob_sweep import sweep_grid, compute_interactions, recommend_direction_nd
 from utils.sequential_perturbation import build_delta_report
 
 TAPE = "data/decision_replay_tape.jsonl"
@@ -95,6 +96,30 @@ async def main():
               f"untrust={r['untrustworthy']}  div={r['divergence_ratio']}  n={r['sequence_len']}  {ds}")
     conf_rec = recommend_direction(conf_sweep)
     print(f"\n  >>> recommend_direction(min_confidence): {json.dumps(conf_rec, ensure_ascii=False, default=str)[:600]}")
+
+    # ── L4 联合扫描: rr_floor_default × min_confidence 交互效应 ──
+    print("\n=== L4 联合扫描: rr_floor_default × min_confidence (交互效应) ===")
+    base_values = {"rr_floor_default": 1.50, "min_confidence": 60}
+    knob_grids = {"rr_floor_default": [1.50, 1.40, 1.30, 1.20],
+                  "min_confidence": [60, 50, 40]}
+    grid = await sweep_grid(recs, knob_grids, price_loader, baseline_config={})
+    if grid.get("untrustworthy"):
+        print(f"  untrustworthy (baseline_fidelity={grid['baseline_fidelity']:.3f}) → 拒答")
+    else:
+        print(f"  baseline_fidelity={grid['baseline_fidelity']:.3f}  组合数={len(grid['combos'])}")
+        for c in grid["combos"]:
+            d = c["delta"]
+            print(f"    {c['combo']}  net={d['net_pnl']:+.2f}  div={c['divergence_ratio']:.3f}")
+        inter = compute_interactions(grid, base_values)
+        print(f"\n  交互矩阵 (anchor_ok={inter['anchor_ok']}, "
+              f"threshold={inter['effective_threshold']:.2f}):")
+        for i in inter["interactions"]:
+            if i["interaction"] is None:
+                print(f"    {i['combo']}  {i['classification']}")
+            else:
+                print(f"    {i['combo']}  interaction={i['interaction']:+.2f}  → {i['classification']}")
+        rec = recommend_direction_nd(grid, base_values, knob_grids=knob_grids)
+        print(f"\n  >>> recommend_direction_nd: {json.dumps(rec, ensure_ascii=False, default=str)[:600]}")
 
     if meta.get("fidelity_note"):
         print(f"\n[fidelity_note] {meta['fidelity_note']}")

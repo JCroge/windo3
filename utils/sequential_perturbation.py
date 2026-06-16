@@ -90,6 +90,15 @@ def _max_drawdown(curve):
     return mdd
 
 
+def _summarize_arm(arm, initial_equity):
+    """单臂 PnL summary（从 build_delta_report 的 _summ 提取，供联合扫描复用）。"""
+    rl = arm["realized"]
+    wins = sum(1 for x in rl if x > 0)
+    return {"net_pnl": arm["final_equity"] - initial_equity, "trades": len(rl),
+            "win_rate": wins / len(rl) if rl else 0.0,
+            "max_drawdown": _max_drawdown(arm["equity_curve"])}
+
+
 def _decision_class(action):
     return "accept" if action in ("open_long", "open_short") else "reject"
 
@@ -141,13 +150,7 @@ async def build_delta_report(records, baseline_config, perturbed_config, price_l
     meta["baseline_cf_open_count"] = base["cf_open_count"]
     meta["perturbed_cf_open_count"] = pert["cf_open_count"]
 
-    def _summ(arm):
-        rl = arm["realized"]
-        wins = sum(1 for x in rl if x > 0)
-        return {"net_pnl": arm["final_equity"] - initial_equity, "trades": len(rl),
-                "win_rate": wins / len(rl) if rl else 0.0,
-                "max_drawdown": _max_drawdown(arm["equity_curve"])}
-    b_s, p_s = _summ(base), _summ(pert)
+    b_s, p_s = _summarize_arm(base, initial_equity), _summarize_arm(pert, initial_equity)
     delta = {"net_pnl": p_s["net_pnl"] - b_s["net_pnl"], "win_rate": p_s["win_rate"] - b_s["win_rate"],
              "max_drawdown": p_s["max_drawdown"] - b_s["max_drawdown"]}
     return {"baseline": b_s, "perturbed": p_s, "delta": delta, "metadata": meta}

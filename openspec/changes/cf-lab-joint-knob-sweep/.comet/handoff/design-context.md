@@ -3,7 +3,7 @@
 - Change: cf-lab-joint-knob-sweep
 - Phase: design
 - Mode: compact
-- Context hash: 611a6729795c6ff8cf0b3da31c17d490f77a315d1d7b63a4d0dbe2d65a8925b2
+- Context hash: ef65b6a11cf99175b11ee353e4247f598e8acc8f3b1b9059879bf018df7b0461
 
 Generated-by: comet-handoff.sh
 
@@ -166,8 +166,8 @@ interaction(a,b) = Δ(a,b) − Δ(a,base) − Δ(base,b)
 ## openspec/changes/cf-lab-joint-knob-sweep/specs/joint-knob-sweep/spec.md
 
 - Source: openspec/changes/cf-lab-joint-knob-sweep/specs/joint-knob-sweep/spec.md
-- Lines: 1-64
-- SHA256: c91afd70b8e8cba9bcfaeb160a6f415f6911decf42918e1ec8896653df8ae309
+- Lines: 1-68
+- SHA256: 2d20241a53c83998e5b86a5a1ee014bcc83cc4b1d97183fe627fd1d28b51d000
 
 ```md
 ## ADDED Requirements
@@ -212,6 +212,10 @@ interaction(a,b) = Δ(a,b) − Δ(a,base) − Δ(base,b)
 #### Scenario: 自检锚点
 - **WHEN** `(base, base)` 组合参与扫描
 - **THEN** 其 delta SHALL ≈ 0（同 config 两臂）；显著非零 SHALL 标记引擎自检失败
+
+#### Scenario: 显著性阈值复用诚实门控口径
+- **WHEN** 判定交互项为协同/可加/拮抗
+- **THEN** 系统 SHALL 复用方向推荐器同款绝对阈值 `actionable_min_pnl × (1 + value_penalty_k × M)`（M = 网格组合总数），随网格点数收紧抵消多重比较：`|interaction| ≤ 阈值` → 可加（确认旋钮独立）；`> 阈值` 且正 → 协同；`< −阈值` → 拮抗。阈值口径 SHALL 与 actionable 推荐门控一致，不另立标准
 
 ### Requirement: 多维孤峰守卫的方向推荐
 系统 SHALL 把单旋钮一维连贯守卫推广到网格：最优组合须在网格上沿轴邻居连贯（曼哈顿距离=1 的相邻点同向）才推荐，否则标 isolated_spike 拒答；actionable 门槛随网格点数收紧以抵消多重比较；证据不足绝不杜撰方向。
