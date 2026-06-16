@@ -1,7 +1,7 @@
 """反事实组合状态机（L3b）：维护扰动后的 CF 持仓/slot/资金/EV/cooldown/daily-stop，
 独立于真实系统。CF 开仓用 L1 resolve_counterfactual 估算退出 + 反馈。
 observability-only —— 严禁交易决策路径 import/调用本模块。"""
-from collections import defaultdict
+from collections import defaultdict, deque
 from utils.counterfactual_pnl import resolve_counterfactual
 from utils.archetype_cooldown import ArchetypeCooldown
 
@@ -12,7 +12,8 @@ def _utc_day(ts):
 
 class CounterfactualPortfolio:
     def __init__(self, initial_equity=1000.0, max_slots=3, price_loader=None,
-                 daily_pnl_hard_stop=-50.0, consecutive_loss_limit=3, window_sec=86400):
+                 daily_pnl_hard_stop=-50.0, consecutive_loss_limit=3, window_sec=86400,
+                 rolling_window_size=20):
         self.equity = float(initial_equity)
         self.max_slots = max_slots
         self.price_loader = price_loader
@@ -27,6 +28,10 @@ class CounterfactualPortfolio:
         self._consec_losses = 0
         self._halted_days = set()
         self.realized = []
+        self.rolling_window_size = rolling_window_size
+        # CF 自身已结算结果的滚动窗口(win=True/loss=False), 与 live Reviewer 同语义。
+        # 只吃 CF 自己的结算; 序列起点的暖启动播种由 _seed_cf_prior 负责(后续任务接入)。
+        self._cf_win_window = deque(maxlen=rolling_window_size)
 
     def open_symbols(self):
         return set(self._open.keys())
@@ -69,6 +74,7 @@ class CounterfactualPortfolio:
             self.equity += net
             self.realized.append(net)
             self._total_completed_trades += 1
+            self._cf_win_window.append(net > 0)
             if net > 0:
                 self._recent_wins += 1
                 self._consec_losses = 0
@@ -91,8 +97,8 @@ class CounterfactualPortfolio:
                                     "_cooldown_until": dict(self._cf_cooldown._cooldown_until)},
             "_recent_wins": self._recent_wins,
             "_total_completed_trades": self._total_completed_trades,
-            "_recent_win_rate": (self._recent_wins / self._total_completed_trades
-                                 if self._total_completed_trades else None),
+            "_recent_win_rate": (sum(self._cf_win_window) / len(self._cf_win_window)
+                                 if self._cf_win_window else None),
             "_probe_short_active": None, "_probe_short_sl_count": 0,
             "_probe_short_cooldown_until": 0.0,
             "_symbol_state": {}, "_available_balance": self.equity,
