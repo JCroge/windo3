@@ -1,0 +1,16 @@
+workflow: full
+phase: design
+build_mode: null
+isolation: null
+verify_mode: null
+base_ref: 6c2b84cf0610ea5b407bd3841362b4bd18ebc91d
+design_doc: null
+plan: null
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-16
+verified_at: null
+archived: false
+handoff_context: openspec/changes/cf-lab-joint-knob-sweep/.comet/handoff/design-context.json
+handoff_hash: 611a6729795c6ff8cf0b3da31c17d490f77a315d1d7b63a4d0dbe2d65a8925b2
