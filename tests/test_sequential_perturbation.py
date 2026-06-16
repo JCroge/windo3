@@ -198,3 +198,29 @@ def test_perturbation_overlays_on_production_base_only_target():
     assert effective["rr_floor_default"] == 0.3
     assert effective["phase2_signal_confidence_split_enabled"] is True
     assert effective["min_confidence"] == base["min_confidence"]
+
+
+def test_inject_cf_state_preserves_recorded_symbol_state():
+    from utils.sequential_perturbation import _inject_cf_state
+    from utils.cf_portfolio import CounterfactualPortfolio
+    cf = CounterfactualPortfolio(initial_equity=1000.0)
+    rec = {
+        "symbol": "X-USDT",
+        "state_snapshot_before_decision": {
+            "_symbol_state": {"trend_streak": 5, "last_tech": {"k": 1}},
+            "_regime_manager": {"effective_regime": "mixed"},
+            "_recent_wins": 9, "_total_completed_trades": 52,
+            "_archetype_cooldown": {"_history": {}, "_cooldown_until": {}},
+        },
+    }
+    out = _inject_cf_state(rec, cf)
+    assert out["state_snapshot_before_decision"]["_symbol_state"] == {"trend_streak": 5, "last_tech": {"k": 1}}
+
+
+def test_inject_cf_state_missing_symbol_state_safe():
+    from utils.sequential_perturbation import _inject_cf_state
+    from utils.cf_portfolio import CounterfactualPortfolio
+    cf = CounterfactualPortfolio(initial_equity=1000.0)
+    rec = {"symbol": "X-USDT", "state_snapshot_before_decision": {"_regime_manager": {}}}
+    out = _inject_cf_state(rec, cf)
+    assert out["state_snapshot_before_decision"]["_symbol_state"] == {}
