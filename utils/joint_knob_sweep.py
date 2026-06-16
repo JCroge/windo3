@@ -105,3 +105,76 @@ def compute_interactions(grid_result, base_values, *, actionable_min_pnl=0.0,
     return {"interactions": interactions, "anchor_ok": anchor_ok,
             "effective_threshold": threshold,
             "fidelity_note": grid_result.get("fidelity_note", _FIDELITY_NOTE)}
+
+
+def _confidence_nd(best, baseline_fidelity, sequence_len):
+    fid = baseline_fidelity or 0.0
+    div = best.get("divergence_ratio") or 0.0
+    n = sequence_len or 0
+    div_factor = max(0.0, 1.0 - max(0.0, div - 0.5))
+    sample_factor = 1.0 if n >= 100 else (0.6 if n >= 30 else 0.0)
+    return round(fid * div_factor * sample_factor, 3)
+
+
+def _axis_neighbors(combo, knob_grids):
+    """网格上沿每个轴 ±1 step 的相邻组合（曼哈顿距离=1）。"""
+    out = []
+    for k, vals in knob_grids.items():
+        if combo[k] not in vals:
+            continue
+        i = vals.index(combo[k])
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(vals):
+                nb = dict(combo)
+                nb[k] = vals[j]
+                out.append(nb)
+    return out
+
+
+def recommend_direction_nd(grid_result, base_values, *, knob_grids=None,
+                           min_sample=30, actionable_min_pnl=0.0, value_penalty_k=0.1,
+                           coherence_frac=0.5):
+    """多维轴邻居孤峰守卫 + 门槛随网格点数收紧。证据不足拒答不杜撰。"""
+    combos = grid_result["combos"]
+    note = grid_result.get("fidelity_note")
+    base = {"all_combos": combos, "fidelity_note": note, "tested_count": len(combos)}
+    if grid_result.get("untrustworthy"):
+        return {**base, "verdict": "no_actionable_direction", "reason": "untrustworthy"}
+    seq = grid_result.get("sequence_len", 0)
+    trustworthy = [c for c in combos
+                   if seq >= min_sample and c.get("delta") is not None]
+    if not trustworthy:
+        return {**base, "verdict": "no_actionable_direction", "reason": "no_trustworthy_combos"}
+
+    m = len(combos)
+    effective_min = actionable_min_pnl * (1 + value_penalty_k * m)
+    ranked = sorted(trustworthy, key=lambda c: c["delta"]["net_pnl"], reverse=True)
+    best = ranked[0]
+    if best["delta"]["net_pnl"] <= effective_min:
+        return {**base, "verdict": "no_actionable_direction", "reason": "below_threshold",
+                "effective_min_pnl": effective_min}
+
+    # 推导 knob_grids（每轴取值集合，保序）若未显式传
+    if knob_grids is None:
+        knob_grids = {}
+        for c in combos:
+            for k, v in c["combo"].items():
+                knob_grids.setdefault(k, [])
+                if v not in knob_grids[k]:
+                    knob_grids[k].append(v)
+        for k in knob_grids:
+            knob_grids[k].sort()
+
+    bp = best["delta"]["net_pnl"]
+    neighbor_combos = _axis_neighbors(best["combo"], knob_grids)
+    nb_deltas = [c["delta"]["net_pnl"] for c in trustworthy
+                 if c["combo"] in neighbor_combos]
+    coherent = any(d >= bp * coherence_frac for d in nb_deltas) if nb_deltas else False
+    if not coherent:
+        return {**base, "verdict": "no_actionable_direction", "reason": "isolated_spike",
+                "isolated_spike": True}
+    return {**base, "verdict": "recommend", "recommended_combo": best["combo"],
+            "delta_net_pnl": bp,
+            "confidence": _confidence_nd(best, grid_result.get("baseline_fidelity"), seq),
+            "baseline_fidelity": grid_result.get("baseline_fidelity"),
+            "divergence_ratio": best.get("divergence_ratio"), "sample": seq}

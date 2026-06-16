@@ -148,3 +148,49 @@ def test_sweep_grid_untrustworthy_short_circuit(monkeypatch):
                                      baseline_config={}, fidelity_threshold=0.8))
     assert res["untrustworthy"] is True
     assert res["combos"] == []
+
+
+from utils.joint_knob_sweep import recommend_direction_nd
+
+
+def test_recommend_coherent_neighbor():
+    # best=(1.3,40) net=10；轴邻居 (1.5,40) net=6 同向 → 连贯 → recommend
+    gr = _gr([({"rr_floor_default": 1.5, "min_confidence": 60}, 0.0),
+              ({"rr_floor_default": 1.3, "min_confidence": 60}, 5.0),
+              ({"rr_floor_default": 1.5, "min_confidence": 40}, 6.0),
+              ({"rr_floor_default": 1.3, "min_confidence": 40}, 10.0)])
+    out = recommend_direction_nd(gr, BV, actionable_min_pnl=1.0, value_penalty_k=0.0)
+    assert out["verdict"] == "recommend"
+    assert out["recommended_combo"] == {"rr_floor_default": 1.3, "min_confidence": 40}
+
+
+def test_recommend_isolated_spike():
+    # best=(1.3,40) net=100；轴邻居都 ≈0 → 孤立尖刺 → 拒答
+    gr = _gr([({"rr_floor_default": 1.5, "min_confidence": 60}, 0.0),
+              ({"rr_floor_default": 1.3, "min_confidence": 60}, 0.5),
+              ({"rr_floor_default": 1.5, "min_confidence": 40}, 0.5),
+              ({"rr_floor_default": 1.3, "min_confidence": 40}, 100.0)])
+    out = recommend_direction_nd(gr, BV, actionable_min_pnl=1.0, value_penalty_k=0.0)
+    assert out["verdict"] == "no_actionable_direction"
+    assert out.get("isolated_spike") is True
+
+
+def test_recommend_below_threshold():
+    # 全部 delta 都很小 → below_threshold
+    gr = _gr([({"rr_floor_default": 1.5, "min_confidence": 60}, 0.0),
+              ({"rr_floor_default": 1.3, "min_confidence": 60}, 0.1),
+              ({"rr_floor_default": 1.5, "min_confidence": 40}, 0.1),
+              ({"rr_floor_default": 1.3, "min_confidence": 40}, 0.2)])
+    out = recommend_direction_nd(gr, BV, actionable_min_pnl=1.0, value_penalty_k=0.0)
+    assert out["verdict"] == "no_actionable_direction"
+    assert out["reason"] == "below_threshold"
+
+
+def test_recommend_reports_all_combos():
+    gr = _gr([({"rr_floor_default": 1.5, "min_confidence": 60}, 0.0),
+              ({"rr_floor_default": 1.3, "min_confidence": 60}, 5.0),
+              ({"rr_floor_default": 1.5, "min_confidence": 40}, 6.0),
+              ({"rr_floor_default": 1.3, "min_confidence": 40}, 10.0)])
+    out = recommend_direction_nd(gr, BV, actionable_min_pnl=1.0, value_penalty_k=0.0)
+    assert "all_combos" in out and len(out["all_combos"]) == 4
+    assert "fidelity_note" in out
