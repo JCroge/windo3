@@ -7,6 +7,45 @@ from utils.sequential_perturbation import (run_arm, _gate_of_recorded,
                                            _summarize_arm, _FIDELITY_NOTE)
 
 
+async def sweep_grid(records, knob_grids, price_loader, *, baseline_config=None,
+                     fidelity_threshold=0.8, initial_equity=1000.0, max_slots=3,
+                     daily_pnl_hard_stop=-50.0, consecutive_loss_limit=3):
+    """多旋钮笛卡尔积扫描。baseline 臂只跑一次复用（fidelity 是 baseline 属性）。
+    每个组合作为多 key perturbed_config 跑一个 perturbed 臂。"""
+    recs = sorted(records, key=lambda r: r.get("timestamp", 0))
+    kw = dict(price_loader=price_loader, initial_equity=initial_equity, max_slots=max_slots,
+              daily_pnl_hard_stop=daily_pnl_hard_stop, consecutive_loss_limit=consecutive_loss_limit)
+    base_cfg = dict(baseline_config or {})
+
+    base = await run_arm(recs, base_cfg, **kw)
+    agree = sum(1 for d, r in zip(base["decisions"], recs)
+                if d["gate"] == _gate_of_recorded(r))
+    fidelity = agree / len(recs) if recs else 0.0
+    out_meta = {"baseline_fidelity": fidelity, "sequence_len": len(recs),
+                "fidelity_note": _FIDELITY_NOTE,
+                "baseline_cf_open_count": base["cf_open_count"]}
+    if fidelity < fidelity_threshold:
+        return {"combos": [], "untrustworthy": True, **out_meta}
+
+    base_summary = _summarize_arm(base, initial_equity)
+    knob_keys = list(knob_grids.keys())
+    combos = []
+    for values in itertools.product(*[knob_grids[k] for k in knob_keys]):
+        perturbed_config = dict(zip(knob_keys, values))
+        pert = await run_arm(recs, perturbed_config, **kw)
+        p_summary = _summarize_arm(pert, initial_equity)
+        delta = {"net_pnl": p_summary["net_pnl"] - base_summary["net_pnl"],
+                 "win_rate": p_summary["win_rate"] - base_summary["win_rate"],
+                 "max_drawdown": p_summary["max_drawdown"] - base_summary["max_drawdown"]}
+        div = sum(1 for b, p in zip(base["decisions"], pert["decisions"])
+                  if b["gate"] != p["gate"])
+        combos.append({"combo": perturbed_config, "delta": delta,
+                       "divergence_ratio": div / len(recs) if recs else 0.0,
+                       "perturbed_cf_open_count": pert["cf_open_count"]})
+    return {"combos": combos, "untrustworthy": False,
+            "baseline_summary": base_summary, **out_meta}
+
+
 def _non_base_axes(combo, base_values):
     """combo 中取值偏离 base 的旋钮 key 列表。"""
     return [k for k, v in combo.items() if base_values.get(k) != v]

@@ -89,3 +89,62 @@ def test_higher_order_skipped():
     out = compute_interactions(gr, bv3, actionable_min_pnl=1.0, value_penalty_k=0.0)
     inter = next(i for i in out["interactions"] if i["combo"] == {"a": 1, "b": 1, "c": 1})
     assert inter["classification"] == "skipped:higher_order"
+
+
+import asyncio
+import utils.joint_knob_sweep as jks
+
+
+class _FakeArm:
+    """run_arm 返回结构的最小桩：按 config 决定 final_equity。"""
+    @staticmethod
+    def make(config):
+        # baseline (空 config / 全 base) → equity 1000；每放宽一个旋钮 +5
+        bump = 5.0 * len(config) if config else 0.0
+        n = 4
+        return {"final_equity": 1000.0 + bump, "realized": [1.0] * n,
+                "equity_curve": [1000.0, 1000.0 + bump],
+                "decisions": [{"gate": "accept" if config else "rr_below_floor"} for _ in range(n)],
+                "cf_open_count": len(config)}
+
+
+def test_sweep_grid_cartesian_and_baseline_reuse(monkeypatch):
+    calls = []
+
+    async def fake_run_arm(recs, config, price_loader, **kw):
+        calls.append(dict(config))
+        return _FakeArm.make(config)
+
+    monkeypatch.setattr(jks, "run_arm", fake_run_arm)
+    # _gate_of_recorded 桩：录制全 reject
+    monkeypatch.setattr(jks, "_gate_of_recorded", lambda r: "rr_below_floor")
+
+    recs = [{"timestamp": i, "symbol": "X"} for i in range(4)]
+    grids = {"rr_floor_default": [1.5, 1.3], "min_confidence": [60, 40]}
+    res = asyncio.run(jks.sweep_grid(recs, grids, price_loader=None,
+                                     baseline_config={}, fidelity_threshold=0.0))
+    # 笛卡尔积 = 2×2 = 4 组合
+    assert len(res["combos"]) == 4
+    # baseline 臂只跑 1 次：calls 中空 config（baseline）恰好 1 个
+    baseline_calls = [c for c in calls if not c]
+    assert len(baseline_calls) == 1
+    # 总调用 = 1 baseline + 4 perturbed
+    assert len(calls) == 5
+    # 多 key perturbed_config 正确透传
+    assert {"rr_floor_default": 1.3, "min_confidence": 40} in calls
+    assert res["untrustworthy"] is False
+
+
+def test_sweep_grid_untrustworthy_short_circuit(monkeypatch):
+    async def fake_run_arm(recs, config, price_loader, **kw):
+        return _FakeArm.make(config)
+    monkeypatch.setattr(jks, "run_arm", fake_run_arm)
+    # 录制 gate 与 baseline 回放永不一致 → fidelity = 0
+    monkeypatch.setattr(jks, "_gate_of_recorded", lambda r: "NEVER_MATCH")
+
+    recs = [{"timestamp": i, "symbol": "X"} for i in range(4)]
+    grids = {"rr_floor_default": [1.5, 1.3], "min_confidence": [60, 40]}
+    res = asyncio.run(jks.sweep_grid(recs, grids, price_loader=None,
+                                     baseline_config={}, fidelity_threshold=0.8))
+    assert res["untrustworthy"] is True
+    assert res["combos"] == []
