@@ -224,3 +224,46 @@ def test_inject_cf_state_missing_symbol_state_safe():
     rec = {"symbol": "X-USDT", "state_snapshot_before_decision": {"_regime_manager": {}}}
     out = _inject_cf_state(rec, cf)
     assert out["state_snapshot_before_decision"]["_symbol_state"] == {}
+
+
+def test_sequential_baseline_fidelity_restored():
+    import os, json, asyncio, sqlite3, pytest
+    tape = os.path.join(os.path.dirname(__file__), "..", "data", "decision_replay_tape.jsonl")
+    klines = os.path.join(os.path.dirname(__file__), "..", "data", "klines_1s.db")
+    if not os.path.exists(tape) or not os.path.exists(klines):
+        pytest.skip("no live tape/klines")
+    from utils.sequential_perturbation import run_arm, _gate_of_recorded
+    recs = []
+    for line in open(tape):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if r.get("schema_version") not in ("decision_replay_record.v2", "decision_replay_record.v3"):
+            continue
+        if not (r.get("tech_analysis") or {}):
+            continue
+        recs.append(r)
+    if len(recs) < 50:
+        pytest.skip("insufficient tape")
+    recs.sort(key=lambda r: r.get("timestamp", 0))
+
+    def loader(sym, ca, win):
+        lo, hi = int(ca * 1000), int((ca + win) * 1000)
+        c = sqlite3.connect(klines)
+        try:
+            rows = c.execute("SELECT open_time,high,low,close FROM klines WHERE symbol=? "
+                             "AND open_time>=? AND open_time<=? ORDER BY open_time", (sym, lo, hi)).fetchall()
+        except Exception:
+            return []
+        finally:
+            c.close()
+        return [{"open_time": t, "high": h, "low": l, "close": cl} for t, h, l, cl in rows]
+
+    arm = asyncio.run(run_arm(recs, {}, loader))
+    agree = sum(1 for d, r in zip(arm["decisions"], recs) if d["gate"] == _gate_of_recorded(r))
+    fid = agree / len(recs)
+    assert fid >= 0.85, f"sequential baseline fidelity {fid:.3f} < 0.85 (expect ~0.91, was 0.798)"
