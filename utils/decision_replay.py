@@ -14,6 +14,7 @@ observability-only —— 严禁交易决策路径 import/调用本模块。
 from unittest import mock
 
 from utils.archetype_cooldown import ArchetypeCooldown
+from utils.config_loader import DEFAULTS as _PROD_DEFAULTS
 
 
 def _restore_regime(snap, config=None):
@@ -66,6 +67,17 @@ def restore_state(judge, snap, symbol=None):
                                             config=getattr(judge, "config", {}))
 
 
+def production_base_config():
+    """live 生产决策 config 基线(config_loader 生产默认)。
+
+    回放/CF-sim baseline 须以此为基线而非空 config —— 空 config 会让
+    _install_config_flags 把 Phase-2 等 flag 默认到与生产相反的值，致
+    confidence/gate 路径系统性发散(baseline_fidelity 虚低)。observability-only:
+    只读 config_loader 静态默认，不读任何 live 运行态。
+    """
+    return dict(_PROD_DEFAULTS)
+
+
 async def replay_decision(record, config=None):
     """还原状态 + stub 3 个外部 await + 跑真实 _make_decision，捕获发布的决策。
 
@@ -78,10 +90,14 @@ async def replay_decision(record, config=None):
     symbol = record["symbol"]
     snap = record["state_snapshot_before_decision"]
 
+    # 有效 config = 生产基线(record 录制的 config_snapshot 优先, 缺则 config_loader 生产默认)
+    #              + 传入 config 作为扰动覆盖(只覆盖目标旋钮)。
+    base = {**production_base_config(), **(record.get("config_snapshot") or {})}
+    effective = {**base, **(config or {})}
     judge = MultiJudge.__new__(MultiJudge)
-    judge.config = config or {}
+    judge.config = effective
     judge.logger = mock.MagicMock()
-    _install_config_flags(judge, config or {})
+    _install_config_flags(judge, effective)
     restore_state(judge, snap, symbol=symbol)
 
     captured = []

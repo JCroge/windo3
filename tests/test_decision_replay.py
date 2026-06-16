@@ -2,7 +2,18 @@ import asyncio
 
 import pytest
 
-from utils.decision_replay import restore_state, replay_decision, compare_decision
+from utils.decision_replay import (
+    restore_state, replay_decision, compare_decision, production_base_config,
+)
+
+
+def test_production_base_config_has_phase2_true():
+    cfg = production_base_config()
+    assert cfg["phase2_signal_confidence_split_enabled"] is True
+    assert cfg["phase2_momentum_probe_long_enabled"] is True
+    assert cfg["phase2_trend_saturation_enabled"] is True
+    assert cfg["phase2_bucketed_ev_enabled"] is True
+    assert cfg["rr_floor_default"] == 1.50
 
 
 @pytest.fixture(autouse=True)
