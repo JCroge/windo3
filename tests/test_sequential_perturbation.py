@@ -267,3 +267,24 @@ def test_sequential_baseline_fidelity_restored():
     agree = sum(1 for d, r in zip(arm["decisions"], recs) if d["gate"] == _gate_of_recorded(r))
     fid = agree / len(recs)
     assert fid >= 0.85, f"sequential baseline fidelity {fid:.3f} < 0.85 (expect ~0.91, was 0.798)"
+
+
+def test_summarize_arm_extracted_helper():
+    from utils.sequential_perturbation import _summarize_arm
+    arm = {"final_equity": 1012.5, "realized": [5.0, -2.0, 3.0],
+           "equity_curve": [1000.0, 1005.0, 1003.0, 1012.5]}
+    s = _summarize_arm(arm, 1000.0)
+    assert s["net_pnl"] == 12.5
+    assert s["trades"] == 3
+    assert abs(s["win_rate"] - 2 / 3) < 1e-9
+    assert s["max_drawdown"] == 2.0
+
+
+def test_summarize_arm_empty_realized():
+    from utils.sequential_perturbation import _summarize_arm
+    arm = {"final_equity": 1000.0, "realized": [], "equity_curve": [1000.0]}
+    s = _summarize_arm(arm, 1000.0)
+    assert s["net_pnl"] == 0.0
+    assert s["trades"] == 0
+    assert s["win_rate"] == 0.0
+    assert s["max_drawdown"] == 0.0
