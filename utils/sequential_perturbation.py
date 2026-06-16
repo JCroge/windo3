@@ -14,6 +14,10 @@ def _inject_cf_state(record, cf):
     （绝不 per-record 注入 reality 当时的演化计数——那会人为抬高 fidelity 并掩盖级联。）"""
     recorded_snap = record.get("state_snapshot_before_decision") or {}
     snap = cf.to_snapshot(regime_snapshot=recorded_snap.get("_regime_manager"))
+    # 保留录制的 per-symbol 决策输入上下文(trend_streak/last_tech 等市场状态——CF 无法重建)，
+    # 镜像上面的 _regime_manager 透传；空 {} 会让 Judge 信号强度路径误判"信号不足"→ hold。
+    # 还原的是市场决策输入(非 reality 的 EV/胜率战绩累计)，不触 L3b 反模式。
+    snap["_symbol_state"] = recorded_snap.get("_symbol_state") or {}
     new_rec = dict(record)
     new_rec["state_snapshot_before_decision"] = snap
     new_rec["replayable"] = True
