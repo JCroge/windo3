@@ -2,6 +2,7 @@
 change: fix-cf-lab-ev-coldstart-deadlock
 design-doc: docs/superpowers/specs/2026-06-16-fix-cf-lab-ev-coldstart-deadlock-design.md
 base-ref: 561cf11da2fea6b9597e609cdd72106be42209c0
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 # CF Lab EV 冷启动死锁修复 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 561cf11da2fea6b9597e609cdd72106be42209c0
 
 **Tech Stack:** Python 3.9, pytest, asyncio。涉及 `utils/cf_portfolio.py`、`utils/sequential_perturbation.py`、`cf_direction_recommendation.py`。
 
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 ## File Structure
@@ -23,6 +25,7 @@ base-ref: 561cf11da2fea6b9597e609cdd72106be42209c0
 - `cf_direction_recommendation.py` — `load_records` 按 v2 + tech 非空过滤。
 - `tests/test_cf_portfolio.py` / `tests/test_sequential_perturbation.py` — 新增测试。
 
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 ### Task 1: CF rolling 胜率窗口（cf_portfolio.py）
@@ -144,6 +147,7 @@ git add utils/cf_portfolio.py tests/test_cf_portfolio.py
 git commit -m "feat(cf): CF rolling win-rate window (live Reviewer semantics) for EV gate fidelity"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 ### Task 2: `_seed_cf_prior` 暖启动播种窗口（sequential_perturbation.py）
@@ -220,6 +224,7 @@ git add utils/sequential_perturbation.py tests/test_sequential_perturbation.py
 git commit -m "feat(cf): warm-seed CF rolling window from recorded rate (break EV cold-start deadlock)"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 ### Task 3: gate-level baseline_fidelity / divergence（sequential_perturbation.py）
@@ -320,6 +325,7 @@ git add utils/sequential_perturbation.py tests/test_sequential_perturbation.py
 git commit -m "feat(cf): gate-level baseline_fidelity/divergence (changed-gate = non-reproduction)"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 ### Task 4: 驱动 v2 过滤（cf_direction_recommendation.py）
@@ -405,6 +411,7 @@ git add cf_direction_recommendation.py tests/test_cf_direction_driver.py
 git commit -m "fix(cf): driver filters tape to v2 + non-empty tech (no stale replayable trust)"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 ### Task 5: 端到端坐实 + 红线 + 全量回归
@@ -496,6 +503,7 @@ git add tests/test_sequential_perturbation.py
 git commit -m "test(cf): end-to-end deadlock-broken + red-line + full regression"
 ```
 
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
 ---
 
 ## Self-Review

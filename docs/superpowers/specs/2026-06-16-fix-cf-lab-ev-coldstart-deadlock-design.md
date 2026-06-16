@@ -2,6 +2,8 @@
 comet_change: fix-cf-lab-ev-coldstart-deadlock
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-16-fix-cf-lab-ev-coldstart-deadlock
+status: final
 ---
 
 # Design Doc — fix-cf-lab-ev-coldstart-deadlock
