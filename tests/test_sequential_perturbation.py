@@ -67,3 +67,124 @@ def test_delta_report_low_fidelity_untrustworthy():
                       price_loader=_price_loader_tp, fidelity_threshold=0.8))
     assert rep["metadata"]["untrustworthy"] is True
     assert rep.get("delta") is None
+
+
+from utils.cf_portfolio import CounterfactualPortfolio
+from utils.sequential_perturbation import _seed_cf_prior
+from utils.sequential_perturbation import _gate_of_recorded, _gate_of_replayed
+
+
+def test_gate_extraction_prefix():
+    rec = {"decision": "reject",
+           "trade_decision_output": {"reject_reason": "rr_below_floor:1.37<1.50"}}
+    assert _gate_of_recorded(rec) == "rr_below_floor"
+    rec_acc = {"decision": "accept", "trade_decision_output": {}}
+    assert _gate_of_recorded(rec_acc) == "accept"
+    assert _gate_of_replayed({"action": "open_long"}) == "accept"
+    d = {"action": "hold", "attribution": {"blocked_by": "ev_gate:EV=-0.41"}}
+    assert _gate_of_replayed(d) == "ev_gate"
+
+
+def test_changed_gate_counts_as_non_reproduction():
+    recorded = {"action": "hold", "attribution": {"blocked_by": "ev_gate:x"}}
+    rec = {"decision": "reject",
+           "trade_decision_output": {"reject_reason": "rr_below_floor:1.37<1.50"}}
+    assert _gate_of_replayed(recorded) != _gate_of_recorded(rec)
+
+
+def test_seed_warms_rolling_window_from_recorded_rate():
+    cf = CounterfactualPortfolio(initial_equity=1000.0, rolling_window_size=20)
+    rec = {"state_snapshot_before_decision": {
+        "_recent_win_rate": 0.45, "_recent_wins": 9, "_total_completed_trades": 52,
+        "_archetype_cooldown": {"_history": {}, "_cooldown_until": {}}}}
+    _seed_cf_prior(cf, rec)
+    assert len(cf._cf_win_window) == 20
+    assert cf.to_snapshot()["_recent_win_rate"] == 0.45
+
+
+def test_seed_window_evicted_by_cf_results_after_full_turnover():
+    cf = CounterfactualPortfolio(initial_equity=1000.0, rolling_window_size=20)
+    rec = {"state_snapshot_before_decision": {
+        "_recent_win_rate": 0.45, "_recent_wins": 9, "_total_completed_trades": 52,
+        "_archetype_cooldown": {"_history": {}, "_cooldown_until": {}}}}
+    _seed_cf_prior(cf, rec)
+    for _ in range(20):
+        cf._open["X-USDT"] = {"resolved_ts": 1.0, "net_usdt": 1.0,
+                              "archetype": "t", "created_at": 0.0}
+        cf.resolve_due(2.0)
+    assert cf.to_snapshot()["_recent_win_rate"] == 1.0
+
+
+import json
+import os as _os
+from utils.sequential_perturbation import build_delta_report as _build_delta_report
+
+_TAPE = _os.path.join(_os.path.dirname(__file__), "..", "data", "decision_replay_tape.jsonl")
+_KLINES = _os.path.join(_os.path.dirname(__file__), "..", "data", "klines_1s.db")
+
+
+def _load_v2_rr(limit=None):
+    if not _os.path.exists(_TAPE):
+        pytest.skip("no live tape available")
+    out = []
+    for line in open(_TAPE):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if r.get("schema_version") != "decision_replay_record.v2":
+            continue
+        if not (r.get("tech_analysis") or {}):
+            continue
+        out.append(r)
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def _e2e_loader(symbol, created_at, window_sec):
+    import sqlite3
+    if not _os.path.exists(_KLINES):
+        return []
+    lo, hi = int(created_at * 1000), int((created_at + window_sec) * 1000)
+    conn = sqlite3.connect(_KLINES)
+    try:
+        rows = conn.execute(
+            "SELECT open_time,high,low,close FROM klines WHERE symbol=? "
+            "AND open_time>=? AND open_time<=? ORDER BY open_time",
+            (symbol, lo, hi)).fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+    return [{"open_time": t, "high": h, "low": l, "close": c} for t, h, l, c in rows]
+
+
+def test_relaxing_floor_breaks_deadlock_perturbed_opens():
+    # End-to-end on the real live tape: prove the EV cold-start deadlock is broken.
+    # Relaxing ONLY `rr_floor_default` (and leaving the EV gate fully intact) is the
+    # DISCRIMINATING test. Pre-fix, the CF EV gate cold-started at the 40% fallback win
+    # rate, so EV<floor blocked every perturbed open no matter how far R:R was relaxed
+    # -> perturbed_cf_open_count == 0 and the assertion fails. Post-fix, the sequence is
+    # warm-seeded from the recorded prior (0.45 rolling rate via `_seed_cf_prior`), so
+    # once the R:R floor is relaxed the +EV setups clear the EV gate and open CF
+    # positions -> perturbed_cf_open_count > 0 and the assertion passes.
+    #
+    # Do NOT disable the EV gate here: setting ev_min_threshold=-999 makes the test pass
+    # even on UNFIXED code (cold p_win becomes irrelevant when the threshold is -999),
+    # so it would no longer validate the EV cold-start fix at all. The floor-only
+    # perturbation is exactly what couples the assertion to the seeded warm prior.
+    #
+    # Replays the FULL set of v2-with-tech records (~630) x 2 arms, so this takes
+    # 1-2 minutes; the baseline window contains no opens (baseline_cf_open_count == 0).
+    recs = _load_v2_rr()
+    if not recs:
+        pytest.skip("no v2 tape records")
+    perturbed = {"rr_floor_default": 0.3}
+    rep = asyncio.run(_build_delta_report(
+        recs, {}, perturbed, _e2e_loader, fidelity_threshold=0.0))
+    print("perturbed_cf_open_count=", rep["metadata"]["perturbed_cf_open_count"])
+    assert rep["metadata"]["perturbed_cf_open_count"] > 0

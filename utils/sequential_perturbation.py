@@ -27,6 +27,14 @@ def _seed_cf_prior(cf, first_record):
     snap = (first_record or {}).get("state_snapshot_before_decision") or {}
     cf._recent_wins = snap.get("_recent_wins", 0) or 0
     cf._total_completed_trades = snap.get("_total_completed_trades", 0) or 0
+    # 用录制滚动胜率暖启动 CF 窗口(= 磁带窗口前真实滚动率), 破 EV gate 冷启动死锁;
+    # CF 自身结算结果之后 FIFO 逐步挤出合成种子。
+    rate = snap.get("_recent_win_rate")
+    cf._cf_win_window.clear()
+    if rate is not None:
+        n = cf.rolling_window_size
+        wins = round(float(rate) * n)
+        cf._cf_win_window.extend([True] * wins + [False] * (n - wins))
     ac = snap.get("_archetype_cooldown") or {}
     # 原地更新（保留 ArchetypeCooldown._history 的 defaultdict(list) 类型，
     # 否则 record_result 的 self._history[k].append 会 KeyError）
@@ -56,7 +64,8 @@ async def run_arm(records, config, price_loader, *, initial_equity=1000.0, max_s
         else:
             decision = None
         action = (decision or {}).get("action", "hold")
-        decisions.append({"timestamp": ts, "symbol": rec.get("symbol"), "action": action})
+        decisions.append({"timestamp": ts, "symbol": rec.get("symbol"),
+                          "action": action, "gate": _gate_of_replayed(decision)})
         if decision:
             funding = (rec.get("state_snapshot_before_decision") or {}).get("_funding_rate", 0.0)
             opened = cf.apply_decision(decision, created_at=ts, funding_rate=funding, regime=None)
@@ -81,6 +90,27 @@ def _decision_class(action):
     return "accept" if action in ("open_long", "open_short") else "reject"
 
 
+def _gate_of_replayed(decision):
+    """回放决策触达的 gate: 开仓=accept; 否则取 attribution.blocked_by 冒号前前缀。"""
+    action = (decision or {}).get("action")
+    if action in ("open_long", "open_short"):
+        return "accept"
+    blocked = ((decision or {}).get("attribution") or {}).get("blocked_by")
+    if blocked:
+        return str(blocked).split(":")[0]
+    return "hold_other"
+
+
+def _gate_of_recorded(record):
+    """录制决策触达的 gate: accept; 否则取 reject_reason 冒号前前缀。"""
+    if (record or {}).get("decision") == "accept":
+        return "accept"
+    rr = ((record or {}).get("trade_decision_output") or {}).get("reject_reason")
+    if rr:
+        return str(rr).split(":")[0]
+    return "hold_other"
+
+
 _FIDELITY_NOTE = ("退出仅 SL/TP/24h（漏 trailing/partial/risk-close ~10-20%），误差沿序列累积；"
                   "两臂同估算 → 系统性偏差在 delta 抵消，结论以 delta 为主非绝对值。")
 
@@ -93,7 +123,7 @@ async def build_delta_report(records, baseline_config, perturbed_config, price_l
               daily_pnl_hard_stop=daily_pnl_hard_stop, consecutive_loss_limit=consecutive_loss_limit)
     base = await run_arm(recs, baseline_config, **kw)
     agree = sum(1 for d, r in zip(base["decisions"], recs)
-                if _decision_class(d["action"]) == r.get("decision"))
+                if d["gate"] == _gate_of_recorded(r))
     fidelity = agree / len(recs) if recs else 0.0
     meta = {"perturbed_knobs": dict(perturbed_config or {}), "baseline_fidelity": fidelity,
             "sequence_len": len(recs), "fidelity_note": _FIDELITY_NOTE}
@@ -102,7 +132,7 @@ async def build_delta_report(records, baseline_config, perturbed_config, price_l
         return {"baseline": None, "perturbed": None, "delta": None, "metadata": meta}
     meta["untrustworthy"] = False
     pert = await run_arm(recs, perturbed_config, **kw)
-    div = sum(1 for b, p in zip(base["decisions"], pert["decisions"]) if b["action"] != p["action"])
+    div = sum(1 for b, p in zip(base["decisions"], pert["decisions"]) if b["gate"] != p["gate"])
     meta["divergence_ratio"] = div / len(recs) if recs else 0.0
     meta["baseline_cf_open_count"] = base["cf_open_count"]
     meta["perturbed_cf_open_count"] = pert["cf_open_count"]
