@@ -7,7 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "decision_replay_record.v2"
+SCHEMA_VERSION = "decision_replay_record.v3"
 
 
 def _jsonable(v):
@@ -23,10 +23,11 @@ def _jsonable(v):
 
 def build_bundle(*, symbol, decision, request_id, tech_analysis, price_at_decision,
                  regime_state, llm_output, llm_audit_ref, trade_decision_output,
-                 state_snapshot=None):
+                 state_snapshot=None, config_snapshot=None):
     """构建一条 decision_replay_record。llm_output 内联（self-contained），
     llm_audit_ref 仅 best-effort 指针。state_snapshot 含决策前跨决策可变状态，
-    存在时 replayable=True。"""
+    存在时 replayable=True。config_snapshot 记录决策时已解析的生产 config，
+    使后续回放即便线上 config 漂移仍保真（write-only observability）。"""
     return {
         "schema_version": SCHEMA_VERSION,
         "request_id": request_id,
@@ -40,6 +41,7 @@ def build_bundle(*, symbol, decision, request_id, tech_analysis, price_at_decisi
         "llm_audit_ref": llm_audit_ref,
         "trade_decision_output": trade_decision_output,
         "state_snapshot_before_decision": _jsonable(state_snapshot) if state_snapshot is not None else None,
+        "config_snapshot": config_snapshot,
         "replayable": state_snapshot is not None and bool(tech_analysis),
     }
 

@@ -19,7 +19,7 @@ def test_accept_record_written(tmp_path):
     assert rows[0]["decision"] == "accept"
     assert rows[0]["symbol"] == "BTC-USDT"
     assert rows[0]["llm_output_inline"]["action"] == "open_long"
-    assert rows[0]["schema_version"] == "decision_replay_record.v2"
+    assert rows[0]["schema_version"] == "decision_replay_record.v3"
 
 
 def test_reject_record_written(tmp_path):
@@ -121,5 +121,26 @@ def test_missing_snapshot_not_replayable():
     assert b["replayable"] is False
 
 
-def test_schema_version_is_v2():
-    assert SCHEMA_VERSION == "decision_replay_record.v2"
+def test_schema_version_is_v3():
+    assert SCHEMA_VERSION == "decision_replay_record.v3"
+
+
+def test_build_bundle_records_config_snapshot():
+    b = build_bundle(
+        symbol="X-USDT", decision="reject", request_id=None,
+        tech_analysis={"rule_signal": {}}, price_at_decision=1.0,
+        regime_state="mixed", llm_output=None, llm_audit_ref=None,
+        trade_decision_output={}, state_snapshot={"_recent_wins": 1},
+        config_snapshot={"rr_floor_default": 1.5, "phase2_bucketed_ev_enabled": True},
+    )
+    assert b["config_snapshot"] == {"rr_floor_default": 1.5, "phase2_bucketed_ev_enabled": True}
+    assert b["schema_version"] == "decision_replay_record.v3"
+
+
+def test_build_bundle_config_snapshot_optional():
+    b = build_bundle(
+        symbol="X-USDT", decision="reject", request_id=None,
+        tech_analysis={}, price_at_decision=1.0, regime_state="mixed",
+        llm_output=None, llm_audit_ref=None, trade_decision_output={},
+    )
+    assert b.get("config_snapshot") is None

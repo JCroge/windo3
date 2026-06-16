@@ -2004,6 +2004,7 @@ class MultiJudge(BaseAgent):
                     "attribution": decision.get("attribution"),
                 },
                 state_snapshot=self._capture_state_snapshot(symbol),
+                config_snapshot=dict(getattr(self, "config", {}) or {}),
             ))
 
         await self.publish("trade_decision", decision, symbol=symbol)
@@ -3055,6 +3056,7 @@ class MultiJudge(BaseAgent):
                 llm_output=getattr(self, "_symbol_llm_cache", {}).get(symbol), llm_audit_ref=None,
                 trade_decision_output={"reject_reason": reason, "attribution": attr},
                 state_snapshot=self._capture_state_snapshot(symbol),
+                config_snapshot=dict(getattr(self, "config", {}) or {}),
             ))
 
     def _rejection_attribution(self, action: str, plan: dict, blocked_by: str,

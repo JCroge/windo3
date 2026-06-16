@@ -1,0 +1,17 @@
+{
+  "change": "fix-cf-lab-replay-config-parity",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "79470090e2eff5069353ef3804bb54bc46384b4f58c693608f4a97371bd5eddd",
+  "files": [
+    { "path": "openspec/changes/fix-cf-lab-replay-config-parity/proposal.md", "sha256": "0494767b1d2ca8d5c081c48d625ff158d184905a741e38cd2b0de59b58e3a3ab" },
+    { "path": "openspec/changes/fix-cf-lab-replay-config-parity/design.md", "sha256": "33e42ee0f828e6e3b561d55271e412c42424e3db9f7b26b5e5f334185a799cd1" },
+    { "path": "openspec/changes/fix-cf-lab-replay-config-parity/tasks.md", "sha256": "0a3e65d08af0470c222fe7ae13d2fe211441dee332af06cc2c8f8d887f8bfff9" },
+    { "path": "openspec/changes/fix-cf-lab-replay-config-parity/specs/decision-replay-tape/spec.md", "sha256": "00ed47a6a261299c5a57309839797a5fbbf7df1beec7b9ec8758baf6bafc3460" },
+    { "path": "openspec/changes/fix-cf-lab-replay-config-parity/specs/deterministic-replay-harness/spec.md", "sha256": "23938e83a3f01644dab9e12065f6fb3e1187b3ee62809f7ee5b10e7291aa8c42" },
+    { "path": "openspec/changes/fix-cf-lab-replay-config-parity/specs/replay-report-driver/spec.md", "sha256": "ec9ab0db2d0b38617cf41f8c8ebe7ec8c500b44357d296de18d38f452db22433" },
+    { "path": "openspec/changes/fix-cf-lab-replay-config-parity/specs/sequential-perturbation-driver/spec.md", "sha256": "ddeeb1ad480ed2b8009d3c04676012ab78b858018587d422eb51d7b2c322bc18" }
+  ]
+}

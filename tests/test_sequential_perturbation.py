@@ -188,3 +188,13 @@ def test_relaxing_floor_breaks_deadlock_perturbed_opens():
         recs, {}, perturbed, _e2e_loader, fidelity_threshold=0.0))
     print("perturbed_cf_open_count=", rep["metadata"]["perturbed_cf_open_count"])
     assert rep["metadata"]["perturbed_cf_open_count"] > 0
+
+
+def test_perturbation_overlays_on_production_base_only_target():
+    from utils.decision_replay import production_base_config
+    base = production_base_config()
+    perturb = {"rr_floor_default": 0.3}
+    effective = {**base, **perturb}
+    assert effective["rr_floor_default"] == 0.3
+    assert effective["phase2_signal_confidence_split_enabled"] is True
+    assert effective["min_confidence"] == base["min_confidence"]

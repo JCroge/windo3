@@ -2,7 +2,18 @@ import asyncio
 
 import pytest
 
-from utils.decision_replay import restore_state, replay_decision, compare_decision
+from utils.decision_replay import (
+    restore_state, replay_decision, compare_decision, production_base_config,
+)
+
+
+def test_production_base_config_has_phase2_true():
+    cfg = production_base_config()
+    assert cfg["phase2_signal_confidence_split_enabled"] is True
+    assert cfg["phase2_momentum_probe_long_enabled"] is True
+    assert cfg["phase2_trend_saturation_enabled"] is True
+    assert cfg["phase2_bucketed_ev_enabled"] is True
+    assert cfg["rr_floor_default"] == 1.50
 
 
 @pytest.fixture(autouse=True)
@@ -144,3 +155,49 @@ def test_replay_accepted_open_is_deterministic():
     d2 = asyncio.run(replay_decision(rec, config={}))
     assert d1 is not None and d2 is not None
     assert compare_decision(d1, d2)["match"] is True
+
+
+# --- End-to-end fidelity on the real live tape (skip-if-absent) ---------------
+
+import json
+import os
+from utils.sequential_perturbation import _gate_of_recorded, _gate_of_replayed
+
+_TAPE = os.path.join(os.path.dirname(__file__), "..", "data", "decision_replay_tape.jsonl")
+
+
+def _load_v2_v3():
+    if not os.path.exists(_TAPE):
+        pytest.skip("no live tape")
+    out = []
+    for line in open(_TAPE):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if r.get("schema_version") not in ("decision_replay_record.v2", "decision_replay_record.v3"):
+            continue
+        if not (r.get("tech_analysis") or {}):
+            continue
+        out.append(r)
+    return out
+
+
+def test_production_baseline_restores_fidelity():
+    recs = _load_v2_v3()
+    if len(recs) < 50:
+        pytest.skip("insufficient tape")
+
+    async def run():
+        agree = 0
+        for r in recs:
+            d = await replay_decision(r, None)  # config=None → production baseline
+            if _gate_of_recorded(r) == _gate_of_replayed(d):
+                agree += 1
+        return agree / len(recs)
+
+    fid = asyncio.run(run())
+    assert fid >= 0.85, f"L2 fidelity {fid:.3f} < 0.85 (production baseline should be ~0.90)"
