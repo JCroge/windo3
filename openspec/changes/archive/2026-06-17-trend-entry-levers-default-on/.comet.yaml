@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-17-trend-entry-levers-defa
 branch_status: handled
 created_at: 2026-06-17
 verified_at: 2026-06-17
-archived: false
+archived: true
 handoff_context: openspec/changes/trend-entry-levers-default-on/.comet/handoff/design-context.json
 handoff_hash: 1de7f89db4bee4b141d67cc970847253fd2b09ccc3daf97a7cc76326f287bc7a
 build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q utils agents tests

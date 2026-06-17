@@ -2,6 +2,8 @@
 comet_change: trend-entry-levers-default-on
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-17-trend-entry-levers-default-on
+status: final
 ---
 
 # Design Doc: trend-entry-levers-default-on（lever2 默认开）

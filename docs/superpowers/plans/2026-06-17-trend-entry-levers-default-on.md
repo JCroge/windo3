@@ -2,6 +2,7 @@
 change: trend-entry-levers-default-on
 design-doc: docs/superpowers/specs/2026-06-17-trend-entry-levers-default-on-design.md
 base-ref: 5e1bcf0dbc506b6406f29b30757b78b7510292db
+archived-with: 2026-06-17-trend-entry-levers-default-on
 ---
 
 # lever2 默认开 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 5e1bcf0dbc506b6406f29b30757b78b7510292db
 
 **Tech Stack:** Python 3.9，`utils/config_loader`，`agents/trading/judge.py`，`utils/decision_replay.py`，pytest。
 
+archived-with: 2026-06-17-trend-entry-levers-default-on
 ---
 
 ### Task 1: config_loader 默认开 + env 逃生阀
@@ -169,6 +171,7 @@ Run: `python3 event_backtest.py 2>&1 | tail -20`（或项目既定调用）
 Run: `python3 -m pytest -q`
 Expected: 全绿。
 
+archived-with: 2026-06-17-trend-entry-levers-default-on
 ---
 
 ## Self-Review
