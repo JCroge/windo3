@@ -140,7 +140,9 @@ def test_capture_record_replays_to_gate_reject():
     Now the full gate sequence executes and the R:R gate is the binding stop.
     """
     rec = _rr_reject_record()
-    out = asyncio.run(replay_decision(rec, {"rr_floor_default": 1.50}))
+    # ladder_rr_enabled=False: 该 fixture 验 TP1 口径下 R:R 地板 gate（trend-entry-levers-default-on
+    # 后 lever2 默认开会用阶梯口径抬高 effective_rr 越过 1.50，掩盖本测试要验的地板效应）。
+    out = asyncio.run(replay_decision(rec, {"rr_floor_default": 1.50, "ladder_rr_enabled": False}))
     assert (out or {}).get("action") in (None, "hold")
     rr = (out or {}).get("reject_reason") or (
         (out or {}).get("attribution") or {}
@@ -154,5 +156,6 @@ def test_capture_record_flips_to_accept_when_floor_lowered():
     that the fix enables real counterfactual perturbation experiments.
     """
     rec = _rr_reject_record()
-    out = asyncio.run(replay_decision(rec, {"rr_floor_default": 1.30}))
+    # 同上 pin TP1 口径，纯验地板 1.50→1.30 翻转 reject→open（与 lever2 阶梯口径解耦）。
+    out = asyncio.run(replay_decision(rec, {"rr_floor_default": 1.30, "ladder_rr_enabled": False}))
     assert (out or {}).get("action") in ("open_long", "open_short")

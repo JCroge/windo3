@@ -263,7 +263,10 @@ def test_sequential_baseline_fidelity_restored():
             c.close()
         return [{"open_time": t, "high": h, "low": l, "close": cl} for t, h, l, cl in rows]
 
-    arm = asyncio.run(run_arm(recs, {}, loader))
+    # ladder_rr_enabled=False 钉磁带录制纪元：本磁带录于 lever2 默认开之前
+    # (trend-entry-levers-default-on)，config_snapshot 不含 ladder 键，用生产基线(现默认开)
+    # 回放会用阶梯口径致系统性发散。前向新记录自带 ladder=True，无需 pin。
+    arm = asyncio.run(run_arm(recs, {"ladder_rr_enabled": False}, loader))
     agree = sum(1 for d, r in zip(arm["decisions"], recs) if d["gate"] == _gate_of_recorded(r))
     fid = agree / len(recs)
     assert fid >= 0.85, f"sequential baseline fidelity {fid:.3f} < 0.85 (expect ~0.91, was 0.798)"

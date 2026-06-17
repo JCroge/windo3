@@ -56,6 +56,16 @@ canonical_spec: openspec
 - **同构历史验证**：重跑 `cf_lever2_rejected_ab.py` 附最新数据，验证报告引其 delta。
 - **event_backtest**：跑一次确认非回归 + 记录不适用。
 
+## Implementation Divergence（build 期发现）：翻 lever2 默认对回放保真的副作用
+
+build 时全量回归暴露：翻 lever2 默认开会**打破所有"翻转前"录制磁带的回放保真**。根因——`production_base_config()`（回放基线）`= config_loader.DEFAULTS`，现含 `ladder_rr_enabled=True`；而翻转前的录制磁带（`data/decision_replay_tape.jsonl` 1418 条）的 `config_snapshot` **不含 ladder 键**（录制时它还不在 DEFAULTS/self.config）→ 缺键回落到生产基线（现 on）→ 用阶梯口径回放 TP1-纪元决策 → gate 系统性发散（L2 fidelity 0.31，sequential 0.32，原 ~0.90）。
+
+**这不是 bug，是配置纪元边界**：磁带录于"lever2 off"纪元，用"lever2 on"基线回放本就会发散。`config_snapshot` 是纪元锚——**翻转后新录制的记录会自带 `ladder_rr_enabled=True`**（已进 DEFAULTS→self.config→snapshot），前向回放自洽，无需 pin。
+
+**处理（本 change）**：3 个 config-parity/capture 保真守卫测试（`test_production_baseline_restores_fidelity` / `test_sequential_baseline_fidelity_restored` / `test_capture_record_replays_to_gate_reject` + 其地板-翻转伴随）显式 pin `ladder_rr_enabled=False`，钉翻转前磁带的录制纪元，使其继续守 config-parity（非 ladder 维度）。
+
+**对真实 CF 实验室的影响（须知）**：用**翻转前旧磁带**跑的观察驱动 `cf_direction_recommendation.py` / `cf_rr_fidelity_ab.py`（经 `build_delta_report`/`run_arm` 生产基线）翻转后 baseline_fidelity 会塌、对旧磁带 untrustworthy——除非同样 pin `ladder_rr_enabled=False`。**`cf_lever2_rejected_ab.py` 不受影响**（自算 ladder_rr，不读 flag）。旧磁带随前向新记录累积自然退役（下一个 change 的影子记录器会产自洽新数据）。**不工程化改 production_base_config 排除 ladder**（为一次性迁移加 per-flag 特例不划算）。
+
 ## 不做（YAGNI）
 
-- 不开 lever1（另起 change）；不做 lever2 v2 概率校准（R:R 已证对频率不敏感）；不重写 event_backtest 复用 Judge 口径（独立 follow-up）；不改 R:R 地板阈值。
+- 不开 lever1（另起 change）；不做 lever2 v2 概率校准（R:R 已证对频率不敏感）；不重写 event_backtest 复用 Judge 口径（独立 follow-up）；不改 R:R 地板阈值；不为旧磁带工程化改 production_base_config（pin + 自然退役即可）。
