@@ -4,7 +4,7 @@ build_mode: null
 isolation: null
 verify_mode: null
 base_ref: 78902b147c35c9178232eedd891f3ad00756bd8d
-design_doc: null
+design_doc: docs/superpowers/specs/2026-06-17-trend-entry-levers-default-on-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -12,3 +12,5 @@ branch_status: pending
 created_at: 2026-06-17
 verified_at: null
 archived: false
+handoff_context: openspec/changes/trend-entry-levers-default-on/.comet/handoff/design-context.json
+handoff_hash: 1de7f89db4bee4b141d67cc970847253fd2b09ccc3daf97a7cc76326f287bc7a
