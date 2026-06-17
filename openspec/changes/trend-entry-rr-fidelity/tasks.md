@@ -25,8 +25,20 @@
 - [x] 3.2 杠杆② 在 event_backtest 全样本(含亏单)A/B,产出 delta
 - [x] 3.3 ①+② 合并 A/B,确认净 PnL 改善且胜率不被低质量入场显著稀释,形成背书结论
 
+## 3b. CF 实验室 A/B(已做,结论 inconclusive)
+
+- [x] 3b.1 CF 重放四臂 A/B(decision_replay_tape);新 flag 注入 _install_config_flags
+- [x] 3b.2 诚实诊断:lever1 目标人群空、lever2 CF 退出不建模阶梯 → 不予采信,见 ab_result.md
+
+## 5. 忠实 harness 扩展(用户授权扩范围)
+
+- [ ] 5.1 lever1 埋点:`_record_rejected_plan` → ledger record 加 `tech_context`(direction/strength/htf_bias/daily_bias/entry_context),observability-only/additive/fail-safe
+- [ ] 5.2 埋点单测:被拒记录含 tech_context;缺 tech 缓存 fail-safe 空 dict 不破记录
+- [ ] 5.3 lever2 忠实 A/B 驱动 `cf_lever2_rejected_ab.py`:回放 rejected_signal_events,重算 ladder effective_rr → 判定过/不过 reject_reason 隐含地板 → 趋势簇去重 → resolve_counterfactual+klines 出含亏单 CF 净 PnL
+- [ ] 5.4 跑并把结论写入 ab_result.md(lever2 段);按净期望决 lever2 灰度
+
 ## 4. 灰度与收尾
 
 - [ ] 4.1 按背书结论配置 config 灰度(默认关或小灰度),不直接全量
 - [ ] 4.2 全量回归测试零回退;更新相关文档/记忆
-- [ ] 4.3 登记后续拆出 change:① P2 bias 上游根治、② v2 到达概率频率校准
+- [ ] 4.3 登记后续拆出 change:① P2 bias 上游根治、① lever1 A/B(待埋点数据)、② v2 到达概率频率校准

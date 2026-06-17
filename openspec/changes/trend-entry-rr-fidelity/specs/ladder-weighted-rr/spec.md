@@ -46,3 +46,8 @@ v1 的阶梯加权 MUST 与旧 TP1-only 口径保持**相同的"目标达成"假
 
 - **WHEN** 阶梯加权口径的 config 开关关闭
 - **THEN** effective_rr 计算回退到改动前的 TP1 口径
+
+#### Scenario: rejected 流忠实 A/B(真实目标人群)
+
+- **WHEN** CF 重放磁带的 lever2 目标人群不足(被拒趋势单不在 decision_replay_tape)
+- **THEN** lever2 SHALL 另在 `rejected_signal_events.jsonl`(被拒趋势单实际所在,含 tp/sl/entry/leverage)上做忠实 A/B:重算 ladder effective_rr → 判定是否过 reject_reason 隐含地板 → 按趋势簇去重 → `resolve_counterfactual` + klines 出**含亏单**的 CF 净 PnL,以净期望(非单看赢家)为背书依据
