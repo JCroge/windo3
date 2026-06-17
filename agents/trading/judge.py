@@ -165,6 +165,13 @@ class MultiJudge(BaseAgent):
         self._rr_floor_short_bullish = config.get('rr_floor_short_bullish', 1.80) if config else 1.80
         self._probe_rr_floor = config.get('probe_rr_floor', 1.30) if config else 1.30
         self._low_rr_long_aligned_enabled = config.get('low_rr_long_aligned_enabled', True) if config else True
+        # trend-entry-rr-fidelity 杠杆① P1:客观路径证据授对齐地板(默认关,灰度)
+        self._path_evidence_aligned_enabled = config.get('path_evidence_aligned_enabled', False) if config else False
+        self._path_evidence_min_pre12h_return = config.get('path_evidence_min_pre12h_return', 0.03) if config else 0.03
+        self._path_evidence_max_range_pos = config.get('path_evidence_max_range_pos', 0.92) if config else 0.92
+        self._path_evidence_min_strength = config.get('path_evidence_min_strength', 60) if config else 60
+        # trend-entry-rr-fidelity 杠杆② v1:阶梯加权 effective_rr(默认关,灰度)
+        self._ladder_rr_enabled = config.get('ladder_rr_enabled', False) if config else False
         self._low_rr_max_leverage = config.get('low_rr_max_leverage', 5) if config else 5
         self._low_rr_max_position_pct = config.get('low_rr_max_position_pct', 0.5) if config else 0.5
         self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
