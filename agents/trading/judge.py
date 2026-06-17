@@ -3432,6 +3432,35 @@ class MultiJudge(BaseAgent):
 
     # ═══ 交易计划构建 ═══
 
+    # trend-entry-rr-fidelity 杠杆② v1:阶梯离场比例加权 effective_rr(Option B,无概率折扣)
+    _LADDER_WEIGHTS = (0.50, 0.25, 0.25)      # 对齐 executor 50/25/25 真实离场比例
+
+    def _compute_ladder_rr(self, tp_dists, sl_dist, notional, gross_loss, total_cost):
+        """按真实阶梯离场比例加权的 effective_rr(与旧口径同"目标达成"假设)。
+
+        - tp_dists: 各 TP 档距离(占比),升序;不足 3 档则权重归一到现有档。
+        - 剩余 trailing 档(第3档)的盈利距离保守封顶 min(tp_dist3, sl_dist),即至多记 +1R 锁利。
+        - 不施加 P(reach tier) 概率折扣:旧 TP1-only 口径本就隐含 TP1 必达,只对新口径缩分子
+          而不缩阶梯化后降低的风险分母会反向压低 R:R(v2 才做相干的概率+风险口径)。
+        """
+        if not tp_dists or sl_dist <= 0:
+            return 1.0
+        weights = list(self._LADDER_WEIGHTS[:len(tp_dists)])
+        wsum = sum(weights)
+        if wsum <= 0:
+            return 1.0
+        weights = [w / wsum for w in weights]   # 缺档归一化
+        exp_profit = 0.0
+        for i, dist in enumerate(tp_dists):
+            d = dist
+            if i == 2:  # 剩余 trailing 档:保守 +1R 锁利上限
+                d = min(dist, sl_dist)
+            exp_profit += weights[i] * (notional * d)
+        denom = gross_loss + total_cost
+        if denom <= 0:
+            return 1.0
+        return round((exp_profit - total_cost) / denom, 2)
+
     def _build_plan(self, tech: dict, action: str, price: float, confidence: int, score: float = 50) -> dict:
         levels = tech.get('levels', {})
         risk = tech.get('risk', {})
