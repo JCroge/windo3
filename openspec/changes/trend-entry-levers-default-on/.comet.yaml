@@ -1,5 +1,5 @@
 workflow: full
-phase: design
+phase: build
 build_mode: null
 isolation: null
 verify_mode: null
