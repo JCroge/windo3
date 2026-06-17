@@ -232,6 +232,8 @@ def _load_yaml(path: str) -> dict:
     if 'max_daily_loss' in risk:
         # yaml 的 max_daily_loss 是正数，转为负的 daily_pnl_hard_stop
         out['daily_pnl_hard_stop'] = -abs(float(risk['max_daily_loss']))
+    if 'consecutive_loss_limit' in risk:
+        out['consecutive_loss_limit'] = int(risk['consecutive_loss_limit'])
     return out
 
 
