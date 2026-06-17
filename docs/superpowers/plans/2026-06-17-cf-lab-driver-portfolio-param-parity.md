@@ -2,6 +2,7 @@
 change: cf-lab-driver-portfolio-param-parity
 design-doc: docs/superpowers/specs/2026-06-17-cf-lab-driver-portfolio-param-parity-design.md
 base-ref: a4192aa77c5f05a0c9075f28695176a806533fec
+archived-with: 2026-06-17-cf-lab-driver-portfolio-param-parity
 ---
 
 # CF 实验室驱动组合参数对齐 live 实施计划
@@ -14,6 +15,7 @@ base-ref: a4192aa77c5f05a0c9075f28695176a806533fec
 
 **Tech Stack:** Python 3.9、`utils.config_loader`、既有 L3b/L4 反事实实验室模块。
 
+archived-with: 2026-06-17-cf-lab-driver-portfolio-param-parity
 ---
 
 ### Task 1: `cf_direction_recommendation.py` 注入 live 组合参数
@@ -85,6 +87,7 @@ Expected: `1285 passed, 4 deselected, 1 warning`
 
 `git diff --stat a4192aa...HEAD` 仅含 2 驱动 + 文档/簿记；`utils/` 库与 `tests/test_cf_red_line_guard.py` 未改。
 
+archived-with: 2026-06-17-cf-lab-driver-portfolio-param-parity
 ---
 
 ## Self-Review

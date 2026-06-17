@@ -2,6 +2,8 @@
 comet_change: cf-lab-driver-portfolio-param-parity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-17-cf-lab-driver-portfolio-param-parity
+status: final
 ---
 
 # Design Doc: CF 实验室分析驱动组合参数对齐 live
