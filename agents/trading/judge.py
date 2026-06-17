@@ -1481,20 +1481,13 @@ class MultiJudge(BaseAgent):
                         return
 
                     # ═══ Low R:R position scaling (Phase 1C) ═══
-                    # 通过动态门槛但 R:R 仍低于默认 1.5 时，缩仓 + 进入 low_rr_extra slot
-                    low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr', 'long_aligned_path_evidence'}
-                    if (rr < 1.5 and is_long and rr_policy in low_rr_policies
-                            and not plan.get('is_probe')):
-                        rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
-                        plan['size_usdt'] = round(
-                            plan['size_usdt'] * rr_scale * self._low_rr_max_position_pct, 2
-                        )
-                        plan['leverage'] = min(plan.get('leverage', 5), self._low_rr_max_leverage)
-                        plan['is_low_rr'] = True
-                        plan['slot_type'] = 'low_rr_extra'
+                    # 地板 gate 用阶梯口径(多开仓), 缩仓判定用 TP1 口径(不被阶梯松绑)。单一收口。
+                    _rr_tp1 = plan.get('effective_rr_tp1', rr)
+                    rr_scale = self._apply_low_rr_sizing(plan, _rr_tp1, is_long, rr_policy)
+                    if rr_scale is not None:
                         self.logger.info(
                             f"[Judge] {symbol} low_rr_long policy={rr_policy} "
-                            f"R:R={rr:.2f} scale={rr_scale:.0%} "
+                            f"R:R(tp1)={_rr_tp1:.2f} scale={rr_scale:.0%} "
                             f"size={plan['size_usdt']} lev={plan['leverage']}x"
                         )
 
@@ -3033,17 +3026,27 @@ class MultiJudge(BaseAgent):
                                        f"rr_below_floor:{rr:.2f}<{min_rr:.2f}")
             return f"rr_below_floor:{rr:.2f}<{min_rr:.2f}"
 
-        # ── Low R:R Scaling ──
-        low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr', 'long_aligned_path_evidence'}
-        if (rr < 1.5 and is_long and rr_policy in low_rr_policies
-                and not plan.get('is_probe')):
-            rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
-            plan['size_usdt'] = round(plan['size_usdt'] * rr_scale * self._low_rr_max_position_pct, 2)
-            plan['leverage'] = min(plan.get('leverage', 5), self._low_rr_max_leverage)
-            plan['is_low_rr'] = True
-            plan['slot_type'] = 'low_rr_extra'
+        # ── Low R:R Scaling ── 缩仓判定用 TP1 口径(不被 lever2 阶梯松绑)。单一收口。
+        self._apply_low_rr_sizing(plan, plan.get('effective_rr_tp1', rr), is_long, rr_policy)
 
         return None
+
+    def _apply_low_rr_sizing(self, plan, rr_for_sizing, is_long, rr_policy):
+        """低 R:R 保护性缩仓单一收口（fix-lever2-low-rr-sizing-tp1）。
+
+        `rr_for_sizing` MUST 用 TP1 口径 `effective_rr_tp1`（不被 lever2 阶梯松绑）——
+        地板 gate 用阶梯口径继续多开仓，但缩仓/降杠杆判定保留 pre-lever2 保护行为。
+        主路径与 `_apply_regime_policy` 共用此函数。返回 rr_scale（已缩仓）或 None（未缩）。"""
+        low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr', 'long_aligned_path_evidence'}
+        if not (rr_for_sizing < 1.5 and is_long and rr_policy in low_rr_policies
+                and not plan.get('is_probe')):
+            return None
+        rr_scale = min(0.8, max(0.4, (rr_for_sizing - 1.2) / 0.3))
+        plan['size_usdt'] = round(plan['size_usdt'] * rr_scale * self._low_rr_max_position_pct, 2)
+        plan['leverage'] = min(plan.get('leverage', 5), self._low_rr_max_leverage)
+        plan['is_low_rr'] = True
+        plan['slot_type'] = 'low_rr_extra'
+        return rr_scale
 
     def _capture_state_snapshot(self, symbol: str) -> dict:
         """白名单采集决策时跨决策可变状态（observability-only）。不 pickle 整个对象。"""
