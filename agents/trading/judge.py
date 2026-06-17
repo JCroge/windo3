@@ -170,8 +170,10 @@ class MultiJudge(BaseAgent):
         self._path_evidence_min_pre12h_return = config.get('path_evidence_min_pre12h_return', 0.03) if config else 0.03
         self._path_evidence_max_range_pos = config.get('path_evidence_max_range_pos', 0.92) if config else 0.92
         self._path_evidence_min_strength = config.get('path_evidence_min_strength', 60) if config else 60
-        # trend-entry-rr-fidelity 杠杆② v1:阶梯加权 effective_rr(默认关,灰度)
-        self._ladder_rr_enabled = config.get('ladder_rr_enabled', False) if config else False
+        # trend-entry-rr-fidelity 杠杆② v1:阶梯加权 effective_rr。
+        # trend-entry-levers-default-on: 默认开(口径修正,与 config_loader.DEFAULTS 一致);
+        # env LADDER_RR_ENABLED=false 可即时关。lever1(path_evidence) 仍默认关。
+        self._ladder_rr_enabled = config.get('ladder_rr_enabled', True) if config else True
         self._low_rr_max_leverage = config.get('low_rr_max_leverage', 5) if config else 5
         self._low_rr_max_position_pct = config.get('low_rr_max_position_pct', 0.5) if config else 0.5
         self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
