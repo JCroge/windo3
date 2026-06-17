@@ -34,8 +34,8 @@
 
 - [x] 5.1 lever1 埋点:`_record_rejected_plan` → ledger record 加 `tech_context`(direction/strength/htf_bias/daily_bias/entry_context),observability-only/additive/fail-safe
 - [x] 5.2 埋点单测:被拒记录含 tech_context;缺 tech 缓存 fail-safe 空 dict 不破记录
-- [ ] 5.3 lever2 忠实 A/B 驱动 `cf_lever2_rejected_ab.py`:回放 rejected_signal_events,重算 ladder effective_rr → 判定过/不过 reject_reason 隐含地板 → 趋势簇去重 → resolve_counterfactual+klines 出含亏单 CF 净 PnL
-- [ ] 5.4 跑并把结论写入 ab_result.md(lever2 段);按净期望决 lever2 灰度
+- [x] 5.3 lever2 忠实 A/B 驱动 `cf_lever2_rejected_ab.py`:回放 rejected_signal_events,重算 ladder effective_rr → 判定过/不过 reject_reason 隐含地板 → 趋势簇去重 → resolve_counterfactual+klines 出含亏单 CF 净 PnL
+- [x] 5.4 跑并把结论写入 ab_result.md(lever2 段);按净期望决 lever2 灰度
 
 ## 4. 灰度与收尾
 
