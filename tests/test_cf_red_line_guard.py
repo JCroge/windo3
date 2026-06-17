@@ -50,3 +50,14 @@ def test_decision_paths_do_not_read_replay_products():
         assert "joint_knob_sweep" not in src, mp  # 多旋钮联合扫描 L4 扩展, observability-only
         # Judge 写快照用 _capture_state_snapshot；但任何路径都不得【读】回放磁带字段
         assert "state_snapshot_before_decision" not in src, mp
+
+
+def test_decision_paths_do_not_read_shadow_products():
+    """trend-entry-shadow-decision-logger：决策/风控路径严禁读影子产物。
+    Judge 写影子日志（_schedule_shadow/_maybe_log_shadow）是允许的写路径，故不在禁列。"""
+    for mp in ["agents.trading.executor", "executor",
+               "agents.trading.portfolio_risk_guard", "agents.trading.reviewer",
+               "agents.trading.position_analyst", "utils.halt_state"]:
+        src = _src(mp)
+        assert "shadow_decision_log" not in src, mp
+        assert "shadow_decision_logger" not in src, mp
