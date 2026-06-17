@@ -14,19 +14,19 @@
 - **WHEN** 计算 trailing 剩余仓位(约 25%)的盈利贡献
 - **THEN** 使用保守口径(+1R 锁利或 trailing 期望下界),不记为最远档满额
 
-### Requirement: 各档到达概率折扣
+### Requirement: 与旧口径同假设、不引入额外概率折扣(v1)
 
-加权 `effective_rr` 的各档盈利贡献 SHALL 乘以该档的到达概率 P(reach tierᵢ)。该概率 MUST NOT 默认全为 1(即不得假设各档必达),远档概率 MUST 不高于近档。v1 实现 SHALL 使用文档化、可辩护的**保守固定先验**(如 TP1=1.0 / TP2=0.5 / trailing=0.25),无需历史标定即可投入全样本回测;基于历史磁带/klines 频率的概率校准(v2)拆出本 change,不在本 change 范围内。所采用的概率取值 SHALL 可观测(记录在决策记录中)。
+v1 的阶梯加权 MUST 与旧 TP1-only 口径保持**相同的"目标达成"假设**——旧公式即假设满仓在 TP1 离场(隐含 P=1),故 v1 MUST NOT 仅对新口径分子单独施加 P(reach tierᵢ)<1 的概率折扣(实测表明:只缩分子而不同步缩减阶梯化后降低的风险分母,会把 effective_rr 不合理地压到低于旧口径,反而抹掉杠杆②的本意)。v1 的唯一保守折扣 SHALL 是剩余 trailing 档封顶 +1R(见上一 Requirement)。基于历史频率的到达概率 + 风险分母同步降低的相干口径(v2)拆出本 change,不在本 change 范围内。
 
-#### Scenario: 保守先验防注水
+#### Scenario: 不出现反向压低
 
-- **WHEN** 远档(如 TP2/trailing)使用低于 TP1 的固定先验概率
-- **THEN** 该档盈利贡献按先验概率折扣后计入,远档不显著抬高 effective_rr
+- **WHEN** 阶梯各档均为正贡献
+- **THEN** 阶梯加权 effective_rr 不低于旧 TP1-only effective_rr(对同一笔计划),即不得因口径改动反而压低评分
 
-#### Scenario: 概率取值可观测
+#### Scenario: 离场比例可观测
 
-- **WHEN** effective_rr 使用各档到达概率
-- **THEN** 所用概率取值随 effective_rr_ladder 一并记录,可在决策记录中回溯
+- **WHEN** effective_rr 使用阶梯加权
+- **THEN** 所用离场比例权重([0.5,0.25,0.25])随 effective_rr_ladder 一并记录,可在决策记录中回溯
 
 ### Requirement: 全样本回测背书与灰度
 

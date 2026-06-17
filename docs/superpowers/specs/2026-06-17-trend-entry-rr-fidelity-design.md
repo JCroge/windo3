@@ -49,17 +49,18 @@ _build_plan(tech, action, price, confidence, score)
 
 ## 杠杆② — 阶梯加权 effective_rr(v1)
 
-现状(`judge.py:3429-3433`)只用 `take_profit[0]`。改为按 executor 真实阶梯(50/25/25)加权:
+现状(`judge.py:3429-3433`)只用 `take_profit[0]`。改为按 executor 真实阶梯(50/25/25)**离场比例**加权(Option B,定稿):
 
 ```
-w   = [0.50, 0.25, 0.25]           # 对齐 executor.py:1354
-P   = [1.00, 0.50, 0.25]           # v1 保守固定先验(MUST NOT 全=1)
-# 各档盈利(剩余 trailing 档用保守口径,不记最远档满额)
-profit_i = tp_dist_i * notional            for i in {TP1, TP2}
-profit_trail = (R * 1.0) * notional        # 剩余档记 +1R 锁利价差,非 TP3
-exp_profit   = Σ w_i * P_i * profit_i
+w = [0.50, 0.25, 0.25]             # 对齐 executor.py:1354 的真实离场比例
+# 各档盈利距离(剩余 trailing 档保守封顶 +1R,不记最远档满额)
+dist_i = tp_dist_i                 for i in {TP1, TP2}
+dist_3 = min(tp_dist_3, sl_dist)   # 剩余档至多记 +1R 锁利
+exp_profit   = Σ w_i * notional * dist_i
 effective_rr = (exp_profit - total_cost) / (gross_loss + total_cost)   # 成本扣法不变
 ```
+
+**关键修正(2026-06-17 build 期)**:初版叠加 P(reach tierᵢ)=[1.0,0.5,0.25] 概率折扣,实测把 HYPE effective_rr 从 1.14 **反向压到 0.86**——因为只缩了收益分子,却保留满仓风险分母(阶梯化后 TP1 平 50%+SL 移保本,真实风险已降)。旧 TP1-only 公式本就隐含"TP1 必达(P=1)",故 v1 **不再单独加概率折扣**,与旧口径同假设,只把离场分布从"虚构 100%@TP1"修正为真实 50/25/25 + 剩余封顶 +1R。HYPE:1.14→**1.34**(过经杠杆①的 1.30 地板)。相干的"概率折扣 + 风险分母同步降低"口径需真实到达概率,拆入 v2。
 
 - 缺档(TP 不足 3 档)→ 权重归一化到现有档,缺失档贡献 0。
 - config 开关 `ladder_rr_enabled` 关闭 → 回退现有 TP1-only。
