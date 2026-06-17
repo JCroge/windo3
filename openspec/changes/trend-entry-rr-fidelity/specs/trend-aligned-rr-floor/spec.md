@@ -21,10 +21,26 @@
 - **WHEN** 计算干净趋势的客观路径证据(方向一致性、近窗回撤、延展度)
 - **THEN** 仅使用入场决策时点及之前的 bar 数据,MUST NOT 引用入场后的 bar(无前视偏差)
 
-#### Scenario: 全样本回测背书
+#### Scenario: 全样本回测背书(CF 重放实验室)
 
-- **WHEN** 趋势对齐判定的放宽/补强在 event_backtest 上对全样本(含亏单)A/B
-- **THEN** 产出净 PnL/胜率/MDD delta,且胜率不被低质量入场显著稀释(背书阈值在回测报告中明示)
+- **WHEN** 趋势对齐判定的放宽以 `path_evidence_aligned_enabled` 为旋钮,在 CF 重放实验室(跑真实 judge 决策代码)对全样本被拒磁带(含亏单)A/B
+- **THEN** 产出净 PnL/胜率/MDD delta,且胜率不被低质量入场显著稀释(背书阈值在回测报告中明示);旋钮 MUST 经 `_install_config_flags` 注入方能生效
+
+### Requirement: 被拒流记录 lever1 验证所需 tech 输入
+
+`rejected_signal_events.jsonl` 的被拒记录 SHALL 附带重算 path-evidence 地板决策所需的入场前 tech 输入(`trend.direction` / `trend.strength` / `trend.higher_tf_bias` / `trend.daily_bias` / `entry_context` 的方向与延展字段),作为 `tech_context` 子结构,使后续可在该流上忠实验证 lever1。该埋点是 **observability-only、additive**,MUST NOT 改变决策行为;缺 tech 缓存时 fail-safe 写空 `tech_context` 不破坏被拒记录。
+
+> 说明:本 change 只加埋点;lever1 的实际 A/B 等该流数据累积后拆新 change(当前两条流均无法忠实验证 lever1——decision_replay_tape 目标人群为空,旧 rejected 记录缺 tech 输入)。
+
+#### Scenario: 被拒记录附带 tech_context
+
+- **WHEN** 一个 long 计划被拒并写入 rejected_signal_events
+- **THEN** 记录含 `tech_context`(direction/strength/higher_tf_bias/daily_bias/entry_context 子集),取自决策时点 tech 缓存
+
+#### Scenario: 缺 tech 缓存 fail-safe
+
+- **WHEN** 决策时点 tech 缓存缺失(如部分构造/测试)
+- **THEN** `tech_context` 写空 dict,被拒记录仍正常写入,决策路径不受影响
 
 ### Requirement: 趋势对齐判定可观测且可配置
 

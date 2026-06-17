@@ -27,7 +27,8 @@ class CounterfactualLedger:
 
     def record_rejection(self, symbol: str, side: str, plan: dict,
                          regime: str, score: float, confidence: float,
-                         reject_reason: str, attribution: dict = None):
+                         reject_reason: str, attribution: dict = None,
+                         tech_context: dict = None):
         """Record a rejected plan for shadow tracking."""
         if not self._enabled:
             return
@@ -65,6 +66,8 @@ class CounterfactualLedger:
             record["blocked_by"] = attribution.get("blocked_by", reject_reason)
             record["is_probe"] = attribution.get("is_probe", False)
             record["is_low_rr"] = attribution.get("is_low_rr", False)
+
+        record["tech_context"] = dict(tech_context) if tech_context else {}
 
         self._active[record_id] = record
         self._append_event("rejected_plan_created", record)

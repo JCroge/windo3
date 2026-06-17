@@ -165,6 +165,13 @@ class MultiJudge(BaseAgent):
         self._rr_floor_short_bullish = config.get('rr_floor_short_bullish', 1.80) if config else 1.80
         self._probe_rr_floor = config.get('probe_rr_floor', 1.30) if config else 1.30
         self._low_rr_long_aligned_enabled = config.get('low_rr_long_aligned_enabled', True) if config else True
+        # trend-entry-rr-fidelity 杠杆① P1:客观路径证据授对齐地板(默认关,灰度)
+        self._path_evidence_aligned_enabled = config.get('path_evidence_aligned_enabled', False) if config else False
+        self._path_evidence_min_pre12h_return = config.get('path_evidence_min_pre12h_return', 0.03) if config else 0.03
+        self._path_evidence_max_range_pos = config.get('path_evidence_max_range_pos', 0.92) if config else 0.92
+        self._path_evidence_min_strength = config.get('path_evidence_min_strength', 60) if config else 60
+        # trend-entry-rr-fidelity 杠杆② v1:阶梯加权 effective_rr(默认关,灰度)
+        self._ladder_rr_enabled = config.get('ladder_rr_enabled', False) if config else False
         self._low_rr_max_leverage = config.get('low_rr_max_leverage', 5) if config else 5
         self._low_rr_max_position_pct = config.get('low_rr_max_position_pct', 0.5) if config else 0.5
         self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
@@ -1470,7 +1477,7 @@ class MultiJudge(BaseAgent):
 
                     # ═══ Low R:R position scaling (Phase 1C) ═══
                     # 通过动态门槛但 R:R 仍低于默认 1.5 时，缩仓 + 进入 low_rr_extra slot
-                    low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr'}
+                    low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr', 'long_aligned_path_evidence'}
                     if (rr < 1.5 and is_long and rr_policy in low_rr_policies
                             and not plan.get('is_probe')):
                         rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
@@ -2541,12 +2548,34 @@ class MultiJudge(BaseAgent):
                        and (htf_bias == 'bullish' or daily_bias == 'bullish')
                        and not block_long
                        and abs(score) >= min_deferred_score)
+            # trend-entry-rr-fidelity 杠杆① P1:bias 漏报时用入场前客观路径证据补判
+            path_evidence = False
+            ectx = (tech or {}).get('entry_context', {}) or {}
+            if (not aligned
+                    and getattr(self, '_path_evidence_aligned_enabled', False)
+                    and not block_long
+                    and abs(score) >= min_deferred_score):
+                strength = trend.get('strength', 0)
+                pre12h = ectx.get('pre_12h_return_pct', 0.0)
+                range_pos = ectx.get('position_in_24h_range', 0.5)
+                path_evidence = (sym_dir == 'bullish'
+                                 and strength >= getattr(self, '_path_evidence_min_strength', 60)
+                                 and pre12h >= getattr(self, '_path_evidence_min_pre12h_return', 0.03)
+                                 and range_pos <= getattr(self, '_path_evidence_max_range_pos', 0.92))
             if aligned:
                 return (
                     rr_floor_long_aligned,
                     'long_aligned_low_rr',
                     f'long_aligned:regime={eff_regime},'
                     f'sym_trend={sym_dir},htf={htf_bias},daily={daily_bias}',
+                )
+            if path_evidence:
+                return (
+                    rr_floor_long_aligned,
+                    'long_aligned_path_evidence',
+                    f'long_aligned_path:regime={eff_regime},'
+                    f'strength={trend.get("strength")},pre12h={ectx.get("pre_12h_return_pct")},'
+                    f'range_pos={ectx.get("position_in_24h_range")}',
                 )
 
         if (not is_long and eff_regime == 'bullish'
@@ -2995,7 +3024,7 @@ class MultiJudge(BaseAgent):
             return f"rr_below_floor:{rr:.2f}<{min_rr:.2f}"
 
         # ── Low R:R Scaling ──
-        low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr'}
+        low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr', 'long_aligned_path_evidence'}
         if (rr < 1.5 and is_long and rr_policy in low_rr_policies
                 and not plan.get('is_probe')):
             rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
@@ -3040,9 +3069,21 @@ class MultiJudge(BaseAgent):
         side = 'long' if 'long' in action else 'short'
         regime = self._regime_manager._effective_regime
         attr = attribution or plan.get('attribution') or self._rejection_attribution(action, plan, reason)
+        _tech = getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {}
+        _trend = _tech.get("trend", {}) or {}
+        _ectx = _tech.get("entry_context", {}) or {}
+        tech_context = {
+            "direction": _trend.get("direction"),
+            "strength": _trend.get("strength"),
+            "higher_tf_bias": _trend.get("higher_tf_bias"),
+            "daily_bias": _trend.get("daily_bias"),
+            "pre_12h_return_pct": _ectx.get("pre_12h_return_pct"),
+            "position_in_24h_range": _ectx.get("position_in_24h_range"),
+            "prev_daily_return_pct": _ectx.get("prev_daily_return_pct"),
+        } if _tech else {}
         self._counterfactual_ledger.record_rejection(
             symbol, side, plan, regime, score, confidence, reason,
-            attribution=attr
+            attribution=attr, tech_context=tech_context
         )
         # Counterfactual replay: tape the rejected plan (observability-only).
         # Guarded: tape absence (e.g. partial construction in tests) must never break the decision path.
@@ -3403,6 +3444,43 @@ class MultiJudge(BaseAgent):
 
     # ═══ 交易计划构建 ═══
 
+    # trend-entry-rr-fidelity 杠杆② v1:阶梯离场比例加权 effective_rr(Option B,无概率折扣)
+    _LADDER_WEIGHTS = (0.50, 0.25, 0.25)      # 对齐 executor 50/25/25 真实离场比例
+
+    def _compute_ladder_rr(self, tp_dists, sl_dist, notional, gross_loss, total_cost):
+        """按真实阶梯离场比例加权的 effective_rr(与旧口径同"目标达成"假设)。
+
+        - tp_dists: 各 TP 档距离(占比),升序;不足 3 档则权重归一到现有档。
+        - 剩余 trailing 档(第3档)的盈利距离保守封顶 min(tp_dist3, sl_dist),即至多记 +1R 锁利。
+        - 不施加 P(reach tier) 概率折扣:旧 TP1-only 口径本就隐含 TP1 必达,只对新口径缩分子
+          而不缩阶梯化后降低的风险分母会反向压低 R:R(v2 才做相干的概率+风险口径)。
+        """
+        if not tp_dists or sl_dist <= 0:
+            return 1.0
+        weights = list(self._LADDER_WEIGHTS[:len(tp_dists)])
+        wsum = sum(weights)
+        if wsum <= 0:
+            return 1.0
+        weights = [w / wsum for w in weights]   # 缺档归一化
+        exp_profit = 0.0
+        for i, dist in enumerate(tp_dists):
+            d = dist
+            if i == 2:  # 剩余 trailing 档:保守 +1R 锁利上限
+                d = min(dist, sl_dist)
+            exp_profit += weights[i] * (notional * d)
+        denom = gross_loss + total_cost
+        if denom <= 0:
+            return 1.0
+        return round((exp_profit - total_cost) / denom, 2)
+
+    def _effective_rr_for_plan(self, tp_dists, sl_dist, notional, gross_loss, total_cost):
+        """按 ladder_rr_enabled 开关返回 effective_rr;关闭时为旧 TP1-only 口径。"""
+        denom = gross_loss + total_cost
+        if getattr(self, '_ladder_rr_enabled', False):
+            return self._compute_ladder_rr(tp_dists, sl_dist, notional, gross_loss, total_cost)
+        tp1 = tp_dists[0] if tp_dists else sl_dist
+        return round((notional * tp1 - total_cost) / denom, 2) if denom > 0 else 1.0
+
     def _build_plan(self, tech: dict, action: str, price: float, confidence: int, score: float = 50) -> dict:
         levels = tech.get('levels', {})
         risk = tech.get('risk', {})
@@ -3430,7 +3508,10 @@ class MultiJudge(BaseAgent):
         gross_profit = notional * tp_dist
         gross_loss = budget['max_loss_usdt']
         total_cost = budget['total_cost_usdt']
-        effective_rr = round((gross_profit - total_cost) / (gross_loss + total_cost), 2) if (gross_loss + total_cost) > 0 else 1.0
+        tp_dists = [abs(tp - price) / price for tp in take_profit] if take_profit else [sl_dist]
+        effective_rr_tp1 = round((gross_profit - total_cost) / (gross_loss + total_cost), 2) if (gross_loss + total_cost) > 0 else 1.0
+        effective_rr = self._effective_rr_for_plan(tp_dists, sl_dist, notional, gross_loss, total_cost)
+        effective_rr_ladder = self._compute_ladder_rr(tp_dists, sl_dist, notional, gross_loss, total_cost)
 
         # ═══ P2-N: 期望值（EV）计算 ═══
         # EV = p_win × net_profit − (1 − p_win) × net_loss
@@ -3473,6 +3554,10 @@ class MultiJudge(BaseAgent):
             "order_type": order_type,
             "risk_reward_ratio": gross_rr,
             "effective_risk_reward_ratio": effective_rr,
+            "effective_rr_tp1": effective_rr_tp1,
+            "effective_rr_ladder": effective_rr_ladder,
+            "ladder_rr_enabled": bool(getattr(self, '_ladder_rr_enabled', False)),
+            "ladder_weights": list(self._LADDER_WEIGHTS),
             "funding_cost": round(budget['funding_cost_usdt'], 3),
             "est_hold_hours": budget['est_hold_hours'],
             "max_holding_hours": 24,
