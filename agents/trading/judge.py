@@ -3069,9 +3069,21 @@ class MultiJudge(BaseAgent):
         side = 'long' if 'long' in action else 'short'
         regime = self._regime_manager._effective_regime
         attr = attribution or plan.get('attribution') or self._rejection_attribution(action, plan, reason)
+        _tech = getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {}
+        _trend = _tech.get("trend", {}) or {}
+        _ectx = _tech.get("entry_context", {}) or {}
+        tech_context = {
+            "direction": _trend.get("direction"),
+            "strength": _trend.get("strength"),
+            "higher_tf_bias": _trend.get("higher_tf_bias"),
+            "daily_bias": _trend.get("daily_bias"),
+            "pre_12h_return_pct": _ectx.get("pre_12h_return_pct"),
+            "position_in_24h_range": _ectx.get("position_in_24h_range"),
+            "prev_daily_return_pct": _ectx.get("prev_daily_return_pct"),
+        } if _tech else {}
         self._counterfactual_ledger.record_rejection(
             symbol, side, plan, regime, score, confidence, reason,
-            attribution=attr
+            attribution=attr, tech_context=tech_context
         )
         # Counterfactual replay: tape the rejected plan (observability-only).
         # Guarded: tape absence (e.g. partial construction in tests) must never break the decision path.
