@@ -1,0 +1,15 @@
+{
+  "change": "trend-entry-rr-fidelity",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "ab8eac41b8884bbdb791fcba45c0b89c3863517e4f278b3b7584fefccc99b362",
+  "files": [
+    { "path": "openspec/changes/trend-entry-rr-fidelity/proposal.md", "sha256": "cf7216ddf7e34dbb4459e6ad058c188682572241f38425bf9d3736cd333f8aff" },
+    { "path": "openspec/changes/trend-entry-rr-fidelity/design.md", "sha256": "d3de35d2f46239f9937fc0f7a3df96f007fb82b4fe3334f26d8c8510f7c8cba3" },
+    { "path": "openspec/changes/trend-entry-rr-fidelity/tasks.md", "sha256": "99f66742a323bcb61b73f3dbcb1fb8dd91b8f5c030a3ab0c279dbe0fc8979a8d" },
+    { "path": "openspec/changes/trend-entry-rr-fidelity/specs/ladder-weighted-rr/spec.md", "sha256": "2c008a70bb53fd185c266ec8456baf72c4b2b4d7478451799ce9bf3729338542" },
+    { "path": "openspec/changes/trend-entry-rr-fidelity/specs/trend-aligned-rr-floor/spec.md", "sha256": "0caf3f2b7c7cf2ac280a34eee7c5794dc9bb59b51f3fc83948d8a49e656c5b00" }
+  ]
+}
