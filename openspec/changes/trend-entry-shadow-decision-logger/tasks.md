@@ -1,10 +1,10 @@
 # Tasks: trend-entry-shadow-decision-logger
 
-> 初始任务边界。影子跑法/隔离/结局锚/报表由 brainstorming 定后细化。
+> 影子=复用 replay_decision 前向 both-levers；fire-and-forget fail-safe；observability-only write-only。
 
-- [ ] 1. 设计定稿：brainstorming 拍板影子跑法（复用 replay_decision 前向 vs 共享纯函数）+ hook 落点 + 隔离红线 + 结局锚口径 + 性能/失败安全；产出 Design Doc + delta spec `shadow-decision-logger`。
-- [ ] 2. 影子决策记录器：在 live 决策 chokepoint 旁路跑 both-levers on 影子决策（复用隔离机器），write-only 写 `shadow_decision_log.jsonl`（real vs shadow + tech_context + 结局锚）；影子异常 fail-safe 不破 live。
-- [ ] 3. 隔离红线守卫：扩展 `tests/test_cf_red_line_guard.py` 禁交易决策/风控路径读影子产物；坐实影子绝不 publish 真实 bus / 不下单 / 不 mutate live 状态。
-- [ ] 4. 结局锚结算 + 对比报表：影子开仓前向结局（resolve_counterfactual/klines）+ 一次性对比驱动（real lever2-only vs shadow both-levers：多开数/前向 R/lever1 增量），复用诚实门。
-- [ ] 5. 全量回归 pytest 绿 + 失败安全测试（影子异常不影响 live 决策）。
-- [ ] 6. 验证报告：隔离红线坐实 + 影子记录 sanity（产物 schema、tech_context 非空填了 lever1 数据墙）+ 性能影响。
+- [x] 1. 设计定稿：brainstorming 定 D1（复用 replay_decision 前向）/D2（影子−实盘=lever1 增量）/D3（红线）/D4（fail-safe + config flag）/D5（结局离线结算）；Design Doc + delta spec `shadow-decision-logger` 4 requirements。
+- [x] 2. 影子决策记录器：`config_loader` 加 `shadow_decision_logger_enabled: True` + env；`utils/shadow_decision_logger.py`（`log_shadow_decision` 跑 replay both-levers + `compute_flip_kind` + write-only jsonl + 内部 fail-safe）；坐实 replay 从真实 chokepoint bundle 跑通（TRUMP-USDT 产出影子决策、不抛/不重复 record）。
+- [x] 3. judge chokepoint hook：`_schedule_shadow`（sync, fire-and-forget create_task, 无 loop fail-safe）+ `_maybe_log_shadow`（async）；accept 在 publish 后（零 live 延迟）/reject（sync `_record_rejected_plan`）旁路；失败安全测试坐实影子异常不破 live。
+- [x] 4. 隔离红线守卫：`test_cf_red_line_guard.py` 加 `test_decision_paths_do_not_read_shadow_products`（executor/halt/riskguard/reviewer/position_analyst 禁读影子产物，Judge 写路径豁免）。
+- [x] 5. 离线对比驱动 `cf_shadow_lever1_compare.py`：筛 flip_kind=shadow_opens（lever1 解锁）→ resolve_counterfactual+klines 结算 lever1 增量净 R + 诚实门；空日志优雅拒答。
+- [x] 6. 全量回归 **1298 passed**（1288+10 新：9 shadow + 1 红线）；失败安全（无 loop/异常/flag-off 皆不破 live）+ schema sanity（含 real+shadow+tech_context）已测。
