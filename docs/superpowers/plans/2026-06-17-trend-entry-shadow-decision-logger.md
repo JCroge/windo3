@@ -2,6 +2,7 @@
 change: trend-entry-shadow-decision-logger
 design-doc: docs/superpowers/specs/2026-06-17-trend-entry-shadow-decision-logger-design.md
 base-ref: 0c07cc5a1384f8ad83059a7e4d0b88b813baabbe
+archived-with: 2026-06-17-trend-entry-shadow-decision-logger
 ---
 
 # 前向影子决策记录器 Implementation Plan
@@ -23,6 +24,7 @@ base-ref: 0c07cc5a1384f8ad83059a7e4d0b88b813baabbe
 - Create `tests/test_shadow_decision_logger.py` — schema / flip_kind / fail-safe / flag-off 单测。
 - Create `cf_shadow_lever1_compare.py` — 离线对比驱动（结局结算 + lever1 增量 + 诚实门）。
 
+archived-with: 2026-06-17-trend-entry-shadow-decision-logger
 ---
 
 ### Task 1: config flag shadow_decision_logger_enabled
@@ -234,6 +236,7 @@ def test_decision_paths_do_not_read_shadow_products():
 
 - [ ] **Step 3: 提交**（若有测试调整）
 
+archived-with: 2026-06-17-trend-entry-shadow-decision-logger
 ---
 
 ## Self-Review

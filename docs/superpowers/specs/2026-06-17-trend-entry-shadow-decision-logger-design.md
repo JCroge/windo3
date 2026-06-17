@@ -2,6 +2,8 @@
 comet_change: trend-entry-shadow-decision-logger
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-17-trend-entry-shadow-decision-logger
+status: final
 ---
 
 # Design Doc: trend-entry-shadow-decision-logger（前向影子决策记录器）
