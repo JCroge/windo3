@@ -133,6 +133,8 @@ DEFAULTS = {
     "counterfactual_ledger_enabled": True,
     # trend-entry-levers-default-on: lever2 阶梯加权 effective_rr 口径修正，默认开（lever1 仍默认关）
     "ladder_rr_enabled": True,
+    # trend-entry-shadow-decision-logger: 前向影子决策记录器（observability-only），默认开
+    "shadow_decision_logger_enabled": True,
     "rr_floor_default": 1.5,
     "rr_floor_long_bullish": 1.30,
     "rr_floor_long_aligned_choppy": 1.30,
@@ -274,6 +276,7 @@ def _read_env_overrides() -> dict:
         "PROBE_SHORT_ENABLED": ("probe_short_enabled", _to_bool),
         "LOW_RR_SLOT_ENABLED": ("low_rr_slot_enabled", _to_bool),
         "LADDER_RR_ENABLED": ("ladder_rr_enabled", _to_bool),
+        "SHADOW_DECISION_LOGGER_ENABLED": ("shadow_decision_logger_enabled", _to_bool),
         "COUNTERFACTUAL_LEDGER_ENABLED": ("counterfactual_ledger_enabled", _to_bool),
         "RR_FLOOR_DEFAULT": ("rr_floor_default", float),
         "RR_FLOOR_LONG_BULLISH": ("rr_floor_long_bullish", float),
