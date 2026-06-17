@@ -1,11 +1,11 @@
 workflow: full
-phase: build
-build_mode: null
-isolation: null
+phase: verify
+build_mode: executing-plans
+isolation: branch
 verify_mode: null
 base_ref: 78902b147c35c9178232eedd891f3ad00756bd8d
 design_doc: docs/superpowers/specs/2026-06-17-trend-entry-levers-default-on-design.md
-plan: null
+plan: docs/superpowers/plans/2026-06-17-trend-entry-levers-default-on.md
 verify_result: pending
 verification_report: null
 branch_status: pending
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/trend-entry-levers-default-on/.comet/handoff/design-context.json
 handoff_hash: 1de7f89db4bee4b141d67cc970847253fd2b09ccc3daf97a7cc76326f287bc7a
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q utils agents tests
+verify_command: python3 -m pytest -q
