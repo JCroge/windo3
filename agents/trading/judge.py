@@ -3461,6 +3461,14 @@ class MultiJudge(BaseAgent):
             return 1.0
         return round((exp_profit - total_cost) / denom, 2)
 
+    def _effective_rr_for_plan(self, tp_dists, sl_dist, notional, gross_loss, total_cost):
+        """按 ladder_rr_enabled 开关返回 effective_rr;关闭时为旧 TP1-only 口径。"""
+        denom = gross_loss + total_cost
+        if getattr(self, '_ladder_rr_enabled', False):
+            return self._compute_ladder_rr(tp_dists, sl_dist, notional, gross_loss, total_cost)
+        tp1 = tp_dists[0] if tp_dists else sl_dist
+        return round((notional * tp1 - total_cost) / denom, 2) if denom > 0 else 1.0
+
     def _build_plan(self, tech: dict, action: str, price: float, confidence: int, score: float = 50) -> dict:
         levels = tech.get('levels', {})
         risk = tech.get('risk', {})
@@ -3488,7 +3496,10 @@ class MultiJudge(BaseAgent):
         gross_profit = notional * tp_dist
         gross_loss = budget['max_loss_usdt']
         total_cost = budget['total_cost_usdt']
-        effective_rr = round((gross_profit - total_cost) / (gross_loss + total_cost), 2) if (gross_loss + total_cost) > 0 else 1.0
+        tp_dists = [abs(tp - price) / price for tp in take_profit] if take_profit else [sl_dist]
+        effective_rr_tp1 = round((gross_profit - total_cost) / (gross_loss + total_cost), 2) if (gross_loss + total_cost) > 0 else 1.0
+        effective_rr = self._effective_rr_for_plan(tp_dists, sl_dist, notional, gross_loss, total_cost)
+        effective_rr_ladder = self._compute_ladder_rr(tp_dists, sl_dist, notional, gross_loss, total_cost)
 
         # ═══ P2-N: 期望值（EV）计算 ═══
         # EV = p_win × net_profit − (1 − p_win) × net_loss
@@ -3531,6 +3542,10 @@ class MultiJudge(BaseAgent):
             "order_type": order_type,
             "risk_reward_ratio": gross_rr,
             "effective_risk_reward_ratio": effective_rr,
+            "effective_rr_tp1": effective_rr_tp1,
+            "effective_rr_ladder": effective_rr_ladder,
+            "ladder_rr_enabled": bool(getattr(self, '_ladder_rr_enabled', False)),
+            "ladder_weights": list(self._LADDER_WEIGHTS),
             "funding_cost": round(budget['funding_cost_usdt'], 3),
             "est_hold_hours": budget['est_hold_hours'],
             "max_holding_hours": 24,

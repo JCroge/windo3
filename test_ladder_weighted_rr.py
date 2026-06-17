@@ -45,3 +45,19 @@ def test_ladder_missing_tiers_normalized():
     ladder = j._compute_ladder_rr(tp_dists=[0.03], sl_dist=0.02,
                                   notional=1000.0, gross_loss=20.0, total_cost=2.0)
     assert ladder > 0
+
+
+def test_effective_rr_switch_off_uses_tp1():
+    j = _judge()
+    j._ladder_rr_enabled = False
+    val = j._effective_rr_for_plan(tp_dists=[0.023, 0.045, 0.068], sl_dist=0.0145,
+                                   notional=1000.0, gross_loss=14.5, total_cost=3.0)
+    assert val == _tp1_only([0.023, 0.045, 0.068], 1000.0, 14.5, 3.0)
+
+
+def test_effective_rr_switch_on_uses_ladder():
+    j = _judge()
+    j._ladder_rr_enabled = True
+    args = dict(tp_dists=[0.023, 0.045, 0.068], sl_dist=0.0145,
+                notional=1000.0, gross_loss=14.5, total_cost=3.0)
+    assert j._effective_rr_for_plan(**args) == j._compute_ladder_rr(**args)
