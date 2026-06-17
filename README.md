@@ -4,7 +4,7 @@
 
 ## 系统状态
 
-- 最新本地验证（2026-06-16）：`1270 passed / 4 deselected / 1 warning`。
+- 最新本地验证（2026-06-17）：`1302 passed / 4 deselected / 1 warning`。
 - 最新能力：**反事实策略实验室 L1-L4**（observability-only）——拿真实决策磁带喂真实 Judge 代码、扰动任意非 LLM 旋钮、量化整策略 PnL/胜率/回撤 delta、自动诚实方向推荐（证据不足拒答不杜撰，绝不自动改线上 config）。模块：`utils/{decision_tape,decision_replay,counterfactual_pnl,cf_honesty_gate,perturbation_replay,cf_portfolio,sequential_perturbation,knob_sweep}.py` + `cf_replay_driver.py`；红线守卫 `tests/test_cf_red_line_guard.py`。详见 `docs/architecture.md`。
 - **2026-06-16 实验室三连修后端到端首次可信**（`fix-cf-lab-ev-coldstart-deadlock` / `fix-cf-lab-replay-config-parity` / `fix-cf-lab-symbol-state-injection`，均 observability-only comet 归档）：驱动 `cf_direction_recommendation.py` baseline_fidelity 1.0(虚假)→0.34→0.798→**0.944（untrustworthy=False）**。首个可信结论：放宽 choppy R:R 地板 / `min_confidence` 的 PnL delta≈0 → 非高价值杠杆，佐证地板 1.50 维持。逐基线见 `docs/handoff.md`。
 - live 状态：OKX 实盘 paper+live 双轨在跑，逻辑账户拆分 300 USDT。第四次审计 F4-001/002/003 阻断已在 2026-05-29 代码与单测闭环，真实 OKX owner-tag 补验 T0/T1/T6 PASS；TG 新增 `/halts` `/resume_symbol` `/pnl` `/pnl_id`，Entry Drift Hybrid Policy 对 open 路径执行 4 档 drift gate；Pullback Entry Paper Parity 对齐 paper/live 限价撮合契约；Short Main Path Risk Guard Parity 把短单结构性风险 gate 收敛到 `_classify_short_entry_risk` 单一函数，main 与 deferred 三路径共用。live 扩容为 CONDITIONAL GO，扩容前需要把 `BOT_INSTANCE_ID` 写入 systemd / pm2 等启动配置，并完成真实 TG 命令链与 drift gate 运维验收。
@@ -54,7 +54,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 ## 常用验证
 
 ```bash
-python3 -m pytest -q                       # 默认回归（当前验证 1270 passed）
+python3 -m pytest -q                       # 默认回归（当前验证 1302 passed）
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（需 .env.testnet）
