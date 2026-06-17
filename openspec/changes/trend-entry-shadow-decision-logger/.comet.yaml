@@ -4,7 +4,7 @@ build_mode: null
 isolation: null
 verify_mode: null
 base_ref: 52e932008966bb9eb748d28425f0e7e8bc125086
-design_doc: null
+design_doc: docs/superpowers/specs/2026-06-17-trend-entry-shadow-decision-logger-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -12,3 +12,5 @@ branch_status: pending
 created_at: 2026-06-17
 verified_at: null
 archived: false
+handoff_context: openspec/changes/trend-entry-shadow-decision-logger/.comet/handoff/design-context.json
+handoff_hash: c27d18b3d8e495c4121f01fcc269830f157a20b0cfe2efd45ab20b87bf0544b4

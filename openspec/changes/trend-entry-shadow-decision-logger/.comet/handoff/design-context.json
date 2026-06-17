@@ -1,0 +1,14 @@
+{
+  "change": "trend-entry-shadow-decision-logger",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "c27d18b3d8e495c4121f01fcc269830f157a20b0cfe2efd45ab20b87bf0544b4",
+  "files": [
+    { "path": "openspec/changes/trend-entry-shadow-decision-logger/proposal.md", "sha256": "357aa114e10bf7ee393528461afdb58e0a369a5a62b4fd339fa852dc9dbae4cf" },
+    { "path": "openspec/changes/trend-entry-shadow-decision-logger/design.md", "sha256": "eb60a5c01576beacf4f126f10c36533b484caa4e53f5b8beafbb70b3a60ef857" },
+    { "path": "openspec/changes/trend-entry-shadow-decision-logger/tasks.md", "sha256": "f807f6c10fd8f93fa0417e8538743efbe22220c01c48c36f3f6cdc0549e337c4" },
+    { "path": "openspec/changes/trend-entry-shadow-decision-logger/specs/shadow-decision-logger/spec.md", "sha256": "35d39858987c7911302dcd8d77f9497ccf023845e5007f5753d59cfb21836085" }
+  ]
+}
