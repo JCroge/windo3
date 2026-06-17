@@ -442,13 +442,17 @@ def test_path_evidence_switch_off_keeps_default():
 
 def test_path_evidence_policy_in_low_rr_family():
     """long_aligned_path_evidence 必须与 long_aligned_low_rr 同享低RR缩仓/降杠杆/槽位待遇。
-    回归守卫:防止新 policy 绕过低 R:R 风控(judge.py ~1480 和 ~3027 两处 low_rr_policies)。"""
+    回归守卫:防止新 policy 绕过低 R:R 风控。
+
+    fix-lever2-low-rr-sizing-tp1 后:低 R:R 缩仓**单一收口**于 `_apply_low_rr_sizing`
+    （消除原 ~1480/~3027 两处重复的 low_rr_policies 定义），两处调用点（主路径 +
+    `_apply_regime_policy`）都须经它，缩仓判定用 TP1 口径不被 lever2 阶梯松绑。"""
     import re
     import pathlib
     src = (pathlib.Path(__file__).parent / 'agents/trading/judge.py').read_text()
+    # 单一收口里的 low_rr_policies 集合必须含两个 policy
     matches = re.findall(r"low_rr_policies = \{([^}]*)\}", src)
-    # 两处 low_rr_policies 集合都必须包含该 policy
-    assert len(matches) >= 2, f"期望至少 2 处 low_rr_policies 定义，实际找到 {len(matches)} 处"
+    assert len(matches) >= 1, "low_rr_policies 定义缺失"
     for occurrence in matches:
         assert 'long_aligned_path_evidence' in occurrence, (
             f"low_rr_policies 缺少 long_aligned_path_evidence: {occurrence!r}"
@@ -456,3 +460,8 @@ def test_path_evidence_policy_in_low_rr_family():
         assert 'long_aligned_low_rr' in occurrence, (
             f"low_rr_policies 缺少 long_aligned_low_rr: {occurrence!r}"
         )
+    # 单一收口存在, 且两处调用点都经它(无旁路)
+    assert 'def _apply_low_rr_sizing' in src, "低 R:R 缩仓单一收口函数缺失"
+    assert src.count('_apply_low_rr_sizing(plan,') >= 2, (
+        "缩仓收口调用点应 ≥2（主路径 + _apply_regime_policy），防止旁路"
+    )
