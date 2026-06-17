@@ -1,0 +1,13 @@
+{
+  "change": "cf-lab-driver-portfolio-param-parity",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "9630220f9caceb59c5b78e95403f533cded71a167f6fd79c008582366c153091",
+  "files": [
+    { "path": "openspec/changes/cf-lab-driver-portfolio-param-parity/proposal.md", "sha256": "a2b4d9afc7c48c13a8837a0b6bd14a05499cce44dd5fd746d2b38c36e24bea39" },
+    { "path": "openspec/changes/cf-lab-driver-portfolio-param-parity/design.md", "sha256": "4d94bfcb8b23cb51e9a83270ff784ba146abb1c9992b022b2bdb684291bdfcf5" },
+    { "path": "openspec/changes/cf-lab-driver-portfolio-param-parity/tasks.md", "sha256": "9a2edf3c21f39b4144afc16a311b6661560f6b771cac0fcb54d99e16d7e241c8" }
+  ]
+}

@@ -1,0 +1,19 @@
+workflow: full
+phase: verify
+build_mode: direct
+isolation: branch
+verify_mode: full
+base_ref: a4192aa77c5f05a0c9075f28695176a806533fec
+design_doc: docs/superpowers/specs/2026-06-17-cf-lab-driver-portfolio-param-parity-design.md
+plan: docs/superpowers/plans/2026-06-17-cf-lab-driver-portfolio-param-parity.md
+verify_result: pending
+verification_report: docs/superpowers/reports/2026-06-17-cf-lab-driver-portfolio-param-parity-verify.md
+branch_status: pending
+created_at: 2026-06-17
+verified_at: null
+archived: false
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q cf_direction_recommendation.py cf_rr_fidelity_ab.py utils agents
+verify_command: python3 -m pytest -q
+handoff_context: openspec/changes/cf-lab-driver-portfolio-param-parity/.comet/handoff/design-context.json
+handoff_hash: 9630220f9caceb59c5b78e95403f533cded71a167f6fd79c008582366c153091
+direct_override: true

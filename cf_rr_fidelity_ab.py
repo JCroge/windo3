@@ -13,9 +13,23 @@ import json
 import sqlite3
 
 from utils.sequential_perturbation import build_delta_report
+from utils.config_loader import load_config
 
 TAPE = "data/decision_replay_tape.jsonl"
 KLINES_1S = "data/klines_1s.db"
+
+
+def _live_portfolio_kwargs():
+    """从 live config 派生 CF 组合参数，对齐 run_agents 运行时（observability-only）。
+    库默认 -50/1000 与 live config.yaml(-300)/.env(EFFECTIVE_BALANCE_CAP=300) 不符，
+    会在未来 accept 变多时让 CF 比 live 更早熔断、污染 delta。显式对齐。"""
+    cfg = load_config()
+    return {
+        "initial_equity": cfg.get("effective_balance_cap") or 1000.0,
+        "max_slots": cfg.get("max_concurrent_positions", 3),
+        "daily_pnl_hard_stop": cfg.get("daily_pnl_hard_stop", -50.0),
+        "consecutive_loss_limit": cfg.get("consecutive_loss_limit", 3),
+    }
 
 ARMS = {
     "lever1_only": {"path_evidence_aligned_enabled": True},
@@ -69,11 +83,13 @@ def _fmt_delta(d):
 async def main():
     recs = load_records()
     price_loader = make_price_loader(KLINES_1S)
-    print(f"=== 磁带载入: {len(recs)} 条 (schema v2 + 非空 tech_analysis) ===\n")
+    pf = _live_portfolio_kwargs()
+    print(f"=== 磁带载入: {len(recs)} 条 (schema v2 + 非空 tech_analysis) ===")
+    print(f"=== CF 组合参数(对齐 live): {pf} ===\n")
 
     for arm_name, knobs in ARMS.items():
         print(f"=== ARM: {arm_name}  knobs={json.dumps(knobs, ensure_ascii=False)} ===")
-        report = await build_delta_report(recs, {}, knobs, price_loader, fidelity_threshold=0.0)
+        report = await build_delta_report(recs, {}, knobs, price_loader, fidelity_threshold=0.0, **pf)
         meta = report["metadata"]
         fid = meta.get("baseline_fidelity")
         print(f"  baseline_fidelity:        {fid:.4f}" if fid is not None else

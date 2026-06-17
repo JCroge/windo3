@@ -14,9 +14,23 @@ import sqlite3
 from utils.knob_sweep import sweep_knob, recommend_direction
 from utils.joint_knob_sweep import sweep_grid, compute_interactions, recommend_direction_nd
 from utils.sequential_perturbation import build_delta_report
+from utils.config_loader import load_config
 
 TAPE = "data/decision_replay_tape.jsonl"
 KLINES_1S = "data/klines_1s.db"
+
+
+def _live_portfolio_kwargs():
+    """从 live config 派生 CF 组合参数，对齐 run_agents 运行时（observability-only）。
+    库默认是 -50/1000，与 live config.yaml(-300)/.env(EFFECTIVE_BALANCE_CAP=300) 不符，
+    会在未来 accept 变多时让 CF 比 live 更早熔断、污染 delta。显式对齐。"""
+    cfg = load_config()
+    return {
+        "initial_equity": cfg.get("effective_balance_cap") or 1000.0,
+        "max_slots": cfg.get("max_concurrent_positions", 3),
+        "daily_pnl_hard_stop": cfg.get("daily_pnl_hard_stop", -50.0),
+        "consecutive_loss_limit": cfg.get("consecutive_loss_limit", 3),
+    }
 
 
 def load_records():
@@ -59,12 +73,14 @@ def make_price_loader(db_path):
 async def main():
     recs = load_records()
     price_loader = make_price_loader(KLINES_1S)
-    print(f"=== 磁带载入: {len(recs)} 条 (全部 reject) ===\n")
+    pf = _live_portfolio_kwargs()
+    print(f"=== 磁带载入: {len(recs)} 条 (全部 reject) ===")
+    print(f"=== CF 组合参数(对齐 live): {pf} ===\n")
 
     # ── L2 终验: baseline 默认 config 单臂回放, 报 fidelity ──
     # build_delta_report 内部先跑 baseline 臂并算 fidelity; 用零扰动探针拿 baseline_fidelity。
     print("=== L2 终验: baseline 复现率 (信任锚) ===")
-    probe = await build_delta_report(recs, {}, {}, price_loader, fidelity_threshold=0.0)
+    probe = await build_delta_report(recs, {}, {}, price_loader, fidelity_threshold=0.0, **pf)
     meta = probe["metadata"]
     print(f"  baseline_fidelity (reject 复现率): {meta['baseline_fidelity']:.4f}")
     print(f"  sequence_len: {meta['sequence_len']}")
@@ -75,7 +91,7 @@ async def main():
     # ── L4 扫描 #1: rr_floor_default (红线关注的 choppy 地板) ──
     print("=== L4 扫描 #1: rr_floor_default [1.50→1.20] ===")
     rr_values = [1.50, 1.45, 1.40, 1.35, 1.30, 1.25, 1.20]
-    rr_sweep = await sweep_knob(recs, "rr_floor_default", rr_values, price_loader)
+    rr_sweep = await sweep_knob(recs, "rr_floor_default", rr_values, price_loader, **pf)
     for r in rr_sweep:
         d = r["delta"]
         ds = f"net={d['net_pnl']:+.2f} wr={d['win_rate']:+.3f} mdd={d['max_drawdown']:+.2f}" if d else "DELTA=None"
@@ -88,7 +104,7 @@ async def main():
     # ── L4 扫描 #2: min_confidence (质量门, 426 单被它拦) ──
     print("=== L4 扫描 #2: min_confidence [60→40] ===")
     conf_values = [60, 55, 50, 45, 40]
-    conf_sweep = await sweep_knob(recs, "min_confidence", conf_values, price_loader)
+    conf_sweep = await sweep_knob(recs, "min_confidence", conf_values, price_loader, **pf)
     for r in conf_sweep:
         d = r["delta"]
         ds = f"net={d['net_pnl']:+.2f} wr={d['win_rate']:+.3f} mdd={d['max_drawdown']:+.2f}" if d else "DELTA=None"
@@ -102,7 +118,7 @@ async def main():
     base_values = {"rr_floor_default": 1.50, "min_confidence": 60}
     knob_grids = {"rr_floor_default": [1.50, 1.40, 1.30, 1.20],
                   "min_confidence": [60, 50, 40]}
-    grid = await sweep_grid(recs, knob_grids, price_loader, baseline_config={})
+    grid = await sweep_grid(recs, knob_grids, price_loader, baseline_config={}, **pf)
     if grid.get("untrustworthy"):
         print(f"  untrustworthy (baseline_fidelity={grid['baseline_fidelity']:.3f}) → 拒答")
     else:
