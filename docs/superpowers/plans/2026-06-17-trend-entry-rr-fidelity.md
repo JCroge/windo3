@@ -393,70 +393,138 @@ git commit -m "feat(rr-fidelity): wire ladder rr into _build_plan behind switch 
 
 ---
 
-## Task 5: 四臂全样本 A/B(event_backtest)
+## Task 5: 四臂全样本 A/B(CF 重放实验室)
 
 **Files:**
+- Modify: `utils/decision_replay.py`(`_install_config_flags` 注入新 flag — **必需前置**)
 - Create: `cf_rr_fidelity_ab.py`(repo 根,observability-only)
-- 复用:`event_backtest.py`(已建模 50%@TP1 + trailing)
+- Test: `tests/test_cf_red_line_guard.py` 已有红线守卫,新脚本不得被决策路径 import
 
-- [ ] **Step 1: 确认 event_backtest 入口签名**
+### Step 1(必需前置): 把新 flag 注入 `_install_config_flags`
 
-Run: `python3 -c "import event_backtest, inspect; print([m for m in dir(event_backtest) if not m.startswith('__')][:20])"`
-Expected: 打印模块成员(确认类名/run 入口,供脚本调用)
+CF 重放用 `MultiJudge.__new__` + `_install_config_flags`(手维护镜像),不走 `__init__`。新 flag 不注入则 replay 用 `getattr(...,False)` 兜底 → 旋钮无效 → A/B 假阴性。
 
-- [ ] **Step 2: 写四臂 A/B 脚本**
-
-新建 `cf_rr_fidelity_ab.py`,对同一历史数据集跑四臂(baseline / 仅① / 仅② / ①+②),各臂用不同 config 开关组合实例化回测,产出净 PnL/胜率/MDD。脚本骨架(按 Step 1 的真实签名补全数据加载):
+- [ ] 在 `utils/decision_replay.py::_install_config_flags` 中,`judge._rr_floor_default = g("rr_floor_default", 1.50)` 附近,补:
 
 ```python
-"""trend-entry-rr-fidelity 四臂全样本 A/B。observability-only,输出严禁交易决策读取。"""
-import json
-from event_backtest import EventBacktest  # 按 Step 1 实际类名调整
-
-ARMS = {
-    'baseline':       dict(path_evidence_aligned_enabled=False, ladder_rr_enabled=False),
-    'lever1_only':    dict(path_evidence_aligned_enabled=True,  ladder_rr_enabled=False),
-    'lever2_only':    dict(path_evidence_aligned_enabled=False, ladder_rr_enabled=True),
-    'lever1_plus_2':  dict(path_evidence_aligned_enabled=True,  ladder_rr_enabled=True),
-}
-
-def run_arm(name, flags, df, symbol):
-    bt = EventBacktest(**flags)          # 按真实构造函数传 flags/config
-    res = bt.run(df, symbol=symbol)
-    return {
-        'arm': name,
-        'net_pnl': res.get('net_pnl'),
-        'win_rate': res.get('win_rate'),
-        'max_drawdown': res.get('max_drawdown'),
-        'trades': res.get('num_trades'),
-    }
-
-def main():
-    # TODO(Step 3): 载入全样本(含亏单)数据集 df + symbol 列表
-    rows = []
-    # for df, symbol in load_full_sample():
-    #     for name, flags in ARMS.items():
-    #         rows.append(run_arm(name, flags, df, symbol))
-    print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
-
-if __name__ == '__main__':
-    main()
+    judge._path_evidence_aligned_enabled = g("path_evidence_aligned_enabled", False)
+    judge._path_evidence_min_pre12h_return = g("path_evidence_min_pre12h_return", 0.03)
+    judge._path_evidence_max_range_pos = g("path_evidence_max_range_pos", 0.92)
+    judge._path_evidence_min_strength = g("path_evidence_min_strength", 60)
+    judge._ladder_rr_enabled = g("ladder_rr_enabled", False)
 ```
 
-- [ ] **Step 3: 接全样本数据并跑**
+(默认值必须与 `judge.py:__init__` 一致。)
 
-按 `test_event_backtest_real_data.py` 的数据加载方式补全 `load_full_sample()`(全样本含亏单,不只趋势赢家),运行:
+- [ ] **写守卫测试**(防回归:旋钮真生效)。新增 `tests/test_rr_fidelity_knob_injection.py`:
+
+```python
+import asyncio, os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from utils.decision_replay import _install_config_flags
+from agents.trading.judge import MultiJudge
+
+
+def test_install_config_flags_sets_new_knobs():
+    j = MultiJudge.__new__(MultiJudge)
+    _install_config_flags(j, {"path_evidence_aligned_enabled": True, "ladder_rr_enabled": True})
+    assert j._path_evidence_aligned_enabled is True
+    assert j._ladder_rr_enabled is True
+    # 默认(空 config)与 __init__ 一致(关)
+    j2 = MultiJudge.__new__(MultiJudge)
+    _install_config_flags(j2, {})
+    assert j2._path_evidence_aligned_enabled is False
+    assert j2._ladder_rr_enabled is False
+```
+
+Run: `python3 -m pytest tests/test_rr_fidelity_knob_injection.py -q` → PASS。
+
+### Step 2: 写四臂 A/B 驱动 `cf_rr_fidelity_ab.py`
+
+复用 `cf_direction_recommendation.py` 的载带方式(`data/decision_replay_tape.jsonl` 过滤 v2+tech 可回放)与 `utils/sequential_perturbation.build_delta_report`(L3b 全样本组合态 delta)。四臂 = baseline vs 三个 flag 组合:
+
+```python
+"""trend-entry-rr-fidelity 四臂全样本 A/B(CF 重放实验室)。observability-only,严禁决策路径 import。"""
+import asyncio, json, sqlite3
+from utils.sequential_perturbation import build_delta_report
+
+TAPE = "data/decision_replay_tape.jsonl"
+KLINES_1S = "data/klines_1s.db"
+
+ARMS = {
+    'lever1_only':   {"path_evidence_aligned_enabled": True},
+    'lever2_only':   {"ladder_rr_enabled": True},
+    'lever1_plus_2': {"path_evidence_aligned_enabled": True, "ladder_rr_enabled": True},
+}
+
+def load_records():
+    recs = []
+    with open(TAPE) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("schema_version") == "decision_replay_record.v2" and r.get("tech_analysis"):
+                recs.append(r)
+    return recs
+
+def make_price_loader(db_path):
+    def loader(symbol, created_at, window_sec=86400):
+        conn = sqlite3.connect(db_path)
+        try:
+            lo = int(created_at * 1000); hi = int((created_at + window_sec) * 1000)
+            rows = conn.execute(
+                "SELECT open_time, high, low, close FROM klines WHERE symbol=? "
+                "AND open_time>=? AND open_time<=? ORDER BY open_time",
+                (symbol, lo, hi)).fetchall()
+        except Exception:
+            return []
+        finally:
+            conn.close()
+        return [{"open_time": t, "high": h, "low": l, "close": c} for t, h, l, c in rows]
+    return loader
+
+async def main():
+    recs = load_records()
+    price_loader = make_price_loader(KLINES_1S)
+    print(f"=== 载带 {len(recs)} 条可回放(全样本被拒磁带)===\n")
+    # baseline 臂(两 flag 皆关)在 build_delta_report 内部作为 base 臂跑;此处对每个 arm 取 delta
+    for name, knobs in ARMS.items():
+        report = await build_delta_report(recs, {}, knobs, price_loader, fidelity_threshold=0.0)
+        meta = report["metadata"]
+        d = report.get("delta") or {}
+        print(f"[{name}] knobs={knobs}")
+        print(f"  baseline_fidelity={meta['baseline_fidelity']:.4f} untrust={meta.get('untrustworthy')} "
+              f"seq_len={meta['sequence_len']} divergence={meta.get('divergence_ratio')}")
+        print(f"  CF开仓数={meta.get('perturbed_cf_open_count')} (baseline={meta.get('baseline_cf_open_count')})")
+        print(f"  delta: net_pnl={d.get('net_pnl')} win_rate={d.get('win_rate')} max_dd={d.get('max_drawdown')}\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+> 注:`build_delta_report` 的确切返回字段名以 `utils/sequential_perturbation.py` 为准(参考 `cf_direction_recommendation.py` 的真实用法),实现时对齐字段(如 `delta`/`metadata`/`baseline_cf_open_count`)。若 baseline_fidelity 跨不过可信线(untrustworthy=True),报告必须如实标注"实验室不可信、delta 不予采信"。
+
+- [ ] **Step 3: 跑并记录**
 
 Run: `python3 cf_rr_fidelity_ab.py`
-Expected: 打印四臂 net_pnl / win_rate / max_drawdown / trades
+Expected: 打印三臂 vs baseline 的 baseline_fidelity / CF 开仓数 / net_pnl·win_rate·MDD delta。
 
 - [ ] **Step 4: 记录背书结论**
 
-把四臂结果写入 `openspec/changes/trend-entry-rr-fidelity/specs/`同级的 `ab_result.md`(change 目录下),给出背书判断:净 PnL 改善且胜率不显著下降则 PASS。
+把结果写入 `openspec/changes/trend-entry-rr-fidelity/ab_result.md`,背书判断:
+- baseline_fidelity ≥ 0.85(实验室可信)否则结论不予采信;
+- 杠杆使被拒干净趋势 CF 开仓数上升 且 净 PnL delta ≥ 0(含同期亏单翻转);
+- 胜率不被显著稀释。
+三者满足 → 灰度 GO;否则记录为何不达标 + 下一步。
 
 ```bash
-git add cf_rr_fidelity_ab.py openspec/changes/trend-entry-rr-fidelity/ab_result.md
-git commit -m "test(rr-fidelity): four-arm full-sample A/B harness + result record"
+git add utils/decision_replay.py tests/test_rr_fidelity_knob_injection.py cf_rr_fidelity_ab.py openspec/changes/trend-entry-rr-fidelity/ab_result.md openspec/changes/trend-entry-rr-fidelity/tasks.md
+git commit -m "test(rr-fidelity): CF-replay four-arm full-sample A/B + knob injection (lever1+2)"
 ```
 
 ---
@@ -485,6 +553,7 @@ git commit -m "chore(rr-fidelity): finalize lever1+lever2, register P2/v2 follow
 
 - **Spec 覆盖**:`trend-aligned-rr-floor`(授对齐地板/真choppy不误授/禁前视/灰度/可观测)→ Task 2;`ladder-weighted-rr`(阶梯加权/保守剩余/保守先验/可观测/全样本A/B/灰度)→ Task 3+4+5。
 - **禁前视**:Task 2 证据仅取 `tech.entry_context`(决策时点产出,无未来 bar)→ 满足 scenario「客观证据禁前视」。
-- **不注水**:Task 3 概率 [1.0,0.5,0.25] + 剩余 +1R 上限,测试 `test_ladder_far_tier_low_prob_no_inflation` / `test_ladder_remainder_conservative` 守门。
+- **不注水/不反向**:Task 3 Option B(离场比例权重,无概率折扣)+ 剩余封顶 +1R,测试 `test_ladder_ge_tp1_when_all_positive`(≥真实旧口径)/ `test_ladder_remainder_capped_at_1R` 守门。
+- **CF 旋钮真生效**:Task 5 Step 1 把新 flag 注入 `_install_config_flags`,守卫测试防 A/B 假阴性。
 - **开关默认关**:Task 1 全 False;Task 2/4 开关关闭回退测试。
 - **类型一致**:`_compute_ladder_rr` / `_effective_rr_for_plan` 签名在 Task 3/4 一致。

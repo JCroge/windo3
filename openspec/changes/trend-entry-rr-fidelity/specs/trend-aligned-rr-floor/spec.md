@@ -21,10 +21,10 @@
 - **WHEN** 计算干净趋势的客观路径证据(方向一致性、近窗回撤、延展度)
 - **THEN** 仅使用入场决策时点及之前的 bar 数据,MUST NOT 引用入场后的 bar(无前视偏差)
 
-#### Scenario: 全样本回测背书
+#### Scenario: 全样本回测背书(CF 重放实验室)
 
-- **WHEN** 趋势对齐判定的放宽/补强在 event_backtest 上对全样本(含亏单)A/B
-- **THEN** 产出净 PnL/胜率/MDD delta,且胜率不被低质量入场显著稀释(背书阈值在回测报告中明示)
+- **WHEN** 趋势对齐判定的放宽以 `path_evidence_aligned_enabled` 为旋钮,在 CF 重放实验室(跑真实 judge 决策代码)对全样本被拒磁带(含亏单)A/B
+- **THEN** 产出净 PnL/胜率/MDD delta,且胜率不被低质量入场显著稀释(背书阈值在回测报告中明示);旋钮 MUST 经 `_install_config_flags` 注入方能生效
 
 ### Requirement: 趋势对齐判定可观测且可配置
 

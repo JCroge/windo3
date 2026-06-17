@@ -28,19 +28,19 @@ v1 的阶梯加权 MUST 与旧 TP1-only 口径保持**相同的"目标达成"假
 - **WHEN** effective_rr 使用阶梯加权
 - **THEN** 所用离场比例权重([0.5,0.25,0.25])随 effective_rr_ladder 一并记录,可在决策记录中回溯
 
-### Requirement: 全样本回测背书与灰度
+### Requirement: 全样本 A/B 背书(CF 重放实验室)与灰度
 
-阶梯加权 effective_rr SHALL 在 event_backtest 上对**全样本(含亏单)** A/B,产出净 PnL/胜率/MDD delta。若 event_backtest 未建模阶梯离场,MUST 先补阶梯离场建模再做 A/B。新口径 SHALL 通过 config 开关灰度,回测背书前不直接全量上线。
+阶梯加权 effective_rr SHALL 在 **CF 重放实验室**(`utils/knob_sweep` / `utils/sequential_perturbation` 跑真实 `MultiJudge` 决策代码)上,以 `ladder_rr_enabled` 作为旋钮对**全样本被拒磁带(含亏单)** A/B,产出净 PnL/胜率/MDD delta。新旋钮 MUST 经 `utils/decision_replay.py::_install_config_flags` 注入(否则 replay 用 `getattr` 兜底默认致旋钮无效、A/B 假阴性)。退出估算的粗粒度(SL/TP/24h)由两臂同估算在 delta 抵消(以 delta 为结论,非绝对值)。新口径 SHALL 通过 config 开关灰度,背书前不直接全量上线。
 
 #### Scenario: 含亏单的全样本 A/B
 
-- **WHEN** 新旧 effective_rr 口径在 event_backtest 上对比
-- **THEN** 回测覆盖全样本(趋势赢家 + 同期亏单),净效果以含亏单的 delta 为准,而非仅趋势赢家
+- **WHEN** baseline 臂(ladder_rr_enabled=False)与 perturbed 臂(=True)在 CF 重放实验室对比
+- **THEN** A/B 覆盖全样本被拒磁带(趋势赢家翻转 + 同期亏单翻转),净效果以含亏单的 delta 为准,而非仅趋势赢家
 
-#### Scenario: event_backtest 阶梯离场前置
+#### Scenario: 旋钮经 _install_config_flags 注入
 
-- **WHEN** 现有 event_backtest 仅按单档 SL/TP 结算
-- **THEN** 在做②的 A/B 前先补 50/25/25 阶梯离场 + trailing 建模,否则 A/B 结果不被采信
+- **WHEN** CF 重放以 `ladder_rr_enabled` 为旋钮
+- **THEN** `utils/decision_replay.py::_install_config_flags` 必须设置该 flag(及①的 path_evidence flags),使 perturbed 臂真实生效;缺注入则视为实现缺陷
 
 #### Scenario: config 灰度开关
 
