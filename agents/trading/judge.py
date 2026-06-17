@@ -2548,12 +2548,34 @@ class MultiJudge(BaseAgent):
                        and (htf_bias == 'bullish' or daily_bias == 'bullish')
                        and not block_long
                        and abs(score) >= min_deferred_score)
+            # trend-entry-rr-fidelity 杠杆① P1:bias 漏报时用入场前客观路径证据补判
+            path_evidence = False
+            ectx = (tech or {}).get('entry_context', {}) or {}
+            if (not aligned
+                    and getattr(self, '_path_evidence_aligned_enabled', False)
+                    and not block_long
+                    and abs(score) >= min_deferred_score):
+                strength = trend.get('strength', 0)
+                pre12h = ectx.get('pre_12h_return_pct', 0.0)
+                range_pos = ectx.get('position_in_24h_range', 0.5)
+                path_evidence = (sym_dir == 'bullish'
+                                 and strength >= getattr(self, '_path_evidence_min_strength', 60)
+                                 and pre12h >= getattr(self, '_path_evidence_min_pre12h_return', 0.03)
+                                 and range_pos <= getattr(self, '_path_evidence_max_range_pos', 0.92))
             if aligned:
                 return (
                     rr_floor_long_aligned,
                     'long_aligned_low_rr',
                     f'long_aligned:regime={eff_regime},'
                     f'sym_trend={sym_dir},htf={htf_bias},daily={daily_bias}',
+                )
+            if path_evidence:
+                return (
+                    rr_floor_long_aligned,
+                    'long_aligned_path_evidence',
+                    f'long_aligned_path:regime={eff_regime},'
+                    f'strength={trend.get("strength")},pre12h={ectx.get("pre_12h_return_pct")},'
+                    f'range_pos={ectx.get("position_in_24h_range")}',
                 )
 
         if (not is_long and eff_regime == 'bullish'

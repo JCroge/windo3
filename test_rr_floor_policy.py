@@ -380,3 +380,59 @@ class TestAC09AttributionLogging:
         assert attr_no_tech['symbol_higher_tf_bias'] == 'bullish'
         assert attr_no_tech['symbol_daily_bias'] == 'bullish'
         assert 'sym_trend=bullish' in attr_no_tech['rr_floor_reason']
+
+
+# ───────────────────────────── Task 2: path_evidence OR branch ─────────────────────────────
+
+def _make_judge_path(regime='choppy', overrides=None):
+    j = _make_judge(regime=regime, config_overrides=overrides)
+    # 新字段在 _make_judge 中未设,显式补设以反映 Task 1 行为
+    j._path_evidence_aligned_enabled = (overrides or {}).get('path_evidence_aligned_enabled', True)
+    j._path_evidence_min_pre12h_return = 0.03
+    j._path_evidence_max_range_pos = 0.92
+    j._path_evidence_min_strength = 60
+    return j
+
+
+def _clean_trend_tech():
+    """choppy regime 下的干净 long 趋势:bias 漏报(neutral),但路径证据明确。"""
+    return {
+        'trend': {'direction': 'bullish', 'strength': 70,
+                  'higher_tf_bias': 'neutral', 'daily_bias': 'neutral'},
+        'entry_timing': {'tf_15m_block_long': False},
+        'entry_context': {'pre_12h_return_pct': 0.08, 'position_in_24h_range': 0.6,
+                          'prev_daily_return_pct': 0.05},
+    }
+
+
+def test_path_evidence_grants_aligned_floor():
+    j = _make_judge_path(regime='choppy')
+    min_rr, policy, reason = j._select_rr_floor('open_long', {}, _clean_trend_tech(), score=60)
+    assert min_rr == 1.30
+    assert policy == 'long_aligned_path_evidence'
+
+
+def test_path_evidence_real_choppy_not_granted():
+    """方向反复/回撤大:pre_12h_return 为负 → 不授对齐地板。"""
+    j = _make_judge_path(regime='choppy')
+    tech = _clean_trend_tech()
+    tech['entry_context']['pre_12h_return_pct'] = -0.02
+    min_rr, policy, reason = j._select_rr_floor('open_long', {}, tech, score=60)
+    assert min_rr == 1.50
+    assert policy == 'default'
+
+
+def test_path_evidence_overheated_not_granted():
+    """追高(range_pos 过高)→ 不授对齐地板。"""
+    j = _make_judge_path(regime='choppy')
+    tech = _clean_trend_tech()
+    tech['entry_context']['position_in_24h_range'] = 0.97
+    min_rr, policy, reason = j._select_rr_floor('open_long', {}, tech, score=60)
+    assert min_rr == 1.50
+
+
+def test_path_evidence_switch_off_keeps_default():
+    j = _make_judge_path(regime='choppy', overrides={'path_evidence_aligned_enabled': False})
+    min_rr, policy, reason = j._select_rr_floor('open_long', {}, _clean_trend_tech(), score=60)
+    assert min_rr == 1.50
+    assert policy == 'default'

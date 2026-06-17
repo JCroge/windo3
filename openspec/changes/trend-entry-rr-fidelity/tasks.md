@@ -7,10 +7,10 @@
 
 ## 1. 杠杆① trend-aligned-rr-floor(P1 客观路径证据)
 
-- [ ] 1.1 定义客观路径证据判据(近窗方向一致性 + 近窗浅回撤≤k·ATR + 延展未过热),全部用入场前数据
-- [ ] 1.2 在 `judge.py:_select_rr_floor` 给 long_aligned 加 `OR 客观证据` 分支,授 1.30 级地板,rr_policy='long_aligned_path_evidence',记命中证据项
-- [ ] 1.3 加 config 开关 `path_evidence_aligned_enabled`(默认关)+ 阈值参数
-- [ ] 1.4 单元测试:干净趋势授对齐地板 / 真 choppy 不误授 / 开关关闭行为不变 / **反前视断言**
+- [x] 1.1 定义客观路径证据判据(近窗方向一致性 + 近窗浅回撤≤k·ATR + 延展未过热),全部用入场前数据
+- [x] 1.2 在 `judge.py:_select_rr_floor` 给 long_aligned 加 `OR 客观证据` 分支,授 1.30 级地板,rr_policy='long_aligned_path_evidence',记命中证据项
+- [x] 1.3 加 config 开关 `path_evidence_aligned_enabled`(默认关)+ 阈值参数
+- [x] 1.4 单元测试:干净趋势授对齐地板 / 真 choppy 不误授 / 开关关闭行为不变 / **反前视断言**
 
 ## 2. 杠杆② ladder-weighted-rr(v1 保守先验)
 
