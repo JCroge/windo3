@@ -2,6 +2,8 @@
 comet_change: trend-entry-rr-fidelity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-17-trend-entry-rr-fidelity
+status: final
 ---
 
 # trend-entry-rr-fidelity 技术设计

@@ -2,6 +2,7 @@
 change: trend-entry-rr-fidelity
 design-doc: docs/superpowers/specs/2026-06-17-trend-entry-rr-fidelity-design.md
 base-ref: 582a0639aa52c0e64ae9dd013123308b7d5a42e8
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 # Trend-Entry R:R Fidelity Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 582a0639aa52c0e64ae9dd013123308b7d5a42e8
 
 **Tech Stack:** Python 3.9, pytest, pandas(event_backtest)。
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## 文件结构
@@ -27,6 +29,7 @@ base-ref: 582a0639aa52c0e64ae9dd013123308b7d5a42e8
 - 测试:`test_rr_floor_policy.py`(①)、新增 `test_ladder_weighted_rr.py`(②)
 - A/B:`event_backtest.py` 已建模阶梯,新增四臂对照脚本 `cf_rr_fidelity_ab.py`(repo 根,observability-only)
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## Task 1: 新增 config 开关与阈值
@@ -60,6 +63,7 @@ git add agents/trading/judge.py
 git commit -m "feat(rr-fidelity): add config flags for path-evidence floor and ladder rr (default off)"
 ```
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## Task 2: 杠杆① — _select_rr_floor 客观路径证据 OR 分支
@@ -184,6 +188,7 @@ git add agents/trading/judge.py test_rr_floor_policy.py openspec/changes/trend-e
 git commit -m "feat(rr-fidelity): grant aligned floor to clean trends via pre-entry path evidence (lever 1)"
 ```
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## Task 3: 杠杆② — 阶梯加权 effective_rr 纯函数
@@ -303,6 +308,7 @@ git add agents/trading/judge.py test_ladder_weighted_rr.py
 git commit -m "feat(rr-fidelity): add ladder-weighted effective_rr pure fn with conservative priors (lever 2)"
 ```
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## Task 4: 把阶梯口径接入 _build_plan(按开关)
@@ -391,6 +397,7 @@ git add agents/trading/judge.py test_ladder_weighted_rr.py openspec/changes/tren
 git commit -m "feat(rr-fidelity): wire ladder rr into _build_plan behind switch with observability fields"
 ```
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## Task 5: 四臂全样本 A/B(CF 重放实验室)
@@ -527,6 +534,7 @@ git add utils/decision_replay.py tests/test_rr_fidelity_knob_injection.py cf_rr_
 git commit -m "test(rr-fidelity): CF-replay four-arm full-sample A/B + knob injection (lever1+2)"
 ```
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## Task 6: 全量回归 + 收尾
@@ -547,6 +555,7 @@ git add -A
 git commit -m "chore(rr-fidelity): finalize lever1+lever2, register P2/v2 follow-up changes"
 ```
 
+archived-with: 2026-06-17-trend-entry-rr-fidelity
 ---
 
 ## Self-Review 记录
