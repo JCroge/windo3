@@ -2,8 +2,8 @@
 
 ## 0. 前置(已基本厘清,留作核对)
 
-- [ ] 0.1 核对 `event_backtest` 阶梯建模与 executor 差异:回测为 50%@TP1+trailing,executor 为 50/25/25;登记 TP2 折进 trailing 的小保真差,本期接受
-- [ ] 0.2 确认入场前可得特征清单(pre_12h_return / 近窗回撤 / position_in_24h_range / tech.trend),供①客观证据使用,确保无前视
+- [x] 0.1 核对 `event_backtest` 阶梯建模与 executor 差异:回测为 50%@TP1+trailing,executor 为 50/25/25;登记 TP2 折进 trailing 的小保真差,本期接受
+- [x] 0.2 确认入场前可得特征清单(pre_12h_return / 近窗回撤 / position_in_24h_range / tech.trend),供①客观证据使用,确保无前视
 
 ## 1. 杠杆① trend-aligned-rr-floor(P1 客观路径证据)
 
@@ -21,9 +21,9 @@
 
 ## 3. 全样本 A/B 与背书
 
-- [ ] 3.1 杠杆① 在 event_backtest 全样本(含亏单)A/B,产出净 PnL/胜率/MDD delta
-- [ ] 3.2 杠杆② 在 event_backtest 全样本(含亏单)A/B,产出 delta
-- [ ] 3.3 ①+② 合并 A/B,确认净 PnL 改善且胜率不被低质量入场显著稀释,形成背书结论
+- [x] 3.1 杠杆① 在 event_backtest 全样本(含亏单)A/B,产出净 PnL/胜率/MDD delta
+- [x] 3.2 杠杆② 在 event_backtest 全样本(含亏单)A/B,产出 delta
+- [x] 3.3 ①+② 合并 A/B,确认净 PnL 改善且胜率不被低质量入场显著稀释,形成背书结论
 
 ## 4. 灰度与收尾
 
