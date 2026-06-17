@@ -436,3 +436,23 @@ def test_path_evidence_switch_off_keeps_default():
     min_rr, policy, reason = j._select_rr_floor('open_long', {}, _clean_trend_tech(), score=60)
     assert min_rr == 1.50
     assert policy == 'default'
+
+
+# ───────────────────────────── 回归守卫: path_evidence 必须与低RR缩仓家族同享待遇 ─────────────────────────────
+
+def test_path_evidence_policy_in_low_rr_family():
+    """long_aligned_path_evidence 必须与 long_aligned_low_rr 同享低RR缩仓/降杠杆/槽位待遇。
+    回归守卫:防止新 policy 绕过低 R:R 风控(judge.py ~1480 和 ~3027 两处 low_rr_policies)。"""
+    import re
+    import pathlib
+    src = (pathlib.Path(__file__).parent / 'agents/trading/judge.py').read_text()
+    matches = re.findall(r"low_rr_policies = \{([^}]*)\}", src)
+    # 两处 low_rr_policies 集合都必须包含该 policy
+    assert len(matches) >= 2, f"期望至少 2 处 low_rr_policies 定义，实际找到 {len(matches)} 处"
+    for occurrence in matches:
+        assert 'long_aligned_path_evidence' in occurrence, (
+            f"low_rr_policies 缺少 long_aligned_path_evidence: {occurrence!r}"
+        )
+        assert 'long_aligned_low_rr' in occurrence, (
+            f"low_rr_policies 缺少 long_aligned_low_rr: {occurrence!r}"
+        )

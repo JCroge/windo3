@@ -1477,7 +1477,7 @@ class MultiJudge(BaseAgent):
 
                     # ═══ Low R:R position scaling (Phase 1C) ═══
                     # 通过动态门槛但 R:R 仍低于默认 1.5 时，缩仓 + 进入 low_rr_extra slot
-                    low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr'}
+                    low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr', 'long_aligned_path_evidence'}
                     if (rr < 1.5 and is_long and rr_policy in low_rr_policies
                             and not plan.get('is_probe')):
                         rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
@@ -3024,7 +3024,7 @@ class MultiJudge(BaseAgent):
             return f"rr_below_floor:{rr:.2f}<{min_rr:.2f}"
 
         # ── Low R:R Scaling ──
-        low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr'}
+        low_rr_policies = {'long_bullish_low_rr', 'long_aligned_low_rr', 'long_aligned_path_evidence'}
         if (rr < 1.5 and is_long and rr_policy in low_rr_policies
                 and not plan.get('is_probe')):
             rr_scale = min(0.8, max(0.4, (rr - 1.2) / 0.3))
