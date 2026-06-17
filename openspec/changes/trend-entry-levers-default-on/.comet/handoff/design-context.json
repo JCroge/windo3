@@ -1,0 +1,14 @@
+{
+  "change": "trend-entry-levers-default-on",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1de7f89db4bee4b141d67cc970847253fd2b09ccc3daf97a7cc76326f287bc7a",
+  "files": [
+    { "path": "openspec/changes/trend-entry-levers-default-on/proposal.md", "sha256": "efd1a064d209b0b2bfd5af7169db6862fa58f4ae2270ef6df76cb8d81c4cfd7a" },
+    { "path": "openspec/changes/trend-entry-levers-default-on/design.md", "sha256": "beafdf836002b748395da9034183a44989b2b6f71864aa64ebf9d88503979713" },
+    { "path": "openspec/changes/trend-entry-levers-default-on/tasks.md", "sha256": "c3f2d49316daf32f90e28c1acac747f6fef694ca35af6233fce7c738fa8205de" },
+    { "path": "openspec/changes/trend-entry-levers-default-on/specs/ladder-weighted-rr/spec.md", "sha256": "4e90bbf24d3cda62c6248a063ba1692435ea6bb8cb8dd899c3aa367197f8b959" }
+  ]
+}

@@ -194,7 +194,10 @@ def test_production_baseline_restores_fidelity():
     async def run():
         agree = 0
         for r in recs:
-            d = await replay_decision(r, None)  # config=None → production baseline
+            # ladder_rr_enabled=False 钉磁带录制纪元：本磁带录于 lever2 默认开之前
+            # (trend-entry-levers-default-on)，config_snapshot 不含 ladder 键，用生产基线
+            # (现默认开)回放会用阶梯口径致系统性发散。前向新记录自带 ladder=True，无需 pin。
+            d = await replay_decision(r, {"ladder_rr_enabled": False})
             if _gate_of_recorded(r) == _gate_of_replayed(d):
                 agree += 1
         return agree / len(recs)

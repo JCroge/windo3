@@ -188,12 +188,13 @@ def _install_config_flags(judge, config):
     judge._low_rr_long_aligned_enabled = g("low_rr_long_aligned_enabled", True)
     judge._low_rr_max_leverage = g("low_rr_max_leverage", 5)
     judge._low_rr_max_position_pct = g("low_rr_max_position_pct", 0.5)
-    # ── trend-entry-rr-fidelity 两杠杆 (默认关, 灰度; 默认值须与 judge.__init__ 一致) ──
+    # ── trend-entry-rr-fidelity 两杠杆 (默认值须与 judge.__init__ 一致) ──
+    # trend-entry-levers-default-on: lever2(ladder) 默认开、lever1(path_evidence) 默认关。
     judge._path_evidence_aligned_enabled = g("path_evidence_aligned_enabled", False)
     judge._path_evidence_min_pre12h_return = g("path_evidence_min_pre12h_return", 0.03)
     judge._path_evidence_max_range_pos = g("path_evidence_max_range_pos", 0.92)
     judge._path_evidence_min_strength = g("path_evidence_min_strength", 60)
-    judge._ladder_rr_enabled = g("ladder_rr_enabled", False)
+    judge._ladder_rr_enabled = g("ladder_rr_enabled", True)
 
     # ── probe_short ──
     judge._probe_short_max_position_pct = g("probe_short_max_position_pct", 0.3)

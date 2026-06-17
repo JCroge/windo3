@@ -19,8 +19,10 @@ def test_install_config_flags_sets_new_knobs():
     assert j._ladder_rr_enabled is True
 
 
-def test_install_config_flags_defaults_off():
+def test_install_config_flags_default_lever1_off_lever2_on():
+    # trend-entry-levers-default-on: 空 config 兜底须与 judge.__init__ 一致——
+    # lever1(path_evidence) 默认关、lever2(ladder) 默认开。
     j = _bare_judge()
     _install_config_flags(j, {})
     assert j._path_evidence_aligned_enabled is False
-    assert j._ladder_rr_enabled is False
+    assert j._ladder_rr_enabled is True
