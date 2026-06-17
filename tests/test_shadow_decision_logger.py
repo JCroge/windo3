@@ -49,6 +49,43 @@ def test_log_shadow_fail_safe_never_raises(tmp_path):
     assert r is None  # 非 replayable → 跳过, 不抛
 
 
+def _bare_judge(enabled=True):
+    from unittest import mock
+    from agents.trading.judge import MultiJudge
+    j = MultiJudge.__new__(MultiJudge)
+    j.logger = mock.MagicMock()
+    j._shadow_logger_enabled = enabled
+    j._shadow_tasks = set()
+    return j
+
+
+def test_schedule_shadow_no_loop_failsafe():
+    # 无 running loop（同步上下文）→ fail-safe 跳过, 绝不抛
+    j = _bare_judge()
+    j._schedule_shadow({"replayable": False}, {"action": "hold"})  # must not raise
+
+
+def test_schedule_shadow_disabled_noop():
+    j = _bare_judge(enabled=False)
+    j._schedule_shadow({"replayable": True}, {"action": "hold"})  # flag off → 不调度, 不抛
+
+
+def test_schedule_shadow_in_loop_schedules_and_failsafe(tmp_path, monkeypatch):
+    # async 上下文：调度一个 task; 即便 log_shadow_decision 抛, 也不冒泡破 live
+    import utils.shadow_decision_logger as sdl
+
+    async def boom(*a, **k):
+        raise RuntimeError("shadow boom")
+    monkeypatch.setattr(sdl, "log_shadow_decision", boom)
+
+    async def run():
+        j = _bare_judge()
+        j._schedule_shadow({"replayable": True, "symbol": "X"}, {"action": "hold"})
+        assert len(j._shadow_tasks) == 1            # 已调度
+        await asyncio.gather(*list(j._shadow_tasks))  # 跑完, 异常被 _maybe_log_shadow 吞掉
+    asyncio.run(run())  # 不抛 = live 不受影响
+
+
 def _load_one_replayable_record():
     import os
     tape = os.path.join(os.path.dirname(os.path.dirname(__file__)),

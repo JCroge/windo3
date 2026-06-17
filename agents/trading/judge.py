@@ -174,6 +174,9 @@ class MultiJudge(BaseAgent):
         # trend-entry-levers-default-on: 默认开(口径修正,与 config_loader.DEFAULTS 一致);
         # env LADDER_RR_ENABLED=false 可即时关。lever1(path_evidence) 仍默认关。
         self._ladder_rr_enabled = config.get('ladder_rr_enabled', True) if config else True
+        # trend-entry-shadow-decision-logger: 前向影子决策记录器开关 + fire-and-forget 任务引用集
+        self._shadow_logger_enabled = config.get('shadow_decision_logger_enabled', True) if config else True
+        self._shadow_tasks = set()
         self._low_rr_max_leverage = config.get('low_rr_max_leverage', 5) if config else 5
         self._low_rr_max_position_pct = config.get('low_rr_max_position_pct', 0.5) if config else 0.5
         self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
@@ -2000,8 +2003,9 @@ class MultiJudge(BaseAgent):
 
         # Counterfactual replay: tape the accepted open decision (observability-only).
         # Guarded: tape absence (e.g. partial construction in tests) must never break the decision path.
+        _accept_bundle = None
         if action in ("open_long", "open_short") and getattr(self, "_decision_tape", None) is not None:
-            self._decision_tape.record_decision(build_bundle(
+            _accept_bundle = build_bundle(
                 symbol=symbol, decision="accept",
                 request_id=decision.get("request_id"),
                 tech_analysis=getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {},
@@ -2014,9 +2018,13 @@ class MultiJudge(BaseAgent):
                 },
                 state_snapshot=self._capture_state_snapshot(symbol),
                 config_snapshot=dict(getattr(self, "config", {}) or {}),
-            ))
+            )
+            self._decision_tape.record_decision(_accept_bundle)
 
         await self.publish("trade_decision", decision, symbol=symbol)
+        # 前向影子决策记录器(observability-only)：publish 后旁路, fire-and-forget 零 live 延迟; fail-safe。
+        if _accept_bundle is not None:
+            self._schedule_shadow(_accept_bundle, decision)
         self.logger.info(
             f"[决策] {symbol} {action} slot={slot_type} req={req_id} "
             f"置信度={decision.get('confidence', 0)} "
@@ -3062,6 +3070,37 @@ class MultiJudge(BaseAgent):
             "_regime_manager": rm.snapshot() if rm is not None and hasattr(rm, "snapshot") else None,
         }
 
+    def _schedule_shadow(self, bundle, real_decision):
+        """前向影子决策记录器(observability-only)：fire-and-forget 调度影子决策。
+
+        sync 入口(两个决策磁带 chokepoint 共用)，fail-safe：无 running loop / 任何异常都
+        绝不影响 live 决策。影子绝不 publish 真实 bus / 不下单 / 不 mutate live 状态。"""
+        if not getattr(self, "_shadow_logger_enabled", False):
+            return
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self._maybe_log_shadow(bundle, real_decision))
+            self._shadow_tasks.add(task)
+            task.add_done_callback(self._shadow_tasks.discard)
+        except Exception as e:           # 无 loop / 调度失败 → 跳过, 绝不破 live
+            getattr(self, "logger", None) and self.logger.warning(f"[shadow] schedule skipped: {e}")
+
+    async def _maybe_log_shadow(self, bundle, real_decision):
+        """异步跑 both-levers 影子决策并 write-only 记录。fail-safe。"""
+        try:
+            from utils.shadow_decision_logger import log_shadow_decision
+            try:
+                from utils.state_paths import get_state_paths
+                path = (get_state_paths() or {}).get("shadow_decision_log")
+            except Exception:
+                path = None
+            path = path or "data/shadow_decision_log.jsonl"
+            await log_shadow_decision(bundle, real_decision, path,
+                                      enabled=True, logger=getattr(self, "logger", None))
+        except Exception as e:
+            getattr(self, "logger", None) and self.logger.warning(f"[shadow] log skipped: {e}")
+
     def _record_rejected_plan(self, symbol: str, action: str, plan: dict,
                               score: float, confidence: float, reason: str,
                               attribution: dict = None):
@@ -3090,7 +3129,7 @@ class MultiJudge(BaseAgent):
         # Counterfactual replay: tape the rejected plan (observability-only).
         # Guarded: tape absence (e.g. partial construction in tests) must never break the decision path.
         if getattr(self, "_decision_tape", None) is not None:
-            self._decision_tape.record_decision(build_bundle(
+            _reject_bundle = build_bundle(
                 symbol=symbol, decision="reject",
                 request_id=(attr or {}).get("request_id") if isinstance(attr, dict) else None,
                 tech_analysis=getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {},
@@ -3100,7 +3139,10 @@ class MultiJudge(BaseAgent):
                 trade_decision_output={"reject_reason": reason, "attribution": attr},
                 state_snapshot=self._capture_state_snapshot(symbol),
                 config_snapshot=dict(getattr(self, "config", {}) or {}),
-            ))
+            )
+            self._decision_tape.record_decision(_reject_bundle)
+            # 前向影子决策记录器(observability-only)：reject 是 lever1 翻转高发处; fire-and-forget fail-safe。
+            self._schedule_shadow(_reject_bundle, {"action": "hold", "attribution": attr})
 
     def _rejection_attribution(self, action: str, plan: dict, blocked_by: str,
                                dispatch_path: str = '', tech: dict = None) -> dict:
