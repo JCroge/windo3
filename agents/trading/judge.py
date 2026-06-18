@@ -86,6 +86,9 @@ class MultiJudge(BaseAgent):
         self._ev_prior_total = config.get('ev_prior_total', 5) if config else 5
         # 强信号豁免阈值：score >= 此值时 EV 门放宽
         self._ev_strong_signal_threshold = config.get('ev_strong_signal_threshold', 70) if config else 70
+        # EV 胜率门开关：关闭后 EV 公式用固定中性胜率，开仓门不再受实际胜率影响
+        self._ev_winrate_gate_enabled = config.get('ev_winrate_gate_enabled', True) if config else True
+        self._ev_neutral_p_win = config.get('ev_neutral_p_win', 0.55) if config else 0.55
 
         # ═══ P2-O: 最大并发持仓上限 ═══
         # 启动期保守：余额 ~100 USDT 时最多 3 个并发持仓，单仓 ~10 USDT margin
