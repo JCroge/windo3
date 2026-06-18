@@ -204,3 +204,33 @@ def test_production_baseline_restores_fidelity():
 
     fid = asyncio.run(run())
     assert fid >= 0.85, f"L2 fidelity {fid:.3f} < 0.85 (production baseline should be ~0.90)"
+
+
+# --- 纪元解析单测 ---------------------------------------------------------
+
+def test_epoch_fallback_for_missing_keys():
+    """缺键记录用录制纪元默认（ladder→False, ev_winrate→True），非当前 production 默认"""
+    from utils.decision_replay import _resolve_effective_config
+    rec_old = {"config_snapshot": None}
+    eff = _resolve_effective_config(rec_old, None)
+    assert eff["ladder_rr_enabled"] is False, "旧记录 ladder 应回退纪元默认 False"
+    assert eff["ev_winrate_gate_enabled"] is True, "旧记录 ev 门应回退纪元默认 True"
+    print("  ✅ Case: 缺键回退录制纪元默认")
+
+
+def test_snapshot_overrides_epoch_fallback():
+    """v3 记录 snapshot 的 ladder=True 应盖回纪元兜底的 False"""
+    from utils.decision_replay import _resolve_effective_config
+    rec_v3 = {"config_snapshot": {"ladder_rr_enabled": True}}
+    eff = _resolve_effective_config(rec_v3, None)
+    assert eff["ladder_rr_enabled"] is True, "snapshot 录值应优先于纪元兜底"
+    print("  ✅ Case: snapshot 优先于纪元兜底")
+
+
+def test_perturbation_overrides_all():
+    """扰动 override 在最顶层，盖过 snapshot"""
+    from utils.decision_replay import _resolve_effective_config
+    rec_v3 = {"config_snapshot": {"ladder_rr_enabled": True}}
+    eff = _resolve_effective_config(rec_v3, {"ladder_rr_enabled": False})
+    assert eff["ladder_rr_enabled"] is False, "扰动 override 应盖过 snapshot"
+    print("  ✅ Case: 扰动 override 最顶层")
