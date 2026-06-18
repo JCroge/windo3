@@ -146,6 +146,7 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | MAX_DAILY_LOSS | 每日最大亏损（USDT，正数） | 50 | 否 |
 | CONSECUTIVE_LOSS_LIMIT | 连续亏损熔断次数（连亏达此数即全平熔断）。可经 config.yaml `risk.consecutive_loss_limit` 配置 | 3 | 否 |
 | EV_WINRATE_GATE_ENABLED | EV 开仓门是否用实际滚动胜率。`false`=关闭，EV 公式改用固定 `ev_neutral_p_win`、跳过胜率<40%硬阈值与分桶覆盖，仅保留 R:R/成本经济门。可经 config.yaml `risk.ev_winrate_gate_enabled` 配置 | true | 否 |
+| ROTATION_CLOSE_HELD_ENABLED | 标的轮换是否强平已持仓标的。`false`=不强平，持仓标的保留在 active 集、出场交 PositionAnalyst（B-revised 保护）；`true`=回退旧行为（轮出即强平）。可经 config.yaml `risk.rotation_close_held_enabled` 配置 | false | 否 |
 | EV_NEUTRAL_P_WIN | 关闭胜率门时 EV 公式使用的固定中性胜率，范围 [0.0, 1.0]。可经 config.yaml `risk.ev_neutral_p_win` 配置 | 0.55 | 否 |
 | EFFECTIVE_BALANCE_CAP | 逻辑账户拆分：风控按此上限计算余额（真实余额不变）。留空=用真实余额。范围 [10, 1_000_000] | （未启用） | 否 |
 | DRAWDOWN_BASELINE_MODE | 回撤基准模式：`session_start`=启动时重置基准（默认）；`persisted_peak`=继承历史峰值（兼容旧行为） | session_start | 否 |
@@ -271,6 +272,7 @@ risk:
   max_daily_loss: 300            # 每日最大亏损
   consecutive_loss_limit: 5      # 连续亏损熔断次数（默认 3，当前放宽到 5）
   ev_winrate_gate_enabled: false # 关闭后开仓门不用实际胜率(胜率低不拦)，EV门仍按R:R/成本（默认 true）
+  # rotation_close_held_enabled: false  # 默认即 false：轮换不强平持仓标的（保护，出场交 PositionAnalyst）；设 true 回退旧强平
   ev_neutral_p_win: 0.55         # 关闭胜率门时 EV 公式使用的固定中性胜率
 
 # 手续费
@@ -280,6 +282,25 @@ fees:
 ```
 
 ## 监控
+
+### CF 实验室 / 策略诊断工具（observability-only，纯读，绝不改 config）
+
+```bash
+# CF 反事实方向推荐：扫 rr_floor/min_confidence 网格，报 baseline_fidelity + 方向 delta
+python3 cf_direction_recommendation.py
+#   2026-06-18 fix-cf-lab-fidelity-epoch-resolution 后 lab 恢复可信：
+#   可信度看 accept/reject 二元保真（≥0.95），gate 严格保真仅诊断参考（对门归因短路顺序过敏）。
+
+# lever1 增量分析：读 shadow_decision_log.jsonl 的 shadow_opens（lever1 解锁、实盘没开的单）
+python3 cf_shadow_lever1_compare.py
+#   样本薄经诚实门拒答。2026-06-18 实测 shadow_opens=0 → lever1 暂无上行证据，未上 live。
+
+# 60 分边缘多单 PnL 跟踪：关联"边缘多单成交→已实现 PnL"，对比边缘60单 vs 信念≥70单
+python3 scripts/track_marginal60.py            # 跨所有日累计
+python3 scripts/track_marginal60.py 20260618   # 指定日
+#   衰减期关 EV 胜率门后，放行多为 confidence=60 门槛线的 rule_signal 多单；
+#   看『边缘60单』均PnL是否持续为负——若是=放水，考虑收紧（重开胜率门/提 min_confidence）。
+```
 
 ### 查看日志
 
