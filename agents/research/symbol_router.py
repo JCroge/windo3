@@ -17,6 +17,7 @@ class SymbolRouter(BaseAgent):
         self._max_active = (config or {}).get('max_active_symbols', 5)
         self._last_update_time = 0
         self._min_rotation_interval = 3600
+        self._close_held = (config or {}).get('rotation_close_held_enabled', False)
 
     async def setup(self):
         self.logger.info("标的路由Agent就绪")
@@ -53,19 +54,31 @@ class SymbolRouter(BaseAgent):
         new_symbols = [s['symbol'] for s in selected[:self._max_active]]
         old_symbols = self._active_symbols.copy()
 
+        held = set(self._get_position_symbols())
+
+        if self._close_held:
+            # 旧行为：轮出即强平，不保留持仓标的
+            removed = [s for s in old_symbols if s not in new_symbols]
+            active_symbols = new_symbols
+            retained = []
+        else:
+            # B-revised：持仓标的保留在 active，不进 removed
+            removed = [s for s in old_symbols if s not in new_symbols and s not in held]
+            retained = sorted(s for s in held if s not in new_symbols)
+            active_symbols = new_symbols + retained
+
         added = [s for s in new_symbols if s not in old_symbols]
-        removed = [s for s in old_symbols if s not in new_symbols]
 
         removed_action = {}
         for s in removed:
             removed_action[s] = "close_at_market"
 
-        self._active_symbols = new_symbols
+        self._active_symbols = active_symbols
         self._symbol_meta = {s['symbol']: s for s in selected[:self._max_active]}
         self._last_update_time = now
 
         await self.publish("symbol_update", {
-            "active_symbols": new_symbols,
+            "active_symbols": active_symbols,
             "added": added,
             "removed": removed,
             "removed_action": removed_action,
@@ -73,9 +86,14 @@ class SymbolRouter(BaseAgent):
         })
 
         self.logger.info(
-            f"[路由] 活跃标的更新: {new_symbols} "
-            f"(+{added}, -{removed})"
+            f"[路由] 活跃标的更新: {active_symbols} "
+            f"(+{added}, -{removed}, 持仓保留={retained})"
         )
+
+        for symbol in retained:
+            self.logger.info(
+                f"[路由] {symbol} 持仓中，保留监控，出场交 PositionAnalyst"
+            )
 
         for symbol in removed:
             if removed_action.get(symbol) == "close_at_market":

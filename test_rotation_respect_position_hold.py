@@ -122,3 +122,96 @@ def test_get_position_symbols_corrupt_file(monkeypatch):
     finally:
         os.unlink(path)
     print("  ✅ Case: positions 文件损坏 fail-safe []")
+
+
+# ───────────────── B-revised 门控 ─────────────────
+
+def _run_rotation(router, selected_symbols, held_symbols, monkeypatch):
+    """驱动一次轮换，返回捕获的 publish 列表 [(msg_type, payload), ...]"""
+    captured = []
+
+    async def _fake_publish(msg_type, payload, to="broadcast", symbol=None):
+        captured.append((msg_type, payload))
+
+    monkeypatch.setattr(router, 'publish', _fake_publish)
+    monkeypatch.setattr(router, '_get_position_symbols', lambda: list(held_symbols))
+    payload = {'selected': [{'symbol': s} for s in selected_symbols]}
+    asyncio.run(router._handle_research_result(payload))
+    return captured
+
+
+def test_held_symbol_retained_not_closed(monkeypatch):
+    """持仓标的被轮出研判选集 → 保留在 active、不发 close"""
+    r = _new_router(close_held=False)
+    cap = _run_rotation(r, ['SUI-USDT', 'ADA-USDT'], ['XLM-USDT'], monkeypatch)
+
+    closes = [p['symbol'] for t, p in cap if t == 'trade_decision' and p.get('action') == 'close']
+    assert 'XLM-USDT' not in closes, f"持仓标的 XLM 不应被平，实际 closes={closes}"
+
+    updates = [p for t, p in cap if t == 'symbol_update']
+    assert updates, "应发 symbol_update"
+    active = updates[-1]['active_symbols']
+    assert 'XLM-USDT' in active, f"持仓标的 XLM 应保留在 active，实际 {active}"
+    assert 'XLM-USDT' not in updates[-1].get('removed', []), "XLM 不应在 removed"
+    print("  ✅ Case: 持仓标的保留不平")
+
+
+def test_unheld_symbol_still_closed(monkeypatch):
+    """无持仓标的被轮出 → 照发 close（原行为）"""
+    r = _new_router(close_held=False)
+    cap = _run_rotation(r, ['ADA-USDT'], [], monkeypatch)
+
+    closes = [p['symbol'] for t, p in cap if t == 'trade_decision' and p.get('action') == 'close']
+    assert 'XLM-USDT' in closes and 'SUI-USDT' in closes, \
+        f"无持仓标的应被平，实际 closes={closes}"
+    print("  ✅ Case: 无持仓标的仍平")
+
+
+def test_close_held_true_reverts_old_behavior(monkeypatch):
+    """开关 true → 持仓标的也被强平（回退旧行为）"""
+    r = _new_router(close_held=True)
+    cap = _run_rotation(r, ['SUI-USDT', 'ADA-USDT'], ['XLM-USDT'], monkeypatch)
+
+    closes = [p['symbol'] for t, p in cap if t == 'trade_decision' and p.get('action') == 'close']
+    assert 'XLM-USDT' in closes, f"开关 true 时持仓标的应被平，实际 closes={closes}"
+    updates = [p for t, p in cap if t == 'symbol_update']
+    assert 'XLM-USDT' not in updates[-1]['active_symbols'], "开关 true 时 XLM 不应保留 active"
+    print("  ✅ Case: 开关 true 回退旧强平")
+
+
+def test_retained_merged_into_active(monkeypatch):
+    """多个持仓标的均保留进 active（即便超出研判新选）"""
+    r = _new_router(close_held=False)
+    r._active_symbols = ['XLM-USDT', 'SUI-USDT', 'DOGE-USDT']
+    cap = _run_rotation(r, ['ADA-USDT'], ['XLM-USDT', 'DOGE-USDT'], monkeypatch)
+
+    active = [p for t, p in cap if t == 'symbol_update'][-1]['active_symbols']
+    assert 'ADA-USDT' in active, "新选应在 active"
+    assert 'XLM-USDT' in active and 'DOGE-USDT' in active, \
+        f"两个持仓标的均应保留，实际 {active}"
+    closes = [p['symbol'] for t, p in cap if t == 'trade_decision' and p.get('action') == 'close']
+    assert 'SUI-USDT' in closes, "无持仓的 SUI 应被平"
+    assert 'XLM-USDT' not in closes and 'DOGE-USDT' not in closes, "持仓标的不应被平"
+    print("  ✅ Case: 多持仓标的合并进 active")
+
+
+def test_held_and_reselected_appears_once(monkeypatch):
+    """标的既持仓又被研判重新选中 → active 中只出现一次（不重复）"""
+    r = _new_router(close_held=False)
+    # XLM 既在新选集、又仍持仓
+    cap = _run_rotation(r, ['XLM-USDT', 'ADA-USDT'], ['XLM-USDT'], monkeypatch)
+
+    active = [p for t, p in cap if t == 'symbol_update'][-1]['active_symbols']
+    assert active.count('XLM-USDT') == 1, f"XLM 应只出现一次，实际 {active}"
+    closes = [p['symbol'] for t, p in cap if t == 'trade_decision' and p.get('action') == 'close']
+    assert 'XLM-USDT' not in closes, "重新选中且持仓的标的不应被平"
+    print("  ✅ Case: 既持仓又重选 → active 不重复")
+
+
+def main():
+    import pytest
+    raise SystemExit(pytest.main([__file__, '-q']))
+
+
+if __name__ == '__main__':
+    main()
