@@ -191,19 +191,29 @@ def test_production_baseline_restores_fidelity():
     if len(recs) < 50:
         pytest.skip("insufficient tape")
 
-    async def run():
-        agree = 0
-        for r in recs:
-            # ladder_rr_enabled=False 钉磁带录制纪元：本磁带录于 lever2 默认开之前
-            # (trend-entry-levers-default-on)，config_snapshot 不含 ladder 键，用生产基线
-            # (现默认开)回放会用阶梯口径致系统性发散。前向新记录自带 ladder=True，无需 pin。
-            d = await replay_decision(r, {"ladder_rr_enabled": False})
-            if _gate_of_recorded(r) == _gate_of_replayed(d):
-                agree += 1
-        return agree / len(recs)
+    def _ar(g):
+        return "accept" if g == "accept" else "reject"
 
-    fid = asyncio.run(run())
-    assert fid >= 0.85, f"L2 fidelity {fid:.3f} < 0.85 (production baseline should be ~0.90)"
+    async def run():
+        gate_agree = 0
+        ar_agree = 0
+        for r in recs:
+            # 纪元解析：不传全局 pin，replay_decision 逐记录按录制纪元解析
+            # （缺键用 _EPOCH_FALLBACK 录制纪元默认，snapshot 录值优先）。
+            d = await replay_decision(r, None)
+            gr = _gate_of_recorded(r)
+            gd = _gate_of_replayed(d)
+            if gr == gd:
+                gate_agree += 1
+            if _ar(gr) == _ar(gd):
+                ar_agree += 1
+        return gate_agree / len(recs), ar_agree / len(recs)
+
+    gate_fid, ar_fid = asyncio.run(run())
+    # gate 严格保真：诊断-only（门归因短路顺序敏感，不作硬门）
+    print(f"[diag] L2 gate fidelity = {gate_fid:.3f} (诊断, 实测 ~0.89)")
+    # accept/reject 二元保真：主可信度硬门（方向推荐真正依赖的维度）
+    assert ar_fid >= 0.95, f"L2 accept/reject fidelity {ar_fid:.3f} < 0.95 (production baseline should be ~0.985)"
 
 
 # --- 纪元解析单测 ---------------------------------------------------------
