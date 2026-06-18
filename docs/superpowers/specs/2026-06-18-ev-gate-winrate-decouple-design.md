@@ -2,6 +2,8 @@
 comet_change: ev-gate-winrate-decouple
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-18-ev-gate-winrate-decouple
+status: final
 ---
 
 # 技术设计：剔除开仓门的胜率因子

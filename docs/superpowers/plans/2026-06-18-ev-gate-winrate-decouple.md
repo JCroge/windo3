@@ -2,6 +2,7 @@
 change: ev-gate-winrate-decouple
 design-doc: docs/superpowers/specs/2026-06-18-ev-gate-winrate-decouple-design.md
 base-ref: b6519db6f9137dcf5c980bc9d2da93ace94d7a3b
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 # 剔除开仓门胜率因子 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: b6519db6f9137dcf5c980bc9d2da93ace94d7a3b
 
 **Tech Stack:** Python 3.9, pytest（print 风格单测 + `main()` 登记）, PyYAML config。
 
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 ## 文件结构
@@ -23,6 +25,7 @@ base-ref: b6519db6f9137dcf5c980bc9d2da93ace94d7a3b
 - `config.yaml` — risk 节点新增两键。
 - `test_ev_gate.py` — 新增 4 个用例 + 在 `main()` 登记。
 
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 ### Task 1: 配置层接入两个新键（config_loader + config.yaml）
@@ -91,6 +94,7 @@ git add utils/config_loader.py config.yaml
 git commit -m "feat(ev-gate): config 接入 ev_winrate_gate_enabled / ev_neutral_p_win"
 ```
 
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 ### Task 2: Judge 构造函数新增两字段
@@ -118,6 +122,7 @@ git add agents/trading/judge.py
 git commit -m "feat(ev-gate): Judge 构造新增 ev_winrate_gate_enabled / ev_neutral_p_win"
 ```
 
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 ### Task 3: `_get_p_win` 关闭时短路 + 测试
@@ -168,6 +173,7 @@ git add agents/trading/judge.py test_ev_gate.py
 git commit -m "feat(ev-gate): _get_p_win 关闭时返回固定中性胜率"
 ```
 
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 ### Task 4: `_check_expected_value` 跳过胜率硬阈值与分桶 + 测试
@@ -251,6 +257,7 @@ git add agents/trading/judge.py test_ev_gate.py
 git commit -m "feat(ev-gate): 关闭开关时跳过胜率硬阈值与分桶覆盖，保留经济门"
 ```
 
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 ### Task 5: 在 main() 登记新用例 + 全量回归
@@ -284,6 +291,7 @@ git add test_ev_gate.py
 git commit -m "test(ev-gate): main() 登记新用例，全量回归通过"
 ```
 
+archived-with: 2026-06-18-ev-gate-winrate-decouple
 ---
 
 ## Self-Review
