@@ -26,4 +26,4 @@
 
 ## 验证
 - [x] `python3 -m pytest test_rotation_respect_position_hold.py -q` 全绿
-- [ ] 全量回归无退化
+- [x] 全量回归无退化（1306 passed；其余 10 失败为既有 flaky：8 round2 全量污染隔离即过 + 2 CF 保真度 base-ref 即失败，均与本 change 无关）
