@@ -269,8 +269,11 @@ def main():
     test_ev_gate_no_exemption_when_ev_too_negative()
     test_build_plan_outputs_ev_fields()
     test_strategy_review_message_updates_state()
+    test_p_win_fixed_when_gate_disabled()
+    test_ev_gate_disabled_allows_low_winrate()
+    test_ev_gate_disabled_still_blocks_bad_economics()
     print("\n" + "=" * 60)
-    print("✅ 全部 10 个测试通过")
+    print("✅ 全部 13 个测试通过")
     print("=" * 60)
 
 
