@@ -1,0 +1,14 @@
+{
+  "change": "rotation-respect-position-hold",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "c4011987581f46fd158bb1dfe020a5a7bff712acc6fc509b5e0c842b63e1674e",
+  "files": [
+    { "path": "openspec/changes/rotation-respect-position-hold/proposal.md", "sha256": "edeb405810765f81f788c662f83cff35a4d84459c35b775881da5189bf001afa" },
+    { "path": "openspec/changes/rotation-respect-position-hold/design.md", "sha256": "39b337cac6da656f26b3ff4bd53eeb78fe2ffeb7da125165b9e92d0d0790c290" },
+    { "path": "openspec/changes/rotation-respect-position-hold/tasks.md", "sha256": "b9f73c9fd638d54c6ac60f1706ef416090230e0b312c518bfb889034b3b0c8a3" },
+    { "path": "openspec/changes/rotation-respect-position-hold/specs/symbol-rotation-position-guard/spec.md", "sha256": "90d8ed07f76e279c917de88dae858ea1551ccbdb011ec086f073afb41ec4d5f4" }
+  ]
+}
