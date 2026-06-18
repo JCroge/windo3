@@ -1,6 +1,8 @@
 """标的路由 Agent - 管理活跃交易标的集，处理标的轮换"""
 
 import time
+import json
+import os
 from agents.base import BaseAgent
 
 
@@ -85,6 +87,25 @@ class SymbolRouter(BaseAgent):
                     "reasoning": "标的轮换，平仓退出",
                 }, symbol=symbol)
                 self.logger.info(f"[路由] 发送平仓指令: {symbol}")
+
+    def _get_position_symbols(self) -> list:
+        """读取持仓标的列表（统一为内部规范 BASE-USDT）。
+
+        fail-safe：文件缺失/损坏 → 返回 []，不抛异常。
+        持仓信息不可得时，轮换退化为旧强平行为，绝不产生无人看管持仓。
+        """
+        from utils.state_paths import get_state_paths
+        from utils.symbol import to_internal
+        positions_file = get_state_paths().positions
+        if not os.path.exists(positions_file):
+            return []
+        try:
+            with open(positions_file, 'r') as f:
+                positions = json.load(f)
+            return [to_internal(s) for s in positions.keys()]
+        except Exception as e:
+            self.logger.warning(f"[路由] 读取持仓失败，退化为旧轮换行为: {e}")
+            return []
 
     @property
     def active_symbols(self) -> list:

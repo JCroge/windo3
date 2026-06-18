@@ -80,3 +80,45 @@ def test_banner_shows_rotation_flag():
     finally:
         os.unlink(path)
     print("  ✅ Case: banner 展示开关状态")
+
+
+# ───────────────── _get_position_symbols fail-safe ─────────────────
+
+def _new_router(close_held=False):
+    """裸构造 SymbolRouter（不需 exchange），绕过轮换冷却"""
+    from agents.research.symbol_router import SymbolRouter
+    r = SymbolRouter(config={'rotation_close_held_enabled': close_held})
+    r._min_rotation_interval = 0          # 绕过 3600s 冷却
+    r._active_symbols = ['XLM-USDT', 'SUI-USDT']
+    return r
+
+
+def test_get_position_symbols_missing_file(monkeypatch):
+    """positions 文件不存在 → 返回 []"""
+    import utils.state_paths as sp
+    r = _new_router()
+    missing = tempfile.mktemp(suffix='.json')   # 不创建
+    monkeypatch.setattr(
+        sp, 'get_state_paths',
+        lambda: type('P', (), {'positions': missing})()
+    )
+    assert r._get_position_symbols() == [], "缺失文件应返回 []"
+    print("  ✅ Case: positions 文件缺失 fail-safe []")
+
+
+def test_get_position_symbols_corrupt_file(monkeypatch):
+    """positions 文件损坏 → 返回 [] 不抛"""
+    import utils.state_paths as sp
+    r = _new_router()
+    with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+        f.write("{not valid json")
+        path = f.name
+    monkeypatch.setattr(
+        sp, 'get_state_paths',
+        lambda: type('P', (), {'positions': path})()
+    )
+    try:
+        assert r._get_position_symbols() == [], "损坏文件应返回 []"
+    finally:
+        os.unlink(path)
+    print("  ✅ Case: positions 文件损坏 fail-safe []")
