@@ -2,6 +2,7 @@
 change: rotation-respect-position-hold
 design-doc: docs/superpowers/specs/2026-06-18-rotation-respect-position-hold-design.md
 base-ref: 1bbbc2471ee1d1a3d61d7dfb0b04c125036a3a9c
+archived-with: 2026-06-18-rotation-respect-position-hold
 ---
 
 # 轮换尊重持仓研判（B-revised）Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 1bbbc2471ee1d1a3d61d7dfb0b04c125036a3a9c
 
 **Tech Stack:** Python 3.9, asyncio, pytest；config 经 `utils/config_loader.py` 四段式接入。
 
+archived-with: 2026-06-18-rotation-respect-position-hold
 ---
 
 ## File Structure
@@ -22,6 +24,7 @@ base-ref: 1bbbc2471ee1d1a3d61d7dfb0b04c125036a3a9c
 - `agents/research/symbol_router.py`（Modify）：新增 `_get_position_symbols()`（fail-safe），`__init__` 读 `_close_held`，`_handle_research_result` 改为 B-revised 门控。
 - `test_rotation_respect_position_hold.py`（Create）：pytest 可收集的 `test_*` 函数 + `main()` 自注册（沿用 `test_ev_gate.py` 范式）。
 
+archived-with: 2026-06-18-rotation-respect-position-hold
 ---
 
 ## Task 1: Config 四段式接入 `rotation_close_held_enabled`
@@ -165,6 +168,7 @@ git add utils/config_loader.py test_rotation_respect_position_hold.py
 git commit -m "feat(rotation-hold): config 接入 rotation_close_held_enabled（默认 False，四段式+banner）"
 ```
 
+archived-with: 2026-06-18-rotation-respect-position-hold
 ---
 
 ## Task 2: SymbolRouter `_get_position_symbols()` fail-safe
@@ -269,6 +273,7 @@ git add agents/research/symbol_router.py test_rotation_respect_position_hold.py
 git commit -m "feat(rotation-hold): SymbolRouter 新增 _get_position_symbols() fail-safe"
 ```
 
+archived-with: 2026-06-18-rotation-respect-position-hold
 ---
 
 ## Task 3: B-revised 门控逻辑
@@ -455,6 +460,7 @@ git add agents/research/symbol_router.py test_rotation_respect_position_hold.py
 git commit -m "feat(rotation-hold): B-revised 门控——持仓标的保留 active 不强平，出场交 PositionAnalyst"
 ```
 
+archived-with: 2026-06-18-rotation-respect-position-hold
 ---
 
 ## Task 4: tasks.md 勾选 + 全量回归
@@ -481,6 +487,7 @@ git add openspec/changes/rotation-respect-position-hold/tasks.md
 git commit -m "chore(rotation-hold): tasks 勾选完成 + 全量回归通过"
 ```
 
+archived-with: 2026-06-18-rotation-respect-position-hold
 ---
 
 ## Self-Review

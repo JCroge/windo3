@@ -2,6 +2,8 @@
 comet_change: rotation-respect-position-hold
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-18-rotation-respect-position-hold
+status: final
 ---
 
 # Design Doc: 轮换尊重持仓研判（B-revised）
