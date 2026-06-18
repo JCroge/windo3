@@ -201,6 +201,60 @@ def test_strategy_review_message_updates_state():
           f"pf={j._recent_profit_factor}, n={j._total_completed_trades}, wins={j._recent_wins}")
 
 
+def test_p_win_fixed_when_gate_disabled():
+    """关闭胜率门 → _get_p_win 返回固定中性胜率，不读实际胜率"""
+    from agents.trading.judge import MultiJudge
+    j = MultiJudge(config={'exchange': 'okx', 'max_trade_amount': 10,
+                           'ev_winrate_gate_enabled': False, 'ev_neutral_p_win': 0.55})
+    j._available_balance = 100.0
+    j._recent_win_rate = 0.25      # 实际胜率很低
+    j._total_completed_trades = 30  # 样本充足
+    p_win, source = j._get_p_win()
+    assert source == 'fixed', f"应 fixed，实际 {source}"
+    assert abs(p_win - 0.55) < 1e-6, f"应=0.55，实际 {p_win}"
+    print("  ✅ Case 11: 关闭胜率门 → p_win=0.55 (fixed)")
+
+
+def test_ev_gate_disabled_allows_low_winrate():
+    """关闭胜率门 → 胜率25% + score<70 + 正 EV 计划应放行"""
+    from agents.trading.judge import MultiJudge
+    j = MultiJudge(config={'exchange': 'okx', 'max_trade_amount': 10,
+                           'ev_winrate_gate_enabled': False, 'ev_neutral_p_win': 0.55})
+    j._available_balance = 100.0
+    j._recent_win_rate = 0.25
+    j._total_completed_trades = 30
+    plan = {
+        'expected_value': 0.80,      # 上游已用固定 p_win 算出的正 EV
+        'p_win_used': 0.55,
+        'p_win_source': 'fixed',
+        'net_profit_usdt': 3.0,
+        'net_loss_usdt': 2.0,
+    }
+    assert j._check_expected_value('BTC-USDT', plan, score=50.0) is True, \
+        "关闭胜率门后低胜率不应拦截"
+    print("  ✅ Case 12: 关闭胜率门 → 胜率25% 放行")
+
+
+def test_ev_gate_disabled_still_blocks_bad_economics():
+    """关闭胜率门 → R:R 极差(负 EV)且非强信号 仍被经济门拦"""
+    from agents.trading.judge import MultiJudge
+    j = MultiJudge(config={'exchange': 'okx', 'max_trade_amount': 10,
+                           'ev_winrate_gate_enabled': False, 'ev_neutral_p_win': 0.55})
+    j._available_balance = 100.0
+    j._recent_win_rate = 0.25
+    j._total_completed_trades = 30
+    plan = {
+        'expected_value': -0.50,     # 经济上亏损期望
+        'p_win_used': 0.55,
+        'p_win_source': 'fixed',
+        'net_profit_usdt': 1.0,
+        'net_loss_usdt': 2.0,
+    }
+    assert j._check_expected_value('BTC-USDT', plan, score=50.0) is False, \
+        "经济门应继续拦截负 EV"
+    print("  ✅ Case 13: 关闭胜率门 → 负 EV 仍被经济门拦")
+
+
 def main():
     print("=" * 60)
     print("P2-N: EV 期望值前置校验门 测试")

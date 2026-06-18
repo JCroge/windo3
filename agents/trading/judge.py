@@ -3626,6 +3626,10 @@ class MultiJudge(BaseAgent):
         p_win = min(fallback, (wins + prior_wins) / (trades + prior_total))
         当样本不足时，prior 拉向保守方向（prior_wins=2, prior_total=5 → 先验40%）。
         """
+        # 胜率门关闭：用固定中性胜率，切断实际胜率对 EV 的影响
+        if not self._ev_winrate_gate_enabled:
+            return float(self._ev_neutral_p_win), "fixed"
+
         if (self._recent_win_rate is not None and
             self._total_completed_trades >= self._min_trades_for_ev_gate):
             return float(self._recent_win_rate), "rolling"
