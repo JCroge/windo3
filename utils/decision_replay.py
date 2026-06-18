@@ -185,6 +185,8 @@ def _install_config_flags(judge, config):
     judge._ev_prior_wins = g("ev_prior_wins", 2)
     judge._ev_prior_total = g("ev_prior_total", 5)
     judge._ev_strong_signal_threshold = g("ev_strong_signal_threshold", 70)
+    judge._ev_winrate_gate_enabled = g("ev_winrate_gate_enabled", True)
+    judge._ev_neutral_p_win = g("ev_neutral_p_win", 0.55)
     judge._recent_profit_factor = None
     judge._ev_bucket_min_trades = g("ev_bucket_min_trades", 10)
     judge._ev_bucket_sparse_allow_uplift = g("ev_bucket_sparse_allow_uplift", False)

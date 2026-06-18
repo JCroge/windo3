@@ -274,3 +274,17 @@ def test_no_unclassified_missing_snapshot_keys():
         f"v3 snapshot 缺键未分类（新增翻转默认键？请登记进 _EPOCH_FALLBACK 或 _GATE_IRRELEVANT）: "
         f"{sorted(unclassified)}")
     print(f"  ✅ Case: 缺键全分类（missing={sorted(missing)}）")
+
+
+def test_install_config_flags_restores_ev_winrate_gate():
+    """回放白名单须还原 EV 解耦两开关，否则 ev_gate 永远 getattr 默认 True（强制门开）"""
+    import logging
+    from agents.trading.judge import MultiJudge
+    from utils.decision_replay import _install_config_flags
+    judge = MultiJudge.__new__(MultiJudge)
+    judge.logger = logging.getLogger("test_judge")
+    # 模拟 post-decouple 记录的 effective config：门关 + 中性胜率
+    _install_config_flags(judge, {"ev_winrate_gate_enabled": False, "ev_neutral_p_win": 0.6})
+    assert judge._ev_winrate_gate_enabled is False, "白名单应还原 _ev_winrate_gate_enabled"
+    assert judge._ev_neutral_p_win == 0.6, "白名单应还原 _ev_neutral_p_win"
+    print("  ✅ Case: 白名单还原 EV 解耦开关")
