@@ -112,6 +112,8 @@ DEFAULTS = {
     # 开仓门胜率因子开关：默认 True 保持现状；关闭后 EV 公式用固定中性胜率
     "ev_winrate_gate_enabled": True,
     "ev_neutral_p_win": 0.55,
+    # 标的轮换是否强平已持仓标的：默认 False=保留持仓交 PositionAnalyst（B-revised 保护）
+    "rotation_close_held_enabled": False,
     # RQ-06: 信号原型 cooldown
     "archetype_cooldown_enabled": True,
     # RQ-04: 早期持仓复核
@@ -242,6 +244,8 @@ def _load_yaml(path: str) -> dict:
         out['ev_winrate_gate_enabled'] = _to_bool(risk['ev_winrate_gate_enabled'])
     if 'ev_neutral_p_win' in risk:
         out['ev_neutral_p_win'] = float(risk['ev_neutral_p_win'])
+    if 'rotation_close_held_enabled' in risk:
+        out['rotation_close_held_enabled'] = _to_bool(risk['rotation_close_held_enabled'])
     return out
 
 
@@ -268,6 +272,7 @@ def _read_env_overrides() -> dict:
         "EV_PRIOR_TOTAL": ("ev_prior_total", int),
         "EV_STRONG_SIGNAL_THRESHOLD": ("ev_strong_signal_threshold", int),
         "EV_WINRATE_GATE_ENABLED": ("ev_winrate_gate_enabled", _to_bool),
+        "ROTATION_CLOSE_HELD_ENABLED": ("rotation_close_held_enabled", _to_bool),
         "EV_NEUTRAL_P_WIN": ("ev_neutral_p_win", float),
         "ARCHETYPE_COOLDOWN_ENABLED": ("archetype_cooldown_enabled", _to_bool),
         "EARLY_REVIEW_ENABLED": ("early_review_enabled", _to_bool),
@@ -469,6 +474,7 @@ def format_banner(cfg: dict) -> str:
         f"  每日硬熔断:            {cfg.get('daily_pnl_hard_stop')} USDT",
         f"  连续亏损熔断:          {cfg.get('consecutive_loss_limit')} 次",
         f"  EV 胜率门:             {'开启' if cfg.get('ev_winrate_gate_enabled', True) else '关闭'} (neutral_p_win={cfg.get('ev_neutral_p_win', 0.55)})",
+        f"  轮换强平持仓:          {'开启' if cfg.get('rotation_close_held_enabled', False) else '关闭'}",
         f"  研判周期:              {cfg.get('research_interval') // 3600}h",
         f"  最大活跃标的:          {cfg.get('max_active_symbols')}",
         f"  最大并发持仓:          {cfg.get('max_concurrent_positions', 3)}",
