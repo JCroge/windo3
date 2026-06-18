@@ -1,8 +1,8 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: executing-plans
 isolation: branch
-verify_mode: null
+verify_mode: full
 base_ref: 53bd6b8bd20d548095ab860ee207c1b069eae6e6
 design_doc: docs/superpowers/specs/2026-06-18-ev-gate-winrate-decouple-design.md
 plan: docs/superpowers/plans/2026-06-18-ev-gate-winrate-decouple.md
