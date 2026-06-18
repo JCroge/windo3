@@ -234,3 +234,33 @@ def test_perturbation_overrides_all():
     eff = _resolve_effective_config(rec_v3, {"ladder_rr_enabled": False})
     assert eff["ladder_rr_enabled"] is False, "扰动 override 应盖过 snapshot"
     print("  ✅ Case: 扰动 override 最顶层")
+
+
+def test_epoch_fallback_keys_exist_in_defaults():
+    """_EPOCH_FALLBACK 每个键都存在于当前 DEFAULTS（无 stale/typo）"""
+    from utils.decision_replay import _EPOCH_FALLBACK, _PROD_DEFAULTS
+    for k in _EPOCH_FALLBACK:
+        assert k in _PROD_DEFAULTS, f"_EPOCH_FALLBACK 键 {k} 不在 DEFAULTS"
+    print("  ✅ Case: 纪元兜底键不悬空")
+
+
+def test_no_unclassified_missing_snapshot_keys():
+    """磁带 v3 记录中缺于 snapshot 的 DEFAULTS 键，必须被显式分类（兜底或无关）"""
+    from utils.decision_replay import _EPOCH_FALLBACK, _GATE_IRRELEVANT, _PROD_DEFAULTS
+    recs = [r for r in _load_v2_v3()
+            if r.get("schema_version") == "decision_replay_record.v3"
+            and (r.get("config_snapshot") or {})]
+    if len(recs) < 50:
+        pytest.skip("insufficient v3 tape")
+    classified = set(_EPOCH_FALLBACK) | set(_GATE_IRRELEVANT)
+    missing = set()
+    for r in recs:
+        snap = r.get("config_snapshot") or {}
+        for k in _PROD_DEFAULTS:
+            if k not in snap:
+                missing.add(k)
+    unclassified = missing - classified
+    assert not unclassified, (
+        f"v3 snapshot 缺键未分类（新增翻转默认键？请登记进 _EPOCH_FALLBACK 或 _GATE_IRRELEVANT）: "
+        f"{sorted(unclassified)}")
+    print(f"  ✅ Case: 缺键全分类（missing={sorted(missing)}）")
