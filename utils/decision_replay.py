@@ -78,6 +78,34 @@ def production_base_config():
     return dict(_PROD_DEFAULTS)
 
 
+# 键 → "该键加入 DEFAULTS 之前的纪元默认"。缺该键的旧记录回放用此值，而非当前
+# production 默认（其默认可能已翻转，致系统性发散）。
+# forward-only 契约：新增"DEFAULTS 默认值发生翻转"的键时，在此登记其翻转前的纪元默认。
+# 注：值与当前 DEFAULTS 相同的条目是防御性 no-op（当前默认恰等于纪元默认），
+#     保留它们仅为让守卫测试把这些 snapshot-缺键显式归类（见 _GATE_IRRELEVANT 对照）。
+_EPOCH_FALLBACK = {
+    "ladder_rr_enabled": False,          # 真翻转：trend-entry-levers-default-on 把 DEFAULTS 翻成 True，纪元前=关
+    "ev_winrate_gate_enabled": True,     # 防御性 no-op：当前 DEFAULTS 仍=True（仅 config.yaml live 值改过）
+    "ev_neutral_p_win": 0.55,            # 防御性 no-op：当前 DEFAULTS 仍=0.55
+}
+
+# 晚加但不影响 Judge gate 决策的键。守卫测试（CF-T2）消费此集合：snapshot-缺键
+# 必须落在 _EPOCH_FALLBACK 或本集合之一，否则守卫失败，防新翻转键静默漂移。
+_GATE_IRRELEVANT = {
+    "rotation_close_held_enabled",       # 轮换平仓开关，不进 Judge 决策
+}
+
+
+def _resolve_effective_config(record, perturbation):
+    """四层合并：production_base < 纪元兜底 < config_snapshot(录值优先) < 扰动override(顶层)。"""
+    return {
+        **production_base_config(),
+        **_EPOCH_FALLBACK,
+        **(record.get("config_snapshot") or {}),
+        **(perturbation or {}),
+    }
+
+
 async def replay_decision(record, config=None):
     """还原状态 + stub 3 个外部 await + 跑真实 _make_decision，捕获发布的决策。
 
@@ -90,10 +118,8 @@ async def replay_decision(record, config=None):
     symbol = record["symbol"]
     snap = record["state_snapshot_before_decision"]
 
-    # 有效 config = 生产基线(record 录制的 config_snapshot 优先, 缺则 config_loader 生产默认)
-    #              + 传入 config 作为扰动覆盖(只覆盖目标旋钮)。
-    base = {**production_base_config(), **(record.get("config_snapshot") or {})}
-    effective = {**base, **(config or {})}
+    # 有效 config = 四层合并：production_base < 纪元兜底 < config_snapshot(录值优先) < 扰动override。
+    effective = _resolve_effective_config(record, config)
     judge = MultiJudge.__new__(MultiJudge)
     judge.config = effective
     judge.logger = mock.MagicMock()
@@ -159,6 +185,8 @@ def _install_config_flags(judge, config):
     judge._ev_prior_wins = g("ev_prior_wins", 2)
     judge._ev_prior_total = g("ev_prior_total", 5)
     judge._ev_strong_signal_threshold = g("ev_strong_signal_threshold", 70)
+    judge._ev_winrate_gate_enabled = g("ev_winrate_gate_enabled", True)
+    judge._ev_neutral_p_win = g("ev_neutral_p_win", 0.55)
     judge._recent_profit_factor = None
     judge._ev_bucket_min_trades = g("ev_bucket_min_trades", 10)
     judge._ev_bucket_sparse_allow_uplift = g("ev_bucket_sparse_allow_uplift", False)

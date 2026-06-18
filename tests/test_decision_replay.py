@@ -191,16 +191,100 @@ def test_production_baseline_restores_fidelity():
     if len(recs) < 50:
         pytest.skip("insufficient tape")
 
-    async def run():
-        agree = 0
-        for r in recs:
-            # ladder_rr_enabled=False 钉磁带录制纪元：本磁带录于 lever2 默认开之前
-            # (trend-entry-levers-default-on)，config_snapshot 不含 ladder 键，用生产基线
-            # (现默认开)回放会用阶梯口径致系统性发散。前向新记录自带 ladder=True，无需 pin。
-            d = await replay_decision(r, {"ladder_rr_enabled": False})
-            if _gate_of_recorded(r) == _gate_of_replayed(d):
-                agree += 1
-        return agree / len(recs)
+    def _ar(g):
+        return "accept" if g == "accept" else "reject"
 
-    fid = asyncio.run(run())
-    assert fid >= 0.85, f"L2 fidelity {fid:.3f} < 0.85 (production baseline should be ~0.90)"
+    async def run():
+        gate_agree = 0
+        ar_agree = 0
+        for r in recs:
+            # 纪元解析：不传全局 pin，replay_decision 逐记录按录制纪元解析
+            # （缺键用 _EPOCH_FALLBACK 录制纪元默认，snapshot 录值优先）。
+            d = await replay_decision(r, None)
+            gr = _gate_of_recorded(r)
+            gd = _gate_of_replayed(d)
+            if gr == gd:
+                gate_agree += 1
+            if _ar(gr) == _ar(gd):
+                ar_agree += 1
+        return gate_agree / len(recs), ar_agree / len(recs)
+
+    gate_fid, ar_fid = asyncio.run(run())
+    # gate 严格保真：诊断-only（门归因短路顺序敏感，不作硬门）
+    print(f"[diag] L2 gate fidelity = {gate_fid:.3f} (诊断, 实测 ~0.89)")
+    # accept/reject 二元保真：主可信度硬门（方向推荐真正依赖的维度）
+    assert ar_fid >= 0.95, f"L2 accept/reject fidelity {ar_fid:.3f} < 0.95 (production baseline should be ~0.985)"
+
+
+# --- 纪元解析单测 ---------------------------------------------------------
+
+def test_epoch_fallback_for_missing_keys():
+    """缺键记录用录制纪元默认（ladder→False, ev_winrate→True），非当前 production 默认"""
+    from utils.decision_replay import _resolve_effective_config
+    rec_old = {"config_snapshot": None}
+    eff = _resolve_effective_config(rec_old, None)
+    assert eff["ladder_rr_enabled"] is False, "旧记录 ladder 应回退纪元默认 False"
+    assert eff["ev_winrate_gate_enabled"] is True, "旧记录 ev 门应回退纪元默认 True"
+    print("  ✅ Case: 缺键回退录制纪元默认")
+
+
+def test_snapshot_overrides_epoch_fallback():
+    """v3 记录 snapshot 的 ladder=True 应盖回纪元兜底的 False"""
+    from utils.decision_replay import _resolve_effective_config
+    rec_v3 = {"config_snapshot": {"ladder_rr_enabled": True}}
+    eff = _resolve_effective_config(rec_v3, None)
+    assert eff["ladder_rr_enabled"] is True, "snapshot 录值应优先于纪元兜底"
+    print("  ✅ Case: snapshot 优先于纪元兜底")
+
+
+def test_perturbation_overrides_all():
+    """扰动 override 在最顶层，盖过 snapshot"""
+    from utils.decision_replay import _resolve_effective_config
+    rec_v3 = {"config_snapshot": {"ladder_rr_enabled": True}}
+    eff = _resolve_effective_config(rec_v3, {"ladder_rr_enabled": False})
+    assert eff["ladder_rr_enabled"] is False, "扰动 override 应盖过 snapshot"
+    print("  ✅ Case: 扰动 override 最顶层")
+
+
+def test_epoch_fallback_keys_exist_in_defaults():
+    """_EPOCH_FALLBACK 每个键都存在于当前 DEFAULTS（无 stale/typo）"""
+    from utils.decision_replay import _EPOCH_FALLBACK, _PROD_DEFAULTS
+    for k in _EPOCH_FALLBACK:
+        assert k in _PROD_DEFAULTS, f"_EPOCH_FALLBACK 键 {k} 不在 DEFAULTS"
+    print("  ✅ Case: 纪元兜底键不悬空")
+
+
+def test_no_unclassified_missing_snapshot_keys():
+    """磁带 v3 记录中缺于 snapshot 的 DEFAULTS 键，必须被显式分类（兜底或无关）"""
+    from utils.decision_replay import _EPOCH_FALLBACK, _GATE_IRRELEVANT, _PROD_DEFAULTS
+    recs = [r for r in _load_v2_v3()
+            if r.get("schema_version") == "decision_replay_record.v3"
+            and (r.get("config_snapshot") or {})]
+    if len(recs) < 50:
+        pytest.skip("insufficient v3 tape")
+    classified = set(_EPOCH_FALLBACK) | set(_GATE_IRRELEVANT)
+    missing = set()
+    for r in recs:
+        snap = r.get("config_snapshot") or {}
+        for k in _PROD_DEFAULTS:
+            if k not in snap:
+                missing.add(k)
+    unclassified = missing - classified
+    assert not unclassified, (
+        f"v3 snapshot 缺键未分类（新增翻转默认键？请登记进 _EPOCH_FALLBACK 或 _GATE_IRRELEVANT）: "
+        f"{sorted(unclassified)}")
+    print(f"  ✅ Case: 缺键全分类（missing={sorted(missing)}）")
+
+
+def test_install_config_flags_restores_ev_winrate_gate():
+    """回放白名单须还原 EV 解耦两开关，否则 ev_gate 永远 getattr 默认 True（强制门开）"""
+    import logging
+    from agents.trading.judge import MultiJudge
+    from utils.decision_replay import _install_config_flags
+    judge = MultiJudge.__new__(MultiJudge)
+    judge.logger = logging.getLogger("test_judge")
+    # 模拟 post-decouple 记录的 effective config：门关 + 中性胜率
+    _install_config_flags(judge, {"ev_winrate_gate_enabled": False, "ev_neutral_p_win": 0.6})
+    assert judge._ev_winrate_gate_enabled is False, "白名单应还原 _ev_winrate_gate_enabled"
+    assert judge._ev_neutral_p_win == 0.6, "白名单应还原 _ev_neutral_p_win"
+    print("  ✅ Case: 白名单还原 EV 解耦开关")
