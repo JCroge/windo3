@@ -1,0 +1,14 @@
+{
+  "change": "fix-cf-lab-fidelity-epoch-resolution",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "bea7803cf674eb6505a69466b9601abe1407410cb2e28a2f1b162e9741e502fd",
+  "files": [
+    { "path": "openspec/changes/fix-cf-lab-fidelity-epoch-resolution/proposal.md", "sha256": "6a68b71a5ec5d535abb42c9eb85d59f70b05ca9b975bc0a75698a7cb8b38f97e" },
+    { "path": "openspec/changes/fix-cf-lab-fidelity-epoch-resolution/design.md", "sha256": "51e8f643f95edde9d3ad3c169fa960795f06c20a0d1e7069ca0680c33526012c" },
+    { "path": "openspec/changes/fix-cf-lab-fidelity-epoch-resolution/tasks.md", "sha256": "d93f690a3b2b0859f2cbbdc5ef5f2f900e641f97ff8e233ecc22ba5e26415975" },
+    { "path": "openspec/changes/fix-cf-lab-fidelity-epoch-resolution/specs/deterministic-replay-harness/spec.md", "sha256": "489a61a9736e2e0b5d28ac6cb4abf47f8547b0bb7792ff77e6f1e1b41abefb3b" }
+  ]
+}
