@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: null
+isolation: null
+verify_mode: null
+base_ref: 53bd6b8bd20d548095ab860ee207c1b069eae6e6
+design_doc: docs/superpowers/specs/2026-06-18-ev-gate-winrate-decouple-design.md
+plan: null
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-18
+verified_at: null
+archived: false
+handoff_context: openspec/changes/ev-gate-winrate-decouple/.comet/handoff/design-context.json
+handoff_hash: 47625277c7032dd968480ac96b7087de9b9be5da703224fbc8aad86d59dc748f
