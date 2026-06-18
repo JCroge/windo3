@@ -2,6 +2,8 @@
 comet_change: fix-cf-lab-fidelity-epoch-resolution
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
+status: final
 ---
 
 # Design Doc: CF 实验室保真度纪元解析修复

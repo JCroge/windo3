@@ -1,17 +1,17 @@
 workflow: full
-phase: verify
+phase: archive
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: full
 base_ref: ba8bdb90745c01a6f055bb27b92d5020ec67ed97
 design_doc: docs/superpowers/specs/2026-06-18-fix-cf-lab-fidelity-epoch-resolution-design.md
 plan: docs/superpowers/plans/2026-06-18-fix-cf-lab-fidelity-epoch-resolution.md
-verify_result: pending
-verification_report: null
-branch_status: pending
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-06-18-fix-cf-lab-fidelity-epoch-resolution-verify.md
+branch_status: handled
 created_at: 2026-06-18
-verified_at: null
-archived: false
+verified_at: 2026-06-18
+archived: true
 handoff_context: openspec/changes/fix-cf-lab-fidelity-epoch-resolution/.comet/handoff/design-context.json
 handoff_hash: bea7803cf674eb6505a69466b9601abe1407410cb2e28a2f1b162e9741e502fd
 build_command: python3 -m pytest tests/test_decision_replay.py tests/test_sequential_perturbation.py -q

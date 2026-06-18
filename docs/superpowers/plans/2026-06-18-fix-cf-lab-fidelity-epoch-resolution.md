@@ -2,6 +2,7 @@
 change: fix-cf-lab-fidelity-epoch-resolution
 design-doc: docs/superpowers/specs/2026-06-18-fix-cf-lab-fidelity-epoch-resolution-design.md
 base-ref: fc42e576b89502c839c403a857a705ae67ec7f3e
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 # CF 实验室保真度纪元解析修复 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: fc42e576b89502c839c403a857a705ae67ec7f3e
 
 **Tech Stack:** Python 3.9, asyncio, pytest。核心 `utils/decision_replay.py` + 两个 CF 测试。
 
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 ## File Structure
@@ -24,6 +26,7 @@ base-ref: fc42e576b89502c839c403a857a705ae67ec7f3e
 
 `utils/sequential_perturbation.py` 的 `run_arm` 把 `config` 透传给 `replay_decision`，引擎修复后无需改动；仅测试调用从 `{"ladder_rr_enabled": False}` 改 `{}`。
 
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 ## Task 1: 纪元解析四层合并（引擎核心）
@@ -127,6 +130,7 @@ git add utils/decision_replay.py tests/test_decision_replay.py
 git commit -m "feat(cf-epoch): replay_decision 四层合并纪元解析（缺键用录制纪元默认）"
 ```
 
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 ## Task 2: 纪元守卫测试（防静默复发）
@@ -181,6 +185,7 @@ git add tests/test_decision_replay.py
 git commit -m "test(cf-epoch): 纪元兜底守卫——缺键必须显式分类，防静默复发"
 ```
 
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 ## Task 3: 两个保真度测试改造（accept/reject 主指标）
@@ -264,6 +269,7 @@ git add tests/test_decision_replay.py tests/test_sequential_perturbation.py
 git commit -m "test(cf-epoch): 两保真度测试改纪元解析 + accept/reject 主硬门 + gate 保真降诊断"
 ```
 
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 ## Task 4: range_position→ev_gate 残余调查（调查任务）
@@ -299,6 +305,7 @@ git commit -m "test(cf-epoch): 两保真度测试改纪元解析 + accept/reject
 git add -A && git commit -m "investigate(cf-epoch): range_position→ev_gate 残余诊断结论" || echo "无代码改动，结论记入报告"
 ```
 
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 ## Task 5: tasks 勾选 + 全量回归
@@ -323,6 +330,7 @@ Expected: 基线 1302 + 本次（原 2 失败现 PASS）；对照 base-ref 确�
 git add -A && git commit -m "chore(cf-epoch): tasks 勾选 + 全量回归（两 CF 保真度测试转绿）"
 ```
 
+archived-with: 2026-06-18-fix-cf-lab-fidelity-epoch-resolution
 ---
 
 ## Self-Review
