@@ -3627,8 +3627,8 @@ class MultiJudge(BaseAgent):
         当样本不足时，prior 拉向保守方向（prior_wins=2, prior_total=5 → 先验40%）。
         """
         # 胜率门关闭：用固定中性胜率，切断实际胜率对 EV 的影响
-        if not self._ev_winrate_gate_enabled:
-            return float(self._ev_neutral_p_win), "fixed"
+        if not getattr(self, '_ev_winrate_gate_enabled', True):
+            return float(getattr(self, '_ev_neutral_p_win', 0.55)), "fixed"
 
         if (self._recent_win_rate is not None and
             self._total_completed_trades >= self._min_trades_for_ev_gate):
@@ -3657,7 +3657,7 @@ class MultiJudge(BaseAgent):
         p_win_source = plan.get('p_win_source', 'fallback')
 
         # Phase 2: 分桶 EV（胜率门关闭时跳过，避免分桶 win_rate 重新引入实际胜率）
-        if self._ev_winrate_gate_enabled and getattr(self, '_bucketed_ev_enabled', False):
+        if getattr(self, '_ev_winrate_gate_enabled', True) and getattr(self, '_bucketed_ev_enabled', False):
             bucket_info = self._get_bucketed_ev_info(plan, score)
             if bucket_info:
                 bucket_p_win = bucket_info['p_win']
@@ -3703,7 +3703,7 @@ class MultiJudge(BaseAgent):
         effective_win_rate = p_win if p_win_source == 'rolling' else (
             self._recent_win_rate if self._recent_win_rate is not None else p_win
         )
-        if (self._ev_winrate_gate_enabled and effective_win_rate < 0.4
+        if (getattr(self, '_ev_winrate_gate_enabled', True) and effective_win_rate < 0.4
                 and abs(score) < self._ev_strong_signal_threshold):
             self.logger.warning(
                 f"[Judge] {symbol} 胜率{effective_win_rate:.1%}<40% 且 "
