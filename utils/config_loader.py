@@ -33,6 +33,7 @@ HARD_LIMITS = {
     "ev_prior_wins": (0, 50),                       # Bayesian EV 先验胜场
     "ev_prior_total": (1, 100),                     # Bayesian EV 先验总场
     "ev_strong_signal_threshold": (30, 100),        # EV 强信号豁免阈值
+    "ev_neutral_p_win": (0.0, 1.0),                 # 胜率门关闭时 EV 公式固定中性胜率
     "entry_timing_15m_strong_score_threshold": (30, 100),  # 15m 强信号豁免阈值
     "entry_timing_15m_timeout_hours": (0.5, 24),           # 15m defer 超时小时
     "rank_flush_delay": (1.0, 30.0),                       # Ranking flush 窗口秒
@@ -108,6 +109,9 @@ DEFAULTS = {
     "ev_prior_wins": 2,
     "ev_prior_total": 5,
     "ev_strong_signal_threshold": 70,
+    # 开仓门胜率因子开关：默认 True 保持现状；关闭后 EV 公式用固定中性胜率
+    "ev_winrate_gate_enabled": True,
+    "ev_neutral_p_win": 0.55,
     # RQ-06: 信号原型 cooldown
     "archetype_cooldown_enabled": True,
     # RQ-04: 早期持仓复核
@@ -234,6 +238,10 @@ def _load_yaml(path: str) -> dict:
         out['daily_pnl_hard_stop'] = -abs(float(risk['max_daily_loss']))
     if 'consecutive_loss_limit' in risk:
         out['consecutive_loss_limit'] = int(risk['consecutive_loss_limit'])
+    if 'ev_winrate_gate_enabled' in risk:
+        out['ev_winrate_gate_enabled'] = _to_bool(risk['ev_winrate_gate_enabled'])
+    if 'ev_neutral_p_win' in risk:
+        out['ev_neutral_p_win'] = float(risk['ev_neutral_p_win'])
     return out
 
 
@@ -259,6 +267,8 @@ def _read_env_overrides() -> dict:
         "EV_PRIOR_WINS": ("ev_prior_wins", int),
         "EV_PRIOR_TOTAL": ("ev_prior_total", int),
         "EV_STRONG_SIGNAL_THRESHOLD": ("ev_strong_signal_threshold", int),
+        "EV_WINRATE_GATE_ENABLED": ("ev_winrate_gate_enabled", _to_bool),
+        "EV_NEUTRAL_P_WIN": ("ev_neutral_p_win", float),
         "ARCHETYPE_COOLDOWN_ENABLED": ("archetype_cooldown_enabled", _to_bool),
         "EARLY_REVIEW_ENABLED": ("early_review_enabled", _to_bool),
         "PROFIT_PROTECTION_ENABLED": ("profit_protection_enabled", _to_bool),
@@ -458,6 +468,7 @@ def format_banner(cfg: dict) -> str:
         f"  最大回撤:              {cfg.get('max_drawdown_pct')}%",
         f"  每日硬熔断:            {cfg.get('daily_pnl_hard_stop')} USDT",
         f"  连续亏损熔断:          {cfg.get('consecutive_loss_limit')} 次",
+        f"  EV 胜率门:             {'开启' if cfg.get('ev_winrate_gate_enabled', True) else '关闭'} (neutral_p_win={cfg.get('ev_neutral_p_win', 0.55)})",
         f"  研判周期:              {cfg.get('research_interval') // 3600}h",
         f"  最大活跃标的:          {cfg.get('max_active_symbols')}",
         f"  最大并发持仓:          {cfg.get('max_concurrent_positions', 3)}",
