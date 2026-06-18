@@ -1,6 +1,8 @@
 """标的路由 Agent - 管理活跃交易标的集，处理标的轮换"""
 
 import time
+import json
+import os
 from agents.base import BaseAgent
 
 
@@ -15,6 +17,7 @@ class SymbolRouter(BaseAgent):
         self._max_active = (config or {}).get('max_active_symbols', 5)
         self._last_update_time = 0
         self._min_rotation_interval = 3600
+        self._close_held = (config or {}).get('rotation_close_held_enabled', False)
 
     async def setup(self):
         self.logger.info("标的路由Agent就绪")
@@ -51,19 +54,31 @@ class SymbolRouter(BaseAgent):
         new_symbols = [s['symbol'] for s in selected[:self._max_active]]
         old_symbols = self._active_symbols.copy()
 
+        held = set(self._get_position_symbols())
+
+        if self._close_held:
+            # 旧行为：轮出即强平，不保留持仓标的
+            removed = [s for s in old_symbols if s not in new_symbols]
+            active_symbols = new_symbols
+            retained = []
+        else:
+            # B-revised：持仓标的保留在 active，不进 removed
+            removed = [s for s in old_symbols if s not in new_symbols and s not in held]
+            retained = sorted(s for s in held if s not in new_symbols)
+            active_symbols = new_symbols + retained
+
         added = [s for s in new_symbols if s not in old_symbols]
-        removed = [s for s in old_symbols if s not in new_symbols]
 
         removed_action = {}
         for s in removed:
             removed_action[s] = "close_at_market"
 
-        self._active_symbols = new_symbols
+        self._active_symbols = active_symbols
         self._symbol_meta = {s['symbol']: s for s in selected[:self._max_active]}
         self._last_update_time = now
 
         await self.publish("symbol_update", {
-            "active_symbols": new_symbols,
+            "active_symbols": active_symbols,
             "added": added,
             "removed": removed,
             "removed_action": removed_action,
@@ -71,9 +86,14 @@ class SymbolRouter(BaseAgent):
         })
 
         self.logger.info(
-            f"[路由] 活跃标的更新: {new_symbols} "
-            f"(+{added}, -{removed})"
+            f"[路由] 活跃标的更新: {active_symbols} "
+            f"(+{added}, -{removed}, 持仓保留={retained})"
         )
+
+        for symbol in retained:
+            self.logger.info(
+                f"[路由] {symbol} 持仓中，保留监控，出场交 PositionAnalyst"
+            )
 
         for symbol in removed:
             if removed_action.get(symbol) == "close_at_market":
@@ -85,6 +105,25 @@ class SymbolRouter(BaseAgent):
                     "reasoning": "标的轮换，平仓退出",
                 }, symbol=symbol)
                 self.logger.info(f"[路由] 发送平仓指令: {symbol}")
+
+    def _get_position_symbols(self) -> list:
+        """读取持仓标的列表（统一为内部规范 BASE-USDT）。
+
+        fail-safe：文件缺失/损坏 → 返回 []，不抛异常。
+        持仓信息不可得时，轮换退化为旧强平行为，绝不产生无人看管持仓。
+        """
+        from utils.state_paths import get_state_paths
+        from utils.symbol import to_internal
+        positions_file = get_state_paths().positions
+        if not os.path.exists(positions_file):
+            return []
+        try:
+            with open(positions_file, 'r') as f:
+                positions = json.load(f)
+            return [to_internal(s) for s in positions.keys()]
+        except Exception as e:
+            self.logger.warning(f"[路由] 读取持仓失败，退化为旧轮换行为: {e}")
+            return []
 
     @property
     def active_symbols(self) -> list:
