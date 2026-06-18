@@ -144,6 +144,9 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | MAX_TRADE_AMOUNT | 单笔最大保证金（USDT） | 10 | 否 |
 | MAX_DRAWDOWN_PCT | 最大回撤百分比 | 20.0 | 否 |
 | MAX_DAILY_LOSS | 每日最大亏损（USDT，正数） | 50 | 否 |
+| CONSECUTIVE_LOSS_LIMIT | 连续亏损熔断次数（连亏达此数即全平熔断）。可经 config.yaml `risk.consecutive_loss_limit` 配置 | 3 | 否 |
+| EV_WINRATE_GATE_ENABLED | EV 开仓门是否用实际滚动胜率。`false`=关闭，EV 公式改用固定 `ev_neutral_p_win`、跳过胜率<40%硬阈值与分桶覆盖，仅保留 R:R/成本经济门。可经 config.yaml `risk.ev_winrate_gate_enabled` 配置 | true | 否 |
+| EV_NEUTRAL_P_WIN | 关闭胜率门时 EV 公式使用的固定中性胜率，范围 [0.0, 1.0]。可经 config.yaml `risk.ev_neutral_p_win` 配置 | 0.55 | 否 |
 | EFFECTIVE_BALANCE_CAP | 逻辑账户拆分：风控按此上限计算余额（真实余额不变）。留空=用真实余额。范围 [10, 1_000_000] | （未启用） | 否 |
 | DRAWDOWN_BASELINE_MODE | 回撤基准模式：`session_start`=启动时重置基准（默认）；`persisted_peak`=继承历史峰值（兼容旧行为） | session_start | 否 |
 | RESET_RISK_BASELINE_ON_START | 启动时是否重置本轮回撤基准 | true | 否 |
@@ -154,9 +157,12 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | RANKING_ENABLED | 是否启用候选 Top-N Ranking 裁决 | true | 否 |
 | RANK_FLUSH_DELAY | Ranking flush 窗口秒数，等待同批候选到齐后统一排序。范围 [1, 30] | 5.0 | 否 |
 | MAX_CONCURRENT_POSITIONS | 最大并发持仓数（同时开仓数量）。范围 [1, 20] | 3 | 否 |
+| SHORT_REGIME_GUARD_ENABLED | 做空结构性风险门总开关（`Judge._classify_short_entry_risk`）；`false`=整门失效 | true | 否 |
+| SHORT_LIVE_MIN_SCORE | 空单入场最低 abs(score)（结构门 `short_score_too_low`） | 55 | 否 |
 | SHORT_LIVE_MIN_RSI | 空单入场最低RSI（防超卖追空） | 40 | 否 |
 | SHORT_LIVE_MIN_RANGE_POS | 空单入场最低24h区间位置（防底部追空） | 0.45 | 否 |
-| SHORT_LIVE_REQUIRE_DAILY_BEARISH | 空单是否要求日线偏空 | true | 否 |
+| SHORT_LIVE_MIN_HTF_VOTES | 空单入场最低 HTF 看跌票数（trend.direction/higher_tf_bias/daily_bias 数 bearish） | 2 | 否 |
+| SHORT_LIVE_REQUIRE_DAILY_BEARISH | 空单是否要求日线偏空（不满足记 `daily_bearish_required` 拒/降级 probe） | true | 否 |
 | SHORT_LIVE_MAX_PRE_MOVE | 空单入场前12h最大跌幅（防追空） | -0.01 | 否 |
 | PHASE2_SIGNAL_CONFIDENCE_SPLIT_ENABLED | Confidence Split：signal_score/execution_confidence/position_scale 三层拆分 | true | 否 |
 | PHASE2_MOMENTUM_PROBE_LONG_ENABLED | Momentum Probe Long：RSI 70-85 强趋势追踪小仓位 | true | 否 |
@@ -260,9 +266,12 @@ arbitrage:
 
 # 风控
 risk:
-  max_trade_amount: 500   # 单次最大保证金（会被 .env 的 MAX_TRADE_AMOUNT 覆盖）
-  max_drawdown: 0.20      # 最大回撤20%
-  max_daily_loss: 300     # 每日最大亏损
+  max_trade_amount: 500          # 单次最大保证金（会被 .env 的 MAX_TRADE_AMOUNT 覆盖）
+  max_drawdown: 0.20             # 最大回撤20%
+  max_daily_loss: 300            # 每日最大亏损
+  consecutive_loss_limit: 5      # 连续亏损熔断次数（默认 3，当前放宽到 5）
+  ev_winrate_gate_enabled: false # 关闭后开仓门不用实际胜率(胜率低不拦)，EV门仍按R:R/成本（默认 true）
+  ev_neutral_p_win: 0.55         # 关闭胜率门时 EV 公式使用的固定中性胜率
 
 # 手续费
 fees:
