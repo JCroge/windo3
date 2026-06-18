@@ -86,6 +86,9 @@ class MultiJudge(BaseAgent):
         self._ev_prior_total = config.get('ev_prior_total', 5) if config else 5
         # 强信号豁免阈值：score >= 此值时 EV 门放宽
         self._ev_strong_signal_threshold = config.get('ev_strong_signal_threshold', 70) if config else 70
+        # EV 胜率门开关：关闭后 EV 公式用固定中性胜率，开仓门不再受实际胜率影响
+        self._ev_winrate_gate_enabled = config.get('ev_winrate_gate_enabled', True) if config else True
+        self._ev_neutral_p_win = config.get('ev_neutral_p_win', 0.55) if config else 0.55
 
         # ═══ P2-O: 最大并发持仓上限 ═══
         # 启动期保守：余额 ~100 USDT 时最多 3 个并发持仓，单仓 ~10 USDT margin
@@ -3623,6 +3626,10 @@ class MultiJudge(BaseAgent):
         p_win = min(fallback, (wins + prior_wins) / (trades + prior_total))
         当样本不足时，prior 拉向保守方向（prior_wins=2, prior_total=5 → 先验40%）。
         """
+        # 胜率门关闭：用固定中性胜率，切断实际胜率对 EV 的影响
+        if not getattr(self, '_ev_winrate_gate_enabled', True):
+            return float(getattr(self, '_ev_neutral_p_win', 0.55)), "fixed"
+
         if (self._recent_win_rate is not None and
             self._total_completed_trades >= self._min_trades_for_ev_gate):
             return float(self._recent_win_rate), "rolling"
@@ -3649,8 +3656,8 @@ class MultiJudge(BaseAgent):
         p_win = plan.get('p_win_used', 0.5)
         p_win_source = plan.get('p_win_source', 'fallback')
 
-        # Phase 2: 分桶 EV
-        if getattr(self, '_bucketed_ev_enabled', False):
+        # Phase 2: 分桶 EV（胜率门关闭时跳过，避免分桶 win_rate 重新引入实际胜率）
+        if getattr(self, '_ev_winrate_gate_enabled', True) and getattr(self, '_bucketed_ev_enabled', False):
             bucket_info = self._get_bucketed_ev_info(plan, score)
             if bucket_info:
                 bucket_p_win = bucket_info['p_win']
@@ -3696,7 +3703,8 @@ class MultiJudge(BaseAgent):
         effective_win_rate = p_win if p_win_source == 'rolling' else (
             self._recent_win_rate if self._recent_win_rate is not None else p_win
         )
-        if (effective_win_rate < 0.4 and abs(score) < self._ev_strong_signal_threshold):
+        if (getattr(self, '_ev_winrate_gate_enabled', True) and effective_win_rate < 0.4
+                and abs(score) < self._ev_strong_signal_threshold):
             self.logger.warning(
                 f"[Judge] {symbol} 胜率{effective_win_rate:.1%}<40% 且 "
                 f"score={score:.0f}<{self._ev_strong_signal_threshold}，EV门强拒 "

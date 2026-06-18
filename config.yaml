@@ -22,6 +22,8 @@ risk:
   max_drawdown: 0.20  # 最大回撤20%
   max_daily_loss: 300  # 每日最大亏损（USDT）
   consecutive_loss_limit: 5  # 连续亏损熔断次数（连亏达此数即全平熔断）
+  ev_winrate_gate_enabled: false  # 关闭后开仓门不用实际胜率(胜率25%不拦)，EV门仍按R:R/成本
+  ev_neutral_p_win: 0.55          # 关闭胜率门时 EV 公式使用的固定中性胜率
 
 # 手续费（Maker/Taker）
 fees:

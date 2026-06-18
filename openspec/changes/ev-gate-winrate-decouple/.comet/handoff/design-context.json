@@ -1,0 +1,14 @@
+{
+  "change": "ev-gate-winrate-decouple",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "47625277c7032dd968480ac96b7087de9b9be5da703224fbc8aad86d59dc748f",
+  "files": [
+    { "path": "openspec/changes/ev-gate-winrate-decouple/proposal.md", "sha256": "b9e3bb9a20e613e7fb09f5cce89f457fb4265257c0b0c44e70a8949561123ea0" },
+    { "path": "openspec/changes/ev-gate-winrate-decouple/design.md", "sha256": "f9f3e5bf71e1778818750184717592181d9cd7b036c6c6c47f4d64edf70cd304" },
+    { "path": "openspec/changes/ev-gate-winrate-decouple/tasks.md", "sha256": "d3f744622f5419c507b2d230ae676d7082db69e58dd8bf1e716aca39cad88328" },
+    { "path": "openspec/changes/ev-gate-winrate-decouple/specs/open-gate-ev/spec.md", "sha256": "a8811a00a9b79d06175cd5c5866d7be175734a2e0c81eacdffd0ffd842699476" }
+  ]
+}
