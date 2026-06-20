@@ -2734,6 +2734,17 @@ class ContractExecutor:
                     removed_symbols.append(sym)
                     del self.positions[sym]
                     self._sl_check_failures.pop(sym, None)
+                    # 幽灵移除自愈: 仅当该 symbol 因 migrate_missing_sl 被 halt
+                    # （症状根因已随仓位移除消失）才自动解 halt；其它 fail-closed
+                    # halt（reconcile_conflict / multiple_sl / side_conflict 等）不动。
+                    halt_info = getattr(self, '_halted_symbols', {}).get(sym)
+                    if halt_info and halt_info.get('reason') == 'migrate_missing_sl':
+                        self.clear_symbol_halt(sym, source='self_heal:phantom_removed')
+                        self.logger.info(
+                            f"[SelfHeal] {sym} 幽灵移除, 自动清 migrate_missing_sl halt"
+                        )
+                    if hasattr(self, '_last_protection_alert'):
+                        self._last_protection_alert.pop(sym, None)
             if not hasattr(self, '_last_removed_symbols'):
                 self._last_removed_symbols = []
             self._last_removed_symbols.extend(removed_symbols)
