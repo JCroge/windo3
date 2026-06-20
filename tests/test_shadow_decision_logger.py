@@ -88,6 +88,51 @@ def test_log_shadow_fail_safe_never_raises(tmp_path):
     assert r is None  # 非 replayable → 跳过, 不抛
 
 
+def test_log_shadow_two_arms_and_mismatch(tmp_path, monkeypatch):
+    import utils.shadow_decision_logger as sdl
+
+    # 模拟两臂复盘：第一次调用(baseline)返回 hold, 第二次(shadow)返回 open_long
+    calls = []
+    async def fake_replay(bundle, config):
+        calls.append(config)
+        # baseline=lever2-only → hold; shadow=both → open_long
+        if config.get("path_evidence_aligned_enabled") is False:
+            return {"action": "hold", "attribution": {"blocked_by": "ev_gate"}}
+        return {"action": "open_long", "plan": {"size": 1}}
+    monkeypatch.setattr(sdl, "replay_decision", fake_replay)
+
+    out = tmp_path / "s.jsonl"
+    bundle = {"replayable": True, "symbol": "XLM-USDT", "timestamp": 9.0,
+              "tech_analysis": {"t": 1}}
+    r = asyncio.run(sdl.log_shadow_decision(bundle, {"action": "open_long"}, str(out)))
+    assert r is not None
+    # 跑了两臂, 顺序 baseline 先 shadow 后
+    assert calls[0].get("path_evidence_aligned_enabled") is False
+    assert calls[1].get("path_evidence_aligned_enabled") is True
+    # baseline=hold 但 live=open_long → mismatch
+    assert r["baseline_mismatch"] is True
+    assert r["baseline_action"] == "hold"
+    assert r["shadow_action"] == "open_long"
+    assert r["flip_kind"] == "shadow_opens"     # baseline hold, shadow open
+    line = json.loads([l for l in out.read_text().splitlines() if l.strip()][0])
+    assert line["baseline_mismatch"] is True
+
+
+def test_log_shadow_baseline_none_skips(tmp_path, monkeypatch):
+    import utils.shadow_decision_logger as sdl
+    async def fake_replay(bundle, config):
+        # baseline 复盘返回 None(不可判定自检) → 整条跳过不写
+        if config.get("path_evidence_aligned_enabled") is False:
+            return None
+        return {"action": "open_long"}
+    monkeypatch.setattr(sdl, "replay_decision", fake_replay)
+    out = tmp_path / "s.jsonl"
+    bundle = {"replayable": True, "symbol": "X", "timestamp": 1.0, "tech_analysis": {}}
+    r = asyncio.run(sdl.log_shadow_decision(bundle, {"action": "open_long"}, str(out)))
+    assert r is None
+    assert not out.exists()
+
+
 def _bare_judge(enabled=True):
     from unittest import mock
     from agents.trading.judge import MultiJudge
