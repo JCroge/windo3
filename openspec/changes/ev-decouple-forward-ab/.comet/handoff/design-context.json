@@ -1,0 +1,14 @@
+{
+  "change": "ev-decouple-forward-ab",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "8736f74950f3fff5202591b39a9e53abf5bdfe7d035448cfc08d0065184a4dc6",
+  "files": [
+    { "path": "openspec/changes/ev-decouple-forward-ab/proposal.md", "sha256": "2e67d019abd415540e911c3acb31cc7da71e5927ec78e1e0c2e548a370123d84" },
+    { "path": "openspec/changes/ev-decouple-forward-ab/design.md", "sha256": "b4d2082b5c578e30fe0959a0c3f7e3f7f5566ad87aae008784a96ed8ad009302" },
+    { "path": "openspec/changes/ev-decouple-forward-ab/tasks.md", "sha256": "e4b2885bec9e82ff7ce86aa7a12e6947ae3a174693ca7985e49c5a325c6fa831" },
+    { "path": "openspec/changes/ev-decouple-forward-ab/specs/ev-decouple-forward-ab/spec.md", "sha256": "7ae586e6a075953d3b6c33e16a093e8d8a95b2621eb841cfaec6fd44ad7ff252" }
+  ]
+}
