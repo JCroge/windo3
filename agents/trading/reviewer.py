@@ -6,6 +6,7 @@ import os
 import time
 import datetime
 from agents.base import BaseAgent
+from utils.symbol import to_internal
 
 
 def _payload_pnl_is_final(payload: dict, result: dict) -> bool:
@@ -109,7 +110,7 @@ class ReviewerAgent(BaseAgent):
                 return
             pnl = _payload_pnl_value(result)
             if pnl != 0:
-                symbol = msg.get('symbol') or payload.get('symbol')
+                symbol = to_internal(msg.get('symbol') or payload.get('symbol'))
                 trade_record = {
                     'timestamp': msg['timestamp'],
                     'symbol': symbol,
@@ -148,7 +149,7 @@ class ReviewerAgent(BaseAgent):
                     f"{msg.get('symbol') or payload.get('symbol')} "
                     f"reason={result.get('pnl_pending_reason', '')}")
                 return
-            symbol = msg.get('symbol') or payload.get('symbol')
+            symbol = to_internal(msg.get('symbol') or payload.get('symbol'))
             pnl = _payload_pnl_value(result)
             attribution = result.get('attribution') or payload.get('attribution', {})
             side = result.get('side') or attribution.get('side', '')
@@ -213,7 +214,7 @@ class ReviewerAgent(BaseAgent):
         """
         payload = msg['payload']
         status = payload.get('pnl_status', '')
-        symbol = msg.get('symbol') or payload.get('symbol')
+        symbol = to_internal(msg.get('symbol') or payload.get('symbol'))
         if status != 'final':
             self.logger.warning(
                 f"[复盘] pnl_resolution status={status} 不入账: "
