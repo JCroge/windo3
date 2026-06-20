@@ -95,3 +95,40 @@ def test_settle_clusters():
     assert s["tp"] == 1 and s["sl"] == 1 and s["nodata"] == 1
     assert abs(s["net_R"] - (0.04 / 0.02 - 1.0)) < 1e-9   # tp: +2R, sl: -1R → net +1R
     assert s["resolved"] == 2
+
+
+def test_extract_settle_fields():
+    from cf_ev_decouple_ab import extract_settle_fields
+    rec = {"symbol": "XLM-USDT", "timestamp": 1000.0,
+           "trade_decision_output": {"plan": {
+               "side": "long", "entry_ref": 0.20, "stop_loss": 0.19,
+               "take_profit": [0.22, 0.24, 0.26]}}}
+    out = extract_settle_fields(rec)
+    assert out["symbol"] == "XLM-USDT" and out["_side"] == "long"
+    assert out["_created"] == 1000.0
+    assert abs(out["_sl_dist"] - 0.05) < 1e-6      # (0.20-0.19)/0.20
+    assert abs(out["_tp1_dist"] - 0.10) < 1e-6     # (0.22-0.20)/0.20
+    assert out["_plan"]["side"] == "long"
+
+
+def test_extract_settle_fields_invalid():
+    from cf_ev_decouple_ab import extract_settle_fields
+    # 缺 stop_loss → 返回 None(不可结算)
+    rec = {"symbol": "X", "timestamp": 1.0,
+           "trade_decision_output": {"plan": {"side": "long", "entry_ref": 1.0,
+                                              "take_profit": [1.1]}}}
+    assert extract_settle_fields(rec) is None
+
+
+def test_fuzzy_join_real_pnl():
+    from cf_ev_decouple_ab import fuzzy_join_real_pnl
+    lifecycle = {"p1": {"symbol": "XLM-USDT", "side": "long", "opened_at": 1200.0,
+                        "total_realized_pnl": -10.0, "reconcile_status": "matched"}}
+    # 决策 ts=1000, 开仓 1200 在 [1000,1600] 窗口内 → 命中
+    admitted = [{"symbol": "XLM-USDT", "_side": "long", "_created": 1000.0}]
+    joined = fuzzy_join_real_pnl(admitted, lifecycle, window=600)
+    assert len(joined) == 1 and joined[0]["real_pnl"] == -10.0
+    # 窗口外不命中
+    assert fuzzy_join_real_pnl(
+        [{"symbol": "XLM-USDT", "_side": "long", "_created": 100.0}],
+        lifecycle, window=600) == []

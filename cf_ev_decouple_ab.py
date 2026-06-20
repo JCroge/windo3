@@ -116,3 +116,45 @@ def dedup_clusters(items, gap_sec=3600):
                 clusters.append(it)
             last = it["_created"]
     return clusters
+
+
+def extract_settle_fields(rec):
+    """从磁带 accept 记录提取结算所需字段；缺关键字段返回 None。"""
+    plan = (rec.get("trade_decision_output") or {}).get("plan") or {}
+    side = plan.get("side")
+    entry = plan.get("entry_ref")
+    sl = plan.get("stop_loss")
+    tp = plan.get("take_profit") or []
+    if not (side and entry and sl and tp):
+        return None
+    is_long = (side == "long")
+    sl_dist = (entry - sl) / entry if is_long else (sl - entry) / entry
+    tp1_dist = (tp[0] - entry) / entry if is_long else (entry - tp[0]) / entry
+    if sl_dist <= 0 or tp1_dist <= 0:
+        return None
+    return {"symbol": rec.get("symbol"), "_side": side, "_created": rec.get("timestamp"),
+            "_sl_dist": sl_dist, "_tp1_dist": tp1_dist, "_plan": plan}
+
+
+def fuzzy_join_real_pnl(admitted_clusters, lifecycle, window=600):
+    """解耦放行簇 symbol+side, opened_at ∈ [created, created+window] 取最近 lifecycle。
+
+    无 request_id → 模糊匹配；pending/external_close 不计入。
+    """
+    by_sym = defaultdict(list)
+    for v in lifecycle.values():
+        if isinstance(v, dict) and v.get("reconcile_status") == "matched":
+            by_sym[(v.get("symbol"), v.get("side"))].append(v)
+    out = []
+    for cl in admitted_clusters:
+        cands = by_sym.get((cl["symbol"], cl["_side"]), [])
+        hit = None
+        for v in cands:
+            op = v.get("opened_at")
+            if op is not None and cl["_created"] <= op <= cl["_created"] + window:
+                if hit is None or op < hit.get("opened_at"):
+                    hit = v
+        if hit is not None:
+            out.append({"symbol": cl["symbol"], "real_pnl": hit.get("total_realized_pnl"),
+                        "fuzzy": True})
+    return out
