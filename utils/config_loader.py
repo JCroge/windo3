@@ -80,6 +80,8 @@ HARD_LIMITS = {
     "cf_lowconf_sample": (1, 5000),
     "decision_tape_retention_days": (1, 3650),
     "tick_capture_retention_days": (1, 3650),
+    # Phantom position resync 双确认（fix-phantom-position-resync）
+    "position_resync_confirm_ticks": (1, 10),
 }
 
 
@@ -199,6 +201,7 @@ DEFAULTS = {
     "cf_lowconf_sample": 100,
     "decision_tape_retention_days": 90,
     "tick_capture_retention_days": 30,
+    "position_resync_confirm_ticks": 2,
 }
 
 
@@ -353,6 +356,7 @@ def _read_env_overrides() -> dict:
         "CF_LOWCONF_SAMPLE": ("cf_lowconf_sample", int),
         "DECISION_TAPE_RETENTION_DAYS": ("decision_tape_retention_days", int),
         "TICK_CAPTURE_RETENTION_DAYS": ("tick_capture_retention_days", int),
+        "POSITION_RESYNC_CONFIRM_TICKS": ("position_resync_confirm_ticks", int),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)

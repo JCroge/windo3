@@ -1,0 +1,14 @@
+{
+  "change": "fix-phantom-position-resync",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "4593c8f8e5b6c4b4945ffa8be544767925c2c9de41f4b39609af17f8e970703a",
+  "files": [
+    { "path": "openspec/changes/fix-phantom-position-resync/proposal.md", "sha256": "54eec1a461abef5cfd874c4673d0e21e595d1d1d91459d8dce752f4a598ccd3a" },
+    { "path": "openspec/changes/fix-phantom-position-resync/design.md", "sha256": "13ad35cc6421a256c04a3b7114b2a046dd0fdad448115cb9a4d2182153f6d953" },
+    { "path": "openspec/changes/fix-phantom-position-resync/tasks.md", "sha256": "1db59ab51c64da2ec2bed1e8a36be5099c2cb9edbc40c84d4bf0511bf84df5db" },
+    { "path": "openspec/changes/fix-phantom-position-resync/specs/position-sync-resilience/spec.md", "sha256": "57c1312b1559b9c2b05639e21f4de68abea3443c5b7908c61cd9c56c18a3213b" }
+  ]
+}

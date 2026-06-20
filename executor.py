@@ -113,6 +113,8 @@ class ContractExecutor:
             max_daily = abs(_cfg.get('daily_pnl_hard_stop', -50.0))
             _cap = _cfg.get('effective_balance_cap')
             _baseline_mode = _cfg.get('drawdown_baseline_mode', 'session_start')
+            # 暴露已加载 config 给 sync_positions 双确认等读取（fail-safe 默认）
+            self._config = dict(_cfg)
         except Exception as e:
             self.logger.warning(f"config_loader 加载失败，使用 env 兜底（HARD_LIMITS clamp）: {e}")
             # P2-17: env 兜底也必须经 HARD_LIMITS clamp，杜绝风险限额 fail-open 到未约束值。
@@ -128,6 +130,7 @@ class ContractExecutor:
             max_daily = abs(_fb['daily_pnl_hard_stop'])
             _cap = _fb['effective_balance_cap']
             _baseline_mode = os.getenv('DRAWDOWN_BASELINE_MODE', 'session_start')
+            self._config = {}   # config 加载失败时双确认走默认 2
         self.risk_manager = RiskManager(
             max_trade_amount=max_amount,
             max_drawdown_pct=max_dd,
@@ -140,6 +143,11 @@ class ContractExecutor:
         # 持仓记录
         self.positions = {}
         self._load_positions()
+
+        # 幽灵持仓补录双确认计数器（key=symbol → 连续见到的 sync tick 数）
+        self._pending_resync = {}
+        # protection-unknown 告警去重状态（key=symbol → 上次告警 reason）
+        self._last_protection_alert = {}
 
         # 止损检查连续失败计数器（key=symbol）
         self._sl_check_failures = {}
@@ -657,16 +665,13 @@ class ContractExecutor:
 
         if not sl_algos:
             summary['missing_sl'] = True
-            self.logger.error(
-                f"[Migrate] {symbol} 本地有仓位但交易所无 SL algo,"
-                f"protection_state→unknown"
-            )
             position['sl_algo_id'] = None
             position['sl_algo_clord_id'] = None
             position['sl_sync_state'] = 'failed'
             position['protection_state'] = 'unknown'
+            # 去重告警 + 幂等 halt（live halt / testnet 不 halt，语义不变）。
+            self._alert_protection_unknown(symbol)
             if not self.testnet:
-                self._halt_symbol(symbol, reason='migrate_missing_sl')
                 summary['halted'] = True
             self._save_positions()
             return summary
@@ -712,6 +717,9 @@ class ContractExecutor:
         position['sl_algo_clord_id'] = algo.get('algoClOrdId')
         position['sl_sync_state'] = 'active'
         position['protection_state'] = 'protected'
+        # 重新归属保护后清去重状态: 若日后再丢 SL 须能重新告警。
+        if hasattr(self, '_last_protection_alert'):
+            self._last_protection_alert.pop(symbol, None)
         try:
             sl_trigger = float(algo.get('sl_trigger') or 0)
             if sl_trigger > 0:
@@ -947,6 +955,24 @@ class ContractExecutor:
             get_halt_state().halt(reason=f"okx_{reason}:{symbol}", triggered_by="executor")
         except Exception:
             pass
+
+    def _alert_protection_unknown(self, symbol: str) -> bool:
+        """protection-unknown 告警去重: 仅状态变化时记 ERROR + halt。返回是否首次告警。
+
+        防同 symbol+reason 连续多个 sync tick 重复刷 ERROR 与重复 halt。
+        """
+        if not hasattr(self, '_last_protection_alert'):
+            self._last_protection_alert = {}
+        if self._last_protection_alert.get(symbol) == 'migrate_missing_sl':
+            return False                            # 同因已告警, 去重静默
+        self.logger.error(
+            f"[Migrate] {symbol} 本地有仓位但交易所无 SL algo,protection_state→unknown"
+        )
+        self._last_protection_alert[symbol] = 'migrate_missing_sl'
+        # testnet 不 halt（与原 [Migrate] 分支语义一致）；live 才 halt，且幂等。
+        if not getattr(self, 'testnet', False) and not self.is_symbol_halted(symbol):
+            self._halt_symbol(symbol, reason='migrate_missing_sl')
+        return True
 
     def is_symbol_halted(self, symbol: str) -> bool:
         return symbol in getattr(self, '_halted_symbols', {})
@@ -2708,6 +2734,17 @@ class ContractExecutor:
                     removed_symbols.append(sym)
                     del self.positions[sym]
                     self._sl_check_failures.pop(sym, None)
+                    # 幽灵移除自愈: 仅当该 symbol 因 migrate_missing_sl 被 halt
+                    # （症状根因已随仓位移除消失）才自动解 halt；其它 fail-closed
+                    # halt（reconcile_conflict / multiple_sl / side_conflict 等）不动。
+                    halt_info = getattr(self, '_halted_symbols', {}).get(sym)
+                    if halt_info and halt_info.get('reason') == 'migrate_missing_sl':
+                        self.clear_symbol_halt(sym, source='self_heal:phantom_removed')
+                        self.logger.info(
+                            f"[SelfHeal] {sym} 幽灵移除, 自动清 migrate_missing_sl halt"
+                        )
+                    if hasattr(self, '_last_protection_alert'):
+                        self._last_protection_alert.pop(sym, None)
             if not hasattr(self, '_last_removed_symbols'):
                 self._last_removed_symbols = []
             self._last_removed_symbols.extend(removed_symbols)
@@ -2715,8 +2752,13 @@ class ContractExecutor:
             newly_synced = []
             cooldown = getattr(self, '_close_cooldown', {})
             now = time.time()
+            if not hasattr(self, '_pending_resync'):
+                self._pending_resync = {}
+            confirm_ticks = (getattr(self, '_config', {}) or {}).get(
+                'position_resync_confirm_ticks', 2)
             for sym, ex_pos in active.items():
-                # 刚平仓的symbol在冷却期内不重新补录（防止API延迟导致幽灵持仓）
+                # 第一道防线: 刚平仓的symbol在冷却期内不补录、不计双确认 tick
+                # （防止API延迟导致幽灵持仓）
                 if sym in cooldown and now < cooldown[sym]:
                     continue
                 if sym in self.positions:
@@ -2727,6 +2769,16 @@ class ContractExecutor:
                         local['amount_usdt'] = ex_pos['amount_usdt']
                     local['unrealized_pnl'] = ex_pos['unrealized_pnl']
                 else:
+                    # 双确认: 本地缺失、交易所新出现的持仓必须连续 confirm_ticks
+                    # 个 sync tick 都见到才补录（防交易所平仓后上报延迟产生幽灵持仓）。
+                    cnt = self._pending_resync.get(sym, 0) + 1
+                    if cnt < confirm_ticks:
+                        self._pending_resync[sym] = cnt
+                        self.logger.info(
+                            f"仓位同步: {sym} 待确认 ({cnt}/{confirm_ticks} tick)，暂不补录"
+                        )
+                        continue                              # 等下个 tick 确认
+                    self._pending_resync.pop(sym, None)
                     entry = ex_pos['entry_price']
                     if ex_pos['side'] == 'long':
                         ex_pos['stop_loss'] = entry * 0.97
@@ -2747,6 +2799,12 @@ class ContractExecutor:
                     self.logger.info(f"仓位同步: 发现交易所持仓 {sym}，补录本地 (SL={ex_pos['stop_loss']:.6f} TP={ex_pos['take_profit']:.6f})")
                     self.positions[sym] = ex_pos
                     newly_synced.append(ex_pos)
+
+            # 扫尾清幽灵: 本 tick 交易所已不再上报的 pending 候选清掉计数,
+            # 防止跨多次 sync 的非连续上报错误累积到补录阈值。
+            for sym in list(self._pending_resync):
+                if sym not in active:
+                    self._pending_resync.pop(sym, None)
 
             self._save_positions()
             self._last_sync_result = newly_synced
