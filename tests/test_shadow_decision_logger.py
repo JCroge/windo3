@@ -9,12 +9,35 @@ def test_shadow_logger_flag_default_true():
     assert DEFAULTS.get("shadow_decision_logger_enabled") is True
 
 
+def test_is_accept():
+    from utils.shadow_decision_logger import _is_accept
+    assert _is_accept("open_long") is True
+    assert _is_accept("open_short") is True
+    assert _is_accept("hold") is False
+    assert _is_accept(None) is False
+    assert _is_accept("close") is False
+
+
+def test_compute_baseline_mismatch():
+    from utils.shadow_decision_logger import compute_baseline_mismatch
+    # baseline 复盘复现 live(都 accept) → 不 mismatch
+    assert compute_baseline_mismatch("open_long", "open_long") is False
+    # baseline 复盘复现 live(都 reject/hold) → 不 mismatch
+    assert compute_baseline_mismatch("hold", "hold") is False
+    # baseline 复盘背离 live(baseline hold, live accept) → mismatch
+    assert compute_baseline_mismatch("hold", "open_long") is True
+    # baseline 复盘背离 live(baseline accept, live hold) → mismatch
+    assert compute_baseline_mismatch("open_short", "hold") is True
+
+
 def test_compute_flip_kind():
+    # 语义：baseline(lever2-only) vs shadow(both-levers)
     from utils.shadow_decision_logger import compute_flip_kind
-    assert compute_flip_kind("hold", "open_long") == "shadow_opens"
+    assert compute_flip_kind("hold", "open_long") == "shadow_opens"      # lever1 解锁新单
     assert compute_flip_kind("open_long", "open_long") == "same"
     assert compute_flip_kind("open_long", "hold") == "shadow_holds"
     assert compute_flip_kind("hold", "hold") == "same"
+    assert compute_flip_kind("open_short", "open_long") == "same"        # 都 accept → same
 
 
 def test_build_shadow_record_schema():

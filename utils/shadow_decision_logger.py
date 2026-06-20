@@ -24,10 +24,23 @@ def _gate_of(decision):
     return str(blocked).split(":")[0] if blocked else "hold_other"
 
 
-def compute_flip_kind(real_action, shadow_action):
-    real_open = real_action in ("open_long", "open_short")
-    shadow_open = shadow_action in ("open_long", "open_short")
-    if real_open == shadow_open:
+def _is_accept(action):
+    return action in ("open_long", "open_short")
+
+
+def compute_baseline_mismatch(baseline_action, real_action):
+    """baseline 复现自检：replay(lever2-only) 的 accept/reject 必须复现 live record。
+
+    不一致 → True（复盘失真，该条排除出 lever1 增量统计）。只比二元 accept/reject。
+    """
+    return _is_accept(baseline_action) != _is_accept(real_action)
+
+
+def compute_flip_kind(baseline_action, shadow_action):
+    """baseline(lever2-only) vs shadow(both-levers) 的开仓翻转类别。"""
+    baseline_open = _is_accept(baseline_action)
+    shadow_open = _is_accept(shadow_action)
+    if baseline_open == shadow_open:
         return "same"
     return "shadow_opens" if shadow_open else "shadow_holds"
 
