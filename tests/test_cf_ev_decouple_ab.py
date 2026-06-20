@@ -132,3 +132,13 @@ def test_fuzzy_join_real_pnl():
     assert fuzzy_join_real_pnl(
         [{"symbol": "XLM-USDT", "_side": "long", "_created": 100.0}],
         lifecycle, window=600) == []
+
+
+def test_bucket_verdict_thin_sample():
+    from cf_ev_decouple_ab import bucket_verdict
+    # 2 簇(<30) → 诚实门 INSUFFICIENT_SAMPLE
+    settle = {"tp": 1, "sl": 1, "expired": 0, "nodata": 0, "resolved": 2,
+              "net_R": 1.0, "r_samples": [2.0, -1.0]}
+    v = bucket_verdict(settle)
+    assert v["verdict"] == "INSUFFICIENT_SAMPLE"
+    assert v["n"] == 2

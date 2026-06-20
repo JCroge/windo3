@@ -158,3 +158,70 @@ def fuzzy_join_real_pnl(admitted_clusters, lifecycle, window=600):
             out.append({"symbol": cl["symbol"], "real_pnl": hit.get("total_realized_pnl"),
                         "fuzzy": True})
     return out
+
+
+def bucket_verdict(settle):
+    """诚实门裁定(min_sample=30 不下调)。net_usdt_samples 用 R 序列(口径一致)。"""
+    return summarize_bucket(wins=settle["tp"], losses=settle["sl"],
+                            net_usdt_samples=settle["r_samples"],
+                            min_sample=30, lowconf_sample=100)
+
+
+def load_tape_accepts(path=TAPE):
+    accepts = []
+    if not os.path.exists(path):
+        return accepts
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if (r.get("decision") == "accept" and r.get("replayable")
+                and r.get("state_snapshot_before_decision")):
+            accepts.append(r)
+    return accepts
+
+
+def _settle_bucket_records(records):
+    """记录 → 提取结算字段 → 簇去重 → 结算 + 诚实门。"""
+    fields = [f for f in (extract_settle_fields(r) for r in records) if f]
+    clusters = dedup_clusters(fields)
+    settle = settle_clusters(clusters)
+    return clusters, settle, bucket_verdict(settle)
+
+
+def main():
+    accepts = load_tape_accepts()
+    cls = asyncio.run(classify_accepts(accepts))
+    da, bp = cls["decouple_admitted"], cls["both_pass"]
+    print("=== ev-decouple-forward-ab: 胜率解耦放行单前向期望复核 ===")
+    print(f"replayable accept: {len(accepts)} | baseline 自检: 忠实 "
+          f"{len(da) + len(bp)} / 失真排除 {cls['mismatch']}")
+    print(f"解耦放行(旧胜率门会拒): {len(da)} | 双门皆过: {len(bp)} "
+          f"| 拒因 {cls['admitted_reject_reasons']}")
+
+    lifecycle = json.load(open(LIFECYCLE)) if os.path.exists(LIFECYCLE) else {}
+    for name, recs in [("解耦放行", da), ("双门皆过", bp)]:
+        clusters, settle, v = _settle_bucket_records(recs)
+        print(f"\n--- {name}桶 ---")
+        print(f"  簇去重: {len(clusters)} | 可结算 {settle['resolved']}(无 klines 跳过 {settle['nodata']})")
+        print(f"  tp={settle['tp']} sl={settle['sl']} expired={settle['expired']}")
+        print(f"  含亏单净 R(TP1 保守): {settle['net_R']:+.2f} over {settle['resolved']} 簇"
+              + (f" → {settle['net_R']/settle['resolved']:+.3f} R/簇" if settle['resolved'] else ""))
+        print(f"  诚实门裁定: {v['verdict']}  (n={v['n']})")
+        if name == "解耦放行":
+            joined = fuzzy_join_real_pnl(clusters, lifecycle)
+            if joined:
+                rp = sum(j["real_pnl"] or 0 for j in joined)
+                print(f"  [sanity] 模糊 join 到 {len(joined)} 笔真实开仓, 真实净 PnL {rp:+.2f}U"
+                      f"(无 request_id 模糊匹配/pending 不计)")
+    print("\n注: 诚实门 min_sample=30 不下调；薄样本裁定 INSUFFICIENT_SAMPLE 时净 R 仅 suggestive 不作结论。")
+    print("    判据(解耦放行净R << 双门皆过且<0 → 解耦放行亏损单)仅在两桶诚实门通过时成立。")
+    print("    klines 覆盖受限(klines_1s 近 ~数日 ~24 标的)无覆盖簇已跳过并计数。observability-only。")
+
+
+if __name__ == "__main__":
+    main()
