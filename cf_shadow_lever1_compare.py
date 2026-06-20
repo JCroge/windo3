@@ -19,10 +19,15 @@ KLINES_1S = "data/klines_1s.db"
 
 
 def load_shadow_opens():
-    """读影子日志, 返回 flip_kind=shadow_opens 的记录(lever1 解锁的单)。"""
+    """读影子日志, 返回 flip_kind=shadow_opens 且 baseline 复现可信的记录。
+
+    排除 baseline_mismatch=True（复盘失真）及缺 baseline_mismatch 字段的旧记录
+    （fail-safe 当不可信），返回 (records, excluded_count)。
+    """
     if not os.path.exists(SHADOW_LOG):
-        return []
+        return [], 0
     out = []
+    excluded = 0
     for line in open(SHADOW_LOG):
         line = line.strip()
         if not line:
@@ -32,8 +37,11 @@ def load_shadow_opens():
         except Exception:
             continue
         if r.get("flip_kind") == "shadow_opens" and r.get("shadow_plan"):
-            out.append(r)
-    return out
+            if r.get("baseline_mismatch") is False:
+                out.append(r)
+            else:                       # True 或缺字段(旧记录) → 不可信排除
+                excluded += 1
+    return out, excluded
 
 
 def load_bars(db, sym, created, window=86400):
@@ -82,10 +90,10 @@ def settle(rec):
 
 
 def main():
-    opens = load_shadow_opens()
+    opens, excluded = load_shadow_opens()
     print(f"=== 影子对比：lever1 增量（影子 shadow_opens = lever1 解锁、实盘没开的单）===")
+    print(f"shadow_opens 候选: {len(opens)}（已排除 baseline_mismatch/旧记录 {excluded} 条）")
     print(f"影子日志: {SHADOW_LOG}  {'存在' if os.path.exists(SHADOW_LOG) else '不存在(需先跑带影子记录器的 live 累积)'}")
-    print(f"shadow_opens 候选: {len(opens)}")
     if not opens:
         print("→ 无数据, 优雅拒答。先让带 shadow_decision_logger 的 live 前向跑一段。")
         return

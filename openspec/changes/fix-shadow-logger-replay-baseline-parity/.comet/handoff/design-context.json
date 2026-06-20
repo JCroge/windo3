@@ -1,0 +1,14 @@
+{
+  "change": "fix-shadow-logger-replay-baseline-parity",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "3c6a3f5f4ab0a2a4909e8dac859ea77794cd959406f6f48809fdce65c5304a8a",
+  "files": [
+    { "path": "openspec/changes/fix-shadow-logger-replay-baseline-parity/proposal.md", "sha256": "59656b6829224b5cd3eff8a596c54487379edbd03501cd22a72a7fac13a9c9a3" },
+    { "path": "openspec/changes/fix-shadow-logger-replay-baseline-parity/design.md", "sha256": "129ea62f990c7ea8d4f70932352fffc2ecf152d9791e713578b124b2c3c13096" },
+    { "path": "openspec/changes/fix-shadow-logger-replay-baseline-parity/tasks.md", "sha256": "fa8539990ab732524eaa48c556a0d5f755dda9336e695505ae39d1496f551733" },
+    { "path": "openspec/changes/fix-shadow-logger-replay-baseline-parity/specs/shadow-decision-logger/spec.md", "sha256": "46eab67e958f6d2775d7344869f0b3f645810a615ed2db9da766fd40c6b41aeb" }
+  ]
+}
