@@ -4,7 +4,6 @@
 `execution_result` 的真实入口是 `_process_trade_result(msg)`（`on_message` 分发），
 故测试改调真实入口，断言不变=trade_record['symbol'] 归一为内部 BASE-USDT。
 """
-import asyncio
 from unittest import mock
 
 from agents.trading.reviewer import ReviewerAgent
@@ -18,7 +17,7 @@ def _bare_reviewer():
     return r
 
 
-def test_trade_record_symbol_normalized_swap():
+async def test_trade_record_symbol_normalized_swap():
     # execution_result close payload 带 -SWAP → trade_record['symbol'] 归一为 BASE-USDT
     r = _bare_reviewer()
     msg = {"timestamp": 1.0, "symbol": "XRP-USDT-SWAP",
@@ -26,7 +25,7 @@ def test_trade_record_symbol_normalized_swap():
                        "status": "executed",
                        "result": {"realized_pnl_net_usdt": -0.58, "pnl_is_final": True,
                                   "side": "short", "attribution": {}}}}
-    asyncio.run(r._process_trade_result(msg))
+    await r._process_trade_result(msg)
     recs = [t for t in r.trade_history if t.get("symbol")]
     assert recs, "应记录一笔"
     assert all(t["symbol"] == "XRP-USDT" for t in recs)   # 归一, 无 -SWAP

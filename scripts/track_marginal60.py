@@ -73,6 +73,9 @@ def settle_fill_from_lifecycle(sym_internal, side, fill_ts, lifecycle, used_keys
         return None, None
     v = lifecycle[best_key]
     pnl = v.get("total_realized_pnl")
+    # reconcile 守卫(delta spec): pending 对账态判"未结算"; 仅 matched(或非 pending) 才结算。
+    if v.get("reconcile_status") == "pending":
+        return None, None
     if pnl is None or v.get("status") not in ("closed",):
         return None, None
     return float(pnl), best_key
