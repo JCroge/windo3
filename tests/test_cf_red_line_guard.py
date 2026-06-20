@@ -61,3 +61,12 @@ def test_decision_paths_do_not_read_shadow_products():
         src = _src(mp)
         assert "shadow_decision_log" not in src, mp
         assert "shadow_decision_logger" not in src, mp
+
+
+def test_decision_paths_do_not_read_ev_decouple_ab():
+    """ev-decouple-forward-ab: 决策/风控路径严禁读解耦复核驱动产物（observability-only）。"""
+    for mp in ["agents.trading.judge", "agents.trading.executor", "executor",
+               "agents.trading.portfolio_risk_guard", "agents.trading.reviewer",
+               "agents.trading.position_analyst"]:
+        src = _src(mp)
+        assert "cf_ev_decouple_ab" not in src, mp
