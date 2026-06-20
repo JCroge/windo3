@@ -58,6 +58,50 @@ async def classify_accepts(records, *, replay_fn=replay_decision):
             "mismatch": mismatch, "admitted_reject_reasons": dict(reasons)}
 
 
+def load_bars(db, sym, created, window=86400):
+    if not db or not os.path.exists(db):
+        return []
+    conn = sqlite3.connect(db)
+    try:
+        lo, hi = int(created * 1000), int((created + window) * 1000)
+        rows = conn.execute(
+            "SELECT open_time,high,low,close FROM klines WHERE symbol=? "
+            "AND open_time>=? AND open_time<=? ORDER BY open_time",
+            (sym, lo, hi)).fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+    return [{"open_time": t, "high": h, "low": l, "close": c} for t, h, l, c in rows]
+
+
+def settle_clusters(clusters, *, load_bars_fn=load_bars, resolve_fn=resolve_counterfactual):
+    """每簇代表用 klines+resolve_counterfactual 结算, TP1 保守 R(含亏单)。"""
+    tp = sl = exp = nodata = 0
+    net_R = 0.0
+    r_samples = []
+    for cl in clusters:
+        bars = load_bars_fn(KL1, cl["symbol"], cl.get("_created")) or \
+            load_bars_fn(KL, cl["symbol"], cl.get("_created"))
+        if not bars:
+            nodata += 1
+            continue
+        res = resolve_fn(cl["_plan"], bars, source="tape")
+        if res.outcome == "tp":
+            tp += 1
+            r = cl["_tp1_dist"] / cl["_sl_dist"]
+        elif res.outcome == "sl":
+            sl += 1
+            r = -1.0
+        else:
+            exp += 1
+            r = 0.0
+        net_R += r
+        r_samples.append(r)
+    return {"tp": tp, "sl": sl, "expired": exp, "nodata": nodata,
+            "resolved": tp + sl + exp, "net_R": net_R, "r_samples": r_samples}
+
+
 def dedup_clusters(items, gap_sec=3600):
     """同 (symbol,_side) 按 _created 排序, 间隔 > gap_sec 为新簇, 取每簇最早代表。"""
     by_key = defaultdict(list)

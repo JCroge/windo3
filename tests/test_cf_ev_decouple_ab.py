@@ -70,3 +70,28 @@ def test_dedup_clusters():
     assert len(clusters) == 3
     createds = sorted(c["_created"] for c in clusters)
     assert createds == [1000.0, 1500.0, 6000.0]
+
+
+def test_settle_clusters():
+    import cf_ev_decouple_ab as m
+
+    class FakeRes:
+        def __init__(self, outcome): self.outcome = outcome
+
+    # 注入 load_bars/resolve：一簇 tp、一簇 sl、一簇无 klines
+    def fake_load(db, sym, created, window=86400):
+        return [] if sym == "NODATA-USDT" else [{"open_time": 1, "high": 2, "low": 1, "close": 1}]
+
+    outcomes = {"TP-USDT": "tp", "SL-USDT": "sl"}
+    def fake_resolve(plan, bars, source="tape"):
+        return FakeRes(outcomes[plan["symbol"]])
+
+    clusters = [
+        {"symbol": "TP-USDT", "_tp1_dist": 0.04, "_sl_dist": 0.02, "_plan": {"symbol": "TP-USDT"}},
+        {"symbol": "SL-USDT", "_tp1_dist": 0.03, "_sl_dist": 0.03, "_plan": {"symbol": "SL-USDT"}},
+        {"symbol": "NODATA-USDT", "_tp1_dist": 0.03, "_sl_dist": 0.03, "_plan": {"symbol": "NODATA-USDT"}},
+    ]
+    s = m.settle_clusters(clusters, load_bars_fn=fake_load, resolve_fn=fake_resolve)
+    assert s["tp"] == 1 and s["sl"] == 1 and s["nodata"] == 1
+    assert abs(s["net_R"] - (0.04 / 0.02 - 1.0)) < 1e-9   # tp: +2R, sl: -1R → net +1R
+    assert s["resolved"] == 2
