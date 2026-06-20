@@ -665,16 +665,13 @@ class ContractExecutor:
 
         if not sl_algos:
             summary['missing_sl'] = True
-            self.logger.error(
-                f"[Migrate] {symbol} 本地有仓位但交易所无 SL algo,"
-                f"protection_state→unknown"
-            )
             position['sl_algo_id'] = None
             position['sl_algo_clord_id'] = None
             position['sl_sync_state'] = 'failed'
             position['protection_state'] = 'unknown'
+            # 去重告警 + 幂等 halt（live halt / testnet 不 halt，语义不变）。
+            self._alert_protection_unknown(symbol)
             if not self.testnet:
-                self._halt_symbol(symbol, reason='migrate_missing_sl')
                 summary['halted'] = True
             self._save_positions()
             return summary
@@ -720,6 +717,9 @@ class ContractExecutor:
         position['sl_algo_clord_id'] = algo.get('algoClOrdId')
         position['sl_sync_state'] = 'active'
         position['protection_state'] = 'protected'
+        # 重新归属保护后清去重状态: 若日后再丢 SL 须能重新告警。
+        if hasattr(self, '_last_protection_alert'):
+            self._last_protection_alert.pop(symbol, None)
         try:
             sl_trigger = float(algo.get('sl_trigger') or 0)
             if sl_trigger > 0:
@@ -955,6 +955,24 @@ class ContractExecutor:
             get_halt_state().halt(reason=f"okx_{reason}:{symbol}", triggered_by="executor")
         except Exception:
             pass
+
+    def _alert_protection_unknown(self, symbol: str) -> bool:
+        """protection-unknown 告警去重: 仅状态变化时记 ERROR + halt。返回是否首次告警。
+
+        防同 symbol+reason 连续多个 sync tick 重复刷 ERROR 与重复 halt。
+        """
+        if not hasattr(self, '_last_protection_alert'):
+            self._last_protection_alert = {}
+        if self._last_protection_alert.get(symbol) == 'migrate_missing_sl':
+            return False                            # 同因已告警, 去重静默
+        self.logger.error(
+            f"[Migrate] {symbol} 本地有仓位但交易所无 SL algo,protection_state→unknown"
+        )
+        self._last_protection_alert[symbol] = 'migrate_missing_sl'
+        # testnet 不 halt（与原 [Migrate] 分支语义一致）；live 才 halt，且幂等。
+        if not getattr(self, 'testnet', False) and not self.is_symbol_halted(symbol):
+            self._halt_symbol(symbol, reason='migrate_missing_sl')
+        return True
 
     def is_symbol_halted(self, symbol: str) -> bool:
         return symbol in getattr(self, '_halted_symbols', {})

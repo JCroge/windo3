@@ -68,3 +68,23 @@ def test_cooldown_skips_resync():
     ex.sync_positions()
     assert "XRP-USDT-SWAP" not in ex.positions
     assert "XRP-USDT-SWAP" not in ex._pending_resync   # 冷却跳过, 不计 tick
+
+
+def test_protection_unknown_error_deduped():
+    # 同 symbol+reason 连续两个 tick protection-unknown → ERROR 仅首次
+    ex = _mk_executor()
+    ex._halt_symbol = MagicMock()
+    ex._last_protection_alert = {}
+    first = ex._alert_protection_unknown("XRP-USDT-SWAP")
+    second = ex._alert_protection_unknown("XRP-USDT-SWAP")
+    assert first is True and second is False        # 首次告警, 第二次去重静默
+    assert ex.logger.error.call_count == 1
+
+
+def test_protection_alert_resets_on_clear():
+    ex = _mk_executor()
+    ex._halt_symbol = MagicMock()
+    ex._alert_protection_unknown("XRP-USDT-SWAP")
+    ex._last_protection_alert.pop("XRP-USDT-SWAP", None)   # 状态恢复
+    again = ex._alert_protection_unknown("XRP-USDT-SWAP")
+    assert again is True                            # 恢复后能重新告警
