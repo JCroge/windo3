@@ -1,7 +1,9 @@
 """前向影子决策记录器（observability-only write-only）。
 
-对 live 决策 bundle 旁路跑 both-levers（lever1+lever2）on 影子决策，write-only 记录
-real vs shadow 供 lever1 增量对比。复用 `replay_decision` 隔离机器（mock 外部 await、
+对 live 决策 bundle 旁路跑两条复盘臂——baseline=replay(lever2-only) 与 shadow=replay(both-levers)，
+write-only 记录 real/baseline/shadow 三决策。lever1 增量 = shadow − baseline（两臂同复盘，
+系统性复盘偏差在 delta 抵消）；baseline 复盘背离 live record 的 accept/reject → baseline_mismatch
+标记排除（自检闸）。复用 `replay_decision` 隔离机器（mock 外部 await、
 缓存 llm、捕获 publish 绝不进真实 bus、MultiJudge.__new__ 不碰 live 实例）。
 
 红线：observability-only write-only —— 严禁交易决策/风控路径 import/读取本产物或日志。
