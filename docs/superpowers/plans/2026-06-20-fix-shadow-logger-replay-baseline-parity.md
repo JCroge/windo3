@@ -2,6 +2,7 @@
 change: fix-shadow-logger-replay-baseline-parity
 design-doc: docs/superpowers/specs/2026-06-20-fix-shadow-logger-replay-baseline-parity-design.md
 base-ref: 90bc8316bd64c1261605341efa2f3a5f6bb096bc
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 # 影子记录器：两臂同复盘 + baseline 自检闸 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 90bc8316bd64c1261605341efa2f3a5f6bb096bc
 
 **Tech Stack:** Python 3.9, asyncio, pytest；复用 `utils/decision_replay.py::replay_decision`。
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 1: `_is_accept` 与 `compute_baseline_mismatch` 纯函数
@@ -82,6 +84,7 @@ git add utils/shadow_decision_logger.py tests/test_shadow_decision_logger.py
 git commit -m "feat(shadow-parity): _is_accept + compute_baseline_mismatch 自检纯函数"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 2: `compute_flip_kind` 复用 `_is_accept`（语义改为 baseline vs shadow）
@@ -138,6 +141,7 @@ git add utils/shadow_decision_logger.py tests/test_shadow_decision_logger.py
 git commit -m "refactor(shadow-parity): compute_flip_kind 复用 _is_accept, 语义=baseline vs shadow"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 3: `build_shadow_record` 新增 baseline 字段
@@ -222,6 +226,7 @@ git add utils/shadow_decision_logger.py tests/test_shadow_decision_logger.py
 git commit -m "feat(shadow-parity): build_shadow_record 加 baseline_action/gate/mismatch 字段"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 4: `log_shadow_decision` 跑两条复盘臂
@@ -344,6 +349,7 @@ git add utils/shadow_decision_logger.py tests/test_shadow_decision_logger.py
 git commit -m "feat(shadow-parity): log_shadow_decision 跑 baseline+shadow 两臂 + 自检 + None 短路"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 5: fail-safe 回归 + 真实磁带冒烟
@@ -386,6 +392,7 @@ git add tests/test_shadow_decision_logger.py
 git commit -m "test(shadow-parity): 真实磁带冒烟校验 baseline 字段 + fail-safe 回归"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 6: 离线驱动过滤 `baseline_mismatch`
@@ -448,6 +455,7 @@ git add cf_shadow_lever1_compare.py
 git commit -m "feat(shadow-parity): 离线驱动剔除 baseline_mismatch + 报排除条数"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 7: 红线守卫 + 全量回归
@@ -476,6 +484,7 @@ git add -A
 git commit -m "test(shadow-parity): 红线守卫不回归 + 全量回归零退化" || echo "nothing to commit"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Task 8: 更新 CLAUDE.md 风控红线条目
@@ -498,6 +507,7 @@ git add CLAUDE.md
 git commit -m "docs(shadow-parity): CLAUDE.md 影子记录器红线口径修正"
 ```
 
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
 ---
 
 ## Self-Review 结论

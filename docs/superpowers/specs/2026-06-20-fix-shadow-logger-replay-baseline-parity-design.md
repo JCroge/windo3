@@ -2,6 +2,8 @@
 comet_change: fix-shadow-logger-replay-baseline-parity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-20-fix-shadow-logger-replay-baseline-parity
+status: final
 ---
 
 # 影子记录器：两臂同复盘 + baseline 自检闸（技术设计）
