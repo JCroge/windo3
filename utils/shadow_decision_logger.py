@@ -45,16 +45,20 @@ def compute_flip_kind(baseline_action, shadow_action):
     return "shadow_opens" if shadow_open else "shadow_holds"
 
 
-def build_shadow_record(*, ts, symbol, real, shadow, tech_context):
+def build_shadow_record(*, ts, symbol, real, baseline, shadow, tech_context):
+    baseline_action = baseline.get("action")
     return {
         "timestamp": ts,
         "symbol": symbol,
-        "real_action": real.get("action"),
+        "real_action": real.get("action"),       # live 决策, 仅供自检追溯
         "real_gate": real.get("gate"),
+        "baseline_action": baseline_action,       # replay(lever2-only)
+        "baseline_gate": baseline.get("gate"),
         "shadow_action": shadow.get("action"),
         "shadow_gate": shadow.get("gate"),
         "shadow_plan": shadow.get("plan"),
-        "flip_kind": compute_flip_kind(real.get("action"), shadow.get("action")),
+        "baseline_mismatch": compute_baseline_mismatch(baseline_action, real.get("action")),
+        "flip_kind": compute_flip_kind(baseline_action, shadow.get("action")),
         "tech_context": tech_context,
     }
 

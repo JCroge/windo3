@@ -44,15 +44,31 @@ def test_build_shadow_record_schema():
     from utils.shadow_decision_logger import build_shadow_record
     rec = build_shadow_record(
         ts=1.0, symbol="HYPE-USDT",
-        real={"action": "hold", "gate": "rr_below_floor"},
+        real={"action": "open_long", "gate": "accept"},
+        baseline={"action": "open_long", "gate": "accept"},
         shadow={"action": "open_long", "gate": "accept", "plan": {"x": 1}},
         tech_context={"trend": {"strength": 70}})
     assert rec["symbol"] == "HYPE-USDT"
-    assert rec["real_action"] == "hold" and rec["shadow_action"] == "open_long"
-    assert rec["real_gate"] == "rr_below_floor" and rec["shadow_gate"] == "accept"
-    assert rec["flip_kind"] == "shadow_opens"
-    assert rec["tech_context"] == {"trend": {"strength": 70}}
+    assert rec["real_action"] == "open_long" and rec["real_gate"] == "accept"
+    assert rec["baseline_action"] == "open_long" and rec["baseline_gate"] == "accept"
+    assert rec["shadow_action"] == "open_long" and rec["shadow_gate"] == "accept"
+    assert rec["baseline_mismatch"] is False          # baseline 复现 live
+    assert rec["flip_kind"] == "same"                 # baseline vs shadow 都 accept
     assert rec["shadow_plan"] == {"x": 1}
+    assert rec["tech_context"] == {"trend": {"strength": 70}}
+
+
+def test_build_shadow_record_mismatch_flagged():
+    from utils.shadow_decision_logger import build_shadow_record
+    # live accept, 但 baseline 复盘 hold → baseline_mismatch=True
+    rec = build_shadow_record(
+        ts=2.0, symbol="XLM-USDT",
+        real={"action": "open_long", "gate": "accept"},
+        baseline={"action": "hold", "gate": "ev_gate"},
+        shadow={"action": "hold", "gate": "ev_gate", "plan": None},
+        tech_context={})
+    assert rec["baseline_mismatch"] is True
+    assert rec["flip_kind"] == "same"                 # baseline=hold, shadow=hold
 
 
 def test_log_shadow_disabled_noop(tmp_path):
