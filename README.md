@@ -4,7 +4,7 @@
 
 ## 系统状态
 
-- 最新本地验证（2026-06-20）：`1331 passed / 8 failed / 4 deselected`（8 failed=round2 全量 asyncio 污染，隔离全 PASS，非 change 引入）。
+- 最新本地验证（2026-06-20）：`1338 passed / 8 failed / 4 deselected`（8 failed=round2 全量 asyncio 污染，隔离全 PASS，非 change 引入）。
 - 最新能力：**反事实策略实验室 L1-L4**（observability-only）——拿真实决策磁带喂真实 Judge 代码、扰动任意非 LLM 旋钮、量化整策略 PnL/胜率/回撤 delta、自动诚实方向推荐（证据不足拒答不杜撰，绝不自动改线上 config）。模块：`utils/{decision_tape,decision_replay,counterfactual_pnl,cf_honesty_gate,perturbation_replay,cf_portfolio,sequential_perturbation,knob_sweep}.py` + `cf_replay_driver.py`；红线守卫 `tests/test_cf_red_line_guard.py`。详见 `docs/architecture.md`。
 - **2026-06-16 实验室三连修后端到端首次可信**（`fix-cf-lab-ev-coldstart-deadlock` / `fix-cf-lab-replay-config-parity` / `fix-cf-lab-symbol-state-injection`，均 observability-only comet 归档）：驱动 `cf_direction_recommendation.py` baseline_fidelity 1.0(虚假)→0.34→0.798→**0.944（untrustworthy=False）**。首个可信结论：放宽 choppy R:R 地板 / `min_confidence` 的 PnL delta≈0 → 非高价值杠杆，佐证地板 1.50 维持。逐基线见 `docs/handoff.md`。
 - **2026-06-20 两个 observability 复核驱动**（均 comet 归档、不碰 live）：`fix-shadow-logger-replay-baseline-parity`（影子记录器改两臂同复盘 + baseline 自检闸，坐实 lever1 增量=0）；`cf_ev_decouple_ab.py`（`ev-decouple-forward-ab`，复核胜率解耦放行单前向期望，真跑诚实门拒答、suggestive 读数不支持"解耦更差"假设）。两者共用方法学=两臂同复盘偏差抵消 + baseline 复现自检闸 + 诚实门薄样本拒答。
@@ -55,7 +55,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 ## 常用验证
 
 ```bash
-python3 -m pytest -q                       # 默认回归（当前验证 1331 passed）
+python3 -m pytest -q                       # 默认回归（当前验证 1338 passed）
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（需 .env.testnet）

@@ -191,6 +191,7 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | EV_BUCKET_SPARSE_ALLOW_UPLIFT | 是否允许稀疏 bucket 抬高 p_win（默认禁止，仅允许降低/缩仓） | false | 否 |
 | LADDER_RR_ENABLED | **lever2 逃生阀**（2026-06-17 `trend-entry-levers-default-on`）：阶梯加权 effective_rr 口径（按 executor 真实 50/25/25 离场加权，影响 R:R 地板 gate=多开仓）。**默认开**；设 `false` 即时回退 TP1-only 旧口径（live 决策回滚，无需改代码） | true | 否 |
 | SHADOW_DECISION_LOGGER_ENABLED | **影子记录器开关**（2026-06-17 `trend-entry-shadow-decision-logger`，observability-only 不碰 live）：每信号旁路跑 both-levers 影子决策写 `data/shadow_decision_log.jsonl`（real vs shadow=lever1 增量）。**默认开**；设 `false` 关闭影子记录 | true | 否 |
+| POSITION_RESYNC_CONFIRM_TICKS | **仓位同步补录双确认 tick 数**（2026-06-20 `fix-phantom-position-resync`）：`sync_positions` 对本地缺失、交易所新出现的持仓须连续此数个 sync tick 确认才补录，防交易所平仓后上报延迟产生幽灵持仓（实证 OKX 滞后 76s 击穿原 60s `_close_cooldown`）。范围 [1,10]，调大更保守（真仓补录延迟更多 sync tick） | 2 | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
