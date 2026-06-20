@@ -7,7 +7,7 @@ base_ref: 90bc8316bd64c1261605341efa2f3a5f6bb096bc
 design_doc: docs/superpowers/specs/2026-06-20-fix-shadow-logger-replay-baseline-parity-design.md
 plan: docs/superpowers/plans/2026-06-20-fix-shadow-logger-replay-baseline-parity.md
 verify_result: pending
-verification_report: null
+verification_report: docs/superpowers/reports/2026-06-20-fix-shadow-logger-replay-baseline-parity-verify.md
 branch_status: pending
 created_at: 2026-06-20
 verified_at: null
