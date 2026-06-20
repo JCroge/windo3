@@ -200,10 +200,11 @@ def test_log_shadow_on_real_bundle(tmp_path):
     from utils.shadow_decision_logger import log_shadow_decision
     out = tmp_path / "s.jsonl"
     r = asyncio.run(log_shadow_decision(rec, {"action": "hold"}, str(out)))
-    # fail-safe 兜底；成功则写恰一行且 symbol 一致
     if r is not None:
         lines = [l for l in out.read_text().splitlines() if l.strip()]
         assert len(lines) == 1
-        assert json.loads(lines[0])["symbol"] == rec["symbol"]
-        assert json.loads(lines[0])["shadow_action"] in (
-            "open_long", "open_short", "hold", "close", None)
+        row = json.loads(lines[0])
+        assert row["symbol"] == rec["symbol"]
+        assert "baseline_action" in row and "baseline_mismatch" in row
+        assert isinstance(row["baseline_mismatch"], bool)
+        assert row["shadow_action"] in ("open_long", "open_short", "hold", "close", None)
