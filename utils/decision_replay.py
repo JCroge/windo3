@@ -93,6 +93,7 @@ _EPOCH_FALLBACK = {
 # 必须落在 _EPOCH_FALLBACK 或本集合之一，否则守卫失败，防新翻转键静默漂移。
 _GATE_IRRELEVANT = {
     "rotation_close_held_enabled",       # 轮换平仓开关，不进 Judge 决策
+    "position_resync_confirm_ticks",     # executor 仓位同步补录双确认 tick 数，不进 Judge 决策
 }
 
 
