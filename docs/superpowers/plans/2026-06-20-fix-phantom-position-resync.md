@@ -2,6 +2,7 @@
 change: fix-phantom-position-resync
 design-doc: docs/superpowers/specs/2026-06-20-fix-phantom-position-resync-design.md
 base-ref: 5715ae0c0f7efc338f337b27f6d2e4be6ea2aebb
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 # 幽灵持仓补录双确认 + 症状硬化 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 5715ae0c0f7efc338f337b27f6d2e4be6ea2aebb
 
 **Tech Stack:** Python 3.9, pytest；测试 harness 复用 `test_position_sync_retry.py`（`ContractExecutor.__new__` + mock `_fetch_positions_with_retry`）。
 
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 ## Task 1: config `position_resync_confirm_ticks`
@@ -65,6 +67,7 @@ git add utils/config_loader.py tests/test_phantom_position_resync.py
 git commit -m "feat(phantom-resync): config position_resync_confirm_ticks 默认 2"
 ```
 
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 ## Task 2: 双确认状态机（核心）
@@ -187,6 +190,7 @@ git add executor.py tests/test_phantom_position_resync.py
 git commit -m "feat(phantom-resync): sync_positions 补录双确认(persist-2-ticks)+扫尾清幽灵"
 ```
 
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 ## Task 3: protection-unknown 告警去重 + halt 幂等
@@ -264,6 +268,7 @@ git add executor.py tests/test_phantom_position_resync.py
 git commit -m "feat(phantom-resync): protection-unknown 告警去重 + halt 幂等"
 ```
 
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 ## Task 4: 幽灵移除后 halt 自愈
@@ -331,6 +336,7 @@ git add executor.py tests/test_phantom_position_resync.py
 git commit -m "feat(phantom-resync): 幽灵移除后 migrate_missing_sl halt 自愈"
 ```
 
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 ## Task 5: 全量回归 + 不回归既有
@@ -354,6 +360,7 @@ git add -A
 git commit -m "test(phantom-resync): 全量回归零退化 + 既有 sync/halt 测试不回归" || echo "nothing to commit"
 ```
 
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 ## Task 6: 更新 CLAUDE.md 风控红线
@@ -376,6 +383,7 @@ git add CLAUDE.md
 git commit -m "docs(phantom-resync): CLAUDE.md 红线加仓位同步补录双确认"
 ```
 
+archived-with: 2026-06-20-fix-phantom-position-resync
 ---
 
 ## Self-Review 结论

@@ -2,6 +2,8 @@
 comet_change: fix-phantom-position-resync
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-20-fix-phantom-position-resync
+status: final
 ---
 
 # 幽灵持仓补录双确认 + 症状硬化（技术设计）
