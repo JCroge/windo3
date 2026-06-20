@@ -56,3 +56,19 @@ async def classify_accepts(records, *, replay_fn=replay_decision):
             both_pass.append(rec)
     return {"decouple_admitted": decouple_admitted, "both_pass": both_pass,
             "mismatch": mismatch, "admitted_reject_reasons": dict(reasons)}
+
+
+def dedup_clusters(items, gap_sec=3600):
+    """同 (symbol,_side) 按 _created 排序, 间隔 > gap_sec 为新簇, 取每簇最早代表。"""
+    by_key = defaultdict(list)
+    for x in items:
+        by_key[(x["symbol"], x["_side"])].append(x)
+    clusters = []
+    for key, lst in by_key.items():
+        lst.sort(key=lambda z: z["_created"])
+        last = None
+        for it in lst:
+            if last is None or it["_created"] - last > gap_sec:
+                clusters.append(it)
+            last = it["_created"]
+    return clusters

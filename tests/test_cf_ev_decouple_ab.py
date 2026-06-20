@@ -54,3 +54,19 @@ def test_classify_baseline_mismatch_excluded():
     assert res["mismatch"] == 1
     assert len(res["decouple_admitted"]) == 0
     assert len(res["both_pass"]) == 0
+
+
+def test_dedup_clusters():
+    from cf_ev_decouple_ab import dedup_clusters
+    # 同 symbol/side: <1h 归一簇取最早; >1h 新簇
+    recs = [
+        {"symbol": "XLM-USDT", "_side": "long", "_created": 1000.0},
+        {"symbol": "XLM-USDT", "_side": "long", "_created": 2000.0},   # +1000s <1h 同簇
+        {"symbol": "XLM-USDT", "_side": "long", "_created": 6000.0},   # +4000s >1h 新簇
+        {"symbol": "ETH-USDT", "_side": "long", "_created": 1500.0},   # 不同标的
+    ]
+    clusters = dedup_clusters(recs)
+    # XLM 2 簇(1000代表, 6000代表) + ETH 1 簇 = 3
+    assert len(clusters) == 3
+    createds = sorted(c["_created"] for c in clusters)
+    assert createds == [1000.0, 1500.0, 6000.0]
