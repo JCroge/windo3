@@ -2,6 +2,7 @@
 change: ev-decouple-forward-ab
 design-doc: docs/superpowers/specs/2026-06-20-ev-decouple-forward-ab-design.md
 base-ref: 93951d020d0e61851d14c236927882c80f4254ec
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 # 胜率解耦放行单前向期望复核 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 93951d020d0e61851d14c236927882c80f4254ec
 
 **Tech Stack:** Python 3.9, asyncio, sqlite3, pytest；复用 `utils/decision_replay.py` / `utils/counterfactual_pnl.py` / `utils/cf_honesty_gate.py`。
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Task 1: `_is_accept` + 分类头（gate-toggle 两臂复盘 + baseline 自检）
@@ -167,6 +169,7 @@ git add cf_ev_decouple_ab.py tests/test_cf_ev_decouple_ab.py
 git commit -m "feat(ev-decouple-ab): 分类头 gate-toggle 两臂复盘 + baseline 自检"
 ```
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Task 2: 簇去重（纯函数）
@@ -234,6 +237,7 @@ git add cf_ev_decouple_ab.py tests/test_cf_ev_decouple_ab.py
 git commit -m "feat(ev-decouple-ab): 簇去重纯函数(symbol,side,>1h)"
 ```
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Task 3: 结算（load_bars + resolve_counterfactual，可注入）
@@ -340,6 +344,7 @@ git add cf_ev_decouple_ab.py tests/test_cf_ev_decouple_ab.py
 git commit -m "feat(ev-decouple-ab): 结算 load_bars+resolve TP1 保守 R(含亏单)"
 ```
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Task 4: 字段提取 + real PnL 模糊 join
@@ -454,6 +459,7 @@ git add cf_ev_decouple_ab.py tests/test_cf_ev_decouple_ab.py
 git commit -m "feat(ev-decouple-ab): 结算字段提取 + real PnL 模糊 join"
 ```
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Task 5: `main()` 编排 + 诚实门领先裁定报表
@@ -566,6 +572,7 @@ git add cf_ev_decouple_ab.py tests/test_cf_ev_decouple_ab.py
 git commit -m "feat(ev-decouple-ab): main 编排 + 诚实门领先裁定报表"
 ```
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Task 6: 红线守卫扩展（禁读断言）
@@ -599,6 +606,7 @@ git add tests/test_cf_red_line_guard.py
 git commit -m "test(ev-decouple-ab): 红线守卫扩展禁读断言"
 ```
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Task 7: 真跑 + 全量回归
@@ -628,6 +636,7 @@ git add -A
 git commit -m "test(ev-decouple-ab): 真跑记录 + 全量回归零退化" || echo "nothing to commit"
 ```
 
+archived-with: 2026-06-20-ev-decouple-forward-ab
 ---
 
 ## Self-Review 结论

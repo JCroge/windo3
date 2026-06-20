@@ -2,6 +2,8 @@
 comet_change: ev-decouple-forward-ab
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-20-ev-decouple-forward-ab
+status: final
 ---
 
 # 胜率解耦放行单前向期望复核（技术设计）

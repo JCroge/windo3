@@ -1,17 +1,17 @@
 workflow: full
-phase: verify
+phase: archive
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: full
 base_ref: 93951d020d0e61851d14c236927882c80f4254ec
 design_doc: docs/superpowers/specs/2026-06-20-ev-decouple-forward-ab-design.md
 plan: docs/superpowers/plans/2026-06-20-ev-decouple-forward-ab.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-20-ev-decouple-forward-ab-verify.md
 branch_status: handled
 created_at: 2026-06-20
-verified_at: null
-archived: false
+verified_at: 2026-06-20
+archived: true
 handoff_context: openspec/changes/ev-decouple-forward-ab/.comet/handoff/design-context.json
 handoff_hash: 8736f74950f3fff5202591b39a9e53abf5bdfe7d035448cfc08d0065184a4dc6
 build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q cf_ev_decouple_ab.py && python3 -m pytest tests/test_cf_ev_decouple_ab.py tests/test_cf_red_line_guard.py -q
