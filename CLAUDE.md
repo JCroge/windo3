@@ -100,7 +100,7 @@ Reviewer / RiskGuard
 
 ## 消息契约红线
 
-- 跨 Agent symbol 使用内部格式 `BASE-USDT`；交易所 API 调用现场转换。
+- 跨 Agent symbol 使用内部格式 `BASE-USDT`；交易所 API 调用现场转换。**消费侧落记前必须经 `utils/symbol.py::to_internal` 归一（2026-06-20 `fix-reviewer-symbol-format-and-marginal-settle`）**：ReviewerAgent 写 `trade_record['symbol']` 与 `[复盘] 记录交易` 日志的 symbol 在 3 处入口（`_process_trade_result` reduce/close + `_apply_pnl_resolution`）套 `to_internal`，防上游 leak 的 `-SWAP`/ccxt 格式污染 trade_history 与下游分桶/工具（实证致 `track_marginal60.py` 配对失败 8 单未结算）；归一只统一记录格式，**不碰匹配键**（pnl_resolution upsert 按 `entry_request_id`/`position_id`）。`track_marginal60.py` 结算源读权威 `data/live_position_lifecycle.json` 的 `total_realized_pnl`（仅 `reconcile_status=matched` 计入，pending 标未结算），fill 与 lifecycle 都归一后按 symbol+side+opened_at≈fill_ts(±300s) join。不回填历史 `trade_history.json`。
 - open 主链路必须走 `trade_decision.v2`，字段包括 `schema_version`、`request_id`、`action`、`confidence`、`plan`、`dispatch_path`、`attribution`。
 - Executor 所有终态必须发布 `execution_result.v2`，字段包括 `schema_version`、`status`、`action`、`symbol`、`source`、`request_id`、`correlation_id`、`reason`、`result`、`timestamp`。
 - `paper_execution_result` 与 live `execution_result` 隔离，不能污染 live Reviewer 指标。
