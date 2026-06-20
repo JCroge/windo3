@@ -97,6 +97,37 @@ def test_settle_clusters():
     assert s["resolved"] == 2
 
 
+def test_settle_clusters_real_resolve():
+    """不 mock resolve_counterfactual：锁死 _plan 结算 record 契约
+    (entry_price/created_at/side/stop_loss/take_profit) 不被 mock 掩盖。"""
+    import cf_ev_decouple_ab as m
+    from utils.counterfactual_pnl import resolve_counterfactual
+
+    # 用 extract_settle_fields 造 long record(synthetic),不直接手搓 _plan
+    rec = {"symbol": "TST-USDT", "timestamp": 1000.0,
+           "trade_decision_output": {"plan": {
+               "side": "long", "entry_ref": 100.0, "stop_loss": 95.0,
+               "take_profit": [110.0, 120.0, 130.0]}}}
+    field = m.extract_settle_fields(rec)
+    assert field is not None
+
+    # --- TP 命中：bars 高点冲到 110(=TP1),open_time 毫秒、覆盖 created_at(1000s) 之后 ---
+    tp_bars = [{"open_time": 1001_000, "high": 105.0, "low": 99.0, "close": 104.0},
+               {"open_time": 1002_000, "high": 112.0, "low": 104.0, "close": 111.0}]
+    s_tp = m.settle_clusters([field], load_bars_fn=lambda *a, **k: tp_bars,
+                             resolve_fn=resolve_counterfactual)
+    assert s_tp["tp"] == 1 and s_tp["sl"] == 0
+    assert s_tp["net_R"] > 0
+
+    # --- SL 命中：bars 低点跌破 95(=SL) ---
+    sl_bars = [{"open_time": 1001_000, "high": 101.0, "low": 99.0, "close": 100.0},
+               {"open_time": 1002_000, "high": 99.0, "low": 94.0, "close": 95.0}]
+    s_sl = m.settle_clusters([field], load_bars_fn=lambda *a, **k: sl_bars,
+                             resolve_fn=resolve_counterfactual)
+    assert s_sl["sl"] == 1 and s_sl["tp"] == 0
+    assert s_sl["net_R"] < 0
+
+
 def test_extract_settle_fields():
     from cf_ev_decouple_ab import extract_settle_fields
     rec = {"symbol": "XLM-USDT", "timestamp": 1000.0,

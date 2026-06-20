@@ -133,7 +133,9 @@ def extract_settle_fields(rec):
     if sl_dist <= 0 or tp1_dist <= 0:
         return None
     return {"symbol": rec.get("symbol"), "_side": side, "_created": rec.get("timestamp"),
-            "_sl_dist": sl_dist, "_tp1_dist": tp1_dist, "_plan": plan}
+            "_sl_dist": sl_dist, "_tp1_dist": tp1_dist,
+            "_plan": {"side": side, "entry_price": entry, "created_at": rec.get("timestamp"),
+                      "stop_loss": sl, "take_profit": tp}}
 
 
 def fuzzy_join_real_pnl(admitted_clusters, lifecycle, window=600):
