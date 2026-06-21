@@ -87,6 +87,9 @@ _EPOCH_FALLBACK = {
     "ladder_rr_enabled": False,          # 真翻转：trend-entry-levers-default-on 把 DEFAULTS 翻成 True，纪元前=关
     "ev_winrate_gate_enabled": True,     # 防御性 no-op：当前 DEFAULTS 仍=True（仅 config.yaml live 值改过）
     "ev_neutral_p_win": 0.55,            # 防御性 no-op：当前 DEFAULTS 仍=0.55
+    "long_live_regime_aware_range_enabled": False,  # 真翻转：regime-aware-long-entry-guard 新增，纪元前无体制感知=固定0.82，replay 用 off 还原旧判定
+    "long_live_max_range_pos_choppy": 0.55,         # 防御性 no-op：仅 enabled=True 生效，旧纪元 enabled=False 不影响判定
+    "long_live_daily_gain_range_pos_choppy": 0.50,  # 防御性 no-op：同上
 }
 
 # 晚加但不影响 Judge gate 决策的键。守卫测试（CF-T2）消费此集合：snapshot-缺键
