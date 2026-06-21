@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: null
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/regime-aware-long-entry-guard/.comet/handoff/design-context.json
 handoff_hash: d709a31156488736ffdd54463ac5bcc486e5017d51f4b1619f4b1369ef11fb70
+verify_command: python3 -m pytest test_long_entry_position_guard.py tests/test_decision_replay.py -q
+build_command: python3 -m pytest test_long_entry_position_guard.py tests/test_decision_replay.py -q
