@@ -1,17 +1,17 @@
 workflow: full
-phase: verify
+phase: archive
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: full
 base_ref: 5765fc00da620310c30b7a22539234071f270e95
 design_doc: docs/superpowers/specs/2026-06-21-regime-aware-long-entry-guard-design.md
 plan: docs/superpowers/plans/2026-06-21-regime-aware-long-entry-guard.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-21-regime-aware-long-entry-guard-verify.md
 branch_status: handled
 created_at: 2026-06-21
-verified_at: null
-archived: false
+verified_at: 2026-06-21
+archived: true
 handoff_context: openspec/changes/regime-aware-long-entry-guard/.comet/handoff/design-context.json
 handoff_hash: d709a31156488736ffdd54463ac5bcc486e5017d51f4b1619f4b1369ef11fb70
 verify_command: python3 -m pytest test_long_entry_position_guard.py tests/test_decision_replay.py -q

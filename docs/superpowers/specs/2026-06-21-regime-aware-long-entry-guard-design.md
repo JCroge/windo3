@@ -2,6 +2,8 @@
 comet_change: regime-aware-long-entry-guard
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-21-regime-aware-long-entry-guard
+status: final
 ---
 
 # Design: regime-aware-long-entry-guard

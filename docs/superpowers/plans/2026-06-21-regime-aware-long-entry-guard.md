@@ -2,6 +2,7 @@
 change: regime-aware-long-entry-guard
 design-doc: docs/superpowers/specs/2026-06-21-regime-aware-long-entry-guard-design.md
 base-ref: 5765fc00da620310c30b7a22539234071f270e95
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 # Regime-Aware Long Entry Guard Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 5765fc00da620310c30b7a22539234071f270e95
 
 **Tech Stack:** Python, pytest, `utils/config_loader.py` 四段式配置（HARD_LIMITS / DEFAULTS / YAML bool coercion / ENV）。
 
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 ## File Structure
@@ -24,6 +26,7 @@ base-ref: 5765fc00da620310c30b7a22539234071f270e95
 - `test_long_entry_position_guard.py` — `_make_judge` 增默认属性；新增体制感知用例。
 - `tests/test_config_loader.py`（若存在则追加，否则在 `test_long_entry_position_guard.py` 内加 config 段）— 校验新键默认/范围。
 
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 ## Task 1: Config 三键接入（four-segment）
@@ -121,6 +124,7 @@ git add utils/config_loader.py config.yaml test_long_entry_position_guard.py
 git commit -m "feat(risk): add regime-aware long range-pos config keys (four-segment)"
 ```
 
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 ## Task 2: `_resolve_long_range_thresholds` helper（纯函数）
@@ -209,6 +213,7 @@ git add agents/trading/judge.py test_long_entry_position_guard.py
 git commit -m "feat(judge): add _resolve_long_range_thresholds regime threshold helper"
 ```
 
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 ## Task 3: 接入位置门 + 归因 metrics
@@ -311,6 +316,7 @@ git add agents/trading/judge.py test_long_entry_position_guard.py
 git commit -m "feat(judge): regime-aware range threshold in _check_entry_position_policy + metrics"
 ```
 
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 ## Task 4: 归因 policy 版本标记 + 透传字段
@@ -366,6 +372,7 @@ git add agents/trading/judge.py test_long_entry_position_guard.py
 git commit -m "feat(judge): tag overheat attribution long_overheat_v2_regime + regime/threshold fields"
 ```
 
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 ## Task 5: 全量回归
@@ -389,6 +396,7 @@ git add -A
 git commit -m "test: align long-overheat policy-tag assertions with v2_regime"
 ```
 
+archived-with: 2026-06-21-regime-aware-long-entry-guard
 ---
 
 ## Self-Review
