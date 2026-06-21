@@ -1,20 +1,20 @@
 ## 1. 配置接入
 
-- [ ] 1.1 `config.yaml` `risk` 段新增 `long_live_max_range_pos_choppy`（默认 0.55）及对应 daily_gain 体制键，附注释说明体制语义
-- [ ] 1.2 `utils/config_loader.py` 按 four-segment 模式接入新键，缺省回退现有 0.82/0.75
-- [ ] 1.3 judge `__init__` 读取并保存 `self._long_live_max_range_pos_choppy` 等字段
+- [x] 1.1 `config.yaml` `risk` 段新增 `long_live_max_range_pos_choppy`（默认 0.55）及对应 daily_gain 体制键，附注释说明体制语义
+- [x] 1.2 `utils/config_loader.py` 按 four-segment 模式接入新键，缺省回退现有 0.82/0.75
+- [x] 1.3 judge `__init__` 读取并保存 `self._long_live_max_range_pos_choppy` 等字段
 
 ## 2. 体制感知阈值核心
 
-- [ ] 2.1 新增 helper `_resolve_long_range_thresholds(regime) -> (max_range, daily_gain_range_pos)`：bullish→默认，choppy/mixed→收紧，None/未知→回退默认
-- [ ] 2.2 `_check_entry_position_policy` 多单分支改用该 helper 取阈值；新增 `regime` 入参
-- [ ] 2.3 在所有调用 `_check_entry_position_policy` 处（judge.py:802/931/1052/1587）传入 `eff_regime`，体制不可得传 None
-- [ ] 2.4 确认主路径与 deferred 路径共用同一阈值判定，无漂移
+- [x] 2.1 新增 helper `_resolve_long_range_thresholds(regime) -> (max_range, daily_gain_range_pos)`：bullish→默认，choppy/mixed→收紧，None/未知→回退默认
+- [x] 2.2 `_check_entry_position_policy` 多单分支改用该 helper 取阈值（D1 决策：内部 `snapshot()` 取体制，不新增入参）
+- [x] 2.3 ~~四处调用点传入 eff_regime~~ — 已被 D1 取代（内部 snapshot 与相邻 `_apply_regime_policy` 同源，无需改调用点）
+- [x] 2.4 确认主路径与 deferred 路径共用同一阈值判定，无漂移（共用同一函数 + 同一 snapshot 源）
 
 ## 3. 归因
 
-- [ ] 3.1 attribution 增补 `entry_regime_used` 与 `entry_range_pos_threshold` 字段
-- [ ] 3.2 `entry_position_policy` 标记升级为 `long_overheat_v2_regime`
+- [x] 3.1 attribution 增补 `entry_regime_used` 与 `entry_range_pos_threshold` 字段
+- [x] 3.2 `entry_position_policy` 标记升级为 `long_overheat_v2_regime`
 
 ## 4. 测试
 
