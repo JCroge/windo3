@@ -213,6 +213,9 @@ class MultiJudge(BaseAgent):
         self._long_live_pullback_min_pct = config.get('long_live_pullback_min_pct', 0.025) if config else 0.025
         self._long_live_pullback_timeout_hours = config.get('long_live_pullback_timeout_hours', 4) if config else 4
         self._long_live_overheat_disable_chase = config.get('long_live_overheat_disable_chase', True) if config else True
+        self._long_live_regime_aware_range_enabled = config.get('long_live_regime_aware_range_enabled', True) if config else True
+        self._long_live_max_range_pos_choppy = config.get('long_live_max_range_pos_choppy', 0.55) if config else 0.55
+        self._long_live_daily_gain_range_pos_choppy = config.get('long_live_daily_gain_range_pos_choppy', 0.50) if config else 0.50
 
         # ═══ EV bucket sparse-sample protection ═══
         self._ev_bucket_min_trades = config.get('ev_bucket_min_trades', 10) if config else 10
@@ -2821,6 +2824,23 @@ class MultiJudge(BaseAgent):
                 "htf_bearish_votes": htf_bearish,
             },
         }
+
+    def _resolve_long_range_thresholds(self, eff_regime):
+        """按有效体制解析多单 (max_range, daily_gain_range_pos) 阈值。
+
+        bullish / None / 未知 / 总开关关闭 → 默认 (0.82, 0.75)；
+        choppy / mixed / bearish → 收紧 (0.55, 0.50)（可配置）。
+        与相邻 _apply_regime_policy 用同一 snapshot 体制源，主/deferred 路径共用。
+        """
+        default = (self._long_live_max_range_pos, self._long_live_daily_gain_range_pos)
+        if not getattr(self, '_long_live_regime_aware_range_enabled', True):
+            return default
+        if eff_regime in ('choppy', 'mixed', 'bearish'):
+            return (
+                getattr(self, '_long_live_max_range_pos_choppy', 0.55),
+                getattr(self, '_long_live_daily_gain_range_pos_choppy', 0.50),
+            )
+        return default
 
     def _check_entry_position_policy(self, symbol: str, action: str, plan: dict,
                                      tech: dict, score: float, context: str = 'main') -> dict:

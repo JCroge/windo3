@@ -624,3 +624,30 @@ class TestRegimeAwareConfig:
         out = _load_yaml(str(p))
         assert out['long_live_max_range_pos_choppy'] == 0.50
         assert out['long_live_daily_gain_range_pos_choppy'] == 0.45
+
+
+class TestResolveThresholds:
+    def _judge(self, **kw):
+        j = _make_judge(**kw)
+        j._long_live_regime_aware_range_enabled = kw.get('_long_live_regime_aware_range_enabled', True)
+        j._long_live_max_range_pos_choppy = 0.55
+        j._long_live_daily_gain_range_pos_choppy = 0.50
+        return j
+
+    def test_bullish_uses_default(self):
+        j = self._judge()
+        assert j._resolve_long_range_thresholds('bullish') == (0.82, 0.75)
+
+    def test_choppy_mixed_bearish_tighten(self):
+        j = self._judge()
+        for r in ('choppy', 'mixed', 'bearish'):
+            assert j._resolve_long_range_thresholds(r) == (0.55, 0.50)
+
+    def test_none_and_unknown_fallback(self):
+        j = self._judge()
+        assert j._resolve_long_range_thresholds(None) == (0.82, 0.75)
+        assert j._resolve_long_range_thresholds('weird') == (0.82, 0.75)
+
+    def test_toggle_off_forces_default(self):
+        j = self._judge(_long_live_regime_aware_range_enabled=False)
+        assert j._resolve_long_range_thresholds('choppy') == (0.82, 0.75)
