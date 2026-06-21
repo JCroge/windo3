@@ -1,6 +1,4 @@
 """AC2-02: probe_long final gate in dispatcher blocks when slot full."""
-import pytest
-import asyncio
 import time
 from unittest.mock import MagicMock, AsyncMock, patch
 from agents.trading.judge import MultiJudge
@@ -52,7 +50,7 @@ def _make_judge():
 
 
 class TestProbeLongDispatcherGate:
-    def test_probe_long_gate_blocks_when_active(self):
+    async def test_probe_long_gate_blocks_when_active(self):
         """Active probe_long position blocks new probe_long in dispatcher."""
         judge = _make_judge()
         judge._open_positions = {'SOL-USDT'}
@@ -62,14 +60,12 @@ class TestProbeLongDispatcherGate:
             'symbol': 'BTC-USDT', 'action': 'open_long', 'confidence': 70,
             'plan': {'slot_type': 'probe_long', 'is_probe': True},
         }
-        result = asyncio.get_event_loop().run_until_complete(
-            judge._gate_and_publish_open('BTC-USDT', decision, {})
-        )
+        result = await judge._gate_and_publish_open('BTC-USDT', decision, {})
         assert result is False
         assert 'BTC-USDT' not in judge._pending_open_symbols
         assert 'BTC-USDT' not in judge._pending_open_slots
 
-    def test_probe_long_gate_blocks_when_pending(self):
+    async def test_probe_long_gate_blocks_when_pending(self):
         """Pending probe_long blocks new probe_long in dispatcher."""
         judge = _make_judge()
         judge._pending_open_symbols = {'ETH-USDT'}
@@ -80,12 +76,10 @@ class TestProbeLongDispatcherGate:
             'symbol': 'BTC-USDT', 'action': 'open_long', 'confidence': 70,
             'plan': {'slot_type': 'probe_long', 'is_probe': True},
         }
-        result = asyncio.get_event_loop().run_until_complete(
-            judge._gate_and_publish_open('BTC-USDT', decision, {})
-        )
+        result = await judge._gate_and_publish_open('BTC-USDT', decision, {})
         assert result is False
 
-    def test_main_slot_full_does_not_block_probe_long(self):
+    async def test_main_slot_full_does_not_block_probe_long(self):
         """Main slot full should NOT block probe_long."""
         judge = _make_judge()
         judge._open_positions = {'BTC-USDT', 'ETH-USDT', 'SOL-USDT'}
@@ -95,13 +89,11 @@ class TestProbeLongDispatcherGate:
             'symbol': 'DOGE-USDT', 'action': 'open_long', 'confidence': 70,
             'plan': {'slot_type': 'probe_long', 'is_probe': True},
         }
-        result = asyncio.get_event_loop().run_until_complete(
-            judge._gate_and_publish_open('DOGE-USDT', decision, {})
-        )
+        result = await judge._gate_and_publish_open('DOGE-USDT', decision, {})
         assert result is True
         assert 'DOGE-USDT' in judge._pending_open_symbols
 
-    def test_probe_long_gate_publishes_hold_with_attribution(self):
+    async def test_probe_long_gate_publishes_hold_with_attribution(self):
         """Blocked probe_long publishes hold with proper attribution."""
         judge = _make_judge()
         judge._open_positions = {'SOL-USDT'}
@@ -111,9 +103,7 @@ class TestProbeLongDispatcherGate:
             'symbol': 'BTC-USDT', 'action': 'open_long', 'confidence': 70,
             'plan': {'slot_type': 'probe_long', 'is_probe': True},
         }
-        asyncio.get_event_loop().run_until_complete(
-            judge._gate_and_publish_open('BTC-USDT', decision, {})
-        )
+        await judge._gate_and_publish_open('BTC-USDT', decision, {})
         call_args = judge.publish.call_args
         payload = call_args[0][1]
         assert payload['action'] == 'hold'

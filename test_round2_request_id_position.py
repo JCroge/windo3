@@ -1,6 +1,4 @@
 """AC2-03 + AC2-04: Executor duplicate open rejected + request_id in result/position."""
-import pytest
-import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
 
 
@@ -58,7 +56,7 @@ def _make_executor_agent(executor_impl):
 
 
 class TestDuplicateOpenRejected:
-    def test_position_exists_same_side_rejected(self):
+    async def test_position_exists_same_side_rejected(self):
         """AC2-03: open_long with existing long position publishes rejected."""
         agent = _make_executor_agent(FakeExecutor())
         decision = {
@@ -66,9 +64,7 @@ class TestDuplicateOpenRejected:
             'confidence': 70, 'source': 'judge',
             'request_id': 'req-456', 'plan': {'leverage': 3},
         }
-        asyncio.get_event_loop().run_until_complete(
-            agent._execute_decision(decision)
-        )
+        await agent._execute_decision(decision)
         call_args = agent.publish.call_args
         payload = call_args[0][1]
         assert payload['status'] == 'rejected'
@@ -76,7 +72,7 @@ class TestDuplicateOpenRejected:
         assert payload['request_id'] == 'req-456'
         assert payload['schema_version'] == 'execution_result.v2'
 
-    def test_position_exists_opposite_side_rejected(self):
+    async def test_position_exists_opposite_side_rejected(self):
         """AC2-03: open_short with existing long position publishes rejected."""
         agent = _make_executor_agent(FakeExecutor())
         decision = {
@@ -84,14 +80,12 @@ class TestDuplicateOpenRejected:
             'confidence': 70, 'source': 'judge',
             'request_id': 'req-789', 'plan': {'leverage': 3},
         }
-        asyncio.get_event_loop().run_until_complete(
-            agent._execute_decision(decision)
-        )
+        await agent._execute_decision(decision)
         payload = agent.publish.call_args[0][1]
         assert payload['status'] == 'rejected'
         assert payload['reason'] == 'position_exists_opposite_side'
 
-    def test_open_success_result_has_request_id(self):
+    async def test_open_success_result_has_request_id(self):
         """AC2-04: successful open writes request_id into result dict."""
         agent = _make_executor_agent(FakeExecutorNoPosition())
         decision = {
@@ -100,16 +94,14 @@ class TestDuplicateOpenRejected:
             'request_id': 'req-open-001',
             'plan': {'leverage': 3, 'size_usdt': 10, 'order_type': 'market'},
         }
-        asyncio.get_event_loop().run_until_complete(
-            agent._execute_decision(decision)
-        )
+        await agent._execute_decision(decision)
         payload = agent.publish.call_args[0][1]
         assert payload['status'] == 'executed'
         assert payload['request_id'] == 'req-open-001'
         assert payload['result']['request_id'] == 'req-open-001'
         assert payload['result']['entry_request_id'] == 'req-open-001'
 
-    def test_close_result_has_entry_request_id(self):
+    async def test_close_result_has_entry_request_id(self):
         """AC2-04: close result carries entry_request_id from position."""
         agent = _make_executor_agent(FakeExecutor())
         decision = {
@@ -118,9 +110,7 @@ class TestDuplicateOpenRejected:
             'request_id': 'req-close-001', 'plan': None,
             'size_pct': 1.0,
         }
-        asyncio.get_event_loop().run_until_complete(
-            agent._execute_decision(decision)
-        )
+        await agent._execute_decision(decision)
         payload = agent.publish.call_args[0][1]
         assert payload['status'] == 'executed'
         result = payload['result']
