@@ -8,7 +8,7 @@ design_doc: docs/superpowers/specs/2026-06-21-regime-aware-long-entry-guard-desi
 plan: docs/superpowers/plans/2026-06-21-regime-aware-long-entry-guard.md
 verify_result: pending
 verification_report: docs/superpowers/reports/2026-06-21-regime-aware-long-entry-guard-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-06-21
 verified_at: null
 archived: false
