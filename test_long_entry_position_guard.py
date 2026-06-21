@@ -616,3 +616,11 @@ class TestRegimeAwareConfig:
         from utils.config_loader import _read_env_overrides
         out = _read_env_overrides()
         assert out['long_live_regime_aware_range_enabled'] is False
+
+    def test_yaml_float_override(self, tmp_path):
+        from utils.config_loader import _load_yaml
+        p = tmp_path / "config.yaml"
+        p.write_text("risk:\n  long_live_max_range_pos_choppy: 0.50\n  long_live_daily_gain_range_pos_choppy: 0.45\n")
+        out = _load_yaml(str(p))
+        assert out['long_live_max_range_pos_choppy'] == 0.50
+        assert out['long_live_daily_gain_range_pos_choppy'] == 0.45

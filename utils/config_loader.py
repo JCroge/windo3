@@ -256,6 +256,10 @@ def _load_yaml(path: str) -> dict:
         out['rotation_close_held_enabled'] = _to_bool(risk['rotation_close_held_enabled'])
     if 'long_live_regime_aware_range_enabled' in risk:
         out['long_live_regime_aware_range_enabled'] = _to_bool(risk['long_live_regime_aware_range_enabled'])
+    if 'long_live_max_range_pos_choppy' in risk:
+        out['long_live_max_range_pos_choppy'] = float(risk['long_live_max_range_pos_choppy'])
+    if 'long_live_daily_gain_range_pos_choppy' in risk:
+        out['long_live_daily_gain_range_pos_choppy'] = float(risk['long_live_daily_gain_range_pos_choppy'])
     return out
 
 
