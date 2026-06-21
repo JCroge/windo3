@@ -694,3 +694,16 @@ class TestRegimeAwareGuard:
         r = self._check(self._judge('choppy'))
         assert r['metrics']['entry_regime_used'] == 'choppy'
         assert r['metrics']['entry_range_pos_threshold'] == 0.55
+
+
+class TestAttributionV2:
+    def test_overheat_attribution_upgraded_to_v2(self):
+        import os as _os
+        _judge_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'agents', 'trading', 'judge.py')
+        src = open(_judge_path, encoding='utf-8').read()
+        # 两处 overheat 内联归因 tag 升级为 v2_regime；旧 v1 内联 override 不再出现
+        assert "attr['entry_position_policy'] = 'long_overheat_v2_regime'" in src
+        assert "attr['entry_position_policy'] = 'long_overheat_v1'" not in src
+        # 新 metrics 字段透传到 attribution
+        assert "attr['entry_regime_used'] = pos_policy['metrics'].get('entry_regime_used')" in src
+        assert "attr['entry_range_pos_threshold'] = pos_policy['metrics'].get('entry_range_pos_threshold')" in src

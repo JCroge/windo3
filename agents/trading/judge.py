@@ -1624,7 +1624,9 @@ class MultiJudge(BaseAgent):
                             attr['entry_range_pos_24h'] = pos_policy['metrics']['position_in_24h_range']
                             attr['entry_pre_12h_return_pct'] = pos_policy['metrics']['pre_12h_return_pct']
                             attr['entry_prev_daily_return_pct'] = pos_policy['metrics']['prev_daily_return_pct']
-                            attr['entry_position_policy'] = 'long_overheat_v1'
+                            attr['entry_regime_used'] = pos_policy['metrics'].get('entry_regime_used')
+                            attr['entry_range_pos_threshold'] = pos_policy['metrics'].get('entry_range_pos_threshold')
+                            attr['entry_position_policy'] = 'long_overheat_v2_regime'
                             attr['deferred_target_price'] = target
                             attr['deferred_reason'] = block_reason
                             decision = {
@@ -1654,7 +1656,9 @@ class MultiJudge(BaseAgent):
                         attr['entry_range_pos_24h'] = pos_policy['metrics']['position_in_24h_range']
                         attr['entry_pre_12h_return_pct'] = pos_policy['metrics']['pre_12h_return_pct']
                         attr['entry_prev_daily_return_pct'] = pos_policy['metrics']['prev_daily_return_pct']
-                        attr['entry_position_policy'] = 'long_overheat_v1'
+                        attr['entry_regime_used'] = pos_policy['metrics'].get('entry_regime_used')
+                        attr['entry_range_pos_threshold'] = pos_policy['metrics'].get('entry_range_pos_threshold')
+                        attr['entry_position_policy'] = 'long_overheat_v2_regime'
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
