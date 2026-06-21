@@ -2429,6 +2429,8 @@ class MultiJudge(BaseAgent):
             'entry_prev_daily_return_pct': float((tech.get('entry_context')
                                                   or {}).get('prev_daily_return_pct', 0.0) or 0.0),
             'entry_position_policy': 'long_overheat_v1',
+            'entry_regime_used': (plan or {}).get('entry_regime_used'),
+            'entry_range_pos_threshold': (plan or {}).get('entry_range_pos_threshold'),
             'deferred_target_price': (plan or {}).get('deferred_target_price', 0.0),
             'deferred_reason': (plan or {}).get('deferred_reason', ''),
             'ev_bucket_key': (plan or {}).get('ev_bucket_key', ''),
@@ -2899,6 +2901,8 @@ class MultiJudge(BaseAgent):
             max_daily = self._long_live_max_daily_gain
             result['metrics']['entry_regime_used'] = eff_regime
             result['metrics']['entry_range_pos_threshold'] = round(max_range, 4)
+            plan['entry_regime_used'] = eff_regime
+            plan['entry_range_pos_threshold'] = round(max_range, 4)
 
             block_reason = ''
             if range_pos >= max_range:

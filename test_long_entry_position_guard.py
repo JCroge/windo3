@@ -695,6 +695,16 @@ class TestRegimeAwareGuard:
         assert r['metrics']['entry_regime_used'] == 'choppy'
         assert r['metrics']['entry_range_pos_threshold'] == 0.55
 
+    def test_allowed_long_writes_threshold_into_plan(self):
+        j = self._judge('choppy')
+        plan = _make_plan()
+        # range_pos 0.40 < 0.55 choppy threshold -> allowed (not overheated)
+        r = j._check_entry_position_policy('X', 'open_long', plan, _make_tech(range_pos=0.40), 50.0, context='main')
+        assert r['allowed'] is True
+        # guard must stamp the resolved regime/threshold onto the plan for downstream open attribution
+        assert plan['entry_regime_used'] == 'choppy'
+        assert plan['entry_range_pos_threshold'] == 0.55
+
 
 class TestAttributionV2:
     def test_overheat_attribution_upgraded_to_v2(self):
