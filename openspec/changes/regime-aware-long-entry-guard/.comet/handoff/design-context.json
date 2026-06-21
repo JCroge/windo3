@@ -1,0 +1,14 @@
+{
+  "change": "regime-aware-long-entry-guard",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d709a31156488736ffdd54463ac5bcc486e5017d51f4b1619f4b1369ef11fb70",
+  "files": [
+    { "path": "openspec/changes/regime-aware-long-entry-guard/proposal.md", "sha256": "5451be84699c9326d5cba55dc8d9bced6ced5a2f570fc853b7d28f47cfd8514f" },
+    { "path": "openspec/changes/regime-aware-long-entry-guard/design.md", "sha256": "f28228c33c4c2870015a58409ca3fb64e392f3bcab1c1e3ed93132ca9a8c6d98" },
+    { "path": "openspec/changes/regime-aware-long-entry-guard/tasks.md", "sha256": "ea0ba81908059d3133580a7fb4565466ec1ae602efbd29def666024353f93ea7" },
+    { "path": "openspec/changes/regime-aware-long-entry-guard/specs/regime-aware-long-entry-guard/spec.md", "sha256": "0eb39efaca2988166db35380a14ca4432df6e195d812109ee97a809033fd8aea" }
+  ]
+}
