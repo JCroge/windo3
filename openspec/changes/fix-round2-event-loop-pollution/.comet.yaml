@@ -1,5 +1,5 @@
 workflow: hotfix
-phase: build
+phase: verify
 build_mode: direct
 isolation: branch
 verify_mode: light
@@ -7,8 +7,10 @@ base_ref: 01fed6ea7e97e1d95994bb32b152e1f461209b30
 design_doc: null
 plan: null
 verify_result: pending
-verification_report: null
+verification_report: docs/superpowers/reports/2026-06-21-fix-round2-event-loop-pollution-verify.md
 branch_status: pending
 created_at: 2026-06-21
 verified_at: null
 archived: false
+build_command: python3 -m pytest test_round2_probe_long_dispatcher.py test_round2_request_id_position.py -q
+verify_command: python3 -m pytest test_round2_probe_long_dispatcher.py test_round2_request_id_position.py -q
