@@ -48,6 +48,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 | 风控 | `MAX_DRAWDOWN_PCT` / `MAX_DAILY_LOSS` / `DAILY_PNL_HARD_STOP` | 回撤上限 / 每日硬熔断 |
 | R:R | `RR_FLOOR_DEFAULT` / `RR_FLOOR_LONG_BULLISH` / `RR_FLOOR_LONG_ALIGNED_CHOPPY` / `RR_FLOOR_SHORT_BULLISH` / `PROBE_RR_FLOOR` | R:R floor 五分支阈值 |
 | 多头位置保护 | `LONG_LIVE_POSITION_GUARD_ENABLED` / `LONG_LIVE_MAX_RANGE_POS` / `LONG_LIVE_MAX_PRE_MOVE` / `LONG_LIVE_MAX_DAILY_GAIN` | 山顶接货防护，命中走 `deferred_pullback_overheat`（2026-05-26） |
+| 多头位置保护·体制感知 | `LONG_LIVE_REGIME_AWARE_RANGE_ENABLED` / `LONG_LIVE_MAX_RANGE_POS_CHOPPY` / `LONG_LIVE_DAILY_GAIN_RANGE_POS_CHOPPY` | choppy/mixed/bearish 收紧 range_pos 阈值转回调入场，bullish 保 0.82；总开关可回退（2026-06-21，生产起步 0.70/目标 0.55） |
 | EV 分桶 | `EV_BUCKET_MIN_TRADES` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT` | 稀疏 bucket 不抬 p_win（2026-05-26） |
 
 完整列表与默认值见 `utils/config_loader.py` 的 `DEFAULTS` 与 `HARD_LIMITS`。

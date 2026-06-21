@@ -187,6 +187,9 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | LONG_LIVE_PULLBACK_MIN_PCT | overheat 触发后等待回调的最小幅度（与 ATR% 取大） | 0.025 | 否 |
 | LONG_LIVE_PULLBACK_TIMEOUT_HOURS | `deferred_pullback_overheat` 最大等待小时 | 4 | 否 |
 | LONG_LIVE_OVERHEAT_DISABLE_CHASE | overheat deferred 期间禁止 chase 入场 | true | 否 |
+| LONG_LIVE_REGIME_AWARE_RANGE_ENABLED | 多头过热阈值是否体制感知（2026-06-21 `regime-aware-long-entry-guard`）。`true`=choppy/mixed/bearish 用收紧阈值、bullish 用默认 0.82；`false`=所有体制用固定 0.82/0.75（即时回退旧行为）。可经 config.yaml `risk.long_live_regime_aware_range_enabled` 配置 | true | 否 |
+| LONG_LIVE_MAX_RANGE_POS_CHOPPY | choppy/mixed/bearish 体制下收紧的 range_pos 阈值（仅 REGIME_AWARE 开启时生效）。代码默认/目标 0.55；**生产 config.yaml 缓进起步 0.70**（先只罩最极端追顶，观察后逐步收紧） | 0.55 | 否 |
+| LONG_LIVE_DAILY_GAIN_RANGE_POS_CHOPPY | 同上体制下 pre_12h/prev_daily 联合判定的辅助 range_pos 阈值 | 0.50 | 否 |
 | EV_BUCKET_MIN_TRADES | bucket 提高 p_win 所需最小样本数（低于此值视为稀疏 bucket） | 10 | 否 |
 | EV_BUCKET_SPARSE_ALLOW_UPLIFT | 是否允许稀疏 bucket 抬高 p_win（默认禁止，仅允许降低/缩仓） | false | 否 |
 | LADDER_RR_ENABLED | **lever2 逃生阀**（2026-06-17 `trend-entry-levers-default-on`）：阶梯加权 effective_rr 口径（按 executor 真实 50/25/25 离场加权，影响 R:R 地板 gate=多开仓）。**默认开**；设 `false` 即时回退 TP1-only 旧口径（live 决策回滚，无需改代码） | true | 否 |
