@@ -24,6 +24,10 @@ risk:
   consecutive_loss_limit: 5  # 连续亏损熔断次数（连亏达此数即全平熔断）
   ev_winrate_gate_enabled: false  # 关闭后开仓门不用实际胜率(胜率25%不拦)，EV门仍按R:R/成本
   ev_neutral_p_win: 0.55          # 关闭胜率门时 EV 公式使用的固定中性胜率
+  # 体制感知多单位置门（regime-aware-long-entry-guard）
+  long_live_regime_aware_range_enabled: true   # 总开关；false=所有体制用默认0.82/0.75（回退旧行为）
+  long_live_max_range_pos_choppy: 0.70         # 缓进起步值（保守，先只罩最极端追顶）；代码默认/目标=0.55，观察 entry_regime_used/PF 后逐步收紧
+  long_live_daily_gain_range_pos_choppy: 0.50  # 同上体制下 daily_gain 二级门 range_pos
 
 # 手续费（Maker/Taker）
 fees:

@@ -61,6 +61,8 @@ HARD_LIMITS = {
     "long_live_max_pre_move": (0.0, 0.30),
     "long_live_max_daily_gain": (0.0, 0.50),
     "long_live_daily_gain_range_pos": (0.0, 1.0),
+    "long_live_max_range_pos_choppy": (0.0, 1.0),
+    "long_live_daily_gain_range_pos_choppy": (0.0, 1.0),
     "long_live_pullback_min_pct": (0.005, 0.20),
     "long_live_pullback_timeout_hours": (0.5, 24),
     # EV bucket
@@ -168,6 +170,9 @@ DEFAULTS = {
     "long_live_max_pre_move": 0.05,
     "long_live_max_daily_gain": 0.10,
     "long_live_daily_gain_range_pos": 0.75,
+    "long_live_regime_aware_range_enabled": True,
+    "long_live_max_range_pos_choppy": 0.55,
+    "long_live_daily_gain_range_pos_choppy": 0.50,
     "long_live_pullback_min_pct": 0.025,
     "long_live_pullback_timeout_hours": 4,
     "long_live_overheat_disable_chase": True,
@@ -249,6 +254,12 @@ def _load_yaml(path: str) -> dict:
         out['ev_neutral_p_win'] = float(risk['ev_neutral_p_win'])
     if 'rotation_close_held_enabled' in risk:
         out['rotation_close_held_enabled'] = _to_bool(risk['rotation_close_held_enabled'])
+    if 'long_live_regime_aware_range_enabled' in risk:
+        out['long_live_regime_aware_range_enabled'] = _to_bool(risk['long_live_regime_aware_range_enabled'])
+    if 'long_live_max_range_pos_choppy' in risk:
+        out['long_live_max_range_pos_choppy'] = float(risk['long_live_max_range_pos_choppy'])
+    if 'long_live_daily_gain_range_pos_choppy' in risk:
+        out['long_live_daily_gain_range_pos_choppy'] = float(risk['long_live_daily_gain_range_pos_choppy'])
     return out
 
 
@@ -319,6 +330,7 @@ def _read_env_overrides() -> dict:
         "SHORT_LIVE_MAX_PRE_MOVE": ("short_live_max_pre_move", float),
         # Long Entry Position Guard
         "LONG_LIVE_POSITION_GUARD_ENABLED": ("long_live_position_guard_enabled", _to_bool),
+        "LONG_LIVE_REGIME_AWARE_RANGE_ENABLED": ("long_live_regime_aware_range_enabled", _to_bool),
         "LONG_LIVE_MAX_RANGE_POS": ("long_live_max_range_pos", float),
         "LONG_LIVE_MAX_PRE_MOVE": ("long_live_max_pre_move", float),
         "LONG_LIVE_MAX_DAILY_GAIN": ("long_live_max_daily_gain", float),

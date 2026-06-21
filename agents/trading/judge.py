@@ -213,6 +213,9 @@ class MultiJudge(BaseAgent):
         self._long_live_pullback_min_pct = config.get('long_live_pullback_min_pct', 0.025) if config else 0.025
         self._long_live_pullback_timeout_hours = config.get('long_live_pullback_timeout_hours', 4) if config else 4
         self._long_live_overheat_disable_chase = config.get('long_live_overheat_disable_chase', True) if config else True
+        self._long_live_regime_aware_range_enabled = config.get('long_live_regime_aware_range_enabled', True) if config else True
+        self._long_live_max_range_pos_choppy = config.get('long_live_max_range_pos_choppy', 0.55) if config else 0.55
+        self._long_live_daily_gain_range_pos_choppy = config.get('long_live_daily_gain_range_pos_choppy', 0.50) if config else 0.50
 
         # ═══ EV bucket sparse-sample protection ═══
         self._ev_bucket_min_trades = config.get('ev_bucket_min_trades', 10) if config else 10
@@ -1621,7 +1624,9 @@ class MultiJudge(BaseAgent):
                             attr['entry_range_pos_24h'] = pos_policy['metrics']['position_in_24h_range']
                             attr['entry_pre_12h_return_pct'] = pos_policy['metrics']['pre_12h_return_pct']
                             attr['entry_prev_daily_return_pct'] = pos_policy['metrics']['prev_daily_return_pct']
-                            attr['entry_position_policy'] = 'long_overheat_v1'
+                            attr['entry_regime_used'] = pos_policy['metrics'].get('entry_regime_used')
+                            attr['entry_range_pos_threshold'] = pos_policy['metrics'].get('entry_range_pos_threshold')
+                            attr['entry_position_policy'] = 'long_overheat_v2_regime'
                             attr['deferred_target_price'] = target
                             attr['deferred_reason'] = block_reason
                             decision = {
@@ -1651,7 +1656,9 @@ class MultiJudge(BaseAgent):
                         attr['entry_range_pos_24h'] = pos_policy['metrics']['position_in_24h_range']
                         attr['entry_pre_12h_return_pct'] = pos_policy['metrics']['pre_12h_return_pct']
                         attr['entry_prev_daily_return_pct'] = pos_policy['metrics']['prev_daily_return_pct']
-                        attr['entry_position_policy'] = 'long_overheat_v1'
+                        attr['entry_regime_used'] = pos_policy['metrics'].get('entry_regime_used')
+                        attr['entry_range_pos_threshold'] = pos_policy['metrics'].get('entry_range_pos_threshold')
+                        attr['entry_position_policy'] = 'long_overheat_v2_regime'
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
@@ -2422,6 +2429,8 @@ class MultiJudge(BaseAgent):
             'entry_prev_daily_return_pct': float((tech.get('entry_context')
                                                   or {}).get('prev_daily_return_pct', 0.0) or 0.0),
             'entry_position_policy': 'long_overheat_v1',
+            'entry_regime_used': (plan or {}).get('entry_regime_used'),
+            'entry_range_pos_threshold': (plan or {}).get('entry_range_pos_threshold'),
             'deferred_target_price': (plan or {}).get('deferred_target_price', 0.0),
             'deferred_reason': (plan or {}).get('deferred_reason', ''),
             'ev_bucket_key': (plan or {}).get('ev_bucket_key', ''),
@@ -2822,6 +2831,23 @@ class MultiJudge(BaseAgent):
             },
         }
 
+    def _resolve_long_range_thresholds(self, eff_regime):
+        """按有效体制解析多单 (max_range, daily_gain_range_pos) 阈值。
+
+        bullish / None / 未知 / 总开关关闭 → 默认 (0.82, 0.75)；
+        choppy / mixed / bearish → 收紧 (0.55, 0.50)（可配置）。
+        与相邻 _apply_regime_policy 用同一 snapshot 体制源，主/deferred 路径共用。
+        """
+        default = (self._long_live_max_range_pos, self._long_live_daily_gain_range_pos)
+        if not getattr(self, '_long_live_regime_aware_range_enabled', True):
+            return default
+        if eff_regime in ('choppy', 'mixed', 'bearish'):
+            return (
+                getattr(self, '_long_live_max_range_pos_choppy', 0.55),
+                getattr(self, '_long_live_daily_gain_range_pos_choppy', 0.50),
+            )
+        return default
+
     def _check_entry_position_policy(self, symbol: str, action: str, plan: dict,
                                      tech: dict, score: float, context: str = 'main') -> dict:
         """Long Entry Position Guard + Short side guard 的统一入口。
@@ -2866,10 +2892,17 @@ class MultiJudge(BaseAgent):
         # Long overheat guard
         if (is_long and self._long_live_position_guard_enabled
                 and not plan.get('is_probe')):
-            max_range = self._long_live_max_range_pos
+            try:
+                eff_regime = self._regime_manager.snapshot().get('effective_regime')
+            except Exception:
+                eff_regime = None
+            max_range, daily_gain_range_pos = self._resolve_long_range_thresholds(eff_regime)
             max_pre = self._long_live_max_pre_move
             max_daily = self._long_live_max_daily_gain
-            daily_gain_range_pos = self._long_live_daily_gain_range_pos
+            result['metrics']['entry_regime_used'] = eff_regime
+            result['metrics']['entry_range_pos_threshold'] = round(max_range, 4)
+            plan['entry_regime_used'] = eff_regime
+            plan['entry_range_pos_threshold'] = round(max_range, 4)
 
             block_reason = ''
             if range_pos >= max_range:

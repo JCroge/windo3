@@ -597,3 +597,123 @@ class TestAC17AuditLog:
                   'entry_prev_daily_return_pct', 'deferred_target_price',
                   'ev_bucket_key', 'ev_bucket_trade_count'):
             assert f in attr
+
+
+class TestRegimeAwareConfig:
+    def test_defaults_present(self):
+        from utils.config_loader import DEFAULTS
+        assert DEFAULTS['long_live_regime_aware_range_enabled'] is True
+        assert DEFAULTS['long_live_max_range_pos_choppy'] == 0.55
+        assert DEFAULTS['long_live_daily_gain_range_pos_choppy'] == 0.50
+
+    def test_hard_limits_present(self):
+        from utils.config_loader import HARD_LIMITS
+        assert HARD_LIMITS['long_live_max_range_pos_choppy'] == (0.0, 1.0)
+        assert HARD_LIMITS['long_live_daily_gain_range_pos_choppy'] == (0.0, 1.0)
+
+    def test_env_bool_override(self, monkeypatch):
+        monkeypatch.setenv('LONG_LIVE_REGIME_AWARE_RANGE_ENABLED', 'false')
+        from utils.config_loader import _read_env_overrides
+        out = _read_env_overrides()
+        assert out['long_live_regime_aware_range_enabled'] is False
+
+    def test_yaml_float_override(self, tmp_path):
+        from utils.config_loader import _load_yaml
+        p = tmp_path / "config.yaml"
+        p.write_text("risk:\n  long_live_max_range_pos_choppy: 0.50\n  long_live_daily_gain_range_pos_choppy: 0.45\n")
+        out = _load_yaml(str(p))
+        assert out['long_live_max_range_pos_choppy'] == 0.50
+        assert out['long_live_daily_gain_range_pos_choppy'] == 0.45
+
+
+class TestResolveThresholds:
+    def _judge(self, **kw):
+        j = _make_judge(**kw)
+        j._long_live_regime_aware_range_enabled = kw.get('_long_live_regime_aware_range_enabled', True)
+        j._long_live_max_range_pos_choppy = 0.55
+        j._long_live_daily_gain_range_pos_choppy = 0.50
+        return j
+
+    def test_bullish_uses_default(self):
+        j = self._judge()
+        assert j._resolve_long_range_thresholds('bullish') == (0.82, 0.75)
+
+    def test_choppy_mixed_bearish_tighten(self):
+        j = self._judge()
+        for r in ('choppy', 'mixed', 'bearish'):
+            assert j._resolve_long_range_thresholds(r) == (0.55, 0.50)
+
+    def test_none_and_unknown_fallback(self):
+        j = self._judge()
+        assert j._resolve_long_range_thresholds(None) == (0.82, 0.75)
+        assert j._resolve_long_range_thresholds('weird') == (0.82, 0.75)
+
+    def test_toggle_off_forces_default(self):
+        j = self._judge(_long_live_regime_aware_range_enabled=False)
+        assert j._resolve_long_range_thresholds('choppy') == (0.82, 0.75)
+
+
+class TestRegimeAwareGuard:
+    def _judge(self, regime, enabled=True):
+        j = _make_judge()
+        j._long_live_regime_aware_range_enabled = enabled
+        j._long_live_max_range_pos_choppy = 0.55
+        j._long_live_daily_gain_range_pos_choppy = 0.50
+
+        class _R:
+            def snapshot(self_inner):
+                return {'effective_regime': regime, 'raw_regime': regime, 'confidence': 60}
+        j._regime_manager = _R()
+        return j
+
+    def _check(self, j):
+        return j._check_entry_position_policy(
+            'X', 'open_long', _make_plan(), _make_tech(range_pos=0.66), 50.0, context='main')
+
+    def test_choppy_066_overheats(self):
+        r = self._check(self._judge('choppy'))
+        assert r['allowed'] is False
+        assert r['entry_position_status'] == 'overheated'
+
+    def test_mixed_066_overheats(self):
+        assert self._check(self._judge('mixed'))['allowed'] is False
+
+    def test_bearish_066_overheats(self):
+        assert self._check(self._judge('bearish'))['allowed'] is False
+
+    def test_bullish_066_passes(self):
+        r = self._check(self._judge('bullish'))
+        assert r['allowed'] is True
+        assert r['entry_position_status'] == 'normal'
+
+    def test_toggle_off_066_passes_in_choppy(self):
+        r = self._check(self._judge('choppy', enabled=False))
+        assert r['allowed'] is True
+
+    def test_metrics_record_regime_and_threshold(self):
+        r = self._check(self._judge('choppy'))
+        assert r['metrics']['entry_regime_used'] == 'choppy'
+        assert r['metrics']['entry_range_pos_threshold'] == 0.55
+
+    def test_allowed_long_writes_threshold_into_plan(self):
+        j = self._judge('choppy')
+        plan = _make_plan()
+        # range_pos 0.40 < 0.55 choppy threshold -> allowed (not overheated)
+        r = j._check_entry_position_policy('X', 'open_long', plan, _make_tech(range_pos=0.40), 50.0, context='main')
+        assert r['allowed'] is True
+        # guard must stamp the resolved regime/threshold onto the plan for downstream open attribution
+        assert plan['entry_regime_used'] == 'choppy'
+        assert plan['entry_range_pos_threshold'] == 0.55
+
+
+class TestAttributionV2:
+    def test_overheat_attribution_upgraded_to_v2(self):
+        import os as _os
+        _judge_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'agents', 'trading', 'judge.py')
+        src = open(_judge_path, encoding='utf-8').read()
+        # 两处 overheat 内联归因 tag 升级为 v2_regime；旧 v1 内联 override 不再出现
+        assert "attr['entry_position_policy'] = 'long_overheat_v2_regime'" in src
+        assert "attr['entry_position_policy'] = 'long_overheat_v1'" not in src
+        # 新 metrics 字段透传到 attribution
+        assert "attr['entry_regime_used'] = pos_policy['metrics'].get('entry_regime_used')" in src
+        assert "attr['entry_range_pos_threshold'] = pos_policy['metrics'].get('entry_range_pos_threshold')" in src
