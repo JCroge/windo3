@@ -597,3 +597,22 @@ class TestAC17AuditLog:
                   'entry_prev_daily_return_pct', 'deferred_target_price',
                   'ev_bucket_key', 'ev_bucket_trade_count'):
             assert f in attr
+
+
+class TestRegimeAwareConfig:
+    def test_defaults_present(self):
+        from utils.config_loader import DEFAULTS
+        assert DEFAULTS['long_live_regime_aware_range_enabled'] is True
+        assert DEFAULTS['long_live_max_range_pos_choppy'] == 0.55
+        assert DEFAULTS['long_live_daily_gain_range_pos_choppy'] == 0.50
+
+    def test_hard_limits_present(self):
+        from utils.config_loader import HARD_LIMITS
+        assert HARD_LIMITS['long_live_max_range_pos_choppy'] == (0.0, 1.0)
+        assert HARD_LIMITS['long_live_daily_gain_range_pos_choppy'] == (0.0, 1.0)
+
+    def test_env_bool_override(self, monkeypatch):
+        monkeypatch.setenv('LONG_LIVE_REGIME_AWARE_RANGE_ENABLED', 'false')
+        from utils.config_loader import _read_env_overrides
+        out = _read_env_overrides()
+        assert out['long_live_regime_aware_range_enabled'] is False
