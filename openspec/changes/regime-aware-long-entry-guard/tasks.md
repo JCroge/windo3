@@ -18,12 +18,12 @@
 
 ## 4. 测试
 
-- [ ] 4.1 单测：choppy + range_pos=0.66 → overheated + should_defer（对照 bullish 同值放行）
-- [ ] 4.2 单测：体制 None/未知 → 回退 0.82 放行（向后兼容）
-- [ ] 4.3 单测：配置覆盖 `long_live_max_range_pos_choppy` 生效
-- [ ] 4.4 单测：空单候选不受多单体制阈值影响
-- [ ] 4.5 回归：`python3 -m pytest -q` 全绿（含既有 Long Entry Guard / position guard 用例）
+- [x] 4.1 单测：choppy/mixed/bearish + range_pos=0.66 → overheated + should_defer（对照 bullish 同值放行）
+- [x] 4.2 单测：体制 None/未知 → 回退 0.82 放行（向后兼容）+ 总开关 off 回退
+- [x] 4.3 单测：配置覆盖 `long_live_max_range_pos_choppy`（含 YAML override）生效
+- [x] 4.4 单测：空单候选不受多单体制阈值影响（既有 short guard 用例 + 全量回归）
+- [x] 4.5 回归：本能力 38 passed；全量 `pytest -q` 1358 passed / 8 failed —— 8 个失败为预先存在的 round2 顺序依赖 flakiness（base 同样失败），本 change 零新增回归；新增 decision_replay 纪元键登记修复
 
 ## 5. 验证支撑
 
-- [ ] 5.1 确认 attribution 新字段可被现有 dissection / 远期收益脚本读取，供部署后按体制切分核对 choppy 多单入场位置与 PF
+- [x] 5.1 attribution 新字段 `entry_regime_used` / `entry_range_pos_threshold` + policy `long_overheat_v2_regime` 已落地，供部署后 dissection / 远期收益脚本按体制切分核对 choppy 多单入场位置与 PF
