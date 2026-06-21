@@ -1,0 +1,14 @@
+{
+  "change": "fix-reviewer-symbol-format-and-marginal-settle",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d0bbdf5cc455b177a64ed082ffa3b89370484ac71520d776af7a7590b08ecb0d",
+  "files": [
+    { "path": "openspec/changes/fix-reviewer-symbol-format-and-marginal-settle/proposal.md", "sha256": "ef3030c903420aebf1c2917532a377442927f37b11f03aa12a0b1efe3d861f3c" },
+    { "path": "openspec/changes/fix-reviewer-symbol-format-and-marginal-settle/design.md", "sha256": "f3fbecb00d596590a89126a172645ad6c7def4cac5efec36d97f1fdc9e2537be" },
+    { "path": "openspec/changes/fix-reviewer-symbol-format-and-marginal-settle/tasks.md", "sha256": "9cb1a434be620e74ca65461150ca39982dce50ba00d840f15b3a5e2766ec2f86" },
+    { "path": "openspec/changes/fix-reviewer-symbol-format-and-marginal-settle/specs/reviewer-canonical-symbol/spec.md", "sha256": "22f6180ef857979065b9366f327a535c6205877a7c0e8d13e9890dfc9396d35d" }
+  ]
+}

@@ -9,22 +9,76 @@
   不带参数 = 扫所有 agent_judge_*.log / agent_reviewer_*.log（跨日累计）。
   带日期 = 只扫指定日。
 """
+import datetime
 import glob
+import json
 import os
 import re
 import sys
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from utils.symbol import to_internal
+
 LOGS = os.path.join(ROOT, "logs")
+LIFECYCLE = os.path.join(ROOT, "data", "live_position_lifecycle.json")
 
 TS = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
 # [决策] SYMBOL-USDT open_long slot=main req=... 置信度=60 plan=5x
 RE_DECISION = re.compile(TS + r".*\[决策\] (\S+?) open_(long|short) .*置信度=([0-9.]+)")
 # [Judge] SYMBOL-USDT 开仓成功 slot=main
 RE_FILL = re.compile(TS + r".*\[Judge\] (\S+?) 开仓成功 slot=")
-# [复盘] 记录交易: SYMBOL-USDT PnL=0.20 USDT
-RE_PNL = re.compile(TS + r".*\[复盘\] 记录交易: (\S+?) PnL=(-?[0-9.]+) USDT")
+
+
+def _log_ts_to_epoch(ts_str):
+    """日志时间戳(本地时区 naive 'YYYY-MM-DD HH:MM:SS') → Unix epoch。
+
+    lifecycle 的 opened_at 是 `time.time()` 写下的本地 epoch，judge 日志时间戳是同机
+    本地时间字符串；两者对齐须用本地解释(`.timestamp()`)，实测同一开仓 dt≈0-2s。
+    """
+    return datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
+
+
+def load_lifecycle(path=LIFECYCLE):
+    if not os.path.exists(path):
+        return {}
+    try:
+        return json.load(open(path))
+    except Exception:
+        return {}
+
+
+def settle_fill_from_lifecycle(sym_internal, side, fill_ts, lifecycle, used_keys, tol=300):
+    """按 symbol(归一) + side + |opened_at-fill_ts|<=tol join lifecycle, 取 total_realized_pnl。
+
+    返回 (pnl_or_None, matched_key_or_None)。已用 key 在 used_keys 中跳过, 避免重复消费。
+    """
+    best_key, best_dt = None, None
+    for k, v in lifecycle.items():
+        if not isinstance(v, dict) or k in used_keys:
+            continue
+        if to_internal(v.get("symbol", "")) != sym_internal:
+            continue
+        if v.get("side") != side:
+            continue
+        op = v.get("opened_at")
+        if op is None:
+            continue
+        dt = abs(op - fill_ts)
+        if dt <= tol and (best_dt is None or dt < best_dt):
+            best_key, best_dt = k, dt
+    if best_key is None:
+        return None, None
+    v = lifecycle[best_key]
+    pnl = v.get("total_realized_pnl")
+    # reconcile 守卫(delta spec): pending 对账态判"未结算"; 仅 matched(或非 pending) 才结算。
+    if v.get("reconcile_status") == "pending":
+        return None, None
+    if pnl is None or v.get("status") not in ("closed",):
+        return None, None
+    return float(pnl), best_key
 
 
 def _logs(prefix, dates):
@@ -36,38 +90,34 @@ def _logs(prefix, dates):
 def main():
     dates = sys.argv[1:]
     judge_logs = _logs("agent_judge", dates)
-    reviewer_logs = _logs("agent_reviewer", dates)
     if not judge_logs:
         print("无 judge 日志")
         return
 
     # 1) 逐 symbol 收集 long 开仓决策(ts→tier) 与 成交(ts)
-    decisions = defaultdict(list)   # symbol -> [(ts, tier)]
-    fills = defaultdict(list)       # symbol -> [ts]
+    #    symbol 经 to_internal 归一(judge 日志已是内部格式, 防御性收口)
+    decisions = defaultdict(list)   # symbol -> [(ts_str, tier)]
+    fills = defaultdict(list)       # symbol -> [ts_str]
     for path in judge_logs:
         for line in open(path, errors="ignore"):
             m = RE_DECISION.search(line)
             if m and m.group(3) == "long":
-                decisions[m.group(2)].append((m.group(1), float(m.group(4))))
+                decisions[to_internal(m.group(2))].append((m.group(1), float(m.group(4))))
             m = RE_FILL.search(line)
             if m:
-                fills[m.group(2)].append(m.group(1))   # group(2)=symbol, group(1)=ts
+                fills[to_internal(m.group(2))].append(m.group(1))
 
-    # 2) 逐 symbol 收集已实现 PnL(ts→pnl)
-    pnls = defaultdict(list)        # symbol -> [(ts, pnl)]
-    for path in reviewer_logs:
-        for line in open(path, errors="ignore"):
-            m = RE_PNL.search(line)
-            if m:
-                pnls[m.group(2)].append((m.group(1), float(m.group(3))))
+    # 2) 结算源改读权威 live_position_lifecycle.json:
+    #    每个 long fill 按 symbol(归一)+side=long+|opened_at-fill_ts|<=tol join,
+    #    取 total_realized_pnl(reconcile 后的统一键值); used_keys 防重复消费。
+    lifecycle = load_lifecycle()
+    used_keys = set()
 
-    # 3) 关联：每个成交 → 取其前最近的 long 决策 tier；按时序配对该 symbol 的 PnL
-    entries = []  # (open_ts, symbol, tier, pnl_or_None)
+    # 3) 关联：每个成交 → 取其前最近的 long 决策 tier；从 lifecycle 结算 PnL
+    entries = []  # (open_ts_str, symbol, tier, pnl_or_None)
     for sym, fill_ts_list in fills.items():
         decs = sorted(decisions.get(sym, []))
-        sym_pnls = sorted(pnls.get(sym, []))
-        used_pnl = 0
-        for i, fts in enumerate(sorted(fill_ts_list)):
+        for fts in sorted(fill_ts_list):
             # tier = 该成交前最近的 long 决策置信度
             tier = None
             for dts, conf in decs:
@@ -75,11 +125,11 @@ def main():
                     tier = conf
                 else:
                     break
-            # 配对：该成交之后、下一个成交之前的第一笔 PnL
-            pnl = None
-            if used_pnl < len(sym_pnls) and sym_pnls[used_pnl][0] >= fts:
-                pnl = sym_pnls[used_pnl][1]
-                used_pnl += 1
+            # 从权威 lifecycle 结算(本脚本只跟踪 long 边缘单, side 固定 long)
+            pnl, key = settle_fill_from_lifecycle(
+                sym, "long", _log_ts_to_epoch(fts), lifecycle, used_keys, tol=300)
+            if key is not None:
+                used_keys.add(key)
             entries.append((fts, sym, tier, pnl))
 
     entries.sort()
@@ -90,7 +140,7 @@ def main():
             return "未知"
         return "边缘60" if tier <= 60 else "信念≥70" if tier >= 70 else f"中间{tier:.0f}"
 
-    print(f"=== 60分边缘多单 PnL 跟踪（judge={len(judge_logs)}日 / reviewer={len(reviewer_logs)}日）===\n")
+    print(f"=== 60分边缘多单 PnL 跟踪（judge={len(judge_logs)}日 / 结算源=lifecycle.json）===\n")
     print(f"{'开仓时间':<20} {'标的':<14} {'置信度':<7} {'类别':<9} {'已实现PnL'}")
     for ts, sym, tier, pnl in entries:
         ps = f"{pnl:+.2f} USDT" if pnl is not None else "持仓中/未结算"
