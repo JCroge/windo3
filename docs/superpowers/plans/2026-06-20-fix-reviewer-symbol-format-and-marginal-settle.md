@@ -2,6 +2,7 @@
 change: fix-reviewer-symbol-format-and-marginal-settle
 design-doc: docs/superpowers/specs/2026-06-20-fix-reviewer-symbol-format-and-marginal-settle-design.md
 base-ref: c3b201c27902cd90f36a656de927053c8ba4356a
+archived-with: 2026-06-21-fix-reviewer-symbol-format-and-marginal-settle
 ---
 
 # Reviewer symbol 格式根治 + 边缘单从权威源结算 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: c3b201c27902cd90f36a656de927053c8ba4356a
 
 **Tech Stack:** Python 3.9, pytest；复用 `utils/symbol.py::to_internal`、`data/live_position_lifecycle.json`。
 
+archived-with: 2026-06-21-fix-reviewer-symbol-format-and-marginal-settle
 ---
 
 ## Task 1: reviewer 入口 symbol 归一
@@ -98,6 +100,7 @@ git add agents/trading/reviewer.py tests/test_reviewer_symbol_canonical.py
 git commit -m "feat(reviewer-symbol): trade record/日志 symbol 经 to_internal 归一为 BASE-USDT"
 ```
 
+archived-with: 2026-06-21-fix-reviewer-symbol-format-and-marginal-settle
 ---
 
 ## Task 2: track_marginal60 结算源改读 lifecycle
@@ -208,6 +211,7 @@ git add scripts/track_marginal60.py tests/test_reviewer_symbol_canonical.py
 git commit -m "feat(marginal-settle): track_marginal60 结算源改读权威 lifecycle.json + 归一 join"
 ```
 
+archived-with: 2026-06-21-fix-reviewer-symbol-format-and-marginal-settle
 ---
 
 ## Task 3: 回归 + 真跑
@@ -231,6 +235,7 @@ git add -A
 git commit -m "test(reviewer-symbol): 全量回归零退化 + reviewer 既有测试不回归" || echo "nothing to commit"
 ```
 
+archived-with: 2026-06-21-fix-reviewer-symbol-format-and-marginal-settle
 ---
 
 ## Task 4: 更新 CLAUDE.md
@@ -253,6 +258,7 @@ git add CLAUDE.md
 git commit -m "docs(reviewer-symbol): CLAUDE.md 加 reviewer symbol 归一约定 + tracker 读 lifecycle"
 ```
 
+archived-with: 2026-06-21-fix-reviewer-symbol-format-and-marginal-settle
 ---
 
 ## Self-Review 结论

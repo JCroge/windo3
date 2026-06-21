@@ -2,6 +2,8 @@
 comet_change: fix-reviewer-symbol-format-and-marginal-settle
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-21-fix-reviewer-symbol-format-and-marginal-settle
+status: final
 ---
 
 # Reviewer symbol 格式根治 + 边缘单从权威源结算（技术设计）
