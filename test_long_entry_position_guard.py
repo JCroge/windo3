@@ -651,3 +651,46 @@ class TestResolveThresholds:
     def test_toggle_off_forces_default(self):
         j = self._judge(_long_live_regime_aware_range_enabled=False)
         assert j._resolve_long_range_thresholds('choppy') == (0.82, 0.75)
+
+
+class TestRegimeAwareGuard:
+    def _judge(self, regime, enabled=True):
+        j = _make_judge()
+        j._long_live_regime_aware_range_enabled = enabled
+        j._long_live_max_range_pos_choppy = 0.55
+        j._long_live_daily_gain_range_pos_choppy = 0.50
+
+        class _R:
+            def snapshot(self_inner):
+                return {'effective_regime': regime, 'raw_regime': regime, 'confidence': 60}
+        j._regime_manager = _R()
+        return j
+
+    def _check(self, j):
+        return j._check_entry_position_policy(
+            'X', 'open_long', _make_plan(), _make_tech(range_pos=0.66), 50.0, context='main')
+
+    def test_choppy_066_overheats(self):
+        r = self._check(self._judge('choppy'))
+        assert r['allowed'] is False
+        assert r['entry_position_status'] == 'overheated'
+
+    def test_mixed_066_overheats(self):
+        assert self._check(self._judge('mixed'))['allowed'] is False
+
+    def test_bearish_066_overheats(self):
+        assert self._check(self._judge('bearish'))['allowed'] is False
+
+    def test_bullish_066_passes(self):
+        r = self._check(self._judge('bullish'))
+        assert r['allowed'] is True
+        assert r['entry_position_status'] == 'normal'
+
+    def test_toggle_off_066_passes_in_choppy(self):
+        r = self._check(self._judge('choppy', enabled=False))
+        assert r['allowed'] is True
+
+    def test_metrics_record_regime_and_threshold(self):
+        r = self._check(self._judge('choppy'))
+        assert r['metrics']['entry_regime_used'] == 'choppy'
+        assert r['metrics']['entry_range_pos_threshold'] == 0.55

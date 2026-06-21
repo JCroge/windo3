@@ -2886,10 +2886,15 @@ class MultiJudge(BaseAgent):
         # Long overheat guard
         if (is_long and self._long_live_position_guard_enabled
                 and not plan.get('is_probe')):
-            max_range = self._long_live_max_range_pos
+            try:
+                eff_regime = self._regime_manager.snapshot().get('effective_regime')
+            except Exception:
+                eff_regime = None
+            max_range, daily_gain_range_pos = self._resolve_long_range_thresholds(eff_regime)
             max_pre = self._long_live_max_pre_move
             max_daily = self._long_live_max_daily_gain
-            daily_gain_range_pos = self._long_live_daily_gain_range_pos
+            result['metrics']['entry_regime_used'] = eff_regime
+            result['metrics']['entry_range_pos_threshold'] = round(max_range, 4)
 
             block_reason = ''
             if range_pos >= max_range:
