@@ -8,20 +8,20 @@
 
 
 ## 2. 形态库(预登记、固定阈值)
-- [ ] 2.1 新建 `utils/candlestick_patterns.py`,实现 ~28 种标准形态识别器(单K/双K/三K,反转+延续+中性)
-- [ ] 2.2 每形态返回 (名称, 预登记方向);阈值全部固定常量,无调参入口
-- [ ] 2.3 形态库单测 `tests/test_candlestick_patterns.py`:对构造的已知形态序列断言识别正确
+- [x] 2.1 新建 `utils/candlestick_patterns.py`,实现 ~28 种标准形态识别器(单K/双K/三K,反转+延续+中性)
+- [x] 2.2 每形态返回 (名称, 预登记方向);阈值全部固定常量,无调参入口
+- [x] 2.3 形态库单测 `tests/test_candlestick_patterns.py`:对构造的已知形态序列断言识别正确
 
 ## 3. 边缘发现骨架
-- [ ] 3.1 新建 `cf_pattern_edge_discovery.py`(镜像 `cf_oi_divergence_ab.py` 结构),载入 klines.db + 计算 ATR(14)
-- [ ] 3.2 上下文条件化:range_pos(N 日区间位置)/ 趋势(价 vs MA)/ 前置移动,分桶
-- [ ] 3.3 ATR 退出 + `resolve_counterfactual` 结算(SL/TP 优先 4h 解析否则日线 SL-first);簇去重
-- [ ] 3.4 train(2023-24)/val(2025)/test(2026) 三分统计每(形态×上下文)桶
-- [ ] 3.5 多重比较校正(Bonferroni/FDR)+ 复用 `cf_honesty_gate.summarize_bucket`
-- [ ] 3.6 加权:`weight=max(0,OOS净R)`,三关全过才非零;输出 edge 报告(全桶 + 过关桶 + 权重)
+- [x] 3.1 新建 `cf_pattern_edge_discovery.py`(镜像 `cf_oi_divergence_ab.py` 结构),载入 klines.db + 计算 ATR(14)
+- [x] 3.2 上下文条件化:range_pos(N 日区间位置)/ 趋势(价 vs MA)/ 前置移动,分桶
+- [x] 3.3 ATR 退出 + `resolve_counterfactual` 结算(SL/TP 优先 4h 解析否则日线 SL-first);簇去重
+- [x] 3.4 train(2023-24)/val(2025)/test(2026) 三分统计每(形态×上下文)桶
+- [x] 3.5 多重比较校正(Bonferroni/FDR)+ 复用 `cf_honesty_gate.summarize_bucket`
+- [x] 3.6 加权:`weight=max(0,OOS净R)`,三关全过才非零;输出 edge 报告(全桶 + 过关桶 + 权重)
 
 ## 4. 红线守卫
-- [ ] 4.1 `tests/test_cf_red_line_guard.py` 加 `test_decision_paths_do_not_read_pattern_research`(判 judge/executor/risk_guard/reviewer/position_analyst 不 import 形态研究模块)
+- [x] 4.1 `tests/test_cf_red_line_guard.py` 加 `test_decision_paths_do_not_read_pattern_research`(判 judge/executor/risk_guard/reviewer/position_analyst 不 import 形态研究模块)
 - [ ] 4.2 跑全量 pytest 确认无回归(基线 1359 passed)
 
 ## 5. 验收与汇报
