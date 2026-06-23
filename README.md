@@ -96,3 +96,16 @@ python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（
 ## 套利系统归档
 
 原 CEX 套利代码保留作参考，但已验证不可行（2026-05-06 全面测试 0 次机会）；当前系统是趋势交易，不是套利。
+
+## 日线形态前向影子记录器（observability-only）
+
+`pattern_forward_shadow.py` 对已确认信号 `Bearish Engulfing|低位跌势`（见 `docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md`）做 record-only 前向验证，**绝不接入 live 决策**。每日 cron：
+
+```bash
+# 每日 UTC 收盘后（先刷新日线再记录）
+python3 fetch_historical_klines.py --intervals 1d && python3 pattern_forward_shadow.py --record
+# 定期（如每周）结算成熟信号并看滚动前向 edge
+python3 pattern_forward_shadow.py --settle
+```
+
+前向验证须数周累积（新日线 + 10 日持仓成熟）；结算经诚实门，薄样本拒答。确认稳健前不上实盘、不改 config。
