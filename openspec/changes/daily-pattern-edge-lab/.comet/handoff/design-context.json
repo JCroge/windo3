@@ -1,0 +1,14 @@
+{
+  "change": "daily-pattern-edge-lab",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "73f1eada9744b0a3f1d7bc236b05f2f716dd9c479fdfcb3a9182726a90d01c7e",
+  "files": [
+    { "path": "openspec/changes/daily-pattern-edge-lab/proposal.md", "sha256": "2233f04e8ed8dea2e8fe3223ad9d31d6b00a90609ead740c53fbe0fb6333b9cd" },
+    { "path": "openspec/changes/daily-pattern-edge-lab/design.md", "sha256": "6e1bb60b463a81a25e0bd7cac8fa01c4b42b29c76d8b65198d98be03fe660943" },
+    { "path": "openspec/changes/daily-pattern-edge-lab/tasks.md", "sha256": "a2382071c6049aa17cbbe32ee7e8e413a54c24299ec93eb9f54fa9c1ade1c7a8" },
+    { "path": "openspec/changes/daily-pattern-edge-lab/specs/pattern-edge-discovery/spec.md", "sha256": "7a31eb95a527603fce4957a515a318bc1065462e2e962e13edf8e8fb810edf31" }
+  ]
+}
