@@ -63,6 +63,8 @@ HARD_LIMITS = {
     "long_live_daily_gain_range_pos": (0.0, 1.0),
     "long_live_max_range_pos_choppy": (0.0, 1.0),
     "long_live_daily_gain_range_pos_choppy": (0.0, 1.0),
+    # 反转合流否决 (restore-llm-rsi-veto-power)
+    "reversal_veto_min_llm_confidence": (0, 100),
     "long_live_pullback_min_pct": (0.005, 0.20),
     "long_live_pullback_timeout_hours": (0.5, 24),
     # EV bucket
@@ -173,6 +175,10 @@ DEFAULTS = {
     "long_live_regime_aware_range_enabled": True,
     "long_live_max_range_pos_choppy": 0.55,
     "long_live_daily_gain_range_pos_choppy": 0.50,
+    # 反转合流否决 (restore-llm-rsi-veto-power)：默认 OFF=潜伏护栏，不改线上行为
+    # （真实磁带验证当前 0% 触发：LLM 从不反向开仓；启用前须 CF 回放验证，见 verify 报告）
+    "llm_rsi_reversal_veto_enabled": False,
+    "reversal_veto_min_llm_confidence": 0,
     "long_live_pullback_min_pct": 0.025,
     "long_live_pullback_timeout_hours": 4,
     "long_live_overheat_disable_chase": True,
@@ -260,6 +266,10 @@ def _load_yaml(path: str) -> dict:
         out['long_live_max_range_pos_choppy'] = float(risk['long_live_max_range_pos_choppy'])
     if 'long_live_daily_gain_range_pos_choppy' in risk:
         out['long_live_daily_gain_range_pos_choppy'] = float(risk['long_live_daily_gain_range_pos_choppy'])
+    if 'llm_rsi_reversal_veto_enabled' in risk:
+        out['llm_rsi_reversal_veto_enabled'] = _to_bool(risk['llm_rsi_reversal_veto_enabled'])
+    if 'reversal_veto_min_llm_confidence' in risk:
+        out['reversal_veto_min_llm_confidence'] = float(risk['reversal_veto_min_llm_confidence'])
     return out
 
 
@@ -331,6 +341,8 @@ def _read_env_overrides() -> dict:
         # Long Entry Position Guard
         "LONG_LIVE_POSITION_GUARD_ENABLED": ("long_live_position_guard_enabled", _to_bool),
         "LONG_LIVE_REGIME_AWARE_RANGE_ENABLED": ("long_live_regime_aware_range_enabled", _to_bool),
+        "LLM_RSI_REVERSAL_VETO_ENABLED": ("llm_rsi_reversal_veto_enabled", _to_bool),
+        "REVERSAL_VETO_MIN_LLM_CONFIDENCE": ("reversal_veto_min_llm_confidence", float),
         "LONG_LIVE_MAX_RANGE_POS": ("long_live_max_range_pos", float),
         "LONG_LIVE_MAX_PRE_MOVE": ("long_live_max_pre_move", float),
         "LONG_LIVE_MAX_DAILY_GAIN": ("long_live_max_daily_gain", float),
@@ -518,6 +530,7 @@ def format_banner(cfg: dict) -> str:
         f"pullback_min={cfg.get('long_live_pullback_min_pct', 0.025)}, "
         f"timeout={cfg.get('long_live_pullback_timeout_hours', 4)}h, chase={overheat_chase})",
         f"  EV Bucket Sparse:      min_trades={cfg.get('ev_bucket_min_trades', 10)} sparse_uplift={bucket_uplift}",
+        f"  反转合流否决:          {'开启' if cfg.get('llm_rsi_reversal_veto_enabled', True) else '关闭'} (min_llm_conf={cfg.get('reversal_veto_min_llm_confidence', 0)})",
     ]
     # FR-008: 启动 banner 打印当前命名空间下的状态文件路径
     try:

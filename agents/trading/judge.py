@@ -216,6 +216,9 @@ class MultiJudge(BaseAgent):
         self._long_live_regime_aware_range_enabled = config.get('long_live_regime_aware_range_enabled', True) if config else True
         self._long_live_max_range_pos_choppy = config.get('long_live_max_range_pos_choppy', 0.55) if config else 0.55
         self._long_live_daily_gain_range_pos_choppy = config.get('long_live_daily_gain_range_pos_choppy', 0.50) if config else 0.50
+        # 反转合流否决 (restore-llm-rsi-veto-power)：默认 OFF=潜伏护栏（见 verify 报告）
+        self._reversal_veto_enabled = config.get('llm_rsi_reversal_veto_enabled', False) if config else False
+        self._reversal_veto_min_llm_confidence = config.get('reversal_veto_min_llm_confidence', 0) if config else 0
 
         # ═══ EV bucket sparse-sample protection ═══
         self._ev_bucket_min_trades = config.get('ev_bucket_min_trades', 10) if config else 10
@@ -957,6 +960,10 @@ class MultiJudge(BaseAgent):
                         return
 
                 plan['order_type'] = 'limit'
+                # reversal-confluence-veto 边界 (restore-llm-rsi-veto-power)：此处为 deferred
+                # 再分发——仅在价格回调达标时触发，正是 veto 期望的"等回调"结果；且此处无新鲜
+                # LLM 读取（只有可能过时的 _symbol_llm_cache）。在此重复 veto 会自毁其目的，
+                # 故 veto 单点收口于主路径即时开仓终点，本路径不重复挂（见 design doc §4）。
                 # Carry overheat tag through if this was an overheat-triggered deferred.
                 if deferred.get('entry_type') == 'deferred_pullback_overheat':
                     plan['entry_type'] = 'deferred_pullback_overheat'
@@ -1308,6 +1315,19 @@ class MultiJudge(BaseAgent):
                     else:
                         final_conf = max(30, int(confidence * 0.4))
                     self.logger.warning(f"[Judge] {symbol} rule_signal={action}但LLM建议反向{llm_action}，强冲突衰减60%，confidence={final_conf}")
+
+                # 反转合流否决 (restore-llm-rsi-veto-power)：LLM看反 AND RSI背离反向 → 转等回调
+                if final_action in ('open_long', 'open_short'):
+                    _veto = self._reversal_confluence_veto(
+                        final_action, llm_action, tech, llm_confidence=final_conf
+                    )
+                    if _veto:
+                        self._record_rejected_plan(symbol, final_action, plan, score, final_conf, _veto)
+                        decision = self._route_reversal_veto_defer(
+                            symbol, final_action, price, score, tech, llm_action
+                        )
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
 
                 if final_action in ('open_long', 'open_short'):
                     reject_reason = self._open_quality_rejection(
@@ -2385,6 +2405,9 @@ class MultiJudge(BaseAgent):
             'rule_signal_type': rule_signal_type,
             'signal_score': round(score, 1),
             'llm_relation': llm_relation,
+            # 反转合流否决 (restore-llm-rsi-veto-power)：放行路径默认 false，
+            # 触发路径由 _route_reversal_veto_defer 写 true（单点收口）
+            'reversal_veto_triggered': False,
             'htf_votes': htf_votes,
             'liquidity_bucket': liquidity_bucket,
             'rr_bucket': rr_bucket,
@@ -2847,6 +2870,70 @@ class MultiJudge(BaseAgent):
                 getattr(self, '_long_live_daily_gain_range_pos_choppy', 0.50),
             )
         return default
+
+    def _reversal_confluence_veto(self, action: str, llm_action: str, tech: dict,
+                                  llm_confidence: float = 100.0):
+        """反转合流否决判定 (restore-llm-rsi-veto-power)。
+
+        单一实现，所有开仓终点共用。仅当两个相互独立的反转信号共振才触发：
+        (a) LLM 明确看反向；(b) RSI 背离与开仓方向相反（读原始信号，不读被压制的分数）。
+        返回 'reversal_confluence'=触发, None=不触发。不改 scoring。
+        """
+        if not getattr(self, '_reversal_veto_enabled', False):
+            return None
+        dir_long = (action == 'open_long')
+        dir_short = (action == 'open_short')
+        if not (dir_long or dir_short):
+            return None
+        llm_counter = (
+            llm_action in ('open_long', 'open_short')
+            and llm_action != action
+            and llm_confidence >= getattr(self, '_reversal_veto_min_llm_confidence', 0)
+        )
+        rsi_div = ((tech or {}).get('momentum', {}) or {}).get('rsi_divergence')
+        rsi_against = (
+            (dir_long and rsi_div == 'bearish_div')
+            or (dir_short and rsi_div == 'bullish_div')
+        )
+        return 'reversal_confluence' if (llm_counter and rsi_against) else None
+
+    def _route_reversal_veto_defer(self, symbol: str, action: str, price: float,
+                                   score: float, tech: dict, llm_action: str) -> dict:
+        """反转合流否决 → 路由到 deferred_reversal_veto（复用 deferred_entry 机制）。
+
+        返回 hold decision（含归因）。单一构造，杜绝第二份内联实现。
+        """
+        frac = 0.005
+        target = price * (1 - frac) if action == 'open_long' else price * (1 + frac)
+        state = self._get_state(symbol)
+        state['deferred_entry'] = {
+            'action': action, 'signal_price': price, 'signal_score': score,
+            'target_price': target, 'created_at': time.time(),
+            'entry_type': 'deferred_reversal_veto',
+            'timeout_hours': getattr(self, '_long_live_pullback_timeout_hours', 4),
+            'expiry_bars': 999, 'chase_eligible': False,
+            'highest_since': price, 'lowest_since': price,
+        }
+        rsi_div = ((tech or {}).get('momentum', {}) or {}).get('rsi_divergence')
+        attr = self._rejection_attribution(action, None, 'reversal_confluence', tech=tech)
+        attr['reversal_veto_triggered'] = True
+        attr['reversal_veto_llm_action'] = llm_action
+        attr['reversal_veto_rsi_div'] = rsi_div
+        attr['reversal_veto_deferred_dir'] = action
+        attr['deferred_target_price'] = target
+        attr['deferred_reason'] = 'reversal_confluence'
+        self.logger.warning(
+            f"[Judge] {symbol} reversal confluence veto: {action} llm={llm_action} "
+            f"rsi_div={rsi_div} -> deferred_reversal_veto target={target:.6f}"
+        )
+        return {
+            "symbol": symbol, "timestamp": time.time(),
+            "action": "hold", "confidence": 0, "plan": None, "size_pct": 0,
+            "reasoning": f"反转合流否决: LLM={llm_action}+RSI背离{rsi_div}, 等待回调至{target:.6f}",
+            "key_factors": ["reversal_confluence_veto"],
+            "risk_warnings": ["reversal_confluence"],
+            "attribution": attr,
+        }
 
     def _check_entry_position_policy(self, symbol: str, action: str, plan: dict,
                                      tech: dict, score: float, context: str = 'main') -> dict:
