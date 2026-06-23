@@ -15,20 +15,35 @@ def _ensure_table(conn):
         close_time INTEGER, quote_volume REAL, trades INTEGER,
         UNIQUE(symbol, interval, open_time))''')
 
+_INTERVAL_MS = {"1m":60_000,"3m":180_000,"5m":300_000,"15m":900_000,"30m":1_800_000,
+    "1h":3_600_000,"2h":7_200_000,"4h":14_400_000,"6h":21_600_000,"12h":43_200_000,
+    "1d":86_400_000,"1w":604_800_000}
+
 def fetch_symbol(ex, conn, symbol, interval, max_bars=4000):
+    """从历史纵深起点(now - max_bars×interval)正向翻页至最新。open_time 去重。
+    日线:start 远早于上市日 → 交易所自上市返回,行为不变。子日线:取回 ~max_bars 根历史深度。"""
     pair = f"{symbol}/USDT"
-    all_rows, since = [], None
-    while len(all_rows) < max_bars:
+    step = _INTERVAL_MS.get(interval, 86_400_000)
+    now_ms = int(time.time() * 1000)
+    since = now_ms - max_bars * step
+    by_time = {}
+    while True:
         try:
             o = ex.fetch_ohlcv(pair, interval, since=since, limit=1000)
         except Exception as e:
             print(f"  {symbol} {interval} 抓取失败: {str(e)[:60]}"); break
         if not o: break
-        all_rows += o
-        if len(o) < 1000: break
-        since = o[-1][0] + 1
+        for row in o:
+            by_time[row[0]] = row
+        last = o[-1][0]
+        if len(o) < 1000 or last + step > now_ms or len(by_time) >= max_bars + 1000:
+            break
+        nxt = last + step
+        if nxt <= since: break          # 防卡死
+        since = nxt
         time.sleep(ex.rateLimit/1000)
-    for t,op,hi,lo,cl,vol in all_rows[:max_bars]:
+    all_rows = [by_time[t] for t in sorted(by_time)][-max_bars:]
+    for t,op,hi,lo,cl,vol in all_rows:
         try:
             conn.execute('INSERT OR IGNORE INTO klines(symbol,interval,open_time,open,high,low,close,volume,close_time) VALUES(?,?,?,?,?,?,?,?,?)',
                 (symbol, interval, t, op, hi, lo, cl, vol, t))

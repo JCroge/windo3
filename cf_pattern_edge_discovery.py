@@ -27,12 +27,27 @@ from utils.cf_honesty_gate import summarize_bucket
 from utils.candlestick_patterns import detect_patterns
 
 DB = "data/klines.db"
-ATR_N = 14
+# 窗口基准以"天"为准,按 interval 的 bars/day 换算成 bar 数(interval 感知,使 4h 确认与日线时窗对齐)
+BARS_PER_DAY = {"1d": 1, "12h": 2, "6h": 4, "4h": 6, "2h": 12, "1h": 24, "30m": 48, "15m": 96}
+ATR_DAYS, RANGE_DAYS, MA_DAYS, HOLD_DAYS, CLUSTER_DAYS = 14, 20, 50, 10, 5
+ATR_N = 14        # 运行期由 set_interval_windows() 按 interval 重设(下同)
 RANGE_N = 20
 MA_N = 50
+MAX_HOLD_BARS = 10
+CLUSTER_BARS = 5
 SL_ATR = 1.5
 TP_ATR = 3.0
-MAX_HOLD_DAYS = 10
+MAX_HOLD_DAYS = 10  # 时间口径(传 resolve_counterfactual max_hold_sec),与 interval 无关
+
+def set_interval_windows(interval):
+    """按 interval 把天数窗口换算成 bar 数,使不同周期上下文/退出时窗时间对齐。"""
+    global ATR_N, RANGE_N, MA_N, MAX_HOLD_BARS, CLUSTER_BARS
+    bpd = BARS_PER_DAY.get(interval, 1)
+    ATR_N = ATR_DAYS * bpd
+    RANGE_N = RANGE_DAYS * bpd
+    MA_N = MA_DAYS * bpd
+    MAX_HOLD_BARS = HOLD_DAYS * bpd
+    CLUSTER_BARS = max(1, CLUSTER_DAYS * bpd)
 
 
 # ── load: 读 klines.db 按 symbol 分组升序 ──
@@ -57,7 +72,8 @@ def load(interval="1d"):
 
 
 # ── ATR(14): TR 均值,不足返回 None ──
-def atr(bars, i, n=ATR_N):
+def atr(bars, i, n=None):
+    n = ATR_N if n is None else n
     if i < n:
         return None
     trs = [
@@ -99,7 +115,7 @@ def fire(bysym):
                 if d == 0:
                     continue
                 key = (name, d)
-                if key in last and i - last[key] < 5:
+                if key in last and i - last[key] < CLUSTER_BARS:
                     continue
                 last[key] = i
                 sig.append((sym, i, name, d, ctx))
@@ -116,7 +132,7 @@ def settle(bars, i, direction, atr_val, size=100.0):
     else:
         sl = entry + SL_ATR * atr_val
         tp = entry - TP_ATR * atr_val
-    fut = bars[i + 1:i + 1 + MAX_HOLD_DAYS]
+    fut = bars[i + 1:i + 1 + MAX_HOLD_BARS]
     if len(fut) < 2:
         return None
     cf_bars = [
@@ -162,15 +178,16 @@ def bh_fdr(pvals, q=0.10):
     return rej
 
 
-def main():
+def main(interval="1d"):
     print("=" * 92)
-    print("日线蜡烛形态 edge 反事实回测 (ATR退出 + OOS三分 + FDR + 诚实门; observability-only)")
+    print(f"蜡烛形态 edge 反事实回测 [{interval}] (ATR退出 + OOS三分 + FDR + 诚实门; observability-only)")
     print("=" * 92)
-    bysym = load("1d")
+    set_interval_windows(interval)
+    bysym = load(interval)
     n_sym = len([s for s in bysym if bysym[s]])
-    print(f"klines(1d) 符号: {n_sym}")
+    print(f"klines({interval}) 符号: {n_sym}")
     if n_sym == 0:
-        print("→ 无 1d 数据 / 无可结算数据,拒答(待联网抓取日线后重跑)。")
+        print(f"→ 无 {interval} 数据 / 无可结算数据,拒答(待抓取后重跑)。")
         print("\nobservability-only —— 仅量化,不据此自动改 config/上 live。")
         return
 
@@ -259,4 +276,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--interval", default="1d", help="1d(主测) 或 4h(确认集)")
+    main(_ap.parse_args().interval)
