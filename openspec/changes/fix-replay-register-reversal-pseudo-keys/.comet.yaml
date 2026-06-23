@@ -12,3 +12,4 @@ branch_status: pending
 created_at: 2026-06-23
 verified_at: null
 archived: false
+build_command: python3 -m py_compile utils/decision_replay.py && python3 -m pytest tests/test_decision_replay.py::test_no_unclassified_missing_snapshot_keys -q
