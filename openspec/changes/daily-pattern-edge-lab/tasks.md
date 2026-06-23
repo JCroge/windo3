@@ -1,10 +1,11 @@
 # Tasks: daily-pattern-edge-lab
 
 ## 1. 历史数据抓取
-- [ ] 1.1 改造 `fetch_historical_klines.py`:加分页(while 循环按 since 翻页至无新数据)、多币列表、多周期参数
-- [ ] 1.2 落 `data/klines.db`,沿用 `UNIQUE(symbol,interval,open_time)`,`INSERT OR IGNORE` 保证幂等
-- [ ] 1.3 跑 ~50 币 × 1d(2.75 年)入库;4h 同步入库(锁为确认集,不进第一轮)
-- [ ] 1.4 入库后自检:打印每币 interval 根数 + 起始日期 + 短史币标注
+- [x] 1.1 改造 `fetch_historical_klines.py`:加分页(while 循环按 since 翻页至无新数据)、多币列表、多周期参数
+- [x] 1.2 落 `data/klines.db`,沿用 `UNIQUE(symbol,interval,open_time)`,`INSERT OR IGNORE` 保证幂等(离线 stub 验证:翻页 3 页/max_bars 截断/二次跑行数不变)
+- [ ] 1.3 跑 ~50 币 × 1d(2.75 年)入库;4h 同步入库(锁为确认集,不进第一轮) <!-- BLOCKED: 沙盒无出网,binance/google 全部 000;待联网环境实跑 -->
+- [ ] 1.4 入库后自检:打印每币 interval 根数 + 起始日期 + 短史币标注 <!-- 代码已实现,待 1.3 实跑后产出 -->
+
 
 ## 2. 形态库(预登记、固定阈值)
 - [ ] 2.1 新建 `utils/candlestick_patterns.py`,实现 ~28 种标准形态识别器(单K/双K/三K,反转+延续+中性)
