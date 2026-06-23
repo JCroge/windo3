@@ -12,3 +12,4 @@ branch_status: pending
 created_at: 2026-06-23
 verified_at: null
 archived: false
+build_command: python3 -m py_compile fetch_historical_klines.py cf_pattern_edge_discovery.py && python3 -m pytest tests/test_candlestick_patterns.py tests/test_cf_red_line_guard.py -q
