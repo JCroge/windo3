@@ -99,13 +99,24 @@ python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（
 
 ## 日线形态前向影子记录器（observability-only）
 
-`pattern_forward_shadow.py` 对已确认信号 `Bearish Engulfing|低位跌势`（见 `docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md`）做 record-only 前向验证，**绝不接入 live 决策**。每日 cron：
+对已确认信号 `Bearish Engulfing|低位跌势`（见 `docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md`）做 record-only 前向验证，**绝不接入 live 决策**。
+
+**调度（macOS）= 自包含 runner + launchd**。背景:本仓库在 `~/Desktop` 下(macOS TCC 保护目录),**cron/launchd 派生的命令行 python 拿不到 Full Disk Access**(实测无论授权 `/usr/bin/python3` 还是框架 `python3.9` 均 `Operation not permitted`)→ 故部署一个**零 Desktop 依赖**的自包含 runner 到非保护目录运行:
+- 仓库内可跟踪源:`scripts/fwdshadow_runner.py`(只用 ccxt + stdlib,逻辑冻结、与 `cf_pattern_edge_discovery` 同口径)
+- 部署副本:`~/Library/Application Support/cryptoarb-fwdshadow/`(klines.db + jsonl 也在此,完全不碰 Desktop)
+- LaunchAgent:`~/Library/LaunchAgents/com.cryptoarb.pattern-forward-shadow.{record,settle}.plist`(每日 09:17 record / 周一 09:47 settle,本地 CST;launchd 唤醒后补跑错过点),日志 `~/Library/Logs/pattern_forward_shadow.log`。
 
 ```bash
-# 每日 UTC 收盘后（先刷新日线再记录）
-python3 fetch_historical_klines.py --intervals 1d && python3 pattern_forward_shadow.py --record
-# 定期（如每周）结算成熟信号并看滚动前向 edge
-python3 pattern_forward_shadow.py --settle
+# 部署/更新 runner(改了 scripts/fwdshadow_runner.py 后重新部署)
+cp scripts/fwdshadow_runner.py ~/Library/Application\ Support/cryptoarb-fwdshadow/
+# 手动验证(可访问环境下直接跑)
+cd ~/Library/Application\ Support/cryptoarb-fwdshadow && python3 fwdshadow_runner.py --record   # 拉日线+检测
+python3 fwdshadow_runner.py --settle                                                            # 结算+滚动报告
+# launchd 即时触发 / 看日志 / 卸载
+launchctl kickstart -k gui/$(id -u)/com.cryptoarb.pattern-forward-shadow.record
+tail -f ~/Library/Logs/pattern_forward_shadow.log
+launchctl bootout gui/$(id -u)/com.cryptoarb.pattern-forward-shadow.{record,settle}
 ```
 
-前向验证须数周累积（新日线 + 10 日持仓成熟）；结算经诚实门，薄样本拒答。确认稳健前不上实盘、不改 config。
+(仓库内 `pattern_forward_shadow.py` 是 lab 集成版,供可访问环境/对照;launchd 跑的是上面的自包含 runner。)
+前向验证须数周累积（新日线 + 10 日持仓成熟）；结算经诚实门，薄样本拒答。**确认稳健前不上实盘、不改 config。**

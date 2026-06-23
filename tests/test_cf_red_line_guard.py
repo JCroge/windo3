@@ -74,7 +74,7 @@ def test_decision_paths_do_not_read_ev_decouple_ab():
 
 def test_decision_paths_do_not_read_pattern_research():
     """daily-pattern-edge-lab: 决策/风控路径禁读形态研究模块/产物（observability-only）。"""
-    forbidden = ("candlestick_patterns", "cf_pattern_edge_discovery", "pattern_forward_shadow")
+    forbidden = ("candlestick_patterns", "cf_pattern_edge_discovery", "pattern_forward_shadow", "fwdshadow_runner")
     for mp in ["agents.trading.judge", "agents.trading.executor",
                "agents.trading.portfolio_risk_guard", "agents.trading.reviewer",
                "agents.trading.position_analyst"]:
