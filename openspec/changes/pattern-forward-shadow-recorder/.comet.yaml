@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: executing-plans
+isolation: branch
+verify_mode: null
+base_ref: 198161b56382702a839e5c6399e749d6f5132848
+design_doc: docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md
+plan: docs/superpowers/plans/2026-06-23-pattern-forward-shadow-recorder.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-23
+verified_at: null
+archived: false
+handoff_context: openspec/changes/pattern-forward-shadow-recorder/.comet/handoff/design-context.json
+handoff_hash: c409c66589356e13d58337a54f84ef5b68a46adc6aefb8a74ba786f0408d108c

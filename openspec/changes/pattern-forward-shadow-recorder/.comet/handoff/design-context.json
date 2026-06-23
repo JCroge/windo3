@@ -1,0 +1,14 @@
+{
+  "change": "pattern-forward-shadow-recorder",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "c409c66589356e13d58337a54f84ef5b68a46adc6aefb8a74ba786f0408d108c",
+  "files": [
+    { "path": "openspec/changes/pattern-forward-shadow-recorder/proposal.md", "sha256": "5b9e488aa08915c5ce95ddca7fb6142c7b145e7bd49ff6c2f755e1eff9b1494c" },
+    { "path": "openspec/changes/pattern-forward-shadow-recorder/design.md", "sha256": "f05f7880fcb743244e479b04d9f23ff895308bcc2de87e1c6a16aed01d0a6b0a" },
+    { "path": "openspec/changes/pattern-forward-shadow-recorder/tasks.md", "sha256": "53efbbc6398ee1e5f76f5067850af0508eed897d7bf7260fa76d9885183fcefa" },
+    { "path": "openspec/changes/pattern-forward-shadow-recorder/specs/pattern-forward-shadow/spec.md", "sha256": "18f7ec30b91eebb0e2ba8f1530e130c8e68a0657f9ef3483c4bd821e754a1c59" }
+  ]
+}
