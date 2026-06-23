@@ -90,6 +90,10 @@ _EPOCH_FALLBACK = {
     "long_live_regime_aware_range_enabled": False,  # 真翻转：regime-aware-long-entry-guard 新增，纪元前无体制感知=固定0.82，replay 用 off 还原旧判定
     "long_live_max_range_pos_choppy": 0.55,         # 防御性 no-op：仅 enabled=True 生效，旧纪元 enabled=False 不影响判定
     "long_live_daily_gain_range_pos_choppy": 0.50,  # 防御性 no-op：同上
+    "llm_rsi_reversal_veto_enabled": False,          # 真翻转：restore-llm-rsi-veto-power 新增，纪元前无反转否决=off，replay 用 off 还原旧判定
+    "reversal_veto_min_llm_confidence": 0,           # 防御性 no-op：子门，veto off 时无效，0=不启用
+    "pseudo_resonance_downweight_enabled": False,    # 真翻转：pseudo-resonance-downweight 新增，纪元前无伪共振降权=off
+    "ma_bloc_cap": 50,                               # 防御性 no-op：仅 downweight enabled=True 生效，旧纪元 enabled=False 不影响判定
 }
 
 # 晚加但不影响 Judge gate 决策的键。守卫测试（CF-T2）消费此集合：snapshot-缺键
