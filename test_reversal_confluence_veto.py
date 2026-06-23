@@ -101,3 +101,42 @@ def test_route_defer_short_target_above():
     st = j._st['deferred_entry']
     assert st['target_price'] > 100.0  # 空单等回调向上
     assert dec['attribution']['reversal_veto_deferred_dir'] == 'open_short'
+
+
+# ─── Task 4: 主路径接线（静态源码断言，与既有 judge 测试同范式）───
+def test_main_path_wires_veto_before_quality_gate():
+    import inspect
+    from agents.trading import judge as judge_mod
+    src = inspect.getsource(judge_mod.MultiJudge._make_decision)
+    assert '_reversal_confluence_veto(' in src
+    assert '_route_reversal_veto_defer(' in src
+    # veto 调用后须紧跟主路径质量门（veto 在主路径开仓终点、质量门之前）
+    veto_idx = src.index('_reversal_confluence_veto(')
+    assert src.find('reject_reason = self._open_quality_rejection(', veto_idx) != -1
+
+
+# ─── Task 5: deferred 边界（红线：单点收口，deferred 不重复挂）───
+def test_deferred_path_does_not_reapply_veto():
+    import inspect
+    from agents.trading import judge as judge_mod
+    src = inspect.getsource(judge_mod.MultiJudge._make_decision)
+    # 主路径恰好一次 veto 调用（deferred 再分发不重复）
+    assert src.count('_reversal_confluence_veto(') == 1
+    assert src.count('_route_reversal_veto_defer(') == 1
+    # 边界注释存在
+    assert 'reversal-confluence-veto 边界' in src
+
+
+# ─── Task 6: 放行路径默认 reversal_veto_triggered=false ───
+def test_passthrough_attribution_default_false():
+    from test_long_entry_position_guard import _make_judge, _make_tech
+    j = _make_judge()
+    attr = j._build_attribution(_make_tech(), 'open_long', 50.0, None, None, 'main')
+    assert attr['reversal_veto_triggered'] is False
+
+
+# ─── Task 7: banner 显示开关 ───
+def test_banner_shows_reversal_veto():
+    from utils.config_loader import format_banner, DEFAULTS
+    banner = format_banner(dict(DEFAULTS))
+    assert '反转合流否决' in banner

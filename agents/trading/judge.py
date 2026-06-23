@@ -960,6 +960,10 @@ class MultiJudge(BaseAgent):
                         return
 
                 plan['order_type'] = 'limit'
+                # reversal-confluence-veto 边界 (restore-llm-rsi-veto-power)：此处为 deferred
+                # 再分发——仅在价格回调达标时触发，正是 veto 期望的"等回调"结果；且此处无新鲜
+                # LLM 读取（只有可能过时的 _symbol_llm_cache）。在此重复 veto 会自毁其目的，
+                # 故 veto 单点收口于主路径即时开仓终点，本路径不重复挂（见 design doc §4）。
                 # Carry overheat tag through if this was an overheat-triggered deferred.
                 if deferred.get('entry_type') == 'deferred_pullback_overheat':
                     plan['entry_type'] = 'deferred_pullback_overheat'
@@ -1311,6 +1315,19 @@ class MultiJudge(BaseAgent):
                     else:
                         final_conf = max(30, int(confidence * 0.4))
                     self.logger.warning(f"[Judge] {symbol} rule_signal={action}但LLM建议反向{llm_action}，强冲突衰减60%，confidence={final_conf}")
+
+                # 反转合流否决 (restore-llm-rsi-veto-power)：LLM看反 AND RSI背离反向 → 转等回调
+                if final_action in ('open_long', 'open_short'):
+                    _veto = self._reversal_confluence_veto(
+                        final_action, llm_action, tech, llm_confidence=final_conf
+                    )
+                    if _veto:
+                        self._record_rejected_plan(symbol, final_action, plan, score, final_conf, _veto)
+                        decision = self._route_reversal_veto_defer(
+                            symbol, final_action, price, score, tech, llm_action
+                        )
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
 
                 if final_action in ('open_long', 'open_short'):
                     reject_reason = self._open_quality_rejection(
@@ -2388,6 +2405,9 @@ class MultiJudge(BaseAgent):
             'rule_signal_type': rule_signal_type,
             'signal_score': round(score, 1),
             'llm_relation': llm_relation,
+            # 反转合流否决 (restore-llm-rsi-veto-power)：放行路径默认 false，
+            # 触发路径由 _route_reversal_veto_defer 写 true（单点收口）
+            'reversal_veto_triggered': False,
             'htf_votes': htf_votes,
             'liquidity_bucket': liquidity_bucket,
             'rr_bucket': rr_bucket,

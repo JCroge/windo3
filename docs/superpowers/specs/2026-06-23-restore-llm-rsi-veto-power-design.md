@@ -60,11 +60,11 @@ if veto:
 
 **defer 路由选型**：复用 `_check_entry_position_policy` 的 `deferred_pullback_overheat` 同条路径（带 `deferred_target_price` + shadow 记录 + 归因），与 regime-aware-long-entry-guard 一致的观测口径。理由：比裸 `pending_pullback`+hold（judge.py:1424/1446）信息更全，Reviewer/backtest 可一致切分。实现时通过一个轻量入口（如给 `_check_entry_position_policy` 增加一个 reason 来源，或抽出共享的 `_route_to_deferred_pullback(symbol, action, tech, reason)` 单点函数）触发，**避免新建第二份 defer 构造逻辑**。
 
-## 4. deferred 路径覆盖（红线关键）
+## 4. deferred 路径覆盖（红线关键）—— 已核定：边界
 
-3 条 deferred 路径（deferred_15m_confirmation / deferred_pullback / deferred_chase）在再分发为最终开仓时若持有新鲜 `llm_action`（或缓存的 `_symbol_llm_cache[symbol]`），调**同一** `_reversal_confluence_veto` helper；若该路径无 llm 上下文，则在本文档与代码注释**显式记录边界**（这些路径本就已 pullback-gated，反转合流主要发生在主路径追势点），**不写第二份实现**。
+实现阶段核定结论（judge.py deferred_pullback 再分发 ~L962-992）：deferred 再分发**仅在价格回调达标时触发**，这正是 veto 期望的"等回调"结果；且该处**无新鲜 LLM 读取**（不调 `_ask_llm`，仅有可能过时的 `_symbol_llm_cache`）。在此重复 veto 会自毁其目的（把已回调的入场又推迟一次）。
 
-> 实现（plan 阶段）须对现行 judge.py 三条 deferred 再分发点逐一核定 llm 上下文可得性，并在 tasks 勾选该核定动作。
+**决定**：veto 单点收口于**主路径即时开仓终点**（fresh LLM + RSI 齐备处），deferred 再分发路径**不重复挂** veto——这是语义正确的边界，非覆盖缺口。代码注释（deferred_pullback 再分发处）+ 本节 + delta spec 显式记录，**不写第二份判定实现**（守 P1-03 单点收口红线）。
 
 ## 5. 配置（config_loader 四段式）
 

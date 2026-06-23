@@ -2,7 +2,7 @@
 
 ### Requirement: 反转合流否决
 
-当一笔 `open_long` 或 `open_short` 候选即将发出时，系统 SHALL 评估两个相互独立的反转信号是否共振：(a) LLM 给出明确的反向开仓建议（`llm_action ∈ {open_long, open_short}` 且方向与候选相反）；(b) RSI 背离与候选方向相反（候选为多遇 `bearish_div`，候选为空遇 `bullish_div`，读 `tech.momentum.rsi_divergence` 原始信号，不读被压制的背离分数）。仅当两者**同时**成立时 SHALL 触发否决，将该候选路由到等回调（`deferred_pullback`），而非立即开仓，也非硬性 hold 拒单。该判定 SHALL 由单一函数实现并被所有开仓终点共用，避免出现第二份内联实现。
+当一笔 `open_long` 或 `open_short` 候选即将发出时，系统 SHALL 评估两个相互独立的反转信号是否共振：(a) LLM 给出明确的反向开仓建议（`llm_action ∈ {open_long, open_short}` 且方向与候选相反）；(b) RSI 背离与候选方向相反（候选为多遇 `bearish_div`，候选为空遇 `bullish_div`，读 `tech.momentum.rsi_divergence` 原始信号，不读被压制的背离分数）。仅当两者**同时**成立时 SHALL 触发否决，将该候选路由到等回调（`deferred_reversal_veto`），而非立即开仓，也非硬性 hold 拒单。该判定 SHALL 由单一函数（`_reversal_confluence_veto`）实现，并在**主路径即时开仓终点**（持有新鲜 LLM 与 RSI 信号处）调用。deferred 再分发路径仅在价格回调达标时触发——即 veto 期望的结果，且该处无新鲜 LLM 读取——故 SHALL NOT 在其上重复该判定（语义正确的边界，避免第二份内联实现）。
 
 #### Scenario: 双信号合流触发等回调
 - **WHEN** 一个 `open_long` 候选，LLM 建议 `open_short`，且 `rsi_divergence='bearish_div'`

@@ -529,6 +529,7 @@ def format_banner(cfg: dict) -> str:
         f"pullback_min={cfg.get('long_live_pullback_min_pct', 0.025)}, "
         f"timeout={cfg.get('long_live_pullback_timeout_hours', 4)}h, chase={overheat_chase})",
         f"  EV Bucket Sparse:      min_trades={cfg.get('ev_bucket_min_trades', 10)} sparse_uplift={bucket_uplift}",
+        f"  反转合流否决:          {'开启' if cfg.get('llm_rsi_reversal_veto_enabled', True) else '关闭'} (min_llm_conf={cfg.get('reversal_veto_min_llm_confidence', 0)})",
     ]
     # FR-008: 启动 banner 打印当前命名空间下的状态文件路径
     try:
