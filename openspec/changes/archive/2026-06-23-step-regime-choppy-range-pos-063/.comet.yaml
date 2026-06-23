@@ -11,6 +11,6 @@ verification_report: docs/superpowers/reports/2026-06-23-step-regime-choppy-rang
 branch_status: handled
 created_at: 2026-06-23
 verified_at: 2026-06-23
-archived: false
+archived: true
 build_command: python3 -c "import yaml; assert yaml.safe_load(open(\"config.yaml\"))[\"risk\"][\"long_live_max_range_pos_choppy\"]==0.63" && python3 -m pytest test_long_entry_position_guard.py -q
 verify_command: python3 -c "import yaml; assert yaml.safe_load(open(\"config.yaml\"))[\"risk\"][\"long_live_max_range_pos_choppy\"]==0.63" && python3 -m pytest test_long_entry_position_guard.py -q
