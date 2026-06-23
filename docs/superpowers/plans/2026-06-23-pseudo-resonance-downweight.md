@@ -2,6 +2,7 @@
 change: pseudo-resonance-downweight
 design-doc: docs/superpowers/specs/2026-06-23-pseudo-resonance-downweight-design.md
 base-ref: b8b498ea0c6acfa1d84edcba985cddb5245e2168
+archived-with: 2026-06-23-pseudo-resonance-downweight
 ---
 
 # 伪共振降权 (病根1a) Implementation Plan
@@ -14,6 +15,7 @@ base-ref: b8b498ea0c6acfa1d84edcba985cddb5245e2168
 
 **Tech Stack:** Python 3.9, pytest, judge.py, config_loader.py, utils/decision_replay.py。
 
+archived-with: 2026-06-23-pseudo-resonance-downweight
 ---
 
 ## Task 1: config 四段式（开关 + cap）

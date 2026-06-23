@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-23-pseudo-resonance-downwe
 branch_status: handled
 created_at: 2026-06-23
 verified_at: 2026-06-23
-archived: false
+archived: true
 handoff_context: openspec/changes/pseudo-resonance-downweight/.comet/handoff/design-context.json
 handoff_hash: 61bd2c7f03402b446fa78f088eeaf272c25303c4a075227d9d03884fafb1141f
 direct_override: true

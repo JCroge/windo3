@@ -2,6 +2,8 @@
 comet_change: pseudo-resonance-downweight
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-23-pseudo-resonance-downweight
+status: final
 ---
 
 # Design Doc: pseudo-resonance-downweight（伪共振降权 · 病根1a）
