@@ -162,15 +162,15 @@ def bh_fdr(pvals, q=0.10):
     return rej
 
 
-def main():
+def main(interval="1d"):
     print("=" * 92)
-    print("日线蜡烛形态 edge 反事实回测 (ATR退出 + OOS三分 + FDR + 诚实门; observability-only)")
+    print(f"蜡烛形态 edge 反事实回测 [{interval}] (ATR退出 + OOS三分 + FDR + 诚实门; observability-only)")
     print("=" * 92)
-    bysym = load("1d")
+    bysym = load(interval)
     n_sym = len([s for s in bysym if bysym[s]])
-    print(f"klines(1d) 符号: {n_sym}")
+    print(f"klines({interval}) 符号: {n_sym}")
     if n_sym == 0:
-        print("→ 无 1d 数据 / 无可结算数据,拒答(待联网抓取日线后重跑)。")
+        print(f"→ 无 {interval} 数据 / 无可结算数据,拒答(待抓取后重跑)。")
         print("\nobservability-only —— 仅量化,不据此自动改 config/上 live。")
         return
 
@@ -259,4 +259,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--interval", default="1d", help="1d(主测) 或 4h(确认集)")
+    main(_ap.parse_args().interval)
