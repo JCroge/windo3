@@ -1,0 +1,16 @@
+workflow: tweak
+phase: verify
+build_mode: direct
+isolation: branch
+verify_mode: light
+base_ref: 1646e86555db00362b8927ca9c473389e01ccb2b
+design_doc: null
+plan: null
+verify_result: pending
+verification_report: docs/superpowers/reports/2026-06-23-step-regime-choppy-range-pos-063-verify.md
+branch_status: pending
+created_at: 2026-06-23
+verified_at: null
+archived: false
+build_command: python3 -c "import yaml; assert yaml.safe_load(open(\"config.yaml\"))[\"risk\"][\"long_live_max_range_pos_choppy\"]==0.63" && python3 -m pytest test_long_entry_position_guard.py -q
+verify_command: python3 -c "import yaml; assert yaml.safe_load(open(\"config.yaml\"))[\"risk\"][\"long_live_max_range_pos_choppy\"]==0.63" && python3 -m pytest test_long_entry_position_guard.py -q
