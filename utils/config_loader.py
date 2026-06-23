@@ -63,6 +63,8 @@ HARD_LIMITS = {
     "long_live_daily_gain_range_pos": (0.0, 1.0),
     "long_live_max_range_pos_choppy": (0.0, 1.0),
     "long_live_daily_gain_range_pos_choppy": (0.0, 1.0),
+    # 反转合流否决 (restore-llm-rsi-veto-power)
+    "reversal_veto_min_llm_confidence": (0, 100),
     "long_live_pullback_min_pct": (0.005, 0.20),
     "long_live_pullback_timeout_hours": (0.5, 24),
     # EV bucket
@@ -173,6 +175,9 @@ DEFAULTS = {
     "long_live_regime_aware_range_enabled": True,
     "long_live_max_range_pos_choppy": 0.55,
     "long_live_daily_gain_range_pos_choppy": 0.50,
+    # 反转合流否决 (restore-llm-rsi-veto-power)
+    "llm_rsi_reversal_veto_enabled": True,
+    "reversal_veto_min_llm_confidence": 0,
     "long_live_pullback_min_pct": 0.025,
     "long_live_pullback_timeout_hours": 4,
     "long_live_overheat_disable_chase": True,
@@ -260,6 +265,10 @@ def _load_yaml(path: str) -> dict:
         out['long_live_max_range_pos_choppy'] = float(risk['long_live_max_range_pos_choppy'])
     if 'long_live_daily_gain_range_pos_choppy' in risk:
         out['long_live_daily_gain_range_pos_choppy'] = float(risk['long_live_daily_gain_range_pos_choppy'])
+    if 'llm_rsi_reversal_veto_enabled' in risk:
+        out['llm_rsi_reversal_veto_enabled'] = _to_bool(risk['llm_rsi_reversal_veto_enabled'])
+    if 'reversal_veto_min_llm_confidence' in risk:
+        out['reversal_veto_min_llm_confidence'] = float(risk['reversal_veto_min_llm_confidence'])
     return out
 
 
@@ -331,6 +340,8 @@ def _read_env_overrides() -> dict:
         # Long Entry Position Guard
         "LONG_LIVE_POSITION_GUARD_ENABLED": ("long_live_position_guard_enabled", _to_bool),
         "LONG_LIVE_REGIME_AWARE_RANGE_ENABLED": ("long_live_regime_aware_range_enabled", _to_bool),
+        "LLM_RSI_REVERSAL_VETO_ENABLED": ("llm_rsi_reversal_veto_enabled", _to_bool),
+        "REVERSAL_VETO_MIN_LLM_CONFIDENCE": ("reversal_veto_min_llm_confidence", float),
         "LONG_LIVE_MAX_RANGE_POS": ("long_live_max_range_pos", float),
         "LONG_LIVE_MAX_PRE_MOVE": ("long_live_max_pre_move", float),
         "LONG_LIVE_MAX_DAILY_GAIN": ("long_live_max_daily_gain", float),
