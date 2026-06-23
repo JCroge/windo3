@@ -7,6 +7,7 @@
 import os
 import time
 import uuid
+import math
 import asyncio
 import ccxt
 from agents.base import BaseAgent
@@ -219,6 +220,9 @@ class MultiJudge(BaseAgent):
         # 反转合流否决 (restore-llm-rsi-veto-power)：默认 OFF=潜伏护栏（见 verify 报告）
         self._reversal_veto_enabled = config.get('llm_rsi_reversal_veto_enabled', False) if config else False
         self._reversal_veto_min_llm_confidence = config.get('reversal_veto_min_llm_confidence', 0) if config else 0
+        # 伪共振降权 (pseudo-resonance-downweight, 病根1a)：默认 OFF 保守起步
+        self._pseudo_resonance_downweight_enabled = config.get('pseudo_resonance_downweight_enabled', False) if config else False
+        self._ma_bloc_cap = config.get('ma_bloc_cap', 50) if config else 50
 
         # ═══ EV bucket sparse-sample protection ═══
         self._ev_bucket_min_trades = config.get('ev_bucket_min_trades', 10) if config else 10
@@ -3400,25 +3404,39 @@ class MultiJudge(BaseAgent):
         else:
             return 3600
 
+    def _cap_ma_bloc(self, ma_bloc_raw: float) -> float:
+        """MA 趋势块同向封顶 (pseudo-resonance-downweight, 病根1a)。
+
+        把同源于 MA 趋势的 rule/trend/htf 合计绝对值封顶，避免一条 MA 趋势
+        重复计权（伪共振）。关闭时线性透传（回退旧行为）。
+        """
+        if not getattr(self, '_pseudo_resonance_downweight_enabled', False):
+            return ma_bloc_raw
+        if ma_bloc_raw == 0:
+            return 0.0
+        cap = getattr(self, '_ma_bloc_cap', 50)
+        return math.copysign(min(abs(ma_bloc_raw), cap), ma_bloc_raw)
+
     def _compute_score(self, tech: dict) -> float:
         """多空评分: +100=极度看多, -100=极度看空, 0=中性
 
-        架构：rule_signal（回测验证83%胜率）为主驱动，其他维度为辅助加减分。
-        rule_signal触发时基础分±35，确保能过30分入场门槛。
+        架构：MA 趋势块（rule/ma_aligned + trend + htf 同源）合计封顶（病根1a 伪共振
+        降权），独立信号（RSI 背离/OI/鲸鱼/散户/taker）与保护层另算。
         """
         score = 0.0
+        ma_bloc_raw = 0.0  # 同源于 MA 趋势的三段贡献先汇总，最后封顶 (病根1a)
 
-        # ═══ 0. 回测验证信号（主驱动）═══
+        # ═══ 0. 回测验证信号（主驱动，MA 块）═══
         rule = tech.get('rule_signal', {})
         if rule.get('entry_long'):
-            score += 35
+            ma_bloc_raw += 35
         elif rule.get('entry_short'):
-            score -= 35
+            ma_bloc_raw -= 35
         # MA alignment持续信号（次驱动）：趋势已建立≥3根K线，无crossover时提供基础分
         elif rule.get('ma_aligned_long'):
-            score += 20
+            ma_bloc_raw += 20
         elif rule.get('ma_aligned_short'):
-            score -= 20
+            ma_bloc_raw -= 20
 
         momentum = tech.get('momentum', {})
         rsi = momentum.get('rsi', 50)
@@ -3456,13 +3474,13 @@ class MultiJudge(BaseAgent):
             # 超买区域趋势做多打折
             if rsi_overbought:
                 trend_score *= 0.3
-            score += trend_score
+            ma_bloc_raw += trend_score
         elif direction == 'bearish' and effective_strength > 70:
             trend_score = 20 * (effective_strength / 100)
             # 超卖区域趋势做空打折
             if rsi_oversold:
                 trend_score *= 0.3
-            score -= trend_score
+            ma_bloc_raw -= trend_score
 
         # ═══ 2. RSI背离（权重提升：背离是反转的强信号）═══
         if div == 'bullish_div':
@@ -3520,11 +3538,25 @@ class MultiJudge(BaseAgent):
         elif taker == 'sell':
             score -= 8
 
-        # ═══ 7. 高时间框架偏向 ═══
+        # ═══ 7. 高时间框架偏向（MA 块）═══
         if htf == 'bullish':
-            score += 10
+            ma_bloc_raw += 10
         elif htf == 'bearish':
-            score -= 10
+            ma_bloc_raw -= 10
+
+        # ═══ MA 趋势块同向封顶 (病根1a 伪共振降权) ═══
+        # 此处 score 仅含独立信号(§2-6)；MA 同源三段(§0/§1/§7)汇总后封顶再并入
+        independent_contribution = score
+        ma_bloc = self._cap_ma_bloc(ma_bloc_raw)
+        score += ma_bloc
+        self._last_score_breakdown = {
+            'ma_bloc_contribution': round(ma_bloc, 2),
+            'independent_contribution': round(independent_contribution, 2),
+            'ma_bloc_capped': bool(
+                getattr(self, '_pseudo_resonance_downweight_enabled', False)
+                and abs(ma_bloc_raw) > getattr(self, '_ma_bloc_cap', 50)
+            ),
+        }
 
         # ═══ 极端值硬性保护 ═══
         # RSI<=30 超卖区禁止做空。分级cap：越深越严
