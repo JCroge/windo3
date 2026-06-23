@@ -26,7 +26,7 @@ risk:
   ev_neutral_p_win: 0.55          # 关闭胜率门时 EV 公式使用的固定中性胜率
   # 体制感知多单位置门（regime-aware-long-entry-guard）
   long_live_regime_aware_range_enabled: true   # 总开关；false=所有体制用默认0.82/0.75（回退旧行为）
-  long_live_max_range_pos_choppy: 0.70         # 缓进起步值（保守，先只罩最极端追顶）；代码默认/目标=0.55，观察 entry_regime_used/PF 后逐步收紧
+  long_live_max_range_pos_choppy: 0.63         # 缓进中间步（0.70→0.63，朝目标0.55）；2026-06-23 两臂实证拦最热档(HYPE/SUI rp≈0.66-0.70)，差异带样本攒够再收到0.55；见 memory regime-threshold-070-vs-055-comparison
   long_live_daily_gain_range_pos_choppy: 0.50  # 同上体制下 daily_gain 二级门 range_pos
 
 # 手续费（Maker/Taker）
