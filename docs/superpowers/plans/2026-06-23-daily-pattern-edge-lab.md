@@ -2,6 +2,7 @@
 change: daily-pattern-edge-lab
 design-doc: docs/superpowers/specs/2026-06-23-daily-pattern-edge-lab-design.md
 base-ref: dde4bd5622458ee9745304cea479ffcc16aebbf7
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 # Daily Pattern Edge Lab Implementation Plan
@@ -14,6 +15,7 @@ base-ref: dde4bd5622458ee9745304cea479ffcc16aebbf7
 
 **Tech Stack:** Python3, ccxt 4.5.52, pandas/numpy, sqlite3, pytest;复用 utils/counterfactual_pnl.py + utils/cf_honesty_gate.py。
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 ## 文件结构
@@ -26,6 +28,7 @@ base-ref: dde4bd5622458ee9745304cea479ffcc16aebbf7
 | `tests/test_candlestick_patterns.py` | 形态库 golden + near-miss 单测 | 新建 |
 | `tests/test_cf_red_line_guard.py` | 加形态研究禁读守卫 | 修改 |
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 ### Task 1: 历史抓取器改造(分页/多币/多周期)
@@ -123,6 +126,7 @@ git add fetch_historical_klines.py
 git commit -m "feat(pattern-lab): 分页历史OHLC抓取器(多币/多周期)落klines.db"
 ```
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 ### Task 2: 形态库(附录A,固定阈值)
@@ -215,6 +219,7 @@ git add utils/candlestick_patterns.py tests/test_candlestick_patterns.py
 git commit -m "feat(pattern-lab): ~28种标准蜡烛形态库(固定阈值)+golden/near-miss单测"
 ```
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 ### Task 3: 红线守卫(先行,锁住 observability-only)
@@ -250,6 +255,7 @@ git add tests/test_cf_red_line_guard.py
 git commit -m "test(pattern-lab): 加形态研究产物红线禁读守卫"
 ```
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 ### Task 4: 回测驱动 cf_pattern_edge_discovery.py
@@ -401,6 +407,7 @@ git add cf_pattern_edge_discovery.py
 git commit -m "feat(pattern-lab): 形态edge发现驱动(ATR退出+OOS三分+FDR+诚实门+加权)"
 ```
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 ### Task 5: 全量回归 + 诚实汇报
@@ -426,6 +433,7 @@ git add openspec/changes/daily-pattern-edge-lab/tasks.md
 git commit -m "chore(pattern-lab): 完成tasks + 首版edge报告诚实汇报"
 ```
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
 ---
 
 ## Self-Review

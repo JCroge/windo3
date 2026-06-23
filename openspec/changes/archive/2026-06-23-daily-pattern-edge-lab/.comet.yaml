@@ -1,17 +1,17 @@
 workflow: full
-phase: verify
+phase: archive
 build_mode: subagent-driven-development
 isolation: branch
 verify_mode: full
 base_ref: dde4bd5622458ee9745304cea479ffcc16aebbf7
 design_doc: docs/superpowers/specs/2026-06-23-daily-pattern-edge-lab-design.md
 plan: docs/superpowers/plans/2026-06-23-daily-pattern-edge-lab.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-23-daily-pattern-edge-lab-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-06-23
-verified_at: null
-archived: false
+verified_at: 2026-06-23
+archived: true
 handoff_context: openspec/changes/daily-pattern-edge-lab/.comet/handoff/design-context.json
 handoff_hash: 73f1eada9744b0a3f1d7bc236b05f2f716dd9c479fdfcb3a9182726a90d01c7e
 build_command: python3 -m py_compile fetch_historical_klines.py utils/candlestick_patterns.py cf_pattern_edge_discovery.py && python3 -m pytest tests/test_candlestick_patterns.py tests/test_cf_red_line_guard.py -q

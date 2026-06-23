@@ -2,6 +2,8 @@
 comet_change: daily-pattern-edge-lab
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-23-daily-pattern-edge-lab
+status: final
 ---
 
 # Design Doc: daily-pattern-edge-lab
@@ -64,6 +66,8 @@ canonical_spec: openspec
 
 D1–D6 已将 proposal/design.md 列的 Open Questions 定到可实施粒度。剩余仅"4h 解封后是否扩 universe"留候选出现后再议。
 
+archived-with: 2026-06-23-daily-pattern-edge-lab
+status: final
 ---
 
 ## 附录 A:预登记形态阈值表(锁死,实现照此)
