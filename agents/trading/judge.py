@@ -2412,6 +2412,10 @@ class MultiJudge(BaseAgent):
             # 反转合流否决 (restore-llm-rsi-veto-power)：放行路径默认 false，
             # 触发路径由 _route_reversal_veto_defer 写 true（单点收口）
             'reversal_veto_triggered': False,
+            # 伪共振降权 (pseudo-resonance-downweight, 病根1a) breakdown
+            'ma_bloc_contribution': (getattr(self, '_last_score_breakdown', None) or {}).get('ma_bloc_contribution', 0.0),
+            'independent_contribution': (getattr(self, '_last_score_breakdown', None) or {}).get('independent_contribution', 0.0),
+            'ma_bloc_capped': (getattr(self, '_last_score_breakdown', None) or {}).get('ma_bloc_capped', False),
             'htf_votes': htf_votes,
             'liquidity_bucket': liquidity_bucket,
             'rr_bucket': rr_bucket,

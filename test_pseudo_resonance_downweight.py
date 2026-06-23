@@ -43,3 +43,34 @@ def test_bloc_negative():
 
 def test_bloc_zero():
     assert _j(cap=45)._cap_ma_bloc(0) == 0
+
+
+# ─── Task 3: 归因 breakdown ───
+def test_attribution_breakdown_fields():
+    from test_long_entry_position_guard import _make_judge, _make_tech
+    j = _make_judge(_pseudo_resonance_downweight_enabled=True, _ma_bloc_cap=45)
+    # 强 MA 同源信号(rule entry_long + bullish 强 + htf bullish)触发封顶
+    tech = _make_tech()
+    tech['rule_signal'] = {'entry_long': 1}
+    tech['trend'] = {'direction': 'bullish', 'strength': 90, 'higher_tf_bias': 'bullish'}
+    j._trend_saturation_enabled = False
+    _ = j._compute_score(tech)
+    attr = j._build_attribution(tech, 'open_long', 50.0, None, None, 'main')
+    assert 'ma_bloc_contribution' in attr
+    assert 'independent_contribution' in attr
+    assert attr['ma_bloc_capped'] is True  # 35+18+10=63 > cap45
+
+
+def test_attribution_default_when_disabled():
+    from test_long_entry_position_guard import _make_judge, _make_tech
+    j = _make_judge(_pseudo_resonance_downweight_enabled=False, _ma_bloc_cap=45)
+    j._trend_saturation_enabled = False
+    _ = j._compute_score(_make_tech())
+    attr = j._build_attribution(_make_tech(), 'open_long', 50.0, None, None, 'main')
+    assert attr['ma_bloc_capped'] is False
+
+
+# ─── Task 4: banner ───
+def test_banner_shows_pseudo_resonance():
+    from utils.config_loader import format_banner, DEFAULTS
+    assert '伪共振降权' in format_banner(dict(DEFAULTS))
