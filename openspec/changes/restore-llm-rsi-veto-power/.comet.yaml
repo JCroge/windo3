@@ -1,10 +1,10 @@
 workflow: full
-phase: design
+phase: build
 build_mode: null
 isolation: null
 verify_mode: null
 base_ref: d88ff46a524445501f297fd2c13b88d655fccd93
-design_doc: null
+design_doc: docs/superpowers/specs/2026-06-23-restore-llm-rsi-veto-power-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -12,3 +12,5 @@ branch_status: pending
 created_at: 2026-06-23
 verified_at: null
 archived: false
+handoff_context: openspec/changes/restore-llm-rsi-veto-power/.comet/handoff/design-context.json
+handoff_hash: dbc20782ffe0041e8645b4501d64a700e39356334c4f7232ebffdae966e4ef01

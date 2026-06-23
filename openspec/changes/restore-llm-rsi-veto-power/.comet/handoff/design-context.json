@@ -1,0 +1,14 @@
+{
+  "change": "restore-llm-rsi-veto-power",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "dbc20782ffe0041e8645b4501d64a700e39356334c4f7232ebffdae966e4ef01",
+  "files": [
+    { "path": "openspec/changes/restore-llm-rsi-veto-power/proposal.md", "sha256": "db96f8da20e55caa009fea65a8ab4932e1cb73e642a37673af0ba49c6a2f092c" },
+    { "path": "openspec/changes/restore-llm-rsi-veto-power/design.md", "sha256": "639423cffd60a914a8cf65a61b021c1324266d9bf3b2bcd3906ff42a4ad7b0cd" },
+    { "path": "openspec/changes/restore-llm-rsi-veto-power/tasks.md", "sha256": "74fa0bd8fb8da6330757adb2518c19177e145cedd53fcedaaf1c7c27a5b7c12b" },
+    { "path": "openspec/changes/restore-llm-rsi-veto-power/specs/llm-rsi-reversal-veto/spec.md", "sha256": "294037977b5d8e96fc535a36d89fc7dbabbb9e0e5c9c5569fb8f3e830fe75840" }
+  ]
+}
