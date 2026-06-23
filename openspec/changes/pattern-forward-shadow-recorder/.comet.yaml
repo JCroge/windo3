@@ -14,3 +14,4 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/pattern-forward-shadow-recorder/.comet/handoff/design-context.json
 handoff_hash: c409c66589356e13d58337a54f84ef5b68a46adc6aefb8a74ba786f0408d108c
+build_command: python3 -m py_compile pattern_forward_shadow.py && python3 -m pytest tests/test_pattern_forward_shadow.py tests/test_cf_red_line_guard.py -q
