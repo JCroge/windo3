@@ -15,3 +15,5 @@ archived: false
 handoff_context: openspec/changes/pseudo-resonance-downweight/.comet/handoff/design-context.json
 handoff_hash: 61bd2c7f03402b446fa78f088eeaf272c25303c4a075227d9d03884fafb1141f
 direct_override: true
+build_command: python3 -m pytest test_pseudo_resonance_downweight.py -q
+verify_command: python3 -m pytest test_pseudo_resonance_downweight.py -q
