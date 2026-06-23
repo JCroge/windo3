@@ -2,6 +2,7 @@
 change: restore-llm-rsi-veto-power
 design-doc: docs/superpowers/specs/2026-06-23-restore-llm-rsi-veto-power-design.md
 base-ref: e13d91fe093b8ce5bbd2443f02798f6d90005df3
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 # 反转合流否决 (restore-llm-rsi-veto-power) Implementation Plan
@@ -14,6 +15,7 @@ base-ref: e13d91fe093b8ce5bbd2443f02798f6d90005df3
 
 **Tech Stack:** Python 3.9, pytest, 现有 judge.py / config_loader.py / event_backtest.py。
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## 文件结构
@@ -24,6 +26,7 @@ base-ref: e13d91fe093b8ce5bbd2443f02798f6d90005df3
 - Create: `test_reversal_confluence_veto.py` — 单测
 - 验证: `event_backtest.py`（已有，跑 pre/post）
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 1: config_loader 四段式接入两个键
@@ -84,6 +87,7 @@ git add utils/config_loader.py test_reversal_confluence_veto.py
 git commit -m "feat(reversal-veto): config 四段式接入 enabled + min_llm_confidence"
 ```
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 2: 单点收口 helper `_reversal_confluence_veto`
@@ -177,6 +181,7 @@ git add agents/trading/judge.py test_reversal_confluence_veto.py
 git commit -m "feat(reversal-veto): 单点收口 helper _reversal_confluence_veto"
 ```
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 3: 共享 defer 路由 helper `_route_reversal_veto_defer`
@@ -264,6 +269,7 @@ git add agents/trading/judge.py test_reversal_confluence_veto.py
 git commit -m "feat(reversal-veto): 共享 defer 路由 _route_reversal_veto_defer + 归因"
 ```
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 4: 主路径插入 veto
@@ -309,6 +315,7 @@ def test_main_path_veto_routes_defer(monkeypatch):
 git commit -am "feat(reversal-veto): 主路径插入合流否决 -> deferred_reversal_veto"
 ```
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 5: deferred 再分发点覆盖核定（红线：单点收口）
@@ -340,6 +347,7 @@ git commit -am "feat(reversal-veto): 主路径插入合流否决 -> deferred_rev
 git commit -am "feat(reversal-veto): deferred 再分发点共用 helper + 覆盖边界记录(红线)"
 ```
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 6: 放行路径写 reversal_veto_triggered=false
@@ -354,6 +362,7 @@ git commit -am "feat(reversal-veto): deferred 再分发点共用 helper + 覆盖
 - [ ] **Step 4: 确认通过**
 - [ ] **Step 5: 提交** `git commit -am "feat(reversal-veto): 放行路径写 reversal_veto_triggered=false 归因"`
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 7: config.yaml 落开关 + banner
@@ -371,6 +380,7 @@ git commit -am "feat(reversal-veto): deferred 再分发点共用 helper + 覆盖
 - [ ] **Step 3:** 测试 config_loader 读出值正确。
 - [ ] **Step 4: 提交** `git commit -am "feat(reversal-veto): config.yaml 开关 + banner"`
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 8: event_backtest 验证（CLAUDE.md 红线）
@@ -385,6 +395,7 @@ git commit -am "feat(reversal-veto): deferred 再分发点共用 helper + 覆盖
 - [ ] **Step 4:** 报告落盘。结果决定上线 default：正向且触发率低 → default true；否则改 false 先影子观察（改 config.yaml + DEFAULTS）。
 - [ ] **Step 5: 提交** `git commit -am "test(reversal-veto): event_backtest pre/post 报告 + 定 default"`
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Task 9: 全量回归 + 收尾
@@ -393,6 +404,7 @@ git commit -am "feat(reversal-veto): deferred 再分发点共用 helper + 覆盖
 - [ ] **Step 2:** 跑相关既有套件不回归：`python3 -m pytest test_long_entry_position_guard.py test_short_main_path_risk_guard.py test_judge_close_cause.py -q`（按实际存在的 judge 套件）。
 - [ ] **Step 3:** 勾选 tasks.md 全部；guard build --apply。
 
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
 ---
 
 ## Self-Review

@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-23-restore-llm-rsi-veto-po
 branch_status: handled
 created_at: 2026-06-23
 verified_at: 2026-06-23
-archived: false
+archived: true
 handoff_context: openspec/changes/restore-llm-rsi-veto-power/.comet/handoff/design-context.json
 handoff_hash: dbc20782ffe0041e8645b4501d64a700e39356334c4f7232ebffdae966e4ef01
 direct_override: true

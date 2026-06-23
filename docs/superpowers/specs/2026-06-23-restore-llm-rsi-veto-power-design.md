@@ -2,6 +2,8 @@
 comet_change: restore-llm-rsi-veto-power
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-23-restore-llm-rsi-veto-power
+status: final
 ---
 
 # Design Doc: restore-llm-rsi-veto-power（反转合流否决）
