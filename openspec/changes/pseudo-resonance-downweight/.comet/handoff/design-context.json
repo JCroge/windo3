@@ -1,0 +1,14 @@
+{
+  "change": "pseudo-resonance-downweight",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "61bd2c7f03402b446fa78f088eeaf272c25303c4a075227d9d03884fafb1141f",
+  "files": [
+    { "path": "openspec/changes/pseudo-resonance-downweight/proposal.md", "sha256": "6d2ebac46cabbeefbda2ef768974b0a95850d5b176270159193f14ff3859aa94" },
+    { "path": "openspec/changes/pseudo-resonance-downweight/design.md", "sha256": "1337863fe7b3dbb74cfe70d545e796042d3b3ff10476b9d8d770edda5bc26443" },
+    { "path": "openspec/changes/pseudo-resonance-downweight/tasks.md", "sha256": "507d0917240874b10bf4d5111dd2ce4187e2da4127d07410cd55e95ed949e5a5" },
+    { "path": "openspec/changes/pseudo-resonance-downweight/specs/pseudo-resonance-downweight/spec.md", "sha256": "7b63fd58e5edea6238cacda7d2a7c9c994475007117d6c5b4eef48fa3f98b94f" }
+  ]
+}

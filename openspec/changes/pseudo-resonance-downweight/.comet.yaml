@@ -1,0 +1,19 @@
+workflow: full
+phase: archive
+build_mode: direct
+isolation: branch
+verify_mode: null
+base_ref: d232fb047ffe09ee5c485c488fad2c87bd37f3f8
+design_doc: docs/superpowers/specs/2026-06-23-pseudo-resonance-downweight-design.md
+plan: docs/superpowers/plans/2026-06-23-pseudo-resonance-downweight.md
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-06-23-pseudo-resonance-downweight-backtest.md
+branch_status: handled
+created_at: 2026-06-23
+verified_at: 2026-06-23
+archived: false
+handoff_context: openspec/changes/pseudo-resonance-downweight/.comet/handoff/design-context.json
+handoff_hash: 61bd2c7f03402b446fa78f088eeaf272c25303c4a075227d9d03884fafb1141f
+direct_override: true
+build_command: python3 -m pytest test_pseudo_resonance_downweight.py -q
+verify_command: python3 -m pytest test_pseudo_resonance_downweight.py -q

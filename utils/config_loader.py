@@ -65,6 +65,8 @@ HARD_LIMITS = {
     "long_live_daily_gain_range_pos_choppy": (0.0, 1.0),
     # 反转合流否决 (restore-llm-rsi-veto-power)
     "reversal_veto_min_llm_confidence": (0, 100),
+    # 伪共振降权 (pseudo-resonance-downweight)
+    "ma_bloc_cap": (0, 100),
     "long_live_pullback_min_pct": (0.005, 0.20),
     "long_live_pullback_timeout_hours": (0.5, 24),
     # EV bucket
@@ -179,6 +181,9 @@ DEFAULTS = {
     # （真实磁带验证当前 0% 触发：LLM 从不反向开仓；启用前须 CF 回放验证，见 verify 报告）
     "llm_rsi_reversal_veto_enabled": False,
     "reversal_veto_min_llm_confidence": 0,
+    # 伪共振降权 (pseudo-resonance-downweight)：默认 OFF 保守起步，cap 缓进 50(目标 45)
+    "pseudo_resonance_downweight_enabled": False,
+    "ma_bloc_cap": 50,
     "long_live_pullback_min_pct": 0.025,
     "long_live_pullback_timeout_hours": 4,
     "long_live_overheat_disable_chase": True,
@@ -270,6 +275,10 @@ def _load_yaml(path: str) -> dict:
         out['llm_rsi_reversal_veto_enabled'] = _to_bool(risk['llm_rsi_reversal_veto_enabled'])
     if 'reversal_veto_min_llm_confidence' in risk:
         out['reversal_veto_min_llm_confidence'] = float(risk['reversal_veto_min_llm_confidence'])
+    if 'pseudo_resonance_downweight_enabled' in risk:
+        out['pseudo_resonance_downweight_enabled'] = _to_bool(risk['pseudo_resonance_downweight_enabled'])
+    if 'ma_bloc_cap' in risk:
+        out['ma_bloc_cap'] = float(risk['ma_bloc_cap'])
     return out
 
 
@@ -343,6 +352,8 @@ def _read_env_overrides() -> dict:
         "LONG_LIVE_REGIME_AWARE_RANGE_ENABLED": ("long_live_regime_aware_range_enabled", _to_bool),
         "LLM_RSI_REVERSAL_VETO_ENABLED": ("llm_rsi_reversal_veto_enabled", _to_bool),
         "REVERSAL_VETO_MIN_LLM_CONFIDENCE": ("reversal_veto_min_llm_confidence", float),
+        "PSEUDO_RESONANCE_DOWNWEIGHT_ENABLED": ("pseudo_resonance_downweight_enabled", _to_bool),
+        "MA_BLOC_CAP": ("ma_bloc_cap", float),
         "LONG_LIVE_MAX_RANGE_POS": ("long_live_max_range_pos", float),
         "LONG_LIVE_MAX_PRE_MOVE": ("long_live_max_pre_move", float),
         "LONG_LIVE_MAX_DAILY_GAIN": ("long_live_max_daily_gain", float),
@@ -531,6 +542,7 @@ def format_banner(cfg: dict) -> str:
         f"timeout={cfg.get('long_live_pullback_timeout_hours', 4)}h, chase={overheat_chase})",
         f"  EV Bucket Sparse:      min_trades={cfg.get('ev_bucket_min_trades', 10)} sparse_uplift={bucket_uplift}",
         f"  反转合流否决:          {'开启' if cfg.get('llm_rsi_reversal_veto_enabled', True) else '关闭'} (min_llm_conf={cfg.get('reversal_veto_min_llm_confidence', 0)})",
+        f"  伪共振降权:            {'开启' if cfg.get('pseudo_resonance_downweight_enabled', False) else '关闭'} (ma_bloc_cap={cfg.get('ma_bloc_cap', 50)})",
     ]
     # FR-008: 启动 banner 打印当前命名空间下的状态文件路径
     try:

@@ -31,6 +31,9 @@ risk:
   # 反转合流否决（restore-llm-rsi-veto-power）：LLM看反 AND RSI背离反向 → 转等回调
   llm_rsi_reversal_veto_enabled: false  # 潜伏护栏默认OFF(真实磁带验证0%触发:LLM从不反向开仓)；启用前须CF回放验证
   reversal_veto_min_llm_confidence: 0   # LLM反向需达此置信才计入合流(0=不启用该子门)
+  # 伪共振降权（pseudo-resonance-downweight 病根1a）：MA趋势块(rule/trend/htf同源)同向封顶
+  pseudo_resonance_downweight_enabled: false  # 默认OFF保守起步(改核心_compute_score)；启用前须CF回放验证
+  ma_bloc_cap: 50                       # MA块同向合计封顶(缓进50,目标45;磁带实证MA簇占score中位67%)
 
 # 手续费（Maker/Taker）
 fees:
