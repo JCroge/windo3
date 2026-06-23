@@ -22,9 +22,9 @@
 
 ## 4. 红线守卫
 - [x] 4.1 `tests/test_cf_red_line_guard.py` 加 `test_decision_paths_do_not_read_pattern_research`(判 judge/executor/risk_guard/reviewer/position_analyst 不 import 形态研究模块)
-- [ ] 4.2 跑全量 pytest 确认无回归(基线 1359 passed)
+- [x] 4.2 跑全量 pytest:**1410 passed / 1 failed**。本 change 零回归(自测 26 passed)。唯一 fail=`test_decision_replay.py::test_no_unclassified_missing_snapshot_keys`,**预存且正交**(reversal-veto/pseudo-resonance 旧 change 的 4 个 config 键漏登记 `_EPOCH_FALLBACK`,数据驱动;前例 521dad5 同类已修 regime-aware 键)→ 另起 hotfix,不在本 change 修
 
 ## 5. 验收与汇报
-- [ ] 5.1 跑骨架产出首版 edge 报告(日线主测)
-- [ ] 5.2 诚实汇报:有无过三关的形态;若有 → 进入 4h 确认集解封;若无 → 干净证伪结论
-- [ ] 5.3 结论写入项目记忆(更新 alpha-source-hunt-verdict 或新建条目)
+- [ ] 5.1 跑骨架产出首版 edge 报告(日线主测) <!-- BLOCKED: 网络中断,无日线数据;待联网跑 `python3 fetch_historical_klines.py` 后 `python3 cf_pattern_edge_discovery.py` -->
+- [ ] 5.2 诚实汇报:有无过三关的形态;若有 → 进入 4h 确认集解封;若无 → 干净证伪结论 <!-- 待 5.1 产出 -->
+- [ ] 5.3 结论写入项目记忆(更新 alpha-source-hunt-verdict 或新建条目) <!-- 待 5.2 结论 -->
