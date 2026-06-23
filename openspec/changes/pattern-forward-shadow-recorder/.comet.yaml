@@ -1,13 +1,13 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: executing-plans
 isolation: branch
-verify_mode: null
+verify_mode: full
 base_ref: 198161b56382702a839e5c6399e749d6f5132848
 design_doc: docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md
 plan: docs/superpowers/plans/2026-06-23-pattern-forward-shadow-recorder.md
 verify_result: pending
-verification_report: null
+verification_report: docs/superpowers/reports/2026-06-23-pattern-forward-shadow-recorder-verify.md
 branch_status: pending
 created_at: 2026-06-23
 verified_at: null
