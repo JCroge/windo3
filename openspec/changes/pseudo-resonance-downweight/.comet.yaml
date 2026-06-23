@@ -1,10 +1,10 @@
 workflow: full
-phase: design
+phase: build
 build_mode: null
 isolation: null
 verify_mode: null
 base_ref: d232fb047ffe09ee5c485c488fad2c87bd37f3f8
-design_doc: null
+design_doc: docs/superpowers/specs/2026-06-23-pseudo-resonance-downweight-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -12,3 +12,5 @@ branch_status: pending
 created_at: 2026-06-23
 verified_at: null
 archived: false
+handoff_context: openspec/changes/pseudo-resonance-downweight/.comet/handoff/design-context.json
+handoff_hash: 61bd2c7f03402b446fa78f088eeaf272c25303c4a075227d9d03884fafb1141f
