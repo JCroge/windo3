@@ -70,3 +70,14 @@ def test_decision_paths_do_not_read_ev_decouple_ab():
                "agents.trading.position_analyst"]:
         src = _src(mp)
         assert "cf_ev_decouple_ab" not in src, mp
+
+
+def test_decision_paths_do_not_read_pattern_research():
+    """daily-pattern-edge-lab: 决策/风控路径禁读形态研究模块/产物（observability-only）。"""
+    forbidden = ("candlestick_patterns", "cf_pattern_edge_discovery")
+    for mp in ["agents.trading.judge", "agents.trading.executor",
+               "agents.trading.portfolio_risk_guard", "agents.trading.reviewer",
+               "agents.trading.position_analyst"]:
+        src = _src(mp)
+        for f in forbidden:
+            assert f not in src, f"{mp} 不得引用形态研究模块 {f}"

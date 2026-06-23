@@ -1,0 +1,79 @@
+============================================================================================
+日线蜡烛形态 edge 反事实回测 (ATR退出 + OOS三分 + FDR + 诚实门; observability-only)
+============================================================================================
+klines(1d) 符号: 30
+形态信号(簇去重后): 13308
+
+形态|方向|上下文                                n_test  净R_test    三段同号             诚实门   FDR       权重
+Three Inside Down|-1|mid|up                  26  +0.783   FalseINSUFFICIENT_SAMPLE  True   +0.000
+Bearish Engulfing|-1|high|up                 13  +0.781   FalseINSUFFICIENT_SAMPLE  True   +0.000
+Evening Star|-1|low|down                     24  +0.773   FalseINSUFFICIENT_SAMPLE  True   +0.000
+Tweezer Top|-1|low|down                      48  +0.769   False  low_confidence  True   +0.000
+Bullish Marubozu|+1|high|up                  11  +0.753   FalseINSUFFICIENT_SAMPLE False   +0.000
+Three Inside Up|+1|high|up                   10  +0.672   FalseINSUFFICIENT_SAMPLE False   +0.000
+Evening Star|-1|mid|up                       42  +0.670    True  low_confidence  True   +0.670
+Bearish Marubozu|-1|mid|up                    6  +0.606   FalseINSUFFICIENT_SAMPLE False   +0.000
+Three Inside Down|-1|low|down                38  +0.564   False  low_confidence  True   +0.000
+Bearish Harami|-1|low|down                   80  +0.386   False  low_confidence  True   +0.000
+Bearish Harami|-1|high|up                    48  +0.373   False  low_confidence False   +0.000
+Three Outside Down|-1|low|down              121  +0.348   False      actionable  True   +0.000
+Tweezer Bottom|+1|mid|down                   34  +0.338   False  low_confidence False   +0.000
+Bearish Engulfing|-1|low|down               135  +0.326    True      actionable  True   +0.326
+Bullish Marubozu|+1|mid|down                 14  +0.320   FalseINSUFFICIENT_SAMPLE False   +0.000
+Tweezer Bottom|+1|mid|up                     21  +0.295   FalseINSUFFICIENT_SAMPLE False   +0.000
+Tweezer Top|-1|high|up                       10  +0.293   FalseINSUFFICIENT_SAMPLE False   +0.000
+Bearish Engulfing|-1|low|up                   8  +0.174   FalseINSUFFICIENT_SAMPLE False   +0.000
+Evening Star|-1|mid|down                     45  +0.131   False  low_confidence False   +0.000
+Shooting Star|-1|mid|up                      19  +0.131   FalseINSUFFICIENT_SAMPLE False   +0.000
+Three Outside Up|+1|mid|up                   40  +0.125   False  low_confidence False   +0.000
+Bullish Engulfing|+1|mid|down               106  +0.094   False    inconclusive False   +0.000
+Bearish Harami|-1|mid|up                     49  +0.083   False  low_confidence False   +0.000
+Bullish Engulfing|+1|low|down                73  +0.075   False  low_confidence False   +0.000
+Bullish Engulfing|+1|mid|up                  62  +0.067   False  low_confidence False   +0.000
+Inverted Hammer|+1|low|down                  14  +0.066    TrueINSUFFICIENT_SAMPLE False   +0.000
+Tweezer Top|-1|mid|up                        31  +0.052   False  low_confidence False   +0.000
+Three Outside Up|+1|high|up                  43  +0.039   False  low_confidence False   +0.000
+Morning Star|+1|low|down                     14  +0.020   FalseINSUFFICIENT_SAMPLE False   +0.000
+Bullish Harami|+1|high|up                    12  -0.019    TrueINSUFFICIENT_SAMPLE False   +0.000
+Three Outside Up|+1|mid|down                 58  -0.026   False  low_confidence False   +0.000
+Bearish Harami|-1|mid|down                  133  -0.068   False    inconclusive False   +0.000
+Morning Star|+1|mid|up                        7  -0.071   FalseINSUFFICIENT_SAMPLE False   +0.000
+Bearish Engulfing|-1|mid|up                  61  -0.087   False  low_confidence False   +0.000
+Bearish Engulfing|-1|mid|down               104  -0.091   False    inconclusive False   +0.000
+Three Outside Down|-1|mid|up                 37  -0.096   False  low_confidence False   +0.000
+Three Inside Up|+1|mid|up                     9  -0.103   FalseINSUFFICIENT_SAMPLE False   +0.000
+Bearish Harami|-1|high|down                   9  -0.138   FalseINSUFFICIENT_SAMPLE False   +0.000
+Inverted Hammer|+1|mid|up                    19  -0.164   FalseINSUFFICIENT_SAMPLE False   +0.000
+Tweezer Bottom|+1|high|up                    17  -0.166    TrueINSUFFICIENT_SAMPLE False   +0.000
+Bearish Marubozu|-1|mid|down                  9  -0.180   FalseINSUFFICIENT_SAMPLE False   +0.000
+Morning Star|+1|high|up                       6  -0.189   FalseINSUFFICIENT_SAMPLE False   +0.000
+Bullish Engulfing|+1|high|up                 59  -0.195    True  low_confidence False   +0.000
+Bullish Harami|+1|mid|down                   86  -0.204   False  low_confidence False   +0.000
+Inverted Hammer|+1|mid|down                  23  -0.226   FalseINSUFFICIENT_SAMPLE False   +0.000
+Three Outside Down|-1|mid|down               52  -0.241   False  low_confidence False   +0.000
+Shooting Star|-1|mid|down                    23  -0.243   FalseINSUFFICIENT_SAMPLE False   +0.000
+Three Inside Down|-1|mid|down                39  -0.257   False  low_confidence False   +0.000
+Three Outside Up|+1|low|down                 23  -0.257   FalseINSUFFICIENT_SAMPLE False   +0.000
+Tweezer Top|-1|mid|down                      40  -0.262   False  low_confidence False   +0.000
+Bullish Engulfing|+1|low|up                   8  -0.286   FalseINSUFFICIENT_SAMPLE False   +0.000
+Shooting Star|-1|low|down                    14  -0.293    TrueINSUFFICIENT_SAMPLE False   +0.000
+Bearish Marubozu|-1|low|down                 18  -0.296   FalseINSUFFICIENT_SAMPLE False   +0.000
+Hammer|+1|mid|down                           20  -0.311   FalseINSUFFICIENT_SAMPLE False   +0.000
+Hammer|+1|low|down                           17  -0.314   FalseINSUFFICIENT_SAMPLE False   +0.000
+Tweezer Bottom|+1|low|down                   59  -0.327    True  low_confidence  True   +0.000
+Bullish Harami|+1|low|down                  126  -0.358   False      actionable  True   +0.000
+Morning Star|+1|mid|down                     25  -0.387   FalseINSUFFICIENT_SAMPLE  True   +0.000
+Bullish Harami|+1|low|up                      7  -0.426   FalseINSUFFICIENT_SAMPLE False   +0.000
+Bullish Harami|+1|mid|up                     59  -0.441    True  low_confidence  True   +0.000
+Three Outside Up|+1|high|down                 8  -0.545   FalseINSUFFICIENT_SAMPLE  True   +0.000
+Bullish Engulfing|+1|high|down               12  -0.579   FalseINSUFFICIENT_SAMPLE  True   +0.000
+Hammer|+1|mid|up                              9  -0.735   FalseINSUFFICIENT_SAMPLE  True   +0.000
+Three Inside Up|+1|mid|down                  16  -0.798    TrueINSUFFICIENT_SAMPLE  True   +0.000
+Three Inside Up|+1|low|down                   8  -0.820   FalseINSUFFICIENT_SAMPLE  True   +0.000
+
+过三关(三段同号 + 诚实门非薄样本 + PnL_CI下界>0 + FDR): 2
+→ 候选形态(待 4h 确认集解封验证):
+   ('Bearish Engulfing', -1, 'low|down') 净R_test=+0.326
+   ('Evening Star', -1, 'mid|up') 净R_test=+0.670
+
+observability-only —— 仅量化,不据此自动改 config/上 live。
