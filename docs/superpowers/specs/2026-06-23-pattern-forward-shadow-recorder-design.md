@@ -2,6 +2,8 @@
 comet_change: pattern-forward-shadow-recorder
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-23-pattern-forward-shadow-recorder
+status: final
 ---
 
 # Design Doc: pattern-forward-shadow-recorder

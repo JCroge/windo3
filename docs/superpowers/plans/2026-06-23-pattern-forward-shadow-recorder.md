@@ -2,6 +2,7 @@
 change: pattern-forward-shadow-recorder
 design-doc: docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md
 base-ref: 198161b56382
+archived-with: 2026-06-23-pattern-forward-shadow-recorder
 ---
 
 # Pattern Forward Shadow Recorder Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 198161b56382
 
 **Tech Stack:** Python3, sqlite3, json;复用既有研究模块,零新依赖。
 
+archived-with: 2026-06-23-pattern-forward-shadow-recorder
 ---
 
 ### Task 1: 记录器 + 结算器 `pattern_forward_shadow.py`
@@ -127,6 +129,7 @@ git add pattern_forward_shadow.py
 git commit -m "feat(forward-shadow): 日线形态前向影子记录器+结算器(observability-only)"
 ```
 
+archived-with: 2026-06-23-pattern-forward-shadow-recorder
 ---
 
 ### Task 2: 红线守卫扩展
@@ -143,6 +146,7 @@ Run: `python3 -m pytest tests/test_cf_red_line_guard.py -q` → PASS(决策路�
 
 - [ ] **Step 3: Commit** `git commit -m "test(forward-shadow): 红线守卫覆盖 pattern_forward_shadow"`
 
+archived-with: 2026-06-23-pattern-forward-shadow-recorder
 ---
 
 ### Task 3: 单测 `tests/test_pattern_forward_shadow.py`
@@ -157,6 +161,7 @@ Run: `python3 -m pytest tests/test_cf_red_line_guard.py -q` → PASS(决策路�
 
 - [ ] **Step 3: Commit** `git commit -m "test(forward-shadow): 记录器单测(命中/上下文/幂等/结算/防前视)"`
 
+archived-with: 2026-06-23-pattern-forward-shadow-recorder
 ---
 
 ### Task 4: 调度文档 + 回归
@@ -165,6 +170,7 @@ Run: `python3 -m pytest tests/test_cf_red_line_guard.py -q` → PASS(决策路�
 - [ ] **Step 2** 全量 `python3 -m pytest -q` 无新回归(1 预存正交 fail 已知)。
 - [ ] **Step 3** record smoke + 勾选 tasks.md + 诚实汇报(前向样本须数周)。Commit。
 
+archived-with: 2026-06-23-pattern-forward-shadow-recorder
 ---
 
 ## Self-Review
