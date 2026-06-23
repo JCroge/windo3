@@ -29,7 +29,7 @@ risk:
   long_live_max_range_pos_choppy: 0.63         # 缓进中间步（0.70→0.63，朝目标0.55）；2026-06-23 两臂实证拦最热档(HYPE/SUI rp≈0.66-0.70)，差异带样本攒够再收到0.55；见 memory regime-threshold-070-vs-055-comparison
   long_live_daily_gain_range_pos_choppy: 0.50  # 同上体制下 daily_gain 二级门 range_pos
   # 反转合流否决（restore-llm-rsi-veto-power）：LLM看反 AND RSI背离反向 → 转等回调
-  llm_rsi_reversal_veto_enabled: true   # 总开关；false=回退旧行为(LLM/RSI仅缩仓)。上线default待event_backtest定
+  llm_rsi_reversal_veto_enabled: false  # 潜伏护栏默认OFF(真实磁带验证0%触发:LLM从不反向开仓)；启用前须CF回放验证
   reversal_veto_min_llm_confidence: 0   # LLM反向需达此置信才计入合流(0=不启用该子门)
 
 # 手续费（Maker/Taker）

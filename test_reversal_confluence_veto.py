@@ -8,7 +8,8 @@ from agents.trading.judge import MultiJudge
 
 # ─── Task 1: config 四段式 ───
 def test_reversal_veto_config_defaults():
-    assert DEFAULTS['llm_rsi_reversal_veto_enabled'] is True
+    # 默认 OFF：潜伏护栏，不改线上行为（真实磁带验证 0% 触发，见 verify 报告）
+    assert DEFAULTS['llm_rsi_reversal_veto_enabled'] is False
     assert DEFAULTS['reversal_veto_min_llm_confidence'] == 0
     assert HARD_LIMITS['reversal_veto_min_llm_confidence'] == (0, 100)
 

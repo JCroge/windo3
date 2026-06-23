@@ -15,3 +15,5 @@ archived: false
 handoff_context: openspec/changes/restore-llm-rsi-veto-power/.comet/handoff/design-context.json
 handoff_hash: dbc20782ffe0041e8645b4501d64a700e39356334c4f7232ebffdae966e4ef01
 direct_override: true
+build_command: python3 -m pytest test_reversal_confluence_veto.py -q
+verify_command: python3 -m pytest test_reversal_confluence_veto.py -q

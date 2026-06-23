@@ -23,7 +23,7 @@
 
 ### Requirement: 反转合流否决总开关
 
-反转合流否决 SHALL 受配置键 `llm_rsi_reversal_veto_enabled` 控制（按既有 four-segment 配置模式接入）。当其为 `false` 时，系统 SHALL NOT 触发该否决，行为与本变更前完全一致（LLM/RSI 仅缩仓、不否决），提供实盘即时回退能力。
+反转合流否决 SHALL 受配置键 `llm_rsi_reversal_veto_enabled` 控制（按既有 four-segment 配置模式接入），**默认 `false`（潜伏护栏）**。当其为 `false` 时，系统 SHALL NOT 触发该否决，行为与本变更前完全一致（LLM/RSI 仅缩仓、不否决），不改变任何线上决策。默认 OFF 的依据：真实磁带验证当前 0% 触发（线上 LLM 从不"反向开仓"表达反对），启用前须经 CF 回放 PnL 验证（见 verify 报告）。
 
 #### Scenario: 总开关关闭回退旧行为
 - **WHEN** `risk.llm_rsi_reversal_veto_enabled=false`，一个 `open_long` 候选满足双信号合流条件

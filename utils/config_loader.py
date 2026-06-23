@@ -175,8 +175,9 @@ DEFAULTS = {
     "long_live_regime_aware_range_enabled": True,
     "long_live_max_range_pos_choppy": 0.55,
     "long_live_daily_gain_range_pos_choppy": 0.50,
-    # 反转合流否决 (restore-llm-rsi-veto-power)
-    "llm_rsi_reversal_veto_enabled": True,
+    # 反转合流否决 (restore-llm-rsi-veto-power)：默认 OFF=潜伏护栏，不改线上行为
+    # （真实磁带验证当前 0% 触发：LLM 从不反向开仓；启用前须 CF 回放验证，见 verify 报告）
+    "llm_rsi_reversal_veto_enabled": False,
     "reversal_veto_min_llm_confidence": 0,
     "long_live_pullback_min_pct": 0.025,
     "long_live_pullback_timeout_hours": 4,

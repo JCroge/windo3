@@ -216,8 +216,8 @@ class MultiJudge(BaseAgent):
         self._long_live_regime_aware_range_enabled = config.get('long_live_regime_aware_range_enabled', True) if config else True
         self._long_live_max_range_pos_choppy = config.get('long_live_max_range_pos_choppy', 0.55) if config else 0.55
         self._long_live_daily_gain_range_pos_choppy = config.get('long_live_daily_gain_range_pos_choppy', 0.50) if config else 0.50
-        # 反转合流否决 (restore-llm-rsi-veto-power)
-        self._reversal_veto_enabled = config.get('llm_rsi_reversal_veto_enabled', True) if config else True
+        # 反转合流否决 (restore-llm-rsi-veto-power)：默认 OFF=潜伏护栏（见 verify 报告）
+        self._reversal_veto_enabled = config.get('llm_rsi_reversal_veto_enabled', False) if config else False
         self._reversal_veto_min_llm_confidence = config.get('reversal_veto_min_llm_confidence', 0) if config else 0
 
         # ═══ EV bucket sparse-sample protection ═══
@@ -2879,7 +2879,7 @@ class MultiJudge(BaseAgent):
         (a) LLM 明确看反向；(b) RSI 背离与开仓方向相反（读原始信号，不读被压制的分数）。
         返回 'reversal_confluence'=触发, None=不触发。不改 scoring。
         """
-        if not getattr(self, '_reversal_veto_enabled', True):
+        if not getattr(self, '_reversal_veto_enabled', False):
             return None
         dir_long = (action == 'open_long')
         dir_short = (action == 'open_short')

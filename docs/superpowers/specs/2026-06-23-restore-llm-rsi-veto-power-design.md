@@ -88,16 +88,13 @@ if veto:
 
 供 Reviewer 分桶 + backtest pre/post 分布对比。
 
-## 7. 验证（CLAUDE.md 红线：策略改动须 event_backtest）
+## 7. 验证（CLAUDE.md 红线）——实况见 verify 报告
 
-**event_backtest**：
-- 用 `event_backtest.py` 跑历史样本，两臂：开关 off（baseline）vs on。
-- 聚焦"被 veto 命中"的样本子集，对比其 PnL/胜率分布。
-- **通过标准**：
-  1. 被 veto 样本集净 PnL **不变差**（理想：改善）；
-  2. 全量无新回归（其余样本决策不变 → 归因字段证 veto_triggered=false 处 PnL 一致）；
-  3. veto 触发率落在合理低区间（合流罕见，不应大面积冻结开仓）。
-- **上线 default 与缓进**：依 event_backtest 结果定。若证据正向且触发率低，default on；否则 default off 先影子观察。
+**event_backtest 不适用**：`event_backtest.py` 走 RobustStrategy MA 信号，不调 `MultiJudge._make_decision`/`_ask_llm`，触达不到 veto 路径。改用真实决策磁带（`decision_replay_tape.jsonl`，含真实 LLM+RSI）口径，与 `utils/decision_replay.py` 同源。
+
+**真实磁带结论**（187 笔 accept-open）：`llm_relation` 只有 hold(155)/agree(32)、**从无 reverse** → veto（LLM 反向开仓 AND RSI 背离）**0/187 触发**。线上 LLM 从不"反向开仓"表达反对（只 hold）。
+
+**决定（用户拍板）：默认 OFF 潜伏护栏合并**——`llm_rsi_reversal_veto_enabled` 默认 `false`，不改任何线上决策（红线"上 live"不触发）。机制正确就位，未来 LLM 行为若产出 reverse 判断置 true 即生效；**启用前须 CF 回放 pre/post PnL 验证**（净 PnL 不变差 + 触发率低区间）。详见 `docs/superpowers/reports/2026-06-23-restore-llm-rsi-veto-power-backtest.md`。
 
 **单元测试**：
 - 合流触发 → defer 路由 + 归因写入；

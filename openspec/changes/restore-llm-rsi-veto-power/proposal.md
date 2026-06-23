@@ -43,6 +43,7 @@ config 开关关闭即回退旧行为（LLM/RSI 仍只缩仓）；阈值可调�
 
 ## Impact / Red Line
 
-- **策略改动 → 必须经 event_backtest 验证才能上 live**（CLAUDE.md 红线）。design/plan 必须含 event_backtest 验证方案与通过标准。
-- 生效需重启 live。
-- 鉴于"双信号合流"本就罕见，误杀风险低；上线 default 与缓进策略在 event_backtest 结果后于 design 阶段定稿。
+- **策略改动红线**：event_backtest 走 MA 策略、触达不到 LLM-Judge 的 veto 路径，故改用真实磁带（CF 回放口径）验证。
+- **实况（见 verify 报告）**：真实磁带 187 笔 accept 中 LLM `llm_relation` 从无 reverse（只 hold/agree）→ veto 当前 **0% 触发**。
+- **决定：默认 OFF 潜伏护栏合并**——不改任何线上决策（红线"上 live"不触发）；机制正确就位，启用前须 CF 回放 PnL 验证。
+- 更深结论：真正杠杆在病根1（rule_signal ±35 锁方向使 LLM 无从否决），下一 change 处理。
