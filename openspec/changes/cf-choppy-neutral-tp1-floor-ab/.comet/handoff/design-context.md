@@ -3,7 +3,7 @@
 - Change: cf-choppy-neutral-tp1-floor-ab
 - Phase: design
 - Mode: compact
-- Context hash: ea86685cbea2cc54614f3dd0ddfee901dfb06ab4975d6e8b44516d831b7fcac0
+- Context hash: d7773a1488b35c7673332fcd48a476fdb40e7165dad56a9894cd956ea4b4974f
 
 Generated-by: comet-handoff.sh
 
@@ -142,8 +142,8 @@ OpenSpec remains the canonical capability spec. This handoff is a deterministic,
 ## openspec/changes/cf-choppy-neutral-tp1-floor-ab/specs/cf-choppy-neutral-tp1-floor-ab/spec.md
 
 - Source: openspec/changes/cf-choppy-neutral-tp1-floor-ab/specs/cf-choppy-neutral-tp1-floor-ab/spec.md
-- Lines: 1-61
-- SHA256: 57b3828227bd44224a145621b6cafe29ef8eea43a4fc18c0a4d45b81ba113f44
+- Lines: 1-65
+- SHA256: ca9fb284ba3d2e7da669bdb3eec2fb241fa559eeded538ebd01840b172ad236c
 
 ```md
 ## ADDED Requirements
@@ -159,6 +159,10 @@ OpenSpec remains the canonical capability spec. This handoff is a deterministic,
 #### Scenario: 卡 TP1 地板仍过的单
 - **WHEN** 一条 scope 内 accept 记录两臂均为 accept
 - **THEN** 该记录归入 `survives_tp1_floor` 桶
+
+#### Scenario: 翻转归因纯度（只计 rr_below_floor）
+- **WHEN** 一条记录 CF 臂翻为 reject，但 reject 原因不是 `rr_below_floor`
+- **THEN** 该记录归入 `other_flip` 桶并在报告中标出，MUST NOT 计入 `tp1_floor_rejected` 或其结算——只有 reject 原因为 `rr_below_floor` 的翻转才归 `tp1_floor_rejected`
 
 ### Requirement: baseline 复现自检闸
 

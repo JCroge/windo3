@@ -1,11 +1,11 @@
 workflow: full
-phase: design
+phase: build
 build_mode: null
 isolation: null
 verify_mode: null
 base_ref: e947c33cdc96082faea8868528c0b283c7596085
-design_doc: null
-plan: null
+design_doc: docs/superpowers/specs/2026-06-24-cf-choppy-neutral-tp1-floor-ab-design.md
+plan: docs/superpowers/plans/2026-06-24-cf-choppy-neutral-tp1-floor-ab.md
 verify_result: pending
 verification_report: null
 branch_status: pending
@@ -13,4 +13,4 @@ created_at: 2026-06-24
 verified_at: null
 archived: false
 handoff_context: openspec/changes/cf-choppy-neutral-tp1-floor-ab/.comet/handoff/design-context.json
-handoff_hash: ea86685cbea2cc54614f3dd0ddfee901dfb06ab4975d6e8b44516d831b7fcac0
+handoff_hash: d7773a1488b35c7673332fcd48a476fdb40e7165dad56a9894cd956ea4b4974f
