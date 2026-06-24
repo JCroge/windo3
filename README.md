@@ -120,3 +120,20 @@ launchctl bootout gui/$(id -u)/com.cryptoarb.pattern-forward-shadow.{record,sett
 
 (仓库内 `pattern_forward_shadow.py` 是 lab 集成版,供可访问环境/对照;launchd 跑的是上面的自包含 runner。)
 前向验证须数周累积（新日线 + 10 日持仓成熟）；结算经诚实门，薄样本拒答。**确认稳健前不上实盘、不改 config。**
+
+## 周更 cron：choppy+neutral TP1 地板反事实重跑（observability-only）
+
+`cf_choppy_neutral_tp1_floor_ab.py`（change `cf-choppy-neutral-tp1-floor-ab`）量化「choppy+neutral 多单卡 TP1 口径地板」的反事实 PnL delta。现诚实门 `INSUFFICIENT_SAMPLE`（n=13<30），须等磁带 choppy+neutral 忠实样本累积后重跑。
+
+**调度 = 用户 crontab（不能自包含——驱动须读 repo 内 live 决策磁带 `data/decision_replay_tape.jsonl`）**：
+- crontab 条目：周一 10:13 重跑驱动，输出追加到 `~/Library/Logs/cf_choppy_tp1_floor_ab.log`（每次带时间戳头）。
+- **⚠️ 因 repo 在 `~/Desktop`（TCC 保护目录），`/usr/sbin/cron` 必须获 Full Disk Access**，否则读 repo 文件报 `Operation not permitted`（实测：cron 能执行 crontab、能 `cd` 进目录，但读文件被 TCC 拦）。授权：系统设置>隐私与安全性>完全磁盘访问 > `+` > ⌘⇧G 输入 `/usr/sbin/cron` > 开启；已运行的 cron 守护进程可能需 `sudo killall cron`（launchd 自动重起）使授权生效。
+- 看结果：`tail ~/Library/Logs/cf_choppy_tp1_floor_ab.log`，关注主桶 `tp1_floor_rejected` 桶的「诚实门裁定」——一旦不再 `INSUFFICIENT_SAMPLE` 即可据此判断是否对 choppy+neutral 上 TP1 地板（另起 change，须 event_backtest）。
+
+```bash
+crontab -l                                   # 查看周更条目
+tail -40 ~/Library/Logs/cf_choppy_tp1_floor_ab.log
+python3 cf_choppy_neutral_tp1_floor_ab.py    # 可访问环境下手动重跑
+```
+
+**确认稳健（诚实门跨过 INSUFFICIENT_SAMPLE）前不上实盘、不改 config。**
