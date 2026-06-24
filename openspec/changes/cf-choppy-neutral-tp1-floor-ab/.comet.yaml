@@ -1,7 +1,7 @@
 workflow: full
 phase: build
-build_mode: null
-isolation: null
+build_mode: subagent-driven-development
+isolation: branch
 verify_mode: null
 base_ref: e947c33cdc96082faea8868528c0b283c7596085
 design_doc: docs/superpowers/specs/2026-06-24-cf-choppy-neutral-tp1-floor-ab-design.md
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/cf-choppy-neutral-tp1-floor-ab/.comet/handoff/design-context.json
 handoff_hash: d7773a1488b35c7673332fcd48a476fdb40e7165dad56a9894cd956ea4b4974f
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q cf_choppy_neutral_tp1_floor_ab.py
+verify_command: python3 -m pytest tests/test_cf_choppy_neutral_tp1_floor_ab.py tests/test_cf_red_line_guard.py -q
