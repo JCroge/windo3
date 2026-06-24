@@ -2,6 +2,8 @@
 comet_change: cf-choppy-neutral-tp1-floor-ab
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
+status: final
 ---
 
 # Design: cf-choppy-neutral-tp1-floor-ab

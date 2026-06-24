@@ -2,6 +2,7 @@
 change: cf-choppy-neutral-tp1-floor-ab
 design-doc: docs/superpowers/specs/2026-06-24-cf-choppy-neutral-tp1-floor-ab-design.md
 base-ref: a68e4e3fc613b84be127314d50c303a8b303b5b0
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 # cf-choppy-neutral-tp1-floor-ab Implementation Plan
@@ -14,6 +15,7 @@ base-ref: a68e4e3fc613b84be127314d50c303a8b303b5b0
 
 **Tech Stack:** Python 3.9, asyncio, sqlite3；复用 `utils.decision_replay.replay_decision` / `utils.counterfactual_pnl.resolve_counterfactual` / `utils.cf_honesty_gate.summarize_bucket` / `utils.symbol.to_internal`。
 
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 ## File Structure
@@ -24,6 +26,7 @@ base-ref: a68e4e3fc613b84be127314d50c303a8b303b5b0
 
 > 结算栈（`load_bars`/`dedup_clusters`/`settle_clusters`/`extract_settle_fields`/`fuzzy_join_real_pnl`/`bucket_verdict`）与 `cf_ev_decouple_ab.py` 逐字节同形态——直接照搬，仅改 toggle 常量、scope 过滤、翻转纯度三处。
 
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 ## Task 1: 驱动骨架 + 加载 + scope 过滤
@@ -170,6 +173,7 @@ git add cf_choppy_neutral_tp1_floor_ab.py tests/test_cf_choppy_neutral_tp1_floor
 git commit -m "feat(cf-choppy-tp1-floor): 驱动骨架 + 加载 + scope 过滤"
 ```
 
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 ## Task 2: 两臂分类 + 自检闸 + 翻转纯度
@@ -302,6 +306,7 @@ git add cf_choppy_neutral_tp1_floor_ab.py tests/test_cf_choppy_neutral_tp1_floor
 git commit -m "feat(cf-choppy-tp1-floor): 两臂分类 + 自检闸 + rr_below_floor 翻转纯度"
 ```
 
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 ## Task 3: 结算栈（照搬 ev-decouple 同形态）
@@ -502,6 +507,7 @@ git add cf_choppy_neutral_tp1_floor_ab.py tests/test_cf_choppy_neutral_tp1_floor
 git commit -m "feat(cf-choppy-tp1-floor): 结算栈（resolve_counterfactual+klines TP1 保守 + 诚实门）"
 ```
 
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 ## Task 4: main() 编排 + 红线守卫
@@ -590,6 +596,7 @@ git add cf_choppy_neutral_tp1_floor_ab.py tests/test_cf_red_line_guard.py
 git commit -m "feat(cf-choppy-tp1-floor): main 编排(主桶+mixed旁路) + 红线禁读守卫"
 ```
 
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 ## Task 5: 真跑 + 全量基线
@@ -613,6 +620,7 @@ git add openspec/changes/cf-choppy-neutral-tp1-floor-ab/tasks.md
 git commit -m "chore(cf-choppy-tp1-floor): tasks 收尾 + 真跑结论待入 verify 报告"
 ```
 
+archived-with: 2026-06-24-cf-choppy-neutral-tp1-floor-ab
 ---
 
 ## Self-Review
