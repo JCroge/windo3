@@ -1,0 +1,16 @@
+workflow: full
+phase: design
+build_mode: null
+isolation: null
+verify_mode: null
+base_ref: e947c33cdc96082faea8868528c0b283c7596085
+design_doc: null
+plan: null
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-24
+verified_at: null
+archived: false
+handoff_context: openspec/changes/cf-choppy-neutral-tp1-floor-ab/.comet/handoff/design-context.json
+handoff_hash: ea86685cbea2cc54614f3dd0ddfee901dfb06ab4975d6e8b44516d831b7fcac0
