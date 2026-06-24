@@ -1,5 +1,4 @@
 """cf-choppy-neutral-tp1-floor-ab 驱动单测。"""
-import asyncio
 
 
 def test_is_accept():
@@ -10,13 +9,12 @@ def test_is_accept():
     assert _is_accept(None) is False
 
 
-def _rec(symbol, regime, direction, action="open_long"):
+def _rec(symbol, regime, direction):
     return {"symbol": symbol, "decision": "accept", "replayable": True,
             "state_snapshot_before_decision": {"x": 1},
             "regime_state": regime,
             "tech_analysis": {"trend": {"direction": direction}},
-            "trade_decision_output": {"plan": {"side": "long"}},
-            "_action": action}
+            "trade_decision_output": {"plan": {"side": "long"}}}
 
 
 def test_scope_filter_choppy_neutral_long():
@@ -46,7 +44,7 @@ def test_scope_filter_excludes_short():
     assert scope_filter([r], regime="choppy") == []
 
 
-def test_classify_tp1_floor_rejected():
+async def test_classify_tp1_floor_rejected():
     import cf_choppy_neutral_tp1_floor_ab as m
 
     async def fake_replay(rec, cfg):
@@ -57,7 +55,7 @@ def test_classify_tp1_floor_rejected():
 
     rec = {"symbol": "HYPE-USDT", "decision": "accept", "replayable": True,
            "state_snapshot_before_decision": {"x": 1}}
-    res = asyncio.run(m.classify_accepts([rec], replay_fn=fake_replay))
+    res = await m.classify_accepts([rec], replay_fn=fake_replay)
     assert res["mismatch"] == 0
     assert len(res["tp1_floor_rejected"]) == 1
     assert len(res["survives_tp1_floor"]) == 0
@@ -65,7 +63,7 @@ def test_classify_tp1_floor_rejected():
     assert res["rejected_reasons"]["rr_below_floor"] == 1
 
 
-def test_classify_survives():
+async def test_classify_survives():
     import cf_choppy_neutral_tp1_floor_ab as m
 
     async def fake_replay(rec, cfg):
@@ -73,12 +71,12 @@ def test_classify_survives():
 
     rec = {"symbol": "X-USDT", "decision": "accept", "replayable": True,
            "state_snapshot_before_decision": {"x": 1}}
-    res = asyncio.run(m.classify_accepts([rec], replay_fn=fake_replay))
+    res = await m.classify_accepts([rec], replay_fn=fake_replay)
     assert len(res["survives_tp1_floor"]) == 1
     assert len(res["tp1_floor_rejected"]) == 0
 
 
-def test_classify_other_flip_excluded():
+async def test_classify_other_flip_excluded():
     import cf_choppy_neutral_tp1_floor_ab as m
 
     async def fake_replay(rec, cfg):
@@ -89,12 +87,12 @@ def test_classify_other_flip_excluded():
 
     rec = {"symbol": "Q-USDT", "decision": "accept", "replayable": True,
            "state_snapshot_before_decision": {"x": 1}}
-    res = asyncio.run(m.classify_accepts([rec], replay_fn=fake_replay))
+    res = await m.classify_accepts([rec], replay_fn=fake_replay)
     assert len(res["other_flip"]) == 1
     assert len(res["tp1_floor_rejected"]) == 0
 
 
-def test_classify_baseline_mismatch_excluded():
+async def test_classify_baseline_mismatch_excluded():
     import cf_choppy_neutral_tp1_floor_ab as m
 
     async def fake_replay(rec, cfg):
@@ -102,7 +100,7 @@ def test_classify_baseline_mismatch_excluded():
 
     rec = {"symbol": "M-USDT", "decision": "accept", "replayable": True,
            "state_snapshot_before_decision": {"x": 1}}
-    res = asyncio.run(m.classify_accepts([rec], replay_fn=fake_replay))
+    res = await m.classify_accepts([rec], replay_fn=fake_replay)
     assert res["mismatch"] == 1
     assert len(res["tp1_floor_rejected"]) == 0
     assert len(res["survives_tp1_floor"]) == 0
