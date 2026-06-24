@@ -81,3 +81,12 @@ def test_decision_paths_do_not_read_pattern_research():
         src = _src(mp)
         for f in forbidden:
             assert f not in src, f"{mp} 不得引用形态研究模块 {f}"
+
+
+def test_decision_paths_do_not_read_choppy_tp1_floor_ab():
+    """choppy-neutral TP1 地板反事实驱动严禁被决策/风控路径 import。"""
+    for mp in ["agents.trading.judge", "agents.trading.executor", "executor",
+               "agents.trading.portfolio_risk_guard", "agents.trading.reviewer",
+               "agents.trading.position_analyst"]:
+        src = _src(mp)
+        assert "cf_choppy_neutral_tp1_floor_ab" not in src, mp

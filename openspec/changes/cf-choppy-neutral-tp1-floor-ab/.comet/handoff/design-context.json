@@ -1,0 +1,14 @@
+{
+  "change": "cf-choppy-neutral-tp1-floor-ab",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d7773a1488b35c7673332fcd48a476fdb40e7165dad56a9894cd956ea4b4974f",
+  "files": [
+    { "path": "openspec/changes/cf-choppy-neutral-tp1-floor-ab/proposal.md", "sha256": "852168f5bd4acfc0092a0849c7caffc78961bed7d6391f0ee0486b61196e90bc" },
+    { "path": "openspec/changes/cf-choppy-neutral-tp1-floor-ab/design.md", "sha256": "5ae861450bbe6f3d89be03eedd4e45815097ad11322efb589deec5496cd5801b" },
+    { "path": "openspec/changes/cf-choppy-neutral-tp1-floor-ab/tasks.md", "sha256": "9b1ddec5d455a903ebffe91ff51fe7358cfdd7c265b18fd63573a6045147baf6" },
+    { "path": "openspec/changes/cf-choppy-neutral-tp1-floor-ab/specs/cf-choppy-neutral-tp1-floor-ab/spec.md", "sha256": "ca9fb284ba3d2e7da669bdb3eec2fb241fa559eeded538ebd01840b172ad236c" }
+  ]
+}
