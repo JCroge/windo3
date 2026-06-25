@@ -2540,6 +2540,45 @@ class MultiJudge(BaseAgent):
             return "多空信号对冲，净得分接近零，观望"
         return "信号强度不足，观望"
 
+    def _compute_directional_evidence(self, action: str, plan: dict,
+                                      tech: dict, score: float) -> tuple:
+        """共享 helper：计算方向论据 (aligned, path_evidence_raw)。
+
+        返回 (aligned: bool, path_evidence_raw: bool)。
+
+        - `aligned`: HTF/daily bias 一致 + 无 15m block + 信号强度达标。
+        - `path_evidence_raw`: 三阈值客观判定 **不含** lever1 flag(_path_evidence_aligned_enabled)。
+          调用 `_select_rr_floor` 的 floor-grant 路径须在此基础上自行与 lever1 flag AND，
+          确保行为零变更。本 helper 供 choppy flat gate 直接使用 ungated 客观判定。
+        """
+        plan = plan or {}
+        tech = tech or {}
+        trend = tech.get('trend', {}) or {}
+        entry_timing = tech.get('entry_timing', {}) or {}
+        ectx = tech.get('entry_context', {}) or {}
+        min_deferred_score = getattr(self, '_min_deferred_signal_score', 45)
+
+        sym_dir = trend.get('direction', 'neutral')
+        htf_bias = trend.get('higher_tf_bias', 'neutral')
+        daily_bias = trend.get('daily_bias', 'neutral')
+        block_long = entry_timing.get('tf_15m_block_long', False)
+
+        aligned = (sym_dir == 'bullish'
+                   and (htf_bias == 'bullish' or daily_bias == 'bullish')
+                   and not block_long
+                   and abs(score) >= min_deferred_score)
+
+        # path_evidence_raw: 三阈值判定 — 去掉 lever1 flag，ungated 客观
+        strength = trend.get('strength', 0)
+        pre12h = ectx.get('pre_12h_return_pct', 0.0)
+        range_pos = ectx.get('position_in_24h_range', 0.5)
+        path_evidence_raw = (sym_dir == 'bullish'
+                             and strength >= getattr(self, '_path_evidence_min_strength', 60)
+                             and pre12h >= getattr(self, '_path_evidence_min_pre12h_return', 0.03)
+                             and range_pos <= getattr(self, '_path_evidence_max_range_pos', 0.92))
+
+        return (aligned, path_evidence_raw)
+
     def _select_rr_floor(self, action: str, plan: dict, tech: dict,
                          score: float) -> tuple:
         """统一 R:R floor 选择，主路径和 deferred 路径必须共用。
@@ -2567,7 +2606,6 @@ class MultiJudge(BaseAgent):
         low_rr_slot_enabled = getattr(self, '_low_rr_slot_enabled', True)
         low_rr_long_aligned_enabled = getattr(self, '_low_rr_long_aligned_enabled', True)
         short_regime_guard_enabled = getattr(self, '_short_regime_guard_enabled', True)
-        min_deferred_score = getattr(self, '_min_deferred_signal_score', 45)
 
         if plan.get('is_probe'):
             return (
@@ -2586,30 +2624,17 @@ class MultiJudge(BaseAgent):
         if (is_long and eff_regime in ('mixed', 'choppy')
                 and low_rr_slot_enabled
                 and low_rr_long_aligned_enabled):
+            # 通过共享 helper 获取 aligned + path_evidence_raw
+            aligned, pe_raw = self._compute_directional_evidence(action, plan, tech, score)
             trend = (tech or {}).get('trend', {}) or {}
+            ectx = (tech or {}).get('entry_context', {}) or {}
             entry_timing = (tech or {}).get('entry_timing', {}) or {}
             sym_dir = trend.get('direction', 'neutral')
             htf_bias = trend.get('higher_tf_bias', 'neutral')
             daily_bias = trend.get('daily_bias', 'neutral')
-            block_long = entry_timing.get('tf_15m_block_long', False)
-            aligned = (sym_dir == 'bullish'
-                       and (htf_bias == 'bullish' or daily_bias == 'bullish')
-                       and not block_long
-                       and abs(score) >= min_deferred_score)
-            # trend-entry-rr-fidelity 杠杆① P1:bias 漏报时用入场前客观路径证据补判
-            path_evidence = False
-            ectx = (tech or {}).get('entry_context', {}) or {}
-            if (not aligned
-                    and getattr(self, '_path_evidence_aligned_enabled', False)
-                    and not block_long
-                    and abs(score) >= min_deferred_score):
-                strength = trend.get('strength', 0)
-                pre12h = ectx.get('pre_12h_return_pct', 0.0)
-                range_pos = ectx.get('position_in_24h_range', 0.5)
-                path_evidence = (sym_dir == 'bullish'
-                                 and strength >= getattr(self, '_path_evidence_min_strength', 60)
-                                 and pre12h >= getattr(self, '_path_evidence_min_pre12h_return', 0.03)
-                                 and range_pos <= getattr(self, '_path_evidence_max_range_pos', 0.92))
+            # floor-grant 用 lever1 门控(行为零变):path_evidence = pe_raw AND lever1_flag
+            path_evidence = (pe_raw
+                             and getattr(self, '_path_evidence_aligned_enabled', False))
             if aligned:
                 return (
                     rr_floor_long_aligned,
