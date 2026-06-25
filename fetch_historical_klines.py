@@ -4,9 +4,15 @@ import ccxt, sqlite3, time, argparse
 from datetime import datetime, timezone
 
 DB = "data/klines.db"
-DEFAULT_SYMBOLS = ["BTC","ETH","SOL","XRP","DOGE","BCH","UNI","NEAR","XLM","SUI",
-    "WLD","TRUMP","AVAX","LINK","LTC","ADA","TON","APT","ARB","FIL","PEPE","ONDO",
-    "TAO","INJ","SEI","TIA","RUNE","AAVE","MKR","ENA"]
+DEFAULT_SYMBOLS = ["BTC","ETH","MEGA","SOL","USD1","XRP","ZEC","BNB","DOGE","WLD",
+    "TRX","ADA","XPL","AAVE","SPCXB","XAUT","PAXG","SUI","NEAR","RLUSD","SYN",
+    "TAO","RE","PEPE","AVAX","LINK","U","XLM","ENA","HEI","LTC","SAHARA","HYPER",
+    "UNI","ATM","UTK","HBAR","PUMP","TRUMP","BCH","ONDO","ASTER","ID","ALICE","FET",
+    "TON","FIL","DASH","CELO","RESOLV","ALLO","SNDKB","RENDER","WBTC","INJ","G",
+    "JTO","WLFI","DOT","ICP","MUB","OPG","OP","SEI","POL","PENGU","AVNT","ARB",
+    "ZRO","CHZ","APT","TIA","币安人生","DYDX","AXS","DEXE","S","ETC","XUSD","BIO",
+    "SHIB","MITO","ALGO","JST","LDO","BICO","MMT","EIGEN","ORDI","CRV","BEL",
+    "ETHFI","ZAMA","ATOM","HOME","VIRTUAL","OPN","LUNC","STRAX","TNSR"]
 
 def _ensure_table(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS klines(
