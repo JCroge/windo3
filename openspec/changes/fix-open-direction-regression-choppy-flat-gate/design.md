@@ -27,9 +27,9 @@
    - `eff_regime = regime_manager.snapshot()['effective_regime']`;若 `eff_regime not in {choppy, mixed}` → allow(趋势体制本来就好)。
    - choppy/mixed 时:`has_thesis = _has_directional_thesis(action, plan, tech)`;`has_thesis` → allow,否则 reject(reason=`regime_flat_no_thesis`)。
    - `regime_flat_gate_enabled=False` → 永远 allow(回滚)。
-2. **`_has_directional_thesis`** 复用 `_select_rr_floor` 的 aligned/path_evidence 判定(提取共享或调用),方向相关:
-   - long:`aligned`(sym bias bullish) OR `path_evidence`(bullish 客观证据)。
-   - short:已有 `_classify_short_entry_risk` 要求 daily_bearish/结构,等价"有方向论据"——short 的 thesis = 该 gate 已通过的结构条件(避免与短单门重复;设计阶段定:short 直接复用 short_gate 结果或 daily_bearish bias)。
+2. **long-only(已定)**:本门只作用 `open_long`,`open_short` 直接放行——做空已由 `_classify_short_entry_risk` 上游强制看跌论据(choppy 里无看跌论据的 short 走不到本门),long-only 避免双重门、不重写短单逻辑;证据也是 long 主导。
+3. **`_has_directional_thesis(plan, tech)`**(long)复用 `_select_rr_floor` 的 `aligned`(sym bias bullish) OR `path_evidence`(bullish 客观证据,三阈值禁前视)判定,提取共享 helper,与 `_select_rr_floor` 同调避免漂移。
+4. **体制范围(已定)**:choppy AND mixed 都拦(坏单是 choppy/mixed/neutral 一锅),path_evidence/aligned 救回两体制里真有方向的。
 3. **调用点**:主开仓路径 + 15m/pullback/chase 三 deferred,与其它门并列(单点收口,不在调用点重写)。
 4. **attribution**:`regime_flat_gate`(版本)/`regime_flat_decision`(allow/reject)/`has_directional_thesis`(bool)/`regime_flat_reason`,经 `_build_attribution` + `_rejection_attribution` 双写。
 5. **event_backtest 同步**:在 event_backtest 的开仓判定加同构硬门(红线)。

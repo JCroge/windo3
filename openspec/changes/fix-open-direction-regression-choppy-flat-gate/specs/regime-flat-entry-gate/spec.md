@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: 体制空仓硬门(choppy/mixed + 无方向论据则拒开仓)
-系统 SHALL 提供单点收口的体制空仓硬门 `Judge._classify_regime_flat_gate`,当 `effective_regime ∈ {choppy, mixed}` 且开仓候选**无方向论据**时拒绝 open(reason=`regime_flat_no_thesis`)。**方向论据** MUST 复用 `_select_rr_floor` 的判定:`aligned`(symbol daily/HTF bias 与开仓方向一致) OR `path_evidence`(bias 漏报时的客观证据:trend.strength + pre_12h_return + 24h range_pos 三阈值,禁前视)。趋势体制(bullish/bearish)直接放行。该门 MUST 由主开仓路径与三条 deferred 路径(15m/pullback/chase)统一调用,不在调用点重写。`regime_flat_gate_enabled` 默认 True,`False` 时永远放行(回滚)。
+系统 SHALL 提供单点收口的体制空仓硬门 `Judge._classify_regime_flat_gate`,**仅作用于 `open_long`**(`open_short` 直接放行——做空已由 `_classify_short_entry_risk` 上游强制看跌论据,choppy 里无看跌论据的 short 走不到本门;本门 long-only 避免双重门),当 `effective_regime ∈ {choppy, mixed}` 且 long 候选**无方向论据**时拒绝 open(reason=`regime_flat_no_thesis`)。**方向论据** MUST 复用 `_select_rr_floor` 的 long 判定:`aligned`(symbol daily/HTF bias bullish 一致) OR `path_evidence`(bias 漏报时的客观证据:trend.strength + pre_12h_return + 24h range_pos 三阈值,禁前视)。趋势体制(bullish/bearish)直接放行。该门 MUST 由主开仓路径与三条 deferred 路径(15m/pullback/chase)统一调用,不在调用点重写。`regime_flat_gate_enabled` 默认 True,`False` 时永远放行(回滚)。
 
 #### Scenario: choppy+无方向论据 → 拒
 - **WHEN** effective_regime=choppy(或 mixed) 且开仓候选 NOT aligned 且 NOT path_evidence
@@ -22,6 +22,10 @@
 #### Scenario: 非开仓动作不受影响
 - **WHEN** action 不是 open_long/open_short(如 close/reduce/add)
 - **THEN** 硬门直接放行(只管开仓)
+
+#### Scenario: open_short 不被本门拦(long-only)
+- **WHEN** action=open_short(即便 effective_regime=choppy/mixed)
+- **THEN** 本门直接放行——做空的看跌论据由 `_classify_short_entry_risk` 上游处理,本门只作用 open_long
 
 ### Requirement: 硬门 attribution 透传
 系统 SHALL 在 accept 与 reject 两条路径都写入硬门归因字段 `regime_flat_gate`/`regime_flat_decision`/`has_directional_thesis`/`regime_flat_reason`,经 `_build_attribution` 与 `_rejection_attribution` 收口。
