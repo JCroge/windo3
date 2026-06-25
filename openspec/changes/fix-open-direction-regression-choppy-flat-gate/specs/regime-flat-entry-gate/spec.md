@@ -32,11 +32,11 @@
 - **THEN** 本门直接放行——做空的看跌论据由 `_classify_short_entry_risk` 上游处理,本门只作用 open_long
 
 ### Requirement: 硬门 attribution 透传
-系统 SHALL 在 accept 与 reject 两条路径都写入硬门归因字段 `regime_flat_gate`/`regime_flat_decision`/`has_directional_thesis`/`regime_flat_reason`,经 `_build_attribution` 与 `_rejection_attribution` 收口。
+系统 SHALL 在 **accept 路径与主开仓 reject 路径**写入硬门归因字段 `regime_flat_gate`/`regime_flat_decision`/`has_directional_thesis`/`regime_flat_reason`,经 `_build_attribution`(accept) 与 `_rejection_attribution`(主 reject) 收口。三条 deferred 路径的 flat-gate 拒单经既有共享 `_publish_hold(symbol, reason, warnings)` 发出(携带 `regime_flat_no_thesis` reason),与现有 deferred 拒单(regime_reject/position_guard/short_gate/quality_gate)同模式、不携结构化四字段——deferred 路径的结构化归因属既有限制,如需统一另起 change(不在本 change 用侵入式改 `_publish_hold` 签名)。
 
-#### Scenario: 拒单带归因
-- **WHEN** 硬门拒一单
-- **THEN** 拒单 attribution 含 regime_flat_decision=reject、has_directional_thesis=false、regime_flat_reason=regime_flat_no_thesis
+#### Scenario: 主路径拒单带归因
+- **WHEN** 主开仓路径硬门拒一单
+- **THEN** 拒单 attribution(`_rejection_attribution`) 含 regime_flat_decision=reject、has_directional_thesis=false、regime_flat_reason 含 regime_flat_no_thesis
 
 #### Scenario: 放行带归因
 - **WHEN** 硬门放行一单
