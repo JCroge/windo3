@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 DB = "data/klines.db"
 DEFAULT_SYMBOLS = ["BTC","ETH","MEGA","SOL","USD1","XRP","ZEC","BNB","DOGE","WLD",
     "TRX","ADA","XPL","AAVE","SPCXB","XAUT","PAXG","SUI","NEAR","RLUSD","SYN",
-    "TAO","RE","PEPE","AVAX","LINK","U","XLM","ENA","HEI","LTC","SAHARA","HYPER",
+    "TAO","RE","PEPE","AVAX","LINK","XLM","ENA","HEI","LTC","SAHARA","HYPER",
     "UNI","ATM","UTK","HBAR","PUMP","TRUMP","BCH","ONDO","ASTER","ID","ALICE","FET",
-    "TON","FIL","DASH","CELO","RESOLV","ALLO","SNDKB","RENDER","WBTC","INJ","G",
+    "TON","FIL","DASH","CELO","RESOLV","ALLO","RENDER","SNDKB","WBTC","INJ",
     "JTO","WLFI","DOT","ICP","MUB","OPG","OP","SEI","POL","PENGU","AVNT","ARB",
-    "ZRO","CHZ","APT","TIA","币安人生","DYDX","AXS","DEXE","S","ETC","XUSD","BIO",
+    "ZRO","CHZ","APT","TIA","DYDX","AXS","DEXE","ETC","XUSD","BIO",
     "SHIB","MITO","ALGO","JST","LDO","BICO","MMT","EIGEN","ORDI","CRV","BEL",
-    "ETHFI","ZAMA","ATOM","HOME","VIRTUAL","OPN","LUNC","STRAX","TNSR"]
+    "ETHFI","ZAMA","ATOM","VIRTUAL","HOME","OPN","LUNC","STRAX","TNSR",
+    "LRC","ROBO","CAKE","WIF"]
 
 def _ensure_table(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS klines(
