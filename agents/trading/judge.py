@@ -178,6 +178,8 @@ class MultiJudge(BaseAgent):
         # trend-entry-levers-default-on: 默认开(口径修正,与 config_loader.DEFAULTS 一致);
         # env LADDER_RR_ENABLED=false 可即时关。lever1(path_evidence) 仍默认关。
         self._ladder_rr_enabled = config.get('ladder_rr_enabled', True) if config else True
+        # 体制空仓硬门(choppy flat gate): choppy/mixed + 无方向论据时拒 open_long
+        self._regime_flat_gate_enabled = config.get('regime_flat_gate_enabled', True) if config else True
         # trend-entry-shadow-decision-logger: 前向影子决策记录器开关 + fire-and-forget 任务引用集
         self._shadow_logger_enabled = config.get('shadow_decision_logger_enabled', True) if config else True
         self._shadow_tasks = set()
