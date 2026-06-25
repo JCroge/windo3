@@ -2,6 +2,7 @@
 change: fix-open-direction-regression-choppy-flat-gate
 design-doc: docs/superpowers/specs/2026-06-25-fix-open-direction-regression-choppy-flat-gate-design.md
 base-ref: 2bb6784
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 # 体制空仓硬门(choppy flat gate)Implementation Plan
@@ -24,6 +25,7 @@ base-ref: 2bb6784
 - **不回滚** ev-decouple / lever2(钝器,会误伤趋势单)。
 - net/现有门行为零回归;改 live 需用户手动 OS 重启。
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## File Structure
@@ -36,6 +38,7 @@ base-ref: 2bb6784
 | `event_backtest.py` | 同构硬门 | Modify |
 | `tests/test_regime_flat_gate.py` | 新门 + helper 单测 | Create |
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Task 1: config 开关
@@ -84,6 +87,7 @@ git add utils/config_loader.py config.yaml agents/trading/judge.py tests/test_re
 git commit -m "feat(choppy-flat-gate): config regime_flat_gate_enabled 默认开 + env 回滚"
 ```
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Task 2: 提取 `_compute_directional_evidence`(零行为变更重构)
@@ -145,6 +149,7 @@ git add agents/trading/judge.py tests/test_regime_flat_gate.py
 git commit -m "refactor(choppy-flat-gate): 提取 _compute_directional_evidence(ungated path_evidence_raw),_select_rr_floor 行为零变"
 ```
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Task 3: `_classify_regime_flat_gate` + `_has_directional_thesis`
@@ -250,6 +255,7 @@ git add agents/trading/judge.py tests/test_regime_flat_gate.py
 git commit -m "feat(choppy-flat-gate): _classify_regime_flat_gate(long-only) + _has_directional_thesis(ungated)"
 ```
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Task 4: 接入主开仓 + 三 deferred 路径(单点收口)
@@ -302,6 +308,7 @@ git add agents/trading/judge.py tests/test_regime_flat_gate.py
 git commit -m "feat(choppy-flat-gate): 接入主开仓 + 三 deferred 路径(单点收口)"
 ```
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Task 5: attribution 四字段(accept + reject 双写)
@@ -343,6 +350,7 @@ git add agents/trading/judge.py tests/test_regime_flat_gate.py
 git commit -m "feat(choppy-flat-gate): attribution 四字段 accept+reject 双写"
 ```
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Task 6: event_backtest 同构硬门
@@ -382,6 +390,7 @@ git add event_backtest.py tests/
 git commit -m "feat(choppy-flat-gate): event_backtest 同构硬门(thesis=aligned-only 口径,verify 标注)"
 ```
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Task 7: 全量基线 + entry_context 前置验证
@@ -410,6 +419,7 @@ git add openspec/changes/fix-open-direction-regression-choppy-flat-gate/tasks.md
 git commit -m "chore(choppy-flat-gate): tasks 收尾 + 全量 1437+ 绿"
 ```
 
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
 ---
 
 ## Self-Review

@@ -2,6 +2,8 @@
 comet_change: fix-open-direction-regression-choppy-flat-gate
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-25-fix-open-direction-regression-choppy-flat-gate
+status: final
 ---
 
 # Design: fix-open-direction-regression-choppy-flat-gate
