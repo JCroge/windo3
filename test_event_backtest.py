@@ -49,7 +49,10 @@ def test_long_signal_to_tp():
     # 实际: atr=1.01, atr_pct=0.01, sl_dist=min(0.025, 0.05)=0.025
     # 入场 101, SL=98.475, TP=101*(1+0.0375)=104.79
     # 价格涨到 105.21, TP 触发 @104.79
-    eb = EventBacktest(initial_capital=100, entry_threshold=30)  # 30 让 rule_signal=35 通过
+    # regime_flat_gate_enabled=False: 本测试验 TP 触发机制，不测 flat gate，关闭 gate 避免
+    # htf_bias=neutral(默认) 在 choppy/mixed 体制下拦截开仓。
+    eb = EventBacktest(initial_capital=100, entry_threshold=30,  # 30 让 rule_signal=35 通过
+                       regime_flat_gate_enabled=False)
     result = eb.run(df, 'TEST')
     assert result['total_trades'] >= 1, f"Expected trades, got {result['total_trades']}"
     trade = result['trades'][0]
@@ -63,7 +66,9 @@ def test_long_signal_to_sl():
     # 入场后价格下跌
     prices = [100] * 5 + [101, 100, 98, 95, 90] + [90] * 5
     df = make_df(prices, signals={'entry_long': [4]})
-    eb = EventBacktest(initial_capital=100, entry_threshold=30)
+    # regime_flat_gate_enabled=False: 本测试验 SL 触发机制，不测 flat gate。
+    eb = EventBacktest(initial_capital=100, entry_threshold=30,
+                       regime_flat_gate_enabled=False)
     result = eb.run(df, 'TEST')
     assert result['total_trades'] >= 1
     trade = result['trades'][0]
@@ -253,7 +258,9 @@ def test_end_of_data_forces_close():
     """数据结束时未平仓位强制平仓"""
     prices = [100] * 5 + [101] + [101] * 5  # 入场后价格不动
     df = make_df(prices, signals={'entry_long': [4]})
-    eb = EventBacktest(initial_capital=100, entry_threshold=30)
+    # regime_flat_gate_enabled=False: 本测试验强制平仓机制，不测 flat gate。
+    eb = EventBacktest(initial_capital=100, entry_threshold=30,
+                       regime_flat_gate_enabled=False)
     result = eb.run(df, 'TEST')
     assert len(result['trades']) >= 1
     # 找到强制平仓的（exit_reason='end_of_data'）

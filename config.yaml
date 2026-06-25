@@ -34,6 +34,8 @@ risk:
   # 伪共振降权（pseudo-resonance-downweight 病根1a）：MA趋势块(rule/trend/htf同源)同向封顶
   pseudo_resonance_downweight_enabled: false  # 默认OFF保守起步(改核心_compute_score)；启用前须CF回放验证
   ma_bloc_cap: 50                       # MA块同向合计封顶(缓进50,目标45;磁带实证MA簇占score中位67%)
+  # 体制空仓硬门（choppy flat gate）：choppy/mixed 体制 + 无方向论据时拒 open_long，修复开仓方向回归
+  regime_flat_gate_enabled: true        # env REGIME_FLAT_GATE_ENABLED=false 可即时回滚
 
 # 手续费（Maker/Taker）
 fees:

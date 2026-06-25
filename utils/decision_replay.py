@@ -94,6 +94,7 @@ _EPOCH_FALLBACK = {
     "reversal_veto_min_llm_confidence": 0,           # 防御性 no-op：子门，veto off 时无效，0=不启用
     "pseudo_resonance_downweight_enabled": False,    # 真翻转：pseudo-resonance-downweight 新增，纪元前无伪共振降权=off
     "ma_bloc_cap": 50,                               # 防御性 no-op：仅 downweight enabled=True 生效，旧纪元 enabled=False 不影响判定
+    "regime_flat_gate_enabled": False,               # 真翻转：choppy-flat-gate 新增，纪元前无 flat-gate=off，replay 忠实还原旧判定（同 ladder_rr_enabled 模式）
 }
 
 # 晚加但不影响 Judge gate 决策的键。守卫测试（CF-T2）消费此集合：snapshot-缺键
@@ -231,6 +232,7 @@ def _install_config_flags(judge, config):
     judge._path_evidence_max_range_pos = g("path_evidence_max_range_pos", 0.92)
     judge._path_evidence_min_strength = g("path_evidence_min_strength", 60)
     judge._ladder_rr_enabled = g("ladder_rr_enabled", True)
+    judge._regime_flat_gate_enabled = g("regime_flat_gate_enabled", True)
 
     # ── probe_short ──
     judge._probe_short_max_position_pct = g("probe_short_max_position_pct", 0.3)

@@ -218,6 +218,8 @@ DEFAULTS = {
     "decision_tape_retention_days": 90,
     "tick_capture_retention_days": 30,
     "position_resync_confirm_ticks": 2,
+    # 体制空仓硬门(choppy flat gate): choppy/mixed + 无方向论据时拒 open_long，默认开
+    "regime_flat_gate_enabled": True,
 }
 
 
@@ -392,6 +394,8 @@ def _read_env_overrides() -> dict:
         "DECISION_TAPE_RETENTION_DAYS": ("decision_tape_retention_days", int),
         "TICK_CAPTURE_RETENTION_DAYS": ("tick_capture_retention_days", int),
         "POSITION_RESYNC_CONFIRM_TICKS": ("position_resync_confirm_ticks", int),
+        # 体制空仓硬门回滚开关
+        "REGIME_FLAT_GATE_ENABLED": ("regime_flat_gate_enabled", _to_bool),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)

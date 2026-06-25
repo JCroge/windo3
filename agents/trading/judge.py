@@ -178,6 +178,8 @@ class MultiJudge(BaseAgent):
         # trend-entry-levers-default-on: 默认开(口径修正,与 config_loader.DEFAULTS 一致);
         # env LADDER_RR_ENABLED=false 可即时关。lever1(path_evidence) 仍默认关。
         self._ladder_rr_enabled = config.get('ladder_rr_enabled', True) if config else True
+        # 体制空仓硬门(choppy flat gate): choppy/mixed + 无方向论据时拒 open_long
+        self._regime_flat_gate_enabled = config.get('regime_flat_gate_enabled', True) if config else True
         # trend-entry-shadow-decision-logger: 前向影子决策记录器开关 + fire-and-forget 任务引用集
         self._shadow_logger_enabled = config.get('shadow_decision_logger_enabled', True) if config else True
         self._shadow_tasks = set()
@@ -808,6 +810,15 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
+                # 体制空仓硬门(choppy flat gate): long-only, 单点收口
+                flat_allow, flat_reason = self._classify_regime_flat_gate(
+                    def_action, plan, tech, deferred.get('signal_score', 50)
+                )
+                if not flat_allow:
+                    self.logger.info(f"[Judge] {symbol} deferred_15m regime_flat_gate 拦截: {flat_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, flat_reason, [flat_reason])
+                    return
                 # ═══ Entry Position Guard (AC-LONGPOS-09 一致性) ═══
                 pos_policy = self._check_entry_position_policy(
                     symbol, def_action, plan, tech, deferred.get('signal_score', 50),
@@ -937,6 +948,15 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
+                # 体制空仓硬门(choppy flat gate): long-only, 单点收口
+                flat_allow, flat_reason = self._classify_regime_flat_gate(
+                    def_action, plan, tech, deferred.get('signal_score', 50)
+                )
+                if not flat_allow:
+                    self.logger.info(f"[Judge] {symbol} deferred_pullback regime_flat_gate 拦截: {flat_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, flat_reason, [flat_reason])
+                    return
                 # ═══ Entry Position Guard（AC-LONGPOS-08：deferred 二次入场必须重过 guard） ═══
                 pos_policy = self._check_entry_position_policy(
                     symbol, def_action, plan, tech, deferred.get('signal_score', 50),
@@ -1061,6 +1081,15 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} 追价入场被regime policy拦截: {regime_reject}")
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
+                    return
+                # 体制空仓硬门(choppy flat gate): long-only, 单点收口
+                flat_allow, flat_reason = self._classify_regime_flat_gate(
+                    def_action, plan, tech, deferred.get('signal_score', 50)
+                )
+                if not flat_allow:
+                    self.logger.info(f"[Judge] {symbol} deferred_chase regime_flat_gate 拦截: {flat_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, flat_reason, [flat_reason])
                     return
                 # ═══ Entry Position Guard (AC-LONGPOS-09 一致性) ═══
                 pos_policy = self._check_entry_position_policy(
@@ -1690,6 +1719,34 @@ class MultiJudge(BaseAgent):
                             "reasoning": f"Entry position guard blocked: {block_reason}",
                             "key_factors": [f"blocked_by={block_reason}"],
                             "risk_warnings": [block_reason],
+                            "attribution": attr,
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
+                    # ═══ 体制空仓硬门(choppy flat gate): long-only, 单点收口 ═══
+                    flat_allow, flat_reason = self._classify_regime_flat_gate(
+                        final_action, plan, tech, score
+                    )
+                    if not flat_allow:
+                        self.logger.info(
+                            f"[Judge] {symbol} regime_flat_gate 拦截: "
+                            f"action={final_action} reason={flat_reason}"
+                        )
+                        self._record_rejected_plan(
+                            symbol, final_action, plan, score, final_conf, flat_reason
+                        )
+                        # _rejection_attribution 自带体制空仓硬门四字段(reject 路径单点收口)
+                        attr = self._rejection_attribution(
+                            final_action, plan, flat_reason, tech=tech
+                        )
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"体制空仓硬门拦截: {flat_reason}",
+                            "key_factors": [f"regime_flat_gate={flat_reason}"],
+                            "risk_warnings": [flat_reason],
                             "attribution": attr,
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
@@ -2471,6 +2528,12 @@ class MultiJudge(BaseAgent):
             'ev_bucket_sparse': (plan or {}).get('ev_bucket_sparse', False),
         }
         attribution['provenance'] = self._summarize_provenance(tech)
+        # ═══ 体制空仓硬门 attribution 四字段（accept 路径）═══
+        _flat_thesis = self._has_directional_thesis(action, plan or {}, tech or {}, score)
+        attribution['regime_flat_gate'] = 'v1'
+        attribution['regime_flat_decision'] = 'allow'
+        attribution['has_directional_thesis'] = _flat_thesis
+        attribution['regime_flat_reason'] = ''
         return attribution
 
     def _is_htf_aligned(self, tech: dict, action: str) -> bool:
@@ -2538,6 +2601,81 @@ class MultiJudge(BaseAgent):
             return "多空信号对冲，净得分接近零，观望"
         return "信号强度不足，观望"
 
+    def _compute_directional_evidence(self, action: str, plan: dict,
+                                      tech: dict, score: float) -> tuple:
+        """共享 helper：计算方向论据 (aligned, path_evidence_raw)。
+
+        返回 (aligned: bool, path_evidence_raw: bool)。
+
+        - `aligned`: HTF/daily bias 一致 + 无 15m block + 信号强度达标。
+        - `path_evidence_raw`: 三阈值客观判定 **不含** lever1 flag(_path_evidence_aligned_enabled)。
+          调用 `_select_rr_floor` 的 floor-grant 路径须在此基础上自行与 lever1 flag AND，
+          确保行为零变更。本 helper 供 choppy flat gate 直接使用 ungated 客观判定。
+        """
+        plan = plan or {}
+        tech = tech or {}
+        trend = tech.get('trend', {}) or {}
+        entry_timing = tech.get('entry_timing', {}) or {}
+        ectx = tech.get('entry_context', {}) or {}
+        min_deferred_score = getattr(self, '_min_deferred_signal_score', 45)
+
+        sym_dir = trend.get('direction', 'neutral')
+        htf_bias = trend.get('higher_tf_bias', 'neutral')
+        daily_bias = trend.get('daily_bias', 'neutral')
+        block_long = entry_timing.get('tf_15m_block_long', False)
+
+        aligned = (sym_dir == 'bullish'
+                   and (htf_bias == 'bullish' or daily_bias == 'bullish')
+                   and not block_long
+                   and abs(score) >= min_deferred_score)
+
+        # path_evidence_raw: 三阈值判定 — 去掉 lever1 flag，ungated 客观
+        strength = trend.get('strength', 0)
+        pre12h = ectx.get('pre_12h_return_pct', 0.0)
+        range_pos = ectx.get('position_in_24h_range', 0.5)
+        path_evidence_raw = (sym_dir == 'bullish'
+                             and strength >= getattr(self, '_path_evidence_min_strength', 60)
+                             and pre12h >= getattr(self, '_path_evidence_min_pre12h_return', 0.03)
+                             and range_pos <= getattr(self, '_path_evidence_max_range_pos', 0.92))
+
+        return (aligned, path_evidence_raw)
+
+    def _has_directional_thesis(self, action: str, plan: dict,
+                                tech: dict, score: float) -> bool:
+        """是否有方向论据：aligned OR path_evidence_raw(ungated)。
+
+        供 _classify_regime_flat_gate 使用。path_evidence_raw 不含 lever1 flag，
+        客观判定；_select_rr_floor 的 floor-grant 路径仍保留 lever1 门控。
+        """
+        aligned, pe_raw = self._compute_directional_evidence(action, plan, tech, score)
+        return bool(aligned or pe_raw)
+
+    def _classify_regime_flat_gate(self, action: str, plan: dict,
+                                    tech: dict, score: float) -> tuple:
+        """体制空仓硬门(choppy flat gate)单点收口。
+
+        返回 (allow: bool, reason: str)。
+
+        - long-only：仅对 open_long 生效；open_short / 非 open → 放行。
+        - choppy AND mixed 都拦；bullish/bearish/其他 → 放行。
+        - 有方向论据(aligned OR path_evidence_raw)→ 放行。
+        - fail-safe：regime 取不到 → 放行，不因 regime 异常误拒。
+        - config `regime_flat_gate_enabled`(默认 True) / env `REGIME_FLAT_GATE_ENABLED=false` 可回滚。
+        """
+        if action != 'open_long':
+            return (True, '')                            # long-only: short/非 open 放行
+        if not getattr(self, '_regime_flat_gate_enabled', True):
+            return (True, 'flag_off')
+        try:
+            eff = self._regime_manager.snapshot().get('effective_regime')
+        except Exception:
+            return (True, 'regime_unknown')              # fail-safe: 不因 regime 取不到而误拒
+        if eff not in ('choppy', 'mixed'):
+            return (True, 'regime_trend')
+        if self._has_directional_thesis(action, plan, tech, score):
+            return (True, 'has_thesis')
+        return (False, 'regime_flat_no_thesis')
+
     def _select_rr_floor(self, action: str, plan: dict, tech: dict,
                          score: float) -> tuple:
         """统一 R:R floor 选择，主路径和 deferred 路径必须共用。
@@ -2565,7 +2703,6 @@ class MultiJudge(BaseAgent):
         low_rr_slot_enabled = getattr(self, '_low_rr_slot_enabled', True)
         low_rr_long_aligned_enabled = getattr(self, '_low_rr_long_aligned_enabled', True)
         short_regime_guard_enabled = getattr(self, '_short_regime_guard_enabled', True)
-        min_deferred_score = getattr(self, '_min_deferred_signal_score', 45)
 
         if plan.get('is_probe'):
             return (
@@ -2584,30 +2721,23 @@ class MultiJudge(BaseAgent):
         if (is_long and eff_regime in ('mixed', 'choppy')
                 and low_rr_slot_enabled
                 and low_rr_long_aligned_enabled):
+            # 通过共享 helper 获取 aligned + path_evidence_raw
+            aligned, pe_raw = self._compute_directional_evidence(action, plan, tech, score)
             trend = (tech or {}).get('trend', {}) or {}
+            ectx = (tech or {}).get('entry_context', {}) or {}
             entry_timing = (tech or {}).get('entry_timing', {}) or {}
             sym_dir = trend.get('direction', 'neutral')
             htf_bias = trend.get('higher_tf_bias', 'neutral')
             daily_bias = trend.get('daily_bias', 'neutral')
             block_long = entry_timing.get('tf_15m_block_long', False)
-            aligned = (sym_dir == 'bullish'
-                       and (htf_bias == 'bullish' or daily_bias == 'bullish')
-                       and not block_long
-                       and abs(score) >= min_deferred_score)
-            # trend-entry-rr-fidelity 杠杆① P1:bias 漏报时用入场前客观路径证据补判
-            path_evidence = False
-            ectx = (tech or {}).get('entry_context', {}) or {}
-            if (not aligned
-                    and getattr(self, '_path_evidence_aligned_enabled', False)
-                    and not block_long
-                    and abs(score) >= min_deferred_score):
-                strength = trend.get('strength', 0)
-                pre12h = ectx.get('pre_12h_return_pct', 0.0)
-                range_pos = ectx.get('position_in_24h_range', 0.5)
-                path_evidence = (sym_dir == 'bullish'
-                                 and strength >= getattr(self, '_path_evidence_min_strength', 60)
-                                 and pre12h >= getattr(self, '_path_evidence_min_pre12h_return', 0.03)
-                                 and range_pos <= getattr(self, '_path_evidence_max_range_pos', 0.92))
+            min_deferred_score = getattr(self, '_min_deferred_signal_score', 45)
+            # floor-grant 须复原原始全部门控(行为零变,含 lever1 ON):
+            # lever1 flag + not block_long + abs(score)>=min_deferred_score + pe_raw 三阈值。
+            # pe_raw 本身保持 ungated(thesis 用 raw 是正确的);这里 AND 回原 _select_rr_floor 的额外守卫。
+            path_evidence = (pe_raw
+                             and getattr(self, '_path_evidence_aligned_enabled', False)
+                             and not block_long
+                             and abs(score) >= min_deferred_score)
             if aligned:
                 return (
                     rr_floor_long_aligned,
@@ -3361,6 +3491,15 @@ class MultiJudge(BaseAgent):
             'ev_bucket_sparse': plan_dict.get('ev_bucket_sparse', False),
         }
         rejection_attribution['provenance'] = self._summarize_provenance(tech)
+        # ═══ 体制空仓硬门 attribution 四字段（reject 路径）═══
+        # M-2: thesis 计算用 plan 实际 signal_score(非硬编码 0)，否则 aligned 永远 False
+        _is_flat_reject = 'regime_flat' in (blocked_by or '')
+        _flat_score = plan_dict.get('signal_score', 0)
+        _flat_thesis = self._has_directional_thesis(action, plan_dict, tech or {}, _flat_score) if not _is_flat_reject else False
+        rejection_attribution['regime_flat_gate'] = 'v1'
+        rejection_attribution['regime_flat_decision'] = 'reject' if _is_flat_reject else 'allow'
+        rejection_attribution['has_directional_thesis'] = _flat_thesis
+        rejection_attribution['regime_flat_reason'] = blocked_by if _is_flat_reject else ''
         return rejection_attribution
 
     def _apply_short_gate_attribution(self, attribution: dict, gate: dict) -> dict:

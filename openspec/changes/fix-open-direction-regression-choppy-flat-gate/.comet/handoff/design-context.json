@@ -1,0 +1,14 @@
+{
+  "change": "fix-open-direction-regression-choppy-flat-gate",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "306a3433f50bc5c605285c59f70fa1fa4026cf870ce712eba88212e632e7d007",
+  "files": [
+    { "path": "openspec/changes/fix-open-direction-regression-choppy-flat-gate/proposal.md", "sha256": "8c0813c10c299218dc324a5421e609b386f33eb63572a3f88267d113e8a76740" },
+    { "path": "openspec/changes/fix-open-direction-regression-choppy-flat-gate/design.md", "sha256": "a5d1d6f6e124d5dffdb8ca0980ec40d401aeeac856edfad2a81022fcfb66353e" },
+    { "path": "openspec/changes/fix-open-direction-regression-choppy-flat-gate/tasks.md", "sha256": "bed52323f8e7a16a2c44e9408e65e622c50385a4e8c6f162ed9a5ce2d3eefe95" },
+    { "path": "openspec/changes/fix-open-direction-regression-choppy-flat-gate/specs/regime-flat-entry-gate/spec.md", "sha256": "3bd4ce9adb59d755732fe074813dbc715ad754a1798d919b11b40bdbda2e4492" }
+  ]
+}

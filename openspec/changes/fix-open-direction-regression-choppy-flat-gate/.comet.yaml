@@ -1,0 +1,18 @@
+workflow: full
+phase: verify
+build_mode: subagent-driven-development
+isolation: branch
+verify_mode: full
+base_ref: 0d5dc8a6021ede953502fbea440461a677fe4a1d
+design_doc: docs/superpowers/specs/2026-06-25-fix-open-direction-regression-choppy-flat-gate-design.md
+plan: docs/superpowers/plans/2026-06-25-fix-open-direction-regression-choppy-flat-gate.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-06-25
+verified_at: null
+archived: false
+handoff_context: openspec/changes/fix-open-direction-regression-choppy-flat-gate/.comet/handoff/design-context.json
+handoff_hash: 306a3433f50bc5c605285c59f70fa1fa4026cf870ce712eba88212e632e7d007
+build_command: env PYTHONPYCACHEPREFIX=/private/tmp/crypto_audit_pycache python3 -m compileall -q agents/trading/judge.py event_backtest.py utils/config_loader.py
+verify_command: python3 -m pytest tests/test_regime_flat_gate.py -q
