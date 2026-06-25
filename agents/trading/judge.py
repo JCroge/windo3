@@ -810,6 +810,15 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
+                # 体制空仓硬门(choppy flat gate): long-only, 单点收口
+                flat_allow, flat_reason = self._classify_regime_flat_gate(
+                    def_action, plan, tech, deferred.get('signal_score', 50)
+                )
+                if not flat_allow:
+                    self.logger.info(f"[Judge] {symbol} deferred_15m regime_flat_gate 拦截: {flat_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, flat_reason, [flat_reason])
+                    return
                 # ═══ Entry Position Guard (AC-LONGPOS-09 一致性) ═══
                 pos_policy = self._check_entry_position_policy(
                     symbol, def_action, plan, tech, deferred.get('signal_score', 50),
@@ -939,6 +948,15 @@ class MultiJudge(BaseAgent):
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
                     return
+                # 体制空仓硬门(choppy flat gate): long-only, 单点收口
+                flat_allow, flat_reason = self._classify_regime_flat_gate(
+                    def_action, plan, tech, deferred.get('signal_score', 50)
+                )
+                if not flat_allow:
+                    self.logger.info(f"[Judge] {symbol} deferred_pullback regime_flat_gate 拦截: {flat_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, flat_reason, [flat_reason])
+                    return
                 # ═══ Entry Position Guard（AC-LONGPOS-08：deferred 二次入场必须重过 guard） ═══
                 pos_policy = self._check_entry_position_policy(
                     symbol, def_action, plan, tech, deferred.get('signal_score', 50),
@@ -1063,6 +1081,15 @@ class MultiJudge(BaseAgent):
                     self.logger.info(f"[Judge] {symbol} 追价入场被regime policy拦截: {regime_reject}")
                     state['deferred_entry'] = None
                     await self._publish_hold(symbol, regime_reject, [regime_reject])
+                    return
+                # 体制空仓硬门(choppy flat gate): long-only, 单点收口
+                flat_allow, flat_reason = self._classify_regime_flat_gate(
+                    def_action, plan, tech, deferred.get('signal_score', 50)
+                )
+                if not flat_allow:
+                    self.logger.info(f"[Judge] {symbol} deferred_chase regime_flat_gate 拦截: {flat_reason}")
+                    state['deferred_entry'] = None
+                    await self._publish_hold(symbol, flat_reason, [flat_reason])
                     return
                 # ═══ Entry Position Guard (AC-LONGPOS-09 一致性) ═══
                 pos_policy = self._check_entry_position_policy(
@@ -1692,6 +1719,37 @@ class MultiJudge(BaseAgent):
                             "reasoning": f"Entry position guard blocked: {block_reason}",
                             "key_factors": [f"blocked_by={block_reason}"],
                             "risk_warnings": [block_reason],
+                            "attribution": attr,
+                        }
+                        await self.publish("trade_decision", decision, symbol=symbol)
+                        return
+
+                    # ═══ 体制空仓硬门(choppy flat gate): long-only, 单点收口 ═══
+                    flat_allow, flat_reason = self._classify_regime_flat_gate(
+                        final_action, plan, tech, score
+                    )
+                    if not flat_allow:
+                        self.logger.info(
+                            f"[Judge] {symbol} regime_flat_gate 拦截: "
+                            f"action={final_action} reason={flat_reason}"
+                        )
+                        self._record_rejected_plan(
+                            symbol, final_action, plan, score, final_conf, flat_reason
+                        )
+                        attr = self._rejection_attribution(
+                            final_action, plan, flat_reason, tech=tech
+                        )
+                        attr['regime_flat_decision'] = 'reject'
+                        attr['regime_flat_reason'] = flat_reason
+                        attr['has_directional_thesis'] = False
+                        attr['regime_flat_gate'] = 'v1'
+                        decision = {
+                            "symbol": symbol, "timestamp": time.time(),
+                            "action": "hold", "confidence": 0,
+                            "plan": None, "size_pct": 0,
+                            "reasoning": f"体制空仓硬门拦截: {flat_reason}",
+                            "key_factors": [f"regime_flat_gate={flat_reason}"],
+                            "risk_warnings": [flat_reason],
                             "attribution": attr,
                         }
                         await self.publish("trade_decision", decision, symbol=symbol)
