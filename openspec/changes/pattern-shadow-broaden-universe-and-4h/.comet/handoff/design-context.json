@@ -1,0 +1,14 @@
+{
+  "change": "pattern-shadow-broaden-universe-and-4h",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "b60847adf501081e8ec3eeeb9eb8aa24efa4053aa780c463859e164166c409dd",
+  "files": [
+    { "path": "openspec/changes/pattern-shadow-broaden-universe-and-4h/proposal.md", "sha256": "9aa18f91116c1b2a99d345f5f555e84c127b03a99c1481864b6cbba0976586d5" },
+    { "path": "openspec/changes/pattern-shadow-broaden-universe-and-4h/design.md", "sha256": "36ed26a3fcf89278641bb75ea008735418f0d5b4962c16b72af4e5004ff8d8e7" },
+    { "path": "openspec/changes/pattern-shadow-broaden-universe-and-4h/tasks.md", "sha256": "f5c02d8643d3a138c8a44625d56187f331804783799bd1047936ba57ff866b93" },
+    { "path": "openspec/changes/pattern-shadow-broaden-universe-and-4h/specs/pattern-forward-shadow/spec.md", "sha256": "636fa1cab2392bb1e8da369d6bbff0715e9b2af7dc66018fa438809a691c5aaa" }
+  ]
+}

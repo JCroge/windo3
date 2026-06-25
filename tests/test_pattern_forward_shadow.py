@@ -36,10 +36,11 @@ def _uptrend_with_bearish_engulfing(base_day=20000):
     return bars
 
 
-def _setup(monkeypatch, tmp_path, bars_map):
-    monkeypatch.setattr(pfs, "LOG", str(tmp_path / "fwd.jsonl"))
-    monkeypatch.setattr(pfs, "_symbols", lambda: list(bars_map.keys()))
-    monkeypatch.setattr(pfs, "_load_bars", lambda sym: bars_map.get(sym, []))
+def _setup(monkeypatch, tmp_path, bars_map, interval="1d"):
+    log = str(tmp_path / "fwd.jsonl")
+    monkeypatch.setattr(pfs, "_log_path", lambda iv: log)
+    monkeypatch.setattr(pfs, "_symbols", lambda iv: list(bars_map.keys()))
+    monkeypatch.setattr(pfs, "_load_bars", lambda sym, iv: bars_map.get(sym, []))
 
 
 def _read(path):
@@ -52,24 +53,27 @@ def _read(path):
 def test_record_hits_confirmed_signal(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, {"TEST": _downtrend_with_bearish_engulfing()})
     pfs.record()
-    recs = _read(pfs.LOG)
+    recs = _read(pfs._log_path("1d"))
     assert len(recs) == 1
     r = recs[0]
     assert r["symbol"] == "TEST" and r["pattern"] == "Bearish Engulfing" and r["context"] == "low|down"
     assert r["direction"] == -1 and r["stop_loss"] > r["entry"] > r["take_profit"]  # 空单 SL 上 TP 下
+    # 新字段验证
+    assert "detect_bar_open_time" in r and "interval" in r
+    assert r["interval"] == "1d"
 
 
 def test_record_skips_non_low_down_context(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, {"TEST": _uptrend_with_bearish_engulfing()})
     pfs.record()
-    assert _read(pfs.LOG) == []  # 形态命中但 context 非 low|down → 不记
+    assert _read(pfs._log_path("1d")) == []  # 形态命中但 context 非 low|down → 不记
 
 
 def test_record_idempotent(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, {"TEST": _downtrend_with_bearish_engulfing()})
     pfs.record()
     pfs.record()
-    assert len(_read(pfs.LOG)) == 1  # 同 symbol+date 不重复
+    assert len(_read(pfs._log_path("1d"))) == 1  # 同 symbol+bar_open_time+interval 不重复
 
 
 def test_record_no_lookahead_uses_closed_bar(monkeypatch, tmp_path):
@@ -77,13 +81,13 @@ def test_record_no_lookahead_uses_closed_bar(monkeypatch, tmp_path):
     bars = _downtrend_with_bearish_engulfing()
     _setup(monkeypatch, tmp_path, {"TEST": bars})
     pfs.record()
-    assert _read(pfs.LOG)[0]["entry"] == bars[-1]["close"]
+    assert _read(pfs._log_path("1d"))[0]["entry"] == bars[-1]["close"]
 
 
 def test_settle_writes_back_matured(monkeypatch, tmp_path):
     import datetime as dt
     log = str(tmp_path / "fwd.jsonl")
-    monkeypatch.setattr(pfs, "LOG", log)
+    monkeypatch.setattr(pfs, "_log_path", lambda iv: log)
     old = (dt.datetime.utcnow() - dt.timedelta(days=30)).strftime("%Y-%m-%d")
     start_ms = int(dt.datetime.strptime(old, "%Y-%m-%d").timestamp() * 1000)
     rec = {"detect_date_utc": old, "symbol": "TEST", "pattern": "Bearish Engulfing", "direction": -1,
@@ -93,7 +97,7 @@ def test_settle_writes_back_matured(monkeypatch, tmp_path):
     # 未来日线:价格下跌触 TP(空单盈利)
     fut = [{"open_time": start_ms + (k + 1) * 86400000, "open": 99.0 - k, "high": 99.5 - k,
             "low": 93.0 - k, "close": 95.0 - k} for k in range(10)]
-    monkeypatch.setattr(pfs, "_load_bars", lambda sym: fut)
+    monkeypatch.setattr(pfs, "_load_bars", lambda sym, iv: fut)
     pfs.settle()
     out = _read(log)[0]
     assert out["settled"] is True and "net_r" in out and "outcome" in out
