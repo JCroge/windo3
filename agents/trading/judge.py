@@ -2531,6 +2531,12 @@ class MultiJudge(BaseAgent):
             'ev_bucket_sparse': (plan or {}).get('ev_bucket_sparse', False),
         }
         attribution['provenance'] = self._summarize_provenance(tech)
+        # ═══ 体制空仓硬门 attribution 四字段（accept 路径）═══
+        _flat_thesis = self._has_directional_thesis(action, plan or {}, tech or {}, score)
+        attribution['regime_flat_gate'] = 'v1'
+        attribution['regime_flat_decision'] = 'allow'
+        attribution['has_directional_thesis'] = _flat_thesis
+        attribution['regime_flat_reason'] = ''
         return attribution
 
     def _is_htf_aligned(self, tech: dict, action: str) -> bool:
@@ -3482,6 +3488,13 @@ class MultiJudge(BaseAgent):
             'ev_bucket_sparse': plan_dict.get('ev_bucket_sparse', False),
         }
         rejection_attribution['provenance'] = self._summarize_provenance(tech)
+        # ═══ 体制空仓硬门 attribution 四字段（reject 路径）═══
+        _is_flat_reject = 'regime_flat' in (blocked_by or '')
+        _flat_thesis = self._has_directional_thesis(action, plan_dict, tech or {}, 0) if not _is_flat_reject else False
+        rejection_attribution['regime_flat_gate'] = 'v1'
+        rejection_attribution['regime_flat_decision'] = 'reject' if _is_flat_reject else 'allow'
+        rejection_attribution['has_directional_thesis'] = _flat_thesis
+        rejection_attribution['regime_flat_reason'] = blocked_by if _is_flat_reject else ''
         return rejection_attribution
 
     def _apply_short_gate_attribution(self, attribution: dict, gate: dict) -> dict:

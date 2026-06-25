@@ -63,9 +63,12 @@ def test_path_evidence_raw_false_below_threshold():
 class _RM:
     def __init__(self, eff):
         self._eff = eff
+        self._effective_regime = eff
+        self._raw_regime = eff
+        self._confidence = 0.8
 
     def snapshot(self):
-        return {"effective_regime": self._eff}
+        return {"effective_regime": self._eff, "raw_regime": self._eff, "confidence": 0.8}
 
 
 def _judge_with(eff, flag=True):
