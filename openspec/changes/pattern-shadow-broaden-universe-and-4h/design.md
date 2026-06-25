@@ -30,6 +30,8 @@
 3. **launchd 节奏**：4h record 每 4h（贴 4h 收盘 + 小偏移，不漏信号）、4h settle 每日（4h ~40h 成熟，一天内结算到）。日线 record/settle 不动（自动覆盖扩 universe）。
 4. **re-validate 是 gate**：宽 universe 1d/4h 回测须 edge 仍过诚实门才算成功；若 4h edge 在宽 universe 翻负/不过门，如实记入 verify、4h 仅当探索不下结论（与日线分开裁定）。
 5. **fetch 仅增量**：现有 30 币 1d+4h 已在库，只抓新增 ~70 币（去重幂等，重跑安全）。
+6. **settle-when-determinable（brainstorming 关键细化，使 4h 真快）**：现 settle 硬等 10 日历日（`(now-detect).days<10 跳过`）→ 若仅参数化 interval，4h 信号即便 8h 触 SL/TP 也要等 10 日，B 的"~2 天"白费。改为 outcome-determinable：窗口内触 ATR SL/TP → 立即结算；无退出且整窗（`max_hold_days×bars_per_day` bar：1d→10/4h→60）已闭合 → expired；窗口未满 → 留未结算（不提前判 expired）。**净 R 值不变、无前视，仅 `settled:true` 提前**。日线随之早结算（同值），是严格改进。
+7. **dedup 按 bar 身份**：现去重键 `(symbol,detect_date_utc)` 对 4h 同 UTC 日多 bar 塌缩 → 改 `(symbol,detect_bar_open_time,interval)`，record 带检测 bar `open_time`；日线一日一 bar 等价。
 
 ## Risks / Trade-offs
 
