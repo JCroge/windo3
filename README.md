@@ -99,10 +99,12 @@ python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（
 
 ## 日线形态前向影子记录器（observability-only）
 
-对已确认信号 `Bearish Engulfing|低位跌势`（见 `docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md`）做 record-only 前向验证，**绝不接入 live 决策**。
+对信号 `Bearish Engulfing|低位跌势`（见 `docs/superpowers/specs/2026-06-23-pattern-forward-shadow-recorder-design.md`）做 record-only 前向验证，**绝不接入 live 决策**。
+
+> **⚠️ 2026-06-25 重要更新（change `pattern-shadow-broaden-universe-and-4h`）**：把 universe 从 30 扩到 **~100 binance 流动币冻结快照**后重跑回测，**日线与 4h 双双干净证伪**——`过三关=0`、所有 pattern×context 均 R 全负、`Bearish Engulfing|低位跌势` 在宽 universe 根本不进排名。**原 30 币的 +0.326R 是小样本/选择偏差，不泛化。** 故：runner 已升级（interval 参数化 1d/4h + settle-when-determinable + 冻结~100 universe），**但 4h 加速 cron 刻意不部署**（不加速收集已证伪的非-edge）；日线 cron 继续作 null-monitor。详见 `docs/superpowers/reports/2026-06-25-pattern-shadow-broaden-universe-and-4h-verify.md` + memory `alpha-source-hunt-verdict`。
 
 **调度（macOS）= 自包含 runner + launchd**。背景:本仓库在 `~/Desktop` 下(macOS TCC 保护目录),**cron/launchd 派生的命令行 python 拿不到 Full Disk Access**(实测无论授权 `/usr/bin/python3` 还是框架 `python3.9` 均 `Operation not permitted`)→ 故部署一个**零 Desktop 依赖**的自包含 runner 到非保护目录运行:
-- 仓库内可跟踪源:`scripts/fwdshadow_runner.py`(只用 ccxt + stdlib,逻辑冻结、与 `cf_pattern_edge_discovery` 同口径)
+- 仓库内可跟踪源:`scripts/fwdshadow_runner.py`(只用 ccxt + stdlib,与 `cf_pattern_edge_discovery` 同口径;2026-06-25 起 **interval 参数化** `--interval {1d,4h}`、窗口×bpd、**settle-when-determinable**=早退出立即结算/整窗满才 expired/窗未满留未结算[净 R 值不变、无前视]、dedup 按 `(symbol,detect_bar_open_time,interval)`、universe=冻结~100;4h 写独立 `pattern_forward_shadow_4h.jsonl`)
 - 部署副本:`~/Library/Application Support/cryptoarb-fwdshadow/`(klines.db + jsonl 也在此,完全不碰 Desktop)
 - LaunchAgent:`~/Library/LaunchAgents/com.cryptoarb.pattern-forward-shadow.{record,settle}.plist`(每日 09:17 record / 周一 09:47 settle,本地 CST;launchd 唤醒后补跑错过点),日志 `~/Library/Logs/pattern_forward_shadow.log`。
 
@@ -119,7 +121,7 @@ launchctl bootout gui/$(id -u)/com.cryptoarb.pattern-forward-shadow.{record,sett
 ```
 
 (仓库内 `pattern_forward_shadow.py` 是 lab 集成版,供可访问环境/对照;launchd 跑的是上面的自包含 runner。)
-前向验证须数周累积（新日线 + 10 日持仓成熟）；结算经诚实门，薄样本拒答。**确认稳健前不上实盘、不改 config。**
+**4h 能力已在 runner 里(`--interval 4h`)但未配 launchd**——因 2026-06-25 宽 universe 回测已证伪 edge,不部署 4h 加速 cron;需要时手动 `python3 fwdshadow_runner.py --record --interval 4h` 可跑。前向验证须数周累积；结算经诚实门(n<30 拒答)。**确认稳健前不上实盘、不改 config——当前结论是 edge 已证伪,日线 cron 仅作 null-monitor。**
 
 ## 周更 cron：choppy+neutral TP1 地板反事实重跑（observability-only）
 
