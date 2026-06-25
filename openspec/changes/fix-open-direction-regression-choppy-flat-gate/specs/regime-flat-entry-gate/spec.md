@@ -11,6 +11,10 @@
 - **WHEN** effective_regime=choppy 但满足 path_evidence(strength/pre_12h/range_pos 三阈值)
 - **THEN** 放行(不误伤被 regime 误判成 choppy 的趋势)
 
+#### Scenario: path_evidence 用客观证据,不受 lever1 flag 门控
+- **WHEN** 评估 thesis 的 path_evidence(`_path_evidence_aligned_enabled`/lever1 默认 OFF)
+- **THEN** thesis 用 **ungated** 的三阈值客观判定(`path_evidence_raw`),即 lever1 关时 path_evidence 仍可成立 thesis;`_select_rr_floor` 的 floor-grant 用法仍受 lever1 门控不变(两用法解耦,防重新砍掉 bias 漏报的趋势)
+
 #### Scenario: 趋势体制 → 放行
 - **WHEN** effective_regime ∈ {bullish, bearish}
 - **THEN** 硬门直接放行(不拦趋势体制)

@@ -26,7 +26,9 @@ canonical_spec: openspec
    - `not regime_flat_gate_enabled` → `(True,'flag_off')`。
    - `eff = regime_manager.snapshot()['effective_regime']`;`eff not in {'choppy','mixed'}` → `(True,'regime_trend')`。
    - `has = _has_directional_thesis(plan, tech)`;`has` → `(True,'has_thesis')`,else `(False,'regime_flat_no_thesis')`。
-2. **`_has_directional_thesis(plan, tech) -> bool`**:提取 `_select_rr_floor` 的 aligned/path_evidence long 判定为共享 helper,二处同调(防漂移)。
+2. **`_has_directional_thesis(plan, tech, score) -> bool`** = `aligned OR path_evidence_raw`:
+   - ⚠️ **关键:path_evidence 必须 ungated**。`_select_rr_floor` 里 path_evidence 被 `_path_evidence_aligned_enabled`(lever1,默认 **OFF**)门控——若原样复用,thesis=aligned-only,会**重新砍掉 bias 漏报、被误判成 choppy 的趋势**(正是要保护的)。故提取共享 `_compute_directional_evidence(plan, tech, score) -> (aligned, path_evidence_raw)`,其中 `path_evidence_raw` = 三阈值客观判定**不含** lever1 flag。`_select_rr_floor` floor-grant 仍 `path_evidence = path_evidence_raw AND _path_evidence_aligned_enabled`(行为零变);flat gate thesis 用 `aligned OR path_evidence_raw`(ungated)。thesis 用法比 floor 用法更弱更安全(只阻止拒单、不授favorable RR),ungated 合理。
+   - **前置验证(build)**:确认 `tech.entry_context`(pre_12h_return_pct/position_in_24h_range)在 live 决策中**无论 lever1 开关都被填充**;若否则 path_evidence_raw 恒 False、flat gate 退化为 aligned-only(可接受,verify 标注)。
 3. **long-only**:open_short 由短单门上游处理,本门放行 short。
 4. **choppy+mixed 都拦**;path_evidence/aligned 救回真趋势。
 5. **调用点**:主开仓 + 15m/pullback/chase 三 deferred,与现有门并列(reject 走拒单 attribution)。
