@@ -212,7 +212,8 @@ class TestE2E15mFilter:
     @pytest.mark.asyncio
     async def test_15m_disabled_allows_entry(self):
         """15m 功能关闭时，bearish 15m 不阻止开仓"""
-        judge = _build_judge({'entry_timing_15m_enabled': False})
+        # regime_flat_gate_enabled=False: 本测试验 15m gate 关闭后允许开仓，不测 flat gate。
+        judge = _build_judge({'entry_timing_15m_enabled': False, 'regime_flat_gate_enabled': False})
         tech = _build_tech_long_setup(entry_timing_bias='bearish', entry_timing_rsi=42)
 
         await judge._make_decision('BTC-USDT', tech)

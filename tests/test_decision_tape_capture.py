@@ -156,6 +156,9 @@ def test_capture_record_flips_to_accept_when_floor_lowered():
     that the fix enables real counterfactual perturbation experiments.
     """
     rec = _rr_reject_record()
-    # 同上 pin TP1 口径，纯验地板 1.50→1.30 翻转 reject→open（与 lever2 阶梯口径解耦）。
-    out = asyncio.run(replay_decision(rec, {"rr_floor_default": 1.30, "ladder_rr_enabled": False}))
+    # regime_flat_gate_enabled=False: 本测试只验 rr_floor 旋钮（地板门），
+    # 不测 flat gate。record 用 mixed+neutral 体制，flat gate 开启时会
+    # 正确拒绝（与 floor 无关），需关闭以隔离 floor 机制。
+    out = asyncio.run(replay_decision(rec, {"rr_floor_default": 1.30, "ladder_rr_enabled": False,
+                                            "regime_flat_gate_enabled": False}))
     assert (out or {}).get("action") in ("open_long", "open_short")
