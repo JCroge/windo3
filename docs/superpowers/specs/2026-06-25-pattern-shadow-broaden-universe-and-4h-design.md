@@ -2,6 +2,8 @@
 comet_change: pattern-shadow-broaden-universe-and-4h
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
+status: final
 ---
 
 # Design: pattern-shadow-broaden-universe-and-4h

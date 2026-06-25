@@ -2,6 +2,7 @@
 change: pattern-shadow-broaden-universe-and-4h
 design-doc: docs/superpowers/specs/2026-06-25-pattern-shadow-broaden-universe-and-4h-design.md
 base-ref: 2723673ce99b6991747cbb5572d9899e57cf7036
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 # pattern-shadow-broaden-universe-and-4h Implementation Plan
@@ -22,6 +23,7 @@ base-ref: 2723673ce99b6991747cbb5572d9899e57cf7036
 - **universe 冻结**：固化成代码常量，绝不每次动态 re-query。
 - **部署副本**：repo 源 `scripts/fwdshadow_runner.py` 改完须 `cp` 到 `~/Library/Application Support/cryptoarb-fwdshadow/`。
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## File Structure
@@ -37,6 +39,7 @@ base-ref: 2723673ce99b6991747cbb5572d9899e57cf7036
 | `~/Library/LaunchAgents/com.cryptoarb.pattern-forward-shadow.{record4h,settle4h}.plist` | 4h 调度 | Create（Task 7） |
 | `README.md` | 运维文档 | Modify（Task 8） |
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 1: 派生并冻结扩展 universe
@@ -94,6 +97,7 @@ git add scripts/derive_universe.py fetch_historical_klines.py
 git commit -m "feat(pattern-shadow-4h): 派生并冻结 binance top~100 流动 universe"
 ```
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 2: 重抓新增币历史（1d + 4h）
@@ -114,6 +118,7 @@ Expected: `1d` 与 `4h` 的 symbol 数都 ≥90（接近 ~100，少数新币抓�
 
 把 n_ok/失败 symbol 记下，供 verify 报告引用。
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 3: 重跑回测确认宽 universe edge（re-validate gate）
@@ -137,6 +142,7 @@ Expected: 4h 同上。**记录 4h edge 是否仍成立**。
 - 若 4h 不过门 → 4h 仅当探索（README/verify 标注、不下结论），**不阻塞日线**。
 - 三种情形都把结论记入 verify 报告。
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 4: 部署版 runner interval 参数化 + settle-when-determinable
@@ -281,6 +287,7 @@ git add scripts/fwdshadow_runner.py tests/test_fwdshadow_runner.py
 git commit -m "feat(pattern-shadow-4h): 部署版 runner interval 参数化 + settle-when-determinable + dedup-by-bar-ts"
 ```
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 5: lab 版 runner 同步参数化
@@ -312,6 +319,7 @@ git add pattern_forward_shadow.py
 git commit -m "feat(pattern-shadow-4h): lab 版 runner 同步 interval 参数化 + settle-when-determinable"
 ```
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 6: 全量基线
@@ -330,6 +338,7 @@ git add openspec/changes/pattern-shadow-broaden-universe-and-4h/tasks.md
 git commit -m "chore(pattern-shadow-4h): 全量基线绿 + tasks 勾选"
 ```
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 7: 部署 + 4h launchd jobs
@@ -362,6 +371,7 @@ sleep 30; tail -15 ~/Library/Logs/pattern_forward_shadow.log
 ```
 Expected: 日志出 `[record]` 行（4h 新增 N 条或"无 4h 信号"），**无 `Operation not permitted`**（自包含 runner 不碰 Desktop，FDA 无关）。
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Task 8: README + 真跑收尾
@@ -391,6 +401,7 @@ git commit -m "docs(pattern-shadow-4h): README 扩 universe + 1d/4h 双轨 + set
 ```
 verify 报告记：宽 universe 1d/4h 回测 edge 裁定（Task3）+ 前向首跑信号数（旧 30 vs 新~100）+ 预计 n≥30 提速。**不改 config、不上 live、诚实门未过前不下前向结论。**
 
+archived-with: 2026-06-25-pattern-shadow-broaden-universe-and-4h
 ---
 
 ## Self-Review
