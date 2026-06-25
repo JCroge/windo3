@@ -1,7 +1,7 @@
 workflow: full
 phase: build
-build_mode: null
-isolation: null
+build_mode: subagent-driven-development
+isolation: branch
 verify_mode: null
 base_ref: 0d5dc8a6021ede953502fbea440461a677fe4a1d
 design_doc: docs/superpowers/specs/2026-06-25-fix-open-direction-regression-choppy-flat-gate-design.md
