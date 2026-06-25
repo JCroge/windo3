@@ -1736,13 +1736,10 @@ class MultiJudge(BaseAgent):
                         self._record_rejected_plan(
                             symbol, final_action, plan, score, final_conf, flat_reason
                         )
+                        # _rejection_attribution 自带体制空仓硬门四字段(reject 路径单点收口)
                         attr = self._rejection_attribution(
                             final_action, plan, flat_reason, tech=tech
                         )
-                        attr['regime_flat_decision'] = 'reject'
-                        attr['regime_flat_reason'] = flat_reason
-                        attr['has_directional_thesis'] = False
-                        attr['regime_flat_gate'] = 'v1'
                         decision = {
                             "symbol": symbol, "timestamp": time.time(),
                             "action": "hold", "confidence": 0,
@@ -2732,9 +2729,15 @@ class MultiJudge(BaseAgent):
             sym_dir = trend.get('direction', 'neutral')
             htf_bias = trend.get('higher_tf_bias', 'neutral')
             daily_bias = trend.get('daily_bias', 'neutral')
-            # floor-grant 用 lever1 门控(行为零变):path_evidence = pe_raw AND lever1_flag
+            block_long = entry_timing.get('tf_15m_block_long', False)
+            min_deferred_score = getattr(self, '_min_deferred_signal_score', 45)
+            # floor-grant 须复原原始全部门控(行为零变,含 lever1 ON):
+            # lever1 flag + not block_long + abs(score)>=min_deferred_score + pe_raw 三阈值。
+            # pe_raw 本身保持 ungated(thesis 用 raw 是正确的);这里 AND 回原 _select_rr_floor 的额外守卫。
             path_evidence = (pe_raw
-                             and getattr(self, '_path_evidence_aligned_enabled', False))
+                             and getattr(self, '_path_evidence_aligned_enabled', False)
+                             and not block_long
+                             and abs(score) >= min_deferred_score)
             if aligned:
                 return (
                     rr_floor_long_aligned,
@@ -3489,8 +3492,10 @@ class MultiJudge(BaseAgent):
         }
         rejection_attribution['provenance'] = self._summarize_provenance(tech)
         # ═══ 体制空仓硬门 attribution 四字段（reject 路径）═══
+        # M-2: thesis 计算用 plan 实际 signal_score(非硬编码 0)，否则 aligned 永远 False
         _is_flat_reject = 'regime_flat' in (blocked_by or '')
-        _flat_thesis = self._has_directional_thesis(action, plan_dict, tech or {}, 0) if not _is_flat_reject else False
+        _flat_score = plan_dict.get('signal_score', 0)
+        _flat_thesis = self._has_directional_thesis(action, plan_dict, tech or {}, _flat_score) if not _is_flat_reject else False
         rejection_attribution['regime_flat_gate'] = 'v1'
         rejection_attribution['regime_flat_decision'] = 'reject' if _is_flat_reject else 'allow'
         rejection_attribution['has_directional_thesis'] = _flat_thesis

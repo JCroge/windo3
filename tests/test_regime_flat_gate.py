@@ -12,8 +12,8 @@ from agents.trading.judge import MultiJudge
 
 
 def test_flag_default_true():
-    j = MultiJudge.__new__(MultiJudge)
-    j._regime_flat_gate_enabled = True  # smoke: 属性存在且默认 True 语义
+    # I-1: 真正走 __init__ 默认路径 — config 缺该键 → 属性默认 True
+    j = MultiJudge(config={})
     assert j._regime_flat_gate_enabled is True
 
 
@@ -171,3 +171,96 @@ def test_rejection_attribution_has_flat_fields():
     assert attr.get("regime_flat_decision") == "reject"
     assert attr.get("has_directional_thesis") is False
     assert "regime_flat" in (attr.get("regime_flat_reason") or "")
+
+
+# M-1: accept 路径 attribution 也写四字段
+def test_build_attribution_has_flat_fields_on_accept():
+    j = _judge_with("choppy")
+    j._ev_bucket_min_trades = 10
+    # 有方向论据的 tech (aligned)，accept 路径
+    tech = {
+        "trend": {"direction": "bullish", "strength": 70,
+                  "higher_tf_bias": "bullish", "daily_bias": "bullish"},
+        "momentum": {"rsi": 55},
+        "risk": {"liquidity_score": 60},
+        "rule_signal": {},
+        "entry_timing": {},
+        "entry_context": {"pre_12h_return_pct": 0.05, "position_in_24h_range": 0.6},
+    }
+    plan = {"effective_risk_reward_ratio": 2.0}
+    attr = j._build_attribution(tech, "open_long", 60, plan, None, "rule_signal")
+    assert attr.get("regime_flat_gate") == "v1"
+    assert attr.get("regime_flat_decision") == "allow"
+    assert attr.get("has_directional_thesis") is True
+    assert attr.get("regime_flat_reason") == ""
+
+
+# ──────────────────────────────────────────────────────────────
+# C-1: _select_rr_floor floor-grant 必须复原全部原始守卫(含 lever1 ON)
+# ──────────────────────────────────────────────────────────────
+
+def _mk_rr_judge(eff="choppy", lever1_on=True):
+    """构造可调 _select_rr_floor 的 judge: lever1 默认 ON 以验证 floor-grant 守卫。"""
+    j = _mk_judge()
+    j._path_evidence_aligned_enabled = lever1_on
+    j._regime_manager = _RM(eff)
+    j._rr_floor_default = 1.50
+    j._rr_floor_long_bullish = 1.30
+    j._rr_floor_long_aligned_choppy = 1.30
+    j._rr_floor_short_bullish = 1.80
+    j._probe_rr_floor = 1.30
+    j._low_rr_slot_enabled = True
+    j._low_rr_long_aligned_enabled = True
+    j._short_regime_guard_enabled = True
+    j._min_deferred_signal_score = 45
+    return j
+
+
+def _path_evidence_tech(block_long=False):
+    """bias 漏报(neutral htf/daily)但三阈值满足 → path_evidence_raw True。"""
+    return {
+        "trend": {"direction": "bullish", "strength": 70,
+                  "higher_tf_bias": "neutral", "daily_bias": "neutral"},
+        "entry_timing": {"tf_15m_block_long": block_long},
+        "entry_context": {"pre_12h_return_pct": 0.05, "position_in_24h_range": 0.6},
+    }
+
+
+def test_rr_floor_path_evidence_granted_when_lever1_on_and_guards_pass():
+    """lever1 ON + not block_long + score>=45 + 三阈值满足 → 授 path_evidence 地板。"""
+    j = _mk_rr_judge(lever1_on=True)
+    min_rr, policy, _ = j._select_rr_floor(
+        "open_long", {}, _path_evidence_tech(block_long=False), score=60
+    )
+    assert policy == "long_aligned_path_evidence"
+    assert min_rr == 1.30
+
+
+def test_rr_floor_path_evidence_blocked_when_block_long_true():
+    """C-1: lever1 ON + block_long True + 三阈值满足 → 不授地板(回退 default)。"""
+    j = _mk_rr_judge(lever1_on=True)
+    min_rr, policy, _ = j._select_rr_floor(
+        "open_long", {}, _path_evidence_tech(block_long=True), score=60
+    )
+    assert policy == "default"
+    assert min_rr == 1.50
+
+
+def test_rr_floor_path_evidence_blocked_when_score_below_threshold():
+    """C-1: lever1 ON + score<45 + 三阈值满足 → 不授地板(回退 default)。"""
+    j = _mk_rr_judge(lever1_on=True)
+    min_rr, policy, _ = j._select_rr_floor(
+        "open_long", {}, _path_evidence_tech(block_long=False), score=30
+    )
+    assert policy == "default"
+    assert min_rr == 1.50
+
+
+def test_rr_floor_path_evidence_blocked_when_lever1_off():
+    """lever1 OFF(现状) → 即使三阈值满足也不授 path_evidence 地板。"""
+    j = _mk_rr_judge(lever1_on=False)
+    min_rr, policy, _ = j._select_rr_floor(
+        "open_long", {}, _path_evidence_tech(block_long=False), score=60
+    )
+    assert policy == "default"
+    assert min_rr == 1.50
