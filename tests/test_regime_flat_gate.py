@@ -264,3 +264,80 @@ def test_rr_floor_path_evidence_blocked_when_lever1_off():
     )
     assert policy == "default"
     assert min_rr == 1.50
+
+
+# ──────────────────────────────────────────────────────────────
+# Task 6: event_backtest 同构硬门
+# ──────────────────────────────────────────────────────────────
+
+from event_backtest import EventBacktest
+
+
+def _mk_row(regime='choppy', htf_bias='neutral', score_long=True):
+    """构造最小 row dict，满足 _check_entry_with_regime 所需字段。
+    score_long=True → entry_long=1 (score ≥ 35)；rsi=50 避免 RSI 压制。
+    """
+    return {
+        'entry_long': 1 if score_long else 0,
+        'entry_short': 0,
+        'ma_aligned_long': 0,
+        'ma_aligned_short': 0,
+        'rsi': 50,
+        'htf_bias': htf_bias,
+        'daily_bias': 'neutral',
+        'regime': regime,
+        'position_in_24h_range': 0.5,
+        'pre_12h_return_pct': 0.0,
+        'prev_daily_return_pct': 0.0,
+    }
+
+
+def _mk_eb(regime_flat_gate_enabled=True):
+    """构造关了 Long Position Guard 的 EventBacktest，只测 regime-flat gate。"""
+    return EventBacktest(
+        long_live_position_guard_enabled=False,
+        regime_flat_gate_enabled=regime_flat_gate_enabled,
+    )
+
+
+def test_event_backtest_flat_gate_rejects_choppy_no_thesis():
+    """choppy + 无方向论据(htf_bias neutral) → 拒入 long。"""
+    eb = _mk_eb()
+    row = _mk_row(regime='choppy', htf_bias='neutral')
+    result = eb._check_entry_with_regime(row, regime='choppy', last_probe_sl_idx=-9999, current_idx=0)
+    assert result is None, f"Expected None (gate reject), got {result}"
+
+
+def test_event_backtest_flat_gate_rejects_mixed_no_thesis():
+    """mixed + 无方向论据(htf_bias bearish) → 拒入 long。"""
+    eb = _mk_eb()
+    row = _mk_row(regime='mixed', htf_bias='bearish')
+    result = eb._check_entry_with_regime(row, regime='mixed', last_probe_sl_idx=-9999, current_idx=0)
+    assert result is None, f"Expected None (gate reject mixed), got {result}"
+
+
+def test_event_backtest_flat_gate_allows_choppy_aligned():
+    """choppy + htf_bias=bullish (aligned thesis) → 放行 long。"""
+    eb = _mk_eb()
+    row = _mk_row(regime='choppy', htf_bias='bullish')
+    result = eb._check_entry_with_regime(row, regime='choppy', last_probe_sl_idx=-9999, current_idx=0)
+    assert result is not None and result['direction'] == 'long', \
+        f"Expected long allow, got {result}"
+
+
+def test_event_backtest_flat_gate_allows_bullish_regime():
+    """bullish 体制（非 choppy/mixed）→ gate 不干预，正常放行。"""
+    eb = _mk_eb()
+    row = _mk_row(regime='bullish', htf_bias='neutral')
+    result = eb._check_entry_with_regime(row, regime='bullish', last_probe_sl_idx=-9999, current_idx=0)
+    assert result is not None and result['direction'] == 'long', \
+        f"Expected long allow in bullish, got {result}"
+
+
+def test_event_backtest_flat_gate_flag_off_allows_choppy_no_thesis():
+    """regime_flat_gate_enabled=False → choppy+无论据仍放行（A/B 对照臂）。"""
+    eb = _mk_eb(regime_flat_gate_enabled=False)
+    row = _mk_row(regime='choppy', htf_bias='neutral')
+    result = eb._check_entry_with_regime(row, regime='choppy', last_probe_sl_idx=-9999, current_idx=0)
+    assert result is not None and result['direction'] == 'long', \
+        f"Expected long allow with gate off, got {result}"

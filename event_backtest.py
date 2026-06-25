@@ -101,6 +101,9 @@ class EventBacktest:
                  # EV bucket sparse-sample protection (与 live 同构)
                  ev_bucket_min_trades: int = 10,
                  ev_bucket_sparse_allow_uplift: bool = False,
+                 # Regime-flat gate (与 live _classify_regime_flat_gate 同构)
+                 # choppy/mixed 体制下无方向论据的 long 拒入；默认开，可构造参数关闭做 A/B。
+                 regime_flat_gate_enabled: bool = True,
                  verbose: bool = False):
         self.initial_capital = initial_capital
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -146,6 +149,8 @@ class EventBacktest:
         # EV bucket sparse
         self.ev_bucket_min_trades = ev_bucket_min_trades
         self.ev_bucket_sparse_allow_uplift = ev_bucket_sparse_allow_uplift
+        # Regime-flat gate
+        self.regime_flat_gate_enabled = regime_flat_gate_enabled
         self.verbose = verbose
 
         self.cm = _COST_MODEL
@@ -374,6 +379,17 @@ class EventBacktest:
         abs_score = abs(score)
 
         if score >= self.entry_threshold:
+            # Regime-flat gate (同构 live _classify_regime_flat_gate，长仅限多头)。
+            # 在 choppy / mixed 体制下，无方向论据时拒入多头。
+            # 口径差异：backtest 无 entry_context(pre_12h_return_pct / position_in_24h_range)，
+            # path_evidence_raw 不可计算 → thesis 退化为 aligned-only (htf_bias == 'bullish')。
+            # live 则同时接受 aligned OR path_evidence_raw；此差异在 verify 报告中标注。
+            if self.regime_flat_gate_enabled and regime in ('choppy', 'mixed'):
+                htf_bias = str(row.get('htf_bias', 'neutral')).lower()
+                aligned = (htf_bias == 'bullish')  # backtest thesis = aligned-only
+                if not aligned:
+                    return None  # regime_flat_no_thesis
+
             # AC-LONGPOS-15: Long Entry Position Guard 与 live 同构。
             if self.long_live_position_guard_enabled:
                 range_pos = float(row.get('position_in_24h_range', 0.5))
