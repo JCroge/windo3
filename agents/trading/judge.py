@@ -2579,6 +2579,42 @@ class MultiJudge(BaseAgent):
 
         return (aligned, path_evidence_raw)
 
+    def _has_directional_thesis(self, action: str, plan: dict,
+                                tech: dict, score: float) -> bool:
+        """是否有方向论据：aligned OR path_evidence_raw(ungated)。
+
+        供 _classify_regime_flat_gate 使用。path_evidence_raw 不含 lever1 flag，
+        客观判定；_select_rr_floor 的 floor-grant 路径仍保留 lever1 门控。
+        """
+        aligned, pe_raw = self._compute_directional_evidence(action, plan, tech, score)
+        return bool(aligned or pe_raw)
+
+    def _classify_regime_flat_gate(self, action: str, plan: dict,
+                                    tech: dict, score: float) -> tuple:
+        """体制空仓硬门(choppy flat gate)单点收口。
+
+        返回 (allow: bool, reason: str)。
+
+        - long-only：仅对 open_long 生效；open_short / 非 open → 放行。
+        - choppy AND mixed 都拦；bullish/bearish/其他 → 放行。
+        - 有方向论据(aligned OR path_evidence_raw)→ 放行。
+        - fail-safe：regime 取不到 → 放行，不因 regime 异常误拒。
+        - config `regime_flat_gate_enabled`(默认 True) / env `REGIME_FLAT_GATE_ENABLED=false` 可回滚。
+        """
+        if action != 'open_long':
+            return (True, '')                            # long-only: short/非 open 放行
+        if not getattr(self, '_regime_flat_gate_enabled', True):
+            return (True, 'flag_off')
+        try:
+            eff = self._regime_manager.snapshot().get('effective_regime')
+        except Exception:
+            return (True, 'regime_unknown')              # fail-safe: 不因 regime 取不到而误拒
+        if eff not in ('choppy', 'mixed'):
+            return (True, 'regime_trend')
+        if self._has_directional_thesis(action, plan, tech, score):
+            return (True, 'has_thesis')
+        return (False, 'regime_flat_no_thesis')
+
     def _select_rr_floor(self, action: str, plan: dict, tech: dict,
                          score: float) -> tuple:
         """统一 R:R floor 选择，主路径和 deferred 路径必须共用。
