@@ -11,7 +11,7 @@ verification_report: docs/superpowers/reports/2026-06-26-cf-neutral-momentum-res
 branch_status: handled
 created_at: 2026-06-26
 verified_at: 2026-06-26
-archived: false
+archived: true
 handoff_context: openspec/changes/cf-neutral-momentum-rescue-ab/.comet/handoff/design-context.json
 handoff_hash: 2ee13fd322882772a657a65bbe7e4e42c40801536f8ac9278faf3210231f7af1
 build_command: python3 -m compileall -q cf_neutral_momentum_rescue_ab.py tests/test_cf_neutral_momentum_rescue_ab.py tests/test_cf_red_line_guard.py

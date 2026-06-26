@@ -2,6 +2,7 @@
 change: cf-neutral-momentum-rescue-ab
 design-doc: docs/superpowers/specs/2026-06-26-cf-neutral-momentum-rescue-ab-design.md
 base-ref: f09b7d9f801c7f6e00f77246a2b9cd224678e5d3
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
 ---
 
 # cf-neutral-momentum-rescue-ab Implementation Plan
@@ -24,6 +25,7 @@ base-ref: f09b7d9f801c7f6e00f77246a2b9cd224678e5d3
 - 不下单、不改 config、不改任何 Judge/executor/live 逻辑。
 - 基线测试 1460 passed,新增后须全绿。
 
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
 ---
 
 ### Task 1: population 加载 + 方向无关谓词
@@ -178,6 +180,7 @@ git add cf_neutral_momentum_rescue_ab.py tests/test_cf_neutral_momentum_rescue_a
 git commit -m "feat(cf-neutral-momentum-rescue-ab): population 加载 + 方向无关谓词(不读 strength)"
 ```
 
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
 ---
 
 ### Task 2: 策略典型几何派生 + 合成退出字段
@@ -300,6 +303,7 @@ git add cf_neutral_momentum_rescue_ab.py tests/test_cf_neutral_momentum_rescue_a
 git commit -m "feat(cf-neutral-momentum-rescue-ab): 策略典型几何派生 + 合成标准化退出(entry_price 契约)"
 ```
 
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
 ---
 
 ### Task 3: 结算栈(bars/dedup/settle/verdict) + 集成结算测试
@@ -454,6 +458,7 @@ git add cf_neutral_momentum_rescue_ab.py tests/test_cf_neutral_momentum_rescue_a
 git commit -m "feat(cf-neutral-momentum-rescue-ab): 结算栈(dedup/settle/honesty)+ 集成结算测试"
 ```
 
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
 ---
 
 ### Task 4: main 编排(A/B 桶 × 阈值网格 × 退出假设)+ 冒烟
@@ -536,6 +541,7 @@ git add cf_neutral_momentum_rescue_ab.py
 git commit -m "feat(cf-neutral-momentum-rescue-ab): main 编排(A/B × 阈值网格 × 退出假设)+ 结论指引"
 ```
 
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
 ---
 
 ### Task 5: 红线守卫 + 全量回归
@@ -582,6 +588,7 @@ git add tests/test_cf_red_line_guard.py
 git commit -m "test(cf-neutral-momentum-rescue-ab): 红线守卫禁决策/风控路径 import + 全量回归绿"
 ```
 
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
 ---
 
 ## Self-Review

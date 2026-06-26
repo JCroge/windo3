@@ -2,6 +2,8 @@
 comet_change: cf-neutral-momentum-rescue-ab
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-26-cf-neutral-momentum-rescue-ab
+status: final
 ---
 
 # cf-neutral-momentum-rescue-ab — 技术设计
