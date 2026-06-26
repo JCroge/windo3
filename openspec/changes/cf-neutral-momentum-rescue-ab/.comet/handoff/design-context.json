@@ -1,0 +1,14 @@
+{
+  "change": "cf-neutral-momentum-rescue-ab",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "2ee13fd322882772a657a65bbe7e4e42c40801536f8ac9278faf3210231f7af1",
+  "files": [
+    { "path": "openspec/changes/cf-neutral-momentum-rescue-ab/proposal.md", "sha256": "f64e6c4d12aae9d74e591c2e84fa1b23e09d1607f2d31231a65a7ac938cbdbc4" },
+    { "path": "openspec/changes/cf-neutral-momentum-rescue-ab/design.md", "sha256": "16eca0077481d9ea9e019b07702ebc0f502c34c09ba30eade0cd89d8fc5fbed7" },
+    { "path": "openspec/changes/cf-neutral-momentum-rescue-ab/tasks.md", "sha256": "e1d1f82858879c88bce2aafe716c05cb8dc93b44d61927dbe54e0f8090d89081" },
+    { "path": "openspec/changes/cf-neutral-momentum-rescue-ab/specs/neutral-momentum-rescue-measurement/spec.md", "sha256": "6e831b12578d51db275971e66eae071ca6a61c075e79042d50b653cf00e9b8c6" }
+  ]
+}
