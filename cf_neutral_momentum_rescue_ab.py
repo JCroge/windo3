@@ -182,3 +182,52 @@ def settle_records(records, sl_dist, tp1_dist):
     clusters = dedup_clusters(fields)
     settle = settle_clusters(clusters)
     return clusters, settle, bucket_verdict(settle)
+
+
+def _print_bucket(name, clusters, settle, v):
+    rr = (f" → {settle['net_R']/settle['resolved']:+.3f} R/簇"
+          if settle["resolved"] else "")
+    print(f"    [{name}] 簇 {len(clusters)} | 可结算 {settle['resolved']}"
+          f"(无 klines 跳过 {settle['nodata']}) | tp={settle['tp']} sl={settle['sl']} "
+          f"exp={settle['expired']} | 净R {settle['net_R']:+.2f}{rr} | 诚实门 {v['verdict']}(n={v['n']})")
+
+
+def _run_grid(population, sl_dist, tp1_dist, exit_label):
+    print(f"\n========== 退出假设: {exit_label} "
+          f"(sl_dist={sl_dist:.4f} tp1_dist={tp1_dist:.4f}, R:R={tp1_dist/sl_dist:.2f}) ==========")
+    for pre12h_min in PRE12H_GRID:
+        for range_pos_max in RANGEPOS_GRID:
+            a = [r for r in population if rescue_predicate(r, pre12h_min, range_pos_max)]
+            b = [r for r in population if not rescue_predicate(r, pre12h_min, range_pos_max)]
+            print(f"\n  --- 谓词 pre12h≥{pre12h_min} range_pos≤{range_pos_max} "
+                  f"| A命中 {len(a)} / B对照 {len(b)} ---")
+            ca, sa, va = settle_records(a, sl_dist, tp1_dist)
+            cb, sb, vb = settle_records(b, sl_dist, tp1_dist)
+            _print_bucket("A 救援候选", ca, sa, va)
+            _print_bucket("B 对照", cb, sb, vb)
+
+
+def main():
+    population = load_population()
+    n_choppy = sum(1 for r in population if r.get("regime_state") == "choppy")
+    n_mixed = sum(1 for r in population if r.get("regime_state") == "mixed")
+    med_sl, med_tp = derive_strategy_geometry()
+    print("=== cf-neutral-momentum-rescue-ab: path_evidence 阀门双重失效测量(信号口径)===")
+    print(f"population(choppy/mixed + neutral 方向): {len(population)} "
+          f"(choppy {n_choppy} / mixed {n_mixed})")
+    print(f"策略典型几何(choppy-long accept median): sl_dist={med_sl:.4f} tp1_dist={med_tp:.4f}")
+    exit_assumptions = [
+        (med_sl, med_tp, "策略中位"),
+        (0.015, 0.0225, "固定 R:R=1.5"),
+        (0.010, 0.0150, "更紧 SL"),
+    ]
+    for sl_dist, tp1_dist, label in exit_assumptions:
+        _run_grid(population, sl_dist, tp1_dist, label)
+    print("\n注: 诚实门 min_sample=30 不下调;n<30 INSUFFICIENT 时净 R 仅 suggestive。")
+    print("    判据: A 净R/簇 显著>0 且 B 不显著>0 且 A 诚实门通过 → 谓词有判别力、阀门值得放宽(另起 change)。")
+    print("    A≈B 或皆 ≤0 或 A INSUFFICIENT → 救援无 edge,结案。")
+    print("    klines 覆盖受限(klines_1s 近 ~数日 ~数十标的)无覆盖簇已跳过并计数。observability-only。")
+
+
+if __name__ == "__main__":
+    main()
