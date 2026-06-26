@@ -82,3 +82,40 @@ def test_derive_geometry_fallback(tmp_path):
     empty.write_text("")
     sl, tp = drv.derive_strategy_geometry(str(empty))
     assert abs(sl - 0.015) < 1e-9 and abs(tp - 0.0225) < 1e-9
+
+
+def test_settle_records_tp_and_sl_via_fake_bars(monkeypatch):
+    # 两个不同 symbol 的候选:一个走到 TP,一个走到 SL
+    recs = [_rec(), _rec()]
+    recs[0]["symbol"] = "WIN-USDT"
+    recs[1]["symbol"] = "LOSE-USDT"
+
+    def fake_bars(db, sym, created, window=86400):
+        if sym == "WIN-USDT":
+            return [{"open_time": int((created + 60) * 1000),
+                     "high": 11.0, "low": 9.95, "close": 11.0}]   # 命中 tp(10.3)
+        return [{"open_time": int((created + 60) * 1000),
+                 "high": 10.05, "low": 9.5, "close": 9.5}]         # 命中 sl(9.8)
+
+    monkeypatch.setattr(drv, "load_bars", fake_bars)
+    clusters, settle, v = drv.settle_records(recs, sl_dist=0.02, tp1_dist=0.03)
+    assert settle["tp"] == 1
+    assert settle["sl"] == 1
+    assert settle["resolved"] == 2
+    # net_R = (tp1_dist/sl_dist) + (-1) = 1.5 - 1 = 0.5
+    assert abs(settle["net_R"] - 0.5) < 1e-6
+
+
+def test_settle_records_nodata_skipped(monkeypatch):
+    monkeypatch.setattr(drv, "load_bars", lambda *a, **k: [])
+    clusters, settle, v = drv.settle_records([_rec()], 0.02, 0.03)
+    assert settle["nodata"] == 1
+    assert settle["resolved"] == 0
+
+
+def test_bucket_verdict_thin_sample_insufficient(monkeypatch):
+    # 单簇 → n=1 < 30 → INSUFFICIENT
+    monkeypatch.setattr(drv, "load_bars", lambda *a, **k: [
+        {"open_time": 1060000, "high": 11.0, "low": 9.95, "close": 11.0}])
+    _, _, v = drv.settle_records([_rec()], 0.02, 0.03)
+    assert "INSUFFICIENT" in v["verdict"]

@@ -109,3 +109,76 @@ def synthesize_settle_fields(rec, sl_dist, tp1_dist):
             "_sl_dist": sl_dist, "_tp1_dist": tp1_dist,
             "_plan": {"side": "long", "entry_price": entry, "created_at": created,
                       "stop_loss": sl, "take_profit": [tp1]}}
+
+
+def load_bars(db, sym, created, window=86400):
+    if not db or not os.path.exists(db) or created is None:
+        return []
+    conn = sqlite3.connect(db)
+    try:
+        lo, hi = int(created * 1000), int((created + window) * 1000)
+        rows = conn.execute(
+            "SELECT open_time,high,low,close FROM klines WHERE symbol=? "
+            "AND open_time>=? AND open_time<=? ORDER BY open_time",
+            (sym, lo, hi)).fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+    return [{"open_time": t, "high": h, "low": l, "close": c} for t, h, l, c in rows]
+
+
+def dedup_clusters(items, gap_sec=3600):
+    by_key = defaultdict(list)
+    for x in items:
+        by_key[(x["symbol"], x["_side"])].append(x)
+    clusters = []
+    for _key, lst in by_key.items():
+        lst.sort(key=lambda z: z["_created"])
+        last = None
+        for it in lst:
+            if last is None or it["_created"] - last > gap_sec:
+                clusters.append(it)
+            last = it["_created"]
+    return clusters
+
+
+def settle_clusters(clusters, *, load_bars_fn=None, resolve_fn=resolve_counterfactual):
+    load_bars_fn = load_bars_fn or load_bars
+    tp = sl = exp = nodata = 0
+    net_R = 0.0
+    r_samples = []
+    for cl in clusters:
+        bars = load_bars_fn(KL1, cl["symbol"], cl.get("_created")) or \
+            load_bars_fn(KL, cl["symbol"], cl.get("_created"))
+        if not bars:
+            nodata += 1
+            continue
+        res = resolve_fn(cl["_plan"], bars, source="tape")
+        if res.outcome == "tp":
+            tp += 1
+            r = cl["_tp1_dist"] / cl["_sl_dist"]
+        elif res.outcome == "sl":
+            sl += 1
+            r = -1.0
+        else:
+            exp += 1
+            r = 0.0
+        net_R += r
+        r_samples.append(r)
+    return {"tp": tp, "sl": sl, "expired": exp, "nodata": nodata,
+            "resolved": tp + sl + exp, "net_R": net_R, "r_samples": r_samples}
+
+
+def bucket_verdict(settle):
+    return summarize_bucket(wins=settle["tp"], losses=settle["sl"],
+                            net_usdt_samples=settle["r_samples"],
+                            min_sample=30, lowconf_sample=100)
+
+
+def settle_records(records, sl_dist, tp1_dist):
+    fields = [f for f in (synthesize_settle_fields(r, sl_dist, tp1_dist)
+                          for r in records) if f]
+    clusters = dedup_clusters(fields)
+    settle = settle_clusters(clusters)
+    return clusters, settle, bucket_verdict(settle)
