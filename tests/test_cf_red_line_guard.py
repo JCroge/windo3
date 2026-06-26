@@ -90,3 +90,12 @@ def test_decision_paths_do_not_read_choppy_tp1_floor_ab():
                "agents.trading.position_analyst"]:
         src = _src(mp)
         assert "cf_choppy_neutral_tp1_floor_ab" not in src, mp
+
+
+def test_decision_paths_do_not_read_neutral_momentum_rescue_ab():
+    """neutral-momentum-rescue 测量驱动严禁被决策/风控路径 import。"""
+    for mp in ["agents.trading.judge", "agents.trading.executor", "executor",
+               "agents.trading.portfolio_risk_guard", "agents.trading.reviewer",
+               "agents.trading.position_analyst"]:
+        src = _src(mp)
+        assert "cf_neutral_momentum_rescue_ab" not in src, mp
