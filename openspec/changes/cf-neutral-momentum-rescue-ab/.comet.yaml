@@ -1,7 +1,7 @@
 workflow: full
-phase: build
-build_mode: null
-isolation: null
+phase: verify
+build_mode: subagent-driven-development
+isolation: branch
 verify_mode: null
 base_ref: 73b960ce118698e80f8e0ce5cec903b3e42c0d6f
 design_doc: docs/superpowers/specs/2026-06-26-cf-neutral-momentum-rescue-ab-design.md
@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/cf-neutral-momentum-rescue-ab/.comet/handoff/design-context.json
 handoff_hash: 2ee13fd322882772a657a65bbe7e4e42c40801536f8ac9278faf3210231f7af1
+build_command: python3 -m compileall -q cf_neutral_momentum_rescue_ab.py tests/test_cf_neutral_momentum_rescue_ab.py tests/test_cf_red_line_guard.py
+verify_command: python3 -m pytest tests/test_cf_neutral_momentum_rescue_ab.py tests/test_cf_red_line_guard.py -q
