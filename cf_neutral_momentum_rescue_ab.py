@@ -61,3 +61,51 @@ def rescue_predicate(rec, pre12h_min, range_pos_max):
     if pre12h is None or range_pos is None:
         return False
     return bool(bias_up and pre12h >= pre12h_min and range_pos <= range_pos_max)
+
+
+def derive_strategy_geometry(path=TAPE):
+    """从磁带 choppy-long accept 的真实 plan 取 median sl_dist/tp1_dist。"""
+    sl_ds, tp_ds = [], []
+    if os.path.exists(path):
+        for line in open(path):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("decision") != "accept" or r.get("regime_state") != "choppy":
+                continue
+            plan = (r.get("trade_decision_output") or {}).get("plan") or {}
+            if plan.get("side") != "long":
+                continue
+            entry = plan.get("entry_ref")
+            sl = plan.get("stop_loss")
+            tp = plan.get("take_profit") or []
+            if not (entry and sl and tp):
+                continue
+            sl_dist = (entry - sl) / entry
+            tp1_dist = (tp[0] - entry) / entry
+            if sl_dist > 0 and tp1_dist > 0:
+                sl_ds.append(sl_dist)
+                tp_ds.append(tp1_dist)
+    if sl_ds and tp_ds:
+        return statistics.median(sl_ds), statistics.median(tp_ds)
+    return 0.015, 0.0225  # 回退 R:R≈1.5
+
+
+def synthesize_settle_fields(rec, sl_dist, tp1_dist):
+    if sl_dist <= 0 or tp1_dist <= 0:
+        return None
+    entry = rec.get("price_at_decision")
+    if not entry:
+        return None
+    entry = float(entry)
+    created = rec.get("timestamp")
+    sl = entry * (1 - sl_dist)
+    tp1 = entry * (1 + tp1_dist)
+    return {"symbol": rec.get("symbol"), "_side": "long", "_created": created,
+            "_sl_dist": sl_dist, "_tp1_dist": tp1_dist,
+            "_plan": {"side": "long", "entry_price": entry, "created_at": created,
+                      "stop_loss": sl, "take_profit": [tp1]}}
