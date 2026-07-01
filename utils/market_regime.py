@@ -138,11 +138,20 @@ class RegimeManager:
     def _compute_raw_regime(self, techs: dict) -> tuple:
         """Compute raw regime from aggregated tech_analysis snapshots.
 
-        Uses: trend direction consensus, BTC/ETH higher_tf_bias, volatility.
+        Uses: trend direction consensus, BTC/ETH higher_tf_bias with weighting, volatility.
         Returns: (regime_label, confidence, basis_dict)
+
+        2026-07-01: 引入 BTC/ETH anchor 权重增强 (方案 B)
+        - BTC bias 权重 2.0，ETH bias 权重 1.5
+        - Bullish/bearish 阈值降至 0.5（从 0.6）
+        - Choppy 阈值提升至 0.6（从 0.5）
         """
         if not techs:
             return REGIME_MIXED, 50, {}
+
+        # Anchor 权重配置
+        BTC_WEIGHT = 2.0
+        ETH_WEIGHT = 1.5
 
         bullish_count = 0
         bearish_count = 0
@@ -177,32 +186,58 @@ class RegimeManager:
         if total == 0:
             return REGIME_MIXED, 50, {}
 
-        bullish_pct = bullish_count / total
-        bearish_pct = bearish_count / total
+        # 原始百分比（未加权）
+        bullish_pct_raw = bullish_count / total
+        bearish_pct_raw = bearish_count / total
+        neutral_pct_raw = neutral_count / total
 
-        # BTC/ETH anchor bias
-        anchor_bullish = (btc_bias == 'bullish') or (eth_bias == 'bullish')
-        anchor_bearish = (btc_bias == 'bearish') or (eth_bias == 'bearish')
-        anchor_neutral = not anchor_bullish and not anchor_bearish
+        # BTC/ETH anchor bias 加权
+        anchor_bullish_weight = 0
+        anchor_bearish_weight = 0
+
+        if btc_bias == 'bullish':
+            anchor_bullish_weight += BTC_WEIGHT
+        elif btc_bias == 'bearish':
+            anchor_bearish_weight += BTC_WEIGHT
+
+        if eth_bias == 'bullish':
+            anchor_bullish_weight += ETH_WEIGHT
+        elif eth_bias == 'bearish':
+            anchor_bearish_weight += ETH_WEIGHT
+
+        # 加权计算
+        weighted_bullish = bullish_count + anchor_bullish_weight
+        weighted_bearish = bearish_count + anchor_bearish_weight
+        weighted_total = total + (BTC_WEIGHT if btc_bias else 0) + (ETH_WEIGHT if eth_bias else 0)
+
+        if weighted_total == 0:
+            return REGIME_MIXED, 50, {}
+
+        bullish_pct = weighted_bullish / weighted_total
+        bearish_pct = weighted_bearish / weighted_total
+        neutral_pct = neutral_count / total  # neutral 不加权
 
         # Volatility assessment
         avg_atr = sum(atr_values) / len(atr_values) if atr_values else 0.02
         high_vol = avg_atr > 0.04
 
-        # Regime determination
+        # Regime determination（调整后的阈值）
         regime = REGIME_MIXED
         confidence = 50
 
-        if bullish_pct >= 0.6 and (anchor_bullish or anchor_neutral):
+        anchor_bullish = btc_bias == 'bullish' or eth_bias == 'bullish'
+        anchor_bearish = btc_bias == 'bearish' or eth_bias == 'bearish'
+
+        if bullish_pct >= 0.5:
             regime = REGIME_BULLISH
             confidence = int(50 + bullish_pct * 40 + (10 if anchor_bullish else 0))
-        elif bearish_pct >= 0.6 and (anchor_bearish or anchor_neutral):
+        elif bearish_pct >= 0.5:
             regime = REGIME_BEARISH
             confidence = int(50 + bearish_pct * 40 + (10 if anchor_bearish else 0))
-        elif high_vol and neutral_count / total < 0.4:
+        elif high_vol and neutral_pct < 0.4:
             regime = REGIME_MIXED
             confidence = 55
-        elif not high_vol and neutral_count / total >= 0.5:
+        elif not high_vol and neutral_pct >= 0.6:
             regime = REGIME_CHOPPY
             confidence = 60
         else:
@@ -214,10 +249,15 @@ class RegimeManager:
         basis = {
             "bullish_pct": round(bullish_pct, 2),
             "bearish_pct": round(bearish_pct, 2),
+            "bullish_pct_raw": round(bullish_pct_raw, 2),
+            "bearish_pct_raw": round(bearish_pct_raw, 2),
             "btc_bias": btc_bias,
             "eth_bias": eth_bias,
+            "anchor_bullish_weight": round(anchor_bullish_weight, 1),
+            "anchor_bearish_weight": round(anchor_bearish_weight, 1),
             "avg_atr": round(avg_atr, 4),
             "total_symbols": total,
+            "weighted_total": round(weighted_total, 1),
         }
 
         return regime, confidence, basis

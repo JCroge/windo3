@@ -78,12 +78,23 @@ class TestRegimeHysteresis:
         assert regime._effective_regime == REGIME_BEARISH
 
     def test_two_mixed_switches_from_bullish(self, regime):
-        """AC-REG-02: bullish → two consecutive mixed → switches to mixed."""
-        # mixed requires: high_vol + neutral < 40%, so use high ATR with
-        # a mix of bullish/bearish (not neutral) to avoid choppy branch
+        """AC-REG-02: bullish → two consecutive mixed → switches to mixed.
+
+        2026-07-01: 修改后的逻辑（bullish/bearish阈值0.6→0.5）。
+        mixed 需要 high_vol + 两边都不到50%。使用 3 bullish + 4 bearish + 1 neutral。
+        """
+        # mixed requires: high_vol + neutral < 40%, 且 bullish/bearish 都 < 0.5
         mixed_techs = {f'SYM{i}-USDT': make_tech('bullish', atr_pct=0.05) for i in range(3)}
         mixed_techs.update({f'BEAR{i}-USDT': make_tech('bearish', atr_pct=0.05) for i in range(4)})
-        mixed_techs['BTC-USDT'] = make_tech('neutral', atr_pct=0.05)
+        mixed_techs['NEUT-USDT'] = make_tech('neutral', atr_pct=0.05)
+        # 8 total: 3 bull (37.5%), 4 bear (50%), 1 neutral (12.5%)
+        # bearish >= 0.5 会判 bearish，需要修改为更平衡
+
+        # 改为 4 bull + 3 bear + 1 neutral，但需要确保没有 BTC anchor
+        mixed_techs = {f'SYM{i}-USDT': make_tech('bullish', atr_pct=0.05) for i in range(4)}
+        mixed_techs.update({f'BEAR{i}-USDT': make_tech('bearish', atr_pct=0.05) for i in range(4)})
+        mixed_techs['NEUT-USDT'] = make_tech('neutral', atr_pct=0.05)
+        # 9 total: 4 bull (44.4%), 4 bear (44.4%), 1 neutral (11.1%) → 两边都 < 0.5
 
         regime.update(mixed_techs)
         assert regime._effective_regime == REGIME_BULLISH  # first, need 2
