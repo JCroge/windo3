@@ -5,7 +5,7 @@
 - 当前系统是多 Agent 加密货币趋势交易系统，不是跨交易所套利系统。
 - 生产、paper、testnet、实盘验收主入口统一为 `python3 run_agents.py`。
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
-- **⚠️ 2026-07-03 关键运营状态**：(a) LLM 中转端点当前 `.env` 为 `BOT_LLM_BASE_URL=https://api.chivess.com` / `BOT_LLM_MODEL=gpt-5.5`。(b) **体制分类加权逻辑修复 97825a1 已部署**（Live PID 34929, 2026-07-03 14:22 重启），但 2026-07-03 清理复核发现 97825a1 漏把 `anchor_neutral_weight` 计入 `weighted_total`；工作区已有 follow-up 修复和回归测试，**当前 live 尚未重启加载该 follow-up**。提交/重启前验证仍受旧分母影响。(c) 体制空仓硬门仍生效（env `REGIME_FLAT_GATE_ENABLED=false` 可回滚）。
+- **⚠️ 2026-07-03 关键运营状态**：(a) LLM 中转端点当前 `.env` 为 `BOT_LLM_BASE_URL=https://api.chivess.com` / `BOT_LLM_MODEL=gpt-5.5`，15:05 后出现多次 504，影响新决策样本产出。(b) **体制分类 weighted_total follow-up 已部署**：97825a1 后续发现 `anchor_neutral_weight` 未进 `weighted_total`，已在 commit `08a7552` 修复为 `weighted_total = weighted_bullish + weighted_bearish + weighted_neutral` 并补回归测试；live 已清理为单进程，当前由 `screen` 会话 `crypto_live` 承载，Python PID 24714，2026-07-03 15:05:11 OS 层重启加载。(c) 体制空仓硬门仍生效（env `REGIME_FLAT_GATE_ENABLED=false` 可回滚）。
 - 当前基线：`1474 passed / 0 failed / 4 deselected`（2026-06-26）。历史基线见 `docs/handoff.md`。
 - 当前 Go/No-Go：小额 live 灰度 GO（维持现有 cap）；live 扩容 CONDITIONAL GO，扩容前置 = 运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置 + 真实 TG 命令链与 drift gate 运维验收。
 - OKX 验收状态：mock 执行语义 10 case PASS；真实 testnet long_short_mode 13 PASS + net_mode 子账户 3 PASS。
