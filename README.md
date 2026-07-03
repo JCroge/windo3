@@ -123,19 +123,19 @@ launchctl bootout gui/$(id -u)/com.cryptoarb.pattern-forward-shadow.{record,sett
 (仓库内 `pattern_forward_shadow.py` 是 lab 集成版,供可访问环境/对照;launchd 跑的是上面的自包含 runner。)
 **4h 能力已在 runner 里(`--interval 4h`)但未配 launchd**——因 2026-06-25 宽 universe 回测已证伪 edge,不部署 4h 加速 cron;需要时手动 `python3 fwdshadow_runner.py --record --interval 4h` 可跑。前向验证须数周累积；结算经诚实门(n<30 拒答)。**确认稳健前不上实盘、不改 config——当前结论是 edge 已证伪,日线 cron 仅作 null-monitor。**
 
-## 周更 cron：choppy+neutral TP1 地板反事实重跑（observability-only）
+## 日更 cron：choppy+neutral TP1 地板反事实监控（observability-only）
 
 `cf_choppy_neutral_tp1_floor_ab.py`（change `cf-choppy-neutral-tp1-floor-ab`）量化「choppy+neutral 多单卡 TP1 口径地板」的反事实 PnL delta。现诚实门 `INSUFFICIENT_SAMPLE`（n=13<30），须等磁带 choppy+neutral 忠实样本累积后重跑。
 
 **调度 = 用户 crontab（不能自包含——驱动须读 repo 内 live 决策磁带 `data/decision_replay_tape.jsonl`）**：
-- crontab 条目：周一 10:13 重跑驱动，输出追加到 `~/Library/Logs/cf_choppy_tp1_floor_ab.log`（每次带时间戳头）。
+- crontab 条目：每日 10:13 重跑驱动，输出追加到 `~/Library/Logs/cf_choppy_tp1_floor_ab.log`（每次带时间戳头）。日更只加快发现样本变化，不制造新样本。
 - **✅ FDA 已授权并验证（2026-06-24 cron 11:19 实跑通过）**。因 repo 在 `~/Desktop`（TCC 保护目录），`/usr/sbin/cron` 必须有 Full Disk Access，否则读 repo 文件报 `Operation not permitted`（TCC 拦的是文件读：cron 能执行 crontab、能 `cd` 进目录，但读不到文件内容）。**若换机 / FDA 失效需重授**：系统设置>隐私与安全性>完全磁盘访问 > `+` > 文件选择器按 ⌘⇧G 输入 `/usr/sbin/cron` > 打开；然后 `sudo killall cron`（launchd 自动重起，**新进程才带上 FDA**）。
-- 看结果：`tail ~/Library/Logs/cf_choppy_tp1_floor_ab.log`，关注主桶 `tp1_floor_rejected` 桶的「诚实门裁定」——一旦不再 `INSUFFICIENT_SAMPLE` 即可据此判断是否对 choppy+neutral 上 TP1 地板（另起 change，须 event_backtest）。
+- 看结果：`tail ~/Library/Logs/cf_choppy_tp1_floor_ab.log`，关注主桶 `tp1_floor_rejected` 桶的「诚实门裁定」和 `EARLY_WARNING`。`EARLY_WARNING` 只表示薄样本已强负向，不自动改 live config；一旦诚实门不再 `INSUFFICIENT_SAMPLE`，再据此判断是否对 choppy+neutral 上 TP1 地板（另起 change，须 event_backtest）。
 
 ```bash
-crontab -l                                   # 查看周更条目
-tail -40 ~/Library/Logs/cf_choppy_tp1_floor_ab.log
+crontab -l                                   # 查看日更条目
+rg "EARLY_WARNING|诚实门裁定|tp1_floor_rejected|日更" ~/Library/Logs/cf_choppy_tp1_floor_ab.log
 python3 cf_choppy_neutral_tp1_floor_ab.py    # 可访问环境下手动重跑
 ```
 
-**确认稳健（诚实门跨过 INSUFFICIENT_SAMPLE）前不上实盘、不改 config。**
+**确认稳健（诚实门跨过 INSUFFICIENT_SAMPLE）前不上实盘、不改 config；`EARLY_WARNING` 也不得自动触发配置变更。**

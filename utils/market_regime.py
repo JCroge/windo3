@@ -141,10 +141,10 @@ class RegimeManager:
         Uses: trend direction consensus, BTC/ETH higher_tf_bias with weighting, volatility.
         Returns: (regime_label, confidence, basis_dict)
 
-        2026-07-01: 引入 BTC/ETH anchor 权重增强 (方案 B)
+        2026-07-01/03: 引入并修正 BTC/ETH anchor 权重增强
         - BTC bias 权重 2.0，ETH bias 权重 1.5
-        - Bullish/bearish 阈值降至 0.5（从 0.6）
-        - Choppy 阈值提升至 0.6（从 0.5）
+        - neutral bias 同样进入加权分子和分母
+        - Bullish/bearish 阈值降至 0.45，Choppy 阈值提升至 0.70
         """
         if not techs:
             return REGIME_MIXED, 50, {}
@@ -214,8 +214,7 @@ class RegimeManager:
         weighted_bullish = bullish_count + anchor_bullish_weight
         weighted_bearish = bearish_count + anchor_bearish_weight
         weighted_neutral = neutral_count + anchor_neutral_weight
-        weighted_total = total + (BTC_WEIGHT if btc_bias in ['bullish', 'bearish'] else 0) + \
-                                (ETH_WEIGHT if eth_bias in ['bullish', 'bearish'] else 0)
+        weighted_total = weighted_bullish + weighted_bearish + weighted_neutral
 
         if weighted_total == 0:
             return REGIME_MIXED, 50, {}

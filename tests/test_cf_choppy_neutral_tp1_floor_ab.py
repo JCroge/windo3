@@ -164,3 +164,24 @@ def test_bucket_verdict_thin_sample():
               "net_R": 1.0, "r_samples": [2.0, -1.0]}
     v = bucket_verdict(settle)
     assert v["verdict"] == "INSUFFICIENT_SAMPLE" and v["n"] == 2
+
+
+def test_early_warning_triggers_for_strong_negative_thin_sample():
+    from cf_choppy_neutral_tp1_floor_ab import early_warning
+    settle = {"tp": 1, "sl": 14, "expired": 6, "nodata": 0, "resolved": 21,
+              "net_R": -12.5, "r_samples": [1.5] + [-1.0] * 14 + [0.0] * 6}
+    verdict = {"verdict": "INSUFFICIENT_SAMPLE", "n": 15}
+    assert early_warning(settle, verdict) is True
+
+
+def test_early_warning_does_not_trigger_for_weaker_or_actionable_sample():
+    from cf_choppy_neutral_tp1_floor_ab import early_warning
+    weak = {"tp": 3, "sl": 8, "expired": 9, "nodata": 0, "resolved": 20,
+            "net_R": -4.0, "r_samples": [1.5] * 3 + [-1.0] * 8 + [0.0] * 9}
+    assert early_warning(weak, {"verdict": "INSUFFICIENT_SAMPLE", "n": 11}) is False
+
+    strong_but_past_honesty_gate = {"tp": 1, "sl": 30, "expired": 0, "nodata": 0,
+                                    "resolved": 31, "net_R": -29.0,
+                                    "r_samples": [1.5] + [-1.0] * 30}
+    assert early_warning(strong_but_past_honesty_gate,
+                         {"verdict": "low_confidence", "n": 31}) is False

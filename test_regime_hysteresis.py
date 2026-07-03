@@ -104,10 +104,18 @@ class TestRegimeHysteresis:
     def test_two_choppy_switches_from_bullish(self, regime):
         """AC-REG-02: bullish → two consecutive choppy → switches to choppy."""
         from utils.market_regime import REGIME_CHOPPY
-        # choppy: low vol + neutral >= 50%
-        choppy_techs = {f'SYM{i}-USDT': make_tech('neutral', atr_pct=0.01) for i in range(6)}
-        choppy_techs['BTC-USDT'] = make_tech('neutral', atr_pct=0.01)
-        choppy_techs['ETH-USDT'] = make_tech('neutral', atr_pct=0.01)
+        # choppy: low vol + weighted neutral >= 70%
+        choppy_techs = {
+            f'SYM{i}-USDT': make_tech('neutral', higher_tf_bias='neutral',
+                                      daily_bias='neutral', atr_pct=0.01)
+            for i in range(6)
+        }
+        choppy_techs['BTC-USDT'] = make_tech(
+            'neutral', higher_tf_bias='neutral', daily_bias='neutral', atr_pct=0.01
+        )
+        choppy_techs['ETH-USDT'] = make_tech(
+            'neutral', higher_tf_bias='neutral', daily_bias='neutral', atr_pct=0.01
+        )
 
         regime.update(choppy_techs)
         assert regime._effective_regime == REGIME_BULLISH  # first, need 2
@@ -137,6 +145,24 @@ class TestRegimeComputation:
         regime.update(techs)
         regime.update(techs)
         assert regime._effective_regime == REGIME_BULLISH
+
+    def test_neutral_anchor_weight_is_in_weighted_total(self, regime):
+        from utils.market_regime import REGIME_CHOPPY
+
+        techs = {
+            f'SYM{i}-USDT': make_tech('neutral', higher_tf_bias='neutral', daily_bias='neutral')
+            for i in range(6)
+        }
+        techs['BTC-USDT'] = make_tech('neutral', higher_tf_bias='neutral', daily_bias='neutral')
+        techs['ETH-USDT'] = make_tech('neutral', higher_tf_bias='neutral', daily_bias='neutral')
+
+        raw_regime, _, basis = regime._compute_raw_regime(techs)
+
+        assert basis["anchor_neutral_weight"] == 3.5
+        assert basis["weighted_neutral"] == 11.5
+        assert basis["weighted_total"] == 11.5
+        assert basis["neutral_pct"] == 1.0
+        assert raw_regime == REGIME_CHOPPY
 
     def test_snapshot_fields(self, regime):
         snap = regime.snapshot()

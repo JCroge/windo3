@@ -189,10 +189,10 @@ class MultiTechAnalyst(BaseAgent):
         higher_highs = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i-1])
         trend_pct = higher_highs / (len(closes) - 1) if len(closes) > 1 else 0.5
 
-        if trend_pct > 0.6 and ma_alignment == "bullish":
+        if trend_pct > 0.5 and ma_alignment == "bullish":
             direction = "bullish"
             strength = int(min(100, trend_pct * 100 + 20))
-        elif trend_pct < 0.4 and ma_alignment == "bearish":
+        elif trend_pct < 0.5 and ma_alignment == "bearish":
             direction = "bearish"
             strength = int(min(100, (1 - trend_pct) * 100 + 20))
         else:

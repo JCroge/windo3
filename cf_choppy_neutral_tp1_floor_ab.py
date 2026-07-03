@@ -26,6 +26,11 @@ LIFECYCLE = "data/live_position_lifecycle.json"
 LADDER_ON = {"ladder_rr_enabled": True}    # = live 现状(lever2 默认开)，baseline 自检锚
 LADDER_OFF = {"ladder_rr_enabled": False}  # = CF：floor gate 比 TP1 口径
 
+EARLY_WARNING_TEXT = (
+    "EARLY_WARNING: choppy+neutral TP1-floor rejected bucket is strongly negative "
+    "but still below honesty threshold; do not auto-change live config."
+)
+
 
 def _is_accept(action):
     return action in ("open_long", "open_short")
@@ -186,6 +191,21 @@ def bucket_verdict(settle):
                             min_sample=30, lowconf_sample=100)
 
 
+def early_warning(settle, verdict):
+    if verdict.get("verdict") != "INSUFFICIENT_SAMPLE":
+        return False
+    resolved = settle.get("resolved") or 0
+    if resolved <= 0:
+        return False
+    return (
+        verdict.get("n", 0) >= 15
+        and resolved >= 20
+        and settle.get("net_R", 0.0) / resolved <= -0.50
+        and settle.get("sl", 0) >= 10
+        and settle.get("tp", 0) <= 2
+    )
+
+
 def fuzzy_join_real_pnl(clusters, lifecycle, window=600):
     by_sym = defaultdict(list)
     for v in lifecycle.values():
@@ -237,6 +257,8 @@ def _run_scope(accepts, regime, label, lifecycle):
         clusters, settle, v = _settle_bucket_records(recs2)
         _print_bucket(name, clusters, settle, v)
         if name.startswith("tp1_floor_rejected"):
+            if early_warning(settle, v):
+                print(f"  {EARLY_WARNING_TEXT}")
             joined = fuzzy_join_real_pnl(clusters, lifecycle)
             if joined:
                 rp = sum(j["real_pnl"] or 0 for j in joined)
