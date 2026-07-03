@@ -194,28 +194,35 @@ class RegimeManager:
         # BTC/ETH anchor bias 加权
         anchor_bullish_weight = 0
         anchor_bearish_weight = 0
+        anchor_neutral_weight = 0
 
         if btc_bias == 'bullish':
             anchor_bullish_weight += BTC_WEIGHT
         elif btc_bias == 'bearish':
             anchor_bearish_weight += BTC_WEIGHT
+        elif btc_bias == 'neutral':
+            anchor_neutral_weight += BTC_WEIGHT
 
         if eth_bias == 'bullish':
             anchor_bullish_weight += ETH_WEIGHT
         elif eth_bias == 'bearish':
             anchor_bearish_weight += ETH_WEIGHT
+        elif eth_bias == 'neutral':
+            anchor_neutral_weight += ETH_WEIGHT
 
         # 加权计算
         weighted_bullish = bullish_count + anchor_bullish_weight
         weighted_bearish = bearish_count + anchor_bearish_weight
-        weighted_total = total + (BTC_WEIGHT if btc_bias else 0) + (ETH_WEIGHT if eth_bias else 0)
+        weighted_neutral = neutral_count + anchor_neutral_weight
+        weighted_total = total + (BTC_WEIGHT if btc_bias in ['bullish', 'bearish'] else 0) + \
+                                (ETH_WEIGHT if eth_bias in ['bullish', 'bearish'] else 0)
 
         if weighted_total == 0:
             return REGIME_MIXED, 50, {}
 
         bullish_pct = weighted_bullish / weighted_total
         bearish_pct = weighted_bearish / weighted_total
-        neutral_pct = neutral_count / total  # neutral 不加权
+        neutral_pct = weighted_neutral / weighted_total
 
         # Volatility assessment
         avg_atr = sum(atr_values) / len(atr_values) if atr_values else 0.02
@@ -228,16 +235,16 @@ class RegimeManager:
         anchor_bullish = btc_bias == 'bullish' or eth_bias == 'bullish'
         anchor_bearish = btc_bias == 'bearish' or eth_bias == 'bearish'
 
-        if bullish_pct >= 0.5:
+        if bullish_pct >= 0.45:
             regime = REGIME_BULLISH
             confidence = int(50 + bullish_pct * 40 + (10 if anchor_bullish else 0))
-        elif bearish_pct >= 0.5:
+        elif bearish_pct >= 0.45:
             regime = REGIME_BEARISH
             confidence = int(50 + bearish_pct * 40 + (10 if anchor_bearish else 0))
         elif high_vol and neutral_pct < 0.4:
             regime = REGIME_MIXED
             confidence = 55
-        elif not high_vol and neutral_pct >= 0.6:
+        elif not high_vol and neutral_pct >= 0.70:
             regime = REGIME_CHOPPY
             confidence = 60
         else:
@@ -249,12 +256,16 @@ class RegimeManager:
         basis = {
             "bullish_pct": round(bullish_pct, 2),
             "bearish_pct": round(bearish_pct, 2),
+            "neutral_pct": round(neutral_pct, 2),
             "bullish_pct_raw": round(bullish_pct_raw, 2),
             "bearish_pct_raw": round(bearish_pct_raw, 2),
+            "neutral_pct_raw": round(neutral_pct_raw, 2),
             "btc_bias": btc_bias,
             "eth_bias": eth_bias,
             "anchor_bullish_weight": round(anchor_bullish_weight, 1),
             "anchor_bearish_weight": round(anchor_bearish_weight, 1),
+            "anchor_neutral_weight": round(anchor_neutral_weight, 1),
+            "weighted_neutral": round(weighted_neutral, 1),
             "avg_atr": round(avg_atr, 4),
             "total_symbols": total,
             "weighted_total": round(weighted_total, 1),
