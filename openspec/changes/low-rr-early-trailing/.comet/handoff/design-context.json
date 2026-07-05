@@ -1,0 +1,14 @@
+{
+  "change": "low-rr-early-trailing",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "c1e916c010c4489c741824676d55b93b33a9b867caadf609d7a7439cba5e913f",
+  "files": [
+    { "path": "openspec/changes/low-rr-early-trailing/proposal.md", "sha256": "879d4fb4a21b3e2a5863b7801e75e3820056fc7471bd62e3842e81f1bc87a4c4" },
+    { "path": "openspec/changes/low-rr-early-trailing/design.md", "sha256": "43884721bd03edd23b6e345565cc13fd9b786bb4a608db472c0605455d6ac613" },
+    { "path": "openspec/changes/low-rr-early-trailing/tasks.md", "sha256": "9922743e5c8c157ece29f4ec93ea7371b4a278abcc5e119c219aba0064cb311f" },
+    { "path": "openspec/changes/low-rr-early-trailing/specs/low-rr-early-trailing/spec.md", "sha256": "ebd33f92ee1d7e827d00d83b42da554191f0e6d27e8ad9152b3aecc81332b64c" }
+  ]
+}

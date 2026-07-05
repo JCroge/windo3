@@ -1991,6 +1991,31 @@ class ContractExecutor:
         else:
             profit_r = (entry - price) / entry / R
 
+        # --- Low RR 槽提前 trailing（不等 TP1）---
+        if position.get('slot_type') == 'low_rr_extra' and tp_filled == 0:
+            cfg = getattr(self, '_config', {}) or {}
+            trail_start = cfg.get('low_rr_trail_start_r', 0.5)
+            trail_dist = cfg.get('low_rr_trail_dist_r', 0.3)
+
+            # TP1 仍保留作为触发条件
+            if tp_levels:
+                tp1 = tp_levels[0]
+                if (is_long and price >= tp1) or (not is_long and price <= tp1):
+                    self.logger.info(f"[Trailing] {symbol} TP1 命中 {tp1},等待 reduce 确认")
+                    return 'partial_tp_1'
+
+            if profit_r >= trail_start:
+                trail_dist_abs = R * trail_dist * entry
+                if is_long:
+                    new_sl = position['highest_price'] - trail_dist_abs
+                    if new_sl > position['stop_loss']:
+                        self._move_sl(symbol, position, new_sl)
+                else:
+                    new_sl = position['lowest_price'] + trail_dist_abs
+                    if new_sl < position['stop_loss']:
+                        self._move_sl(symbol, position, new_sl)
+            return None
+
         # --- 分批止盈 ---
         # 注意:本函数只返回触发信号,不再 mutate tp_filled / SL。
         # tp_filled 和锁利 SL 必须在 reduce_position() 真实成交确认后才推进,
@@ -2411,6 +2436,7 @@ class ContractExecutor:
                 'original_amount': size_usdt,
                 'entry_type': plan.get('entry_type', 'unknown'),
                 'attribution': plan.get('attribution', {}),
+                'slot_type': plan.get('slot_type', 'main'),
                 'open_time': time.time(),
                 'request_id': plan.get('request_id', ''),
             }
