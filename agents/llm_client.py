@@ -16,6 +16,11 @@ class LLMUnavailableError(RuntimeError):
     pass
 
 
+class StreamTruncatedError(RuntimeError):
+    """流式响应被截断（finish_reason 非 stop 或连接中断）"""
+    pass
+
+
 def validate_against_schema(data: dict, schema: dict) -> tuple:
     """按 schema 校验/填充 LLM 返回 dict。返回 (cleaned, errors)。
 
@@ -189,6 +194,10 @@ def sanitize_user_input(text: str, max_length: int = 8000) -> tuple:
 class LLMClient:
     """Claude API 客户端，通过 OpenAI 兼容格式调用中转站"""
 
+    _global_last_call = 0.0
+    _global_lock = asyncio.Lock()
+    _global_min_interval = 2.0
+
     def __init__(self):
         self.logger = setup_logger('llm_client')
 
@@ -235,24 +244,42 @@ class LLMClient:
         await self._rate_limit()
 
         try:
-            response = await self.client.chat.completions.create(
+            stream = await self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
-                ]
+                ],
+                stream=True,
             )
+
+            chunks = []
+            finish_reason = None
+            async for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0]
+                    if delta.delta.content:
+                        chunks.append(delta.delta.content)
+                    if delta.finish_reason:
+                        finish_reason = delta.finish_reason
 
             self._call_count += 1
             self._consecutive_failures = 0
             self._last_success_time = time.time()
-            result = response.choices[0].message.content
-            tokens = response.usage.total_tokens if response.usage else 0
-            self.logger.info(f"LLM调用成功 (#{self._call_count}, tokens={tokens})")
+            result = ''.join(chunks)
+            self.logger.info(f"LLM调用成功 (#{self._call_count}, chars={len(result)}, finish={finish_reason})")
+
+            if result and finish_reason != 'stop':
+                raise StreamTruncatedError(
+                    f"流式响应截断: finish_reason={finish_reason}, chars={len(result)}")
+
             return result
 
+        except StreamTruncatedError:
+            self._consecutive_failures += 1
+            raise
         except Exception as e:
             self._consecutive_failures += 1
             self.logger.error(f"LLM调用失败 (连续第{self._consecutive_failures}次): {e}")
@@ -285,11 +312,26 @@ class LLMClient:
 
         system_with_json = effective_system + "\n\n请以纯JSON格式回复，不要包含markdown代码块。"
         start_ts = time.time()
-        raw = await self.chat(system_with_json, cleaned_user_msg, max_tokens, temperature=temperature)
+
+        # 截断重试：StreamTruncatedError 或 JSON 解析失败且末尾不完整时重试 1 次
+        raw = None
+        truncated_retry = False
+        for attempt in range(2):
+            try:
+                raw = await self.chat(system_with_json, cleaned_user_msg, max_tokens, temperature=temperature)
+                break
+            except StreamTruncatedError as e:
+                if attempt == 0:
+                    self.logger.warning(f"[{caller}] 流式截断，重试: {e}")
+                    truncated_retry = True
+                    continue
+                raw = ''
+                break
+
         latency_ms = int((time.time() - start_ts) * 1000)
 
         # 解析阶段
-        raw_stripped = raw.strip()
+        raw_stripped = raw.strip() if raw else ''
         if raw_stripped.startswith("```"):
             raw_stripped = raw_stripped.split("\n", 1)[1]
             raw_stripped = raw_stripped.rsplit("```", 1)[0]
@@ -299,7 +341,22 @@ class LLMClient:
         try:
             parsed = json.loads(raw_stripped)
         except json.JSONDecodeError as e:
-            parse_error = f"json_decode:{e}"
+            # 截断特征：末尾非 } 或 ]，且未重试过 → 重试一次
+            if not truncated_retry and raw_stripped and raw_stripped[-1] not in ('}', ']'):
+                self.logger.warning(f"[{caller}] JSON 不完整(末尾='{raw_stripped[-1]}')，重试")
+                try:
+                    raw = await self.chat(system_with_json, cleaned_user_msg, max_tokens, temperature=temperature)
+                    latency_ms = int((time.time() - start_ts) * 1000)
+                    raw_stripped = raw.strip() if raw else ''
+                    if raw_stripped.startswith("```"):
+                        raw_stripped = raw_stripped.split("\n", 1)[1]
+                        raw_stripped = raw_stripped.rsplit("```", 1)[0]
+                    parsed = json.loads(raw_stripped)
+                except (StreamTruncatedError, json.JSONDecodeError, Exception):
+                    parse_error = f"json_decode_after_retry:{e}"
+                    parsed = {}
+            else:
+                parse_error = f"json_decode:{e}"
             parsed = {}
 
         # Schema 校验
@@ -355,11 +412,12 @@ class LLMClient:
             pass
 
     async def _rate_limit(self):
-        now = time.time()
-        elapsed = now - self._last_call_time
-        if elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
-        self._last_call_time = time.time()
+        async with LLMClient._global_lock:
+            now = time.time()
+            elapsed = now - LLMClient._global_last_call
+            if elapsed < LLMClient._global_min_interval:
+                await asyncio.sleep(LLMClient._global_min_interval - elapsed)
+            LLMClient._global_last_call = time.time()
 
     @property
     def stats(self) -> dict:

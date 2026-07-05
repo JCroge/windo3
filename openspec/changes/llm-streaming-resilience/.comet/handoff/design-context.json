@@ -1,0 +1,14 @@
+{
+  "change": "llm-streaming-resilience",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d81530182b888aa40e6d9d11255f438059fd986b6ddf3d5f7dd91e47833d4515",
+  "files": [
+    { "path": "openspec/changes/llm-streaming-resilience/proposal.md", "sha256": "f6470b757f3c1fd21a670361e332bbcdb2238b379d3a47cdcbdfd2c07117d698" },
+    { "path": "openspec/changes/llm-streaming-resilience/design.md", "sha256": "7d0cf7870ce3d0040019b1b29902d6e9c44dd79b3fe35366e118eec6fdecbdbb" },
+    { "path": "openspec/changes/llm-streaming-resilience/tasks.md", "sha256": "20a2f17b25bd7f3e07957c4551f451c5760d0ff012192f9397aad7808d11d60e" },
+    { "path": "openspec/changes/llm-streaming-resilience/specs/llm-stream-resilience/spec.md", "sha256": "1a0c41eb2ee59390fba173e963d09f68cffddb74f5de798dc8f78134bf3e5472" }
+  ]
+}
