@@ -14,6 +14,23 @@ from utils.candidate_ranker import CandidateRanker
 
 class TestCandidateRankerSlots:
 
+    def test_ranker_limits_tactical_slot(self):
+        ranker = CandidateRanker(max_slots=3, enabled=True, tactical_slot=1)
+        for sym in ("A-USDT", "B-USDT"):
+            ranker.add_candidate({
+                "symbol": sym,
+                "action": "open_short",
+                "score": -70,
+                "plan": {"slot_type": "tactical", "effective_risk_reward_ratio": 1.2},
+                "tech": {},
+                "decision": {"symbol": sym, "action": "open_short"},
+            })
+
+        selected, rejected = ranker.rank_and_select(set(), {"main": 0, "tactical": 0})
+
+        assert len(selected) == 1
+        assert len(rejected) == 1
+
     def test_rank_and_select_respects_occupied_slots(self):
         """已有2仓+1pending，max=3，同窗口3候选只选0个"""
         ranker = CandidateRanker(max_slots=3, enabled=True)

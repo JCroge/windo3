@@ -26,10 +26,12 @@ class CandidateRanker:
     LOW_RR_PENALTY = 0.7  # 30% rank score penalty for low R:R candidates
 
     def __init__(self, max_slots: int = 3, enabled: bool = True,
-                 low_rr_extra_slot: int = 0, logger=None):
+                 low_rr_extra_slot: int = 0, tactical_slot: int = 1,
+                 logger=None):
         self.max_slots = max_slots
         self.enabled = enabled
         self.low_rr_extra_slot = low_rr_extra_slot
+        self.tactical_slot = tactical_slot
         self.logger = logger
         self._buffer = []
         self._last_flush = time.time()
@@ -48,7 +50,7 @@ class CandidateRanker:
         selected: 可以进入 live 的候选
         rejected: 被排名淘汰的候选（可进入 paper 观察）
 
-        slot_occupancy: {main: int, low_rr_extra: int, probe_short: int, probe_long: int} 当前各类型占用数。
+        slot_occupancy: {main: int, low_rr_extra: int, tactical: int, probe_short: int, probe_long: int} 当前各类型占用数。
         Low R:R candidates get a rank penalty and use a separate extra slot.
         Probe candidates use dedicated probe slots (max 1 each).
         """
@@ -61,20 +63,25 @@ class CandidateRanker:
         if slot_occupancy:
             main_used = slot_occupancy.get('main', 0)
             low_rr_used = slot_occupancy.get('low_rr_extra', 0)
+            tactical_used = slot_occupancy.get('tactical', 0)
             probe_short_used = slot_occupancy.get('probe_short', 0)
             probe_long_used = slot_occupancy.get('probe_long', 0)
         else:
             main_used = len(open_positions)
             low_rr_used = 0
+            tactical_used = 0
             probe_short_used = 0
             probe_long_used = 0
 
         available_main = self.max_slots - main_used
         available_low_rr_extra = max(0, self.low_rr_extra_slot - low_rr_used)
+        available_tactical = max(0, self.tactical_slot - tactical_used)
         available_probe_short = max(0, 1 - probe_short_used)
         available_probe_long = max(0, 1 - probe_long_used)
 
-        if available_main <= 0 and available_low_rr_extra <= 0 and available_probe_short <= 0 and available_probe_long <= 0:
+        if (available_main <= 0 and available_low_rr_extra <= 0
+                and available_tactical <= 0
+                and available_probe_short <= 0 and available_probe_long <= 0):
             rejected = list(self._buffer)
             self._buffer = []
             self._rejected_candidates.extend(rejected)
@@ -90,8 +97,11 @@ class CandidateRanker:
         # Separate by slot type
         normal_scored = [(s, c) for s, c in scored
                          if not c.get('plan', {}).get('is_low_rr')
-                         and not c.get('plan', {}).get('is_probe')]
+                         and not c.get('plan', {}).get('is_probe')
+                         and c.get('plan', {}).get('slot_type') != 'tactical']
         low_rr_scored = [(s, c) for s, c in scored if c.get('plan', {}).get('is_low_rr')]
+        tactical_scored = [(s, c) for s, c in scored
+                           if c.get('plan', {}).get('slot_type') == 'tactical']
         probe_short_scored = [(s, c) for s, c in scored
                               if c.get('plan', {}).get('is_probe')
                               and c.get('plan', {}).get('slot_type') == 'probe_short']
@@ -111,6 +121,10 @@ class CandidateRanker:
         low_rr_remaining = low_rr_scored[remaining_main:]
         extra_selected = [c for _, c in low_rr_remaining[:available_low_rr_extra]]
         selected.extend(extra_selected)
+
+        # Tactical slot: separate from Main and Low-R:R pools.
+        tactical_selected = [c for _, c in tactical_scored[:available_tactical]]
+        selected.extend(tactical_selected)
 
         # Probe short slot
         probe_short_selected = [c for _, c in probe_short_scored[:available_probe_short]]
@@ -132,17 +146,19 @@ class CandidateRanker:
                 f"[Ranking] {len(scored)} candidates → "
                 f"selected {len(selected)} (main={len(main_from_normal)+len(main_from_low_rr)}, "
                 f"extra_low_rr={len(extra_selected)}, "
+                f"tactical={len(tactical_selected)}, "
                 f"probe_short={len(probe_short_selected)}, probe_long={len(probe_long_selected)}), "
                 f"rejected={len(rejected)}"
             )
             for rank_score, c in scored:
                 low_rr_tag = " [low_rr]" if c.get('plan', {}).get('is_low_rr') else ""
                 probe_tag = " [probe]" if c.get('plan', {}).get('is_probe') else ""
+                tactical_tag = " [tactical]" if c.get('plan', {}).get('slot_type') == 'tactical' else ""
                 self.logger.info(
                     f"  [{c['symbol']}] rank_score={rank_score:.2f} "
                     f"signal={c.get('score', 0):.0f} "
                     f"rr={c.get('plan', {}).get('effective_risk_reward_ratio', 0):.2f}"
-                    f"{low_rr_tag}{probe_tag}"
+                    f"{low_rr_tag}{probe_tag}{tactical_tag}"
                 )
 
         return selected, rejected

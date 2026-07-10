@@ -41,6 +41,52 @@ class PortfolioRiskGuard(BaseAgent):
         self._high_leverage_loss_pct = 5.0
         self._correlation_exposure_limit = 2400.0
         self._stale_position_hours = 24
+        self._tactical_daily_pnl = 0.0
+        self._tactical_loss_streak = 0
+        self._tactical_pause_until = 0
+        self._tactical_daily_loss_limit_usdt = (
+            config.get('tactical_daily_loss_limit_usdt', -10.0) if config else -10.0
+        )
+        self._tactical_loss_streak_pause_count = (
+            config.get('tactical_loss_streak_pause_count', 3) if config else 3
+        )
+        self._tactical_loss_streak_pause_minutes = (
+            config.get('tactical_loss_streak_pause_minutes', 60) if config else 60
+        )
+        self._tactical_max_concurrent_calm = 2
+        self._tactical_max_concurrent_high_vol = 1
+
+    def _tactical_open_count(self) -> int:
+        return sum(1 for p in self._positions.values() if p.get('track') == 'tactical')
+
+    def can_open_tactical(self, symbol: str, plan: dict, market_state: dict):
+        now = time.time()
+        if now < getattr(self, '_tactical_pause_until', 0):
+            return False, 'tactical_paused'
+        if (getattr(self, '_tactical_daily_pnl', 0.0)
+                <= getattr(self, '_tactical_daily_loss_limit_usdt', -10.0)):
+            return False, 'tactical_daily_loss_limit'
+
+        volatility = (market_state or {}).get('volatility', 'calm')
+        cap = (getattr(self, '_tactical_max_concurrent_high_vol', 1)
+               if volatility == 'high'
+               else getattr(self, '_tactical_max_concurrent_calm', 2))
+        if self._tactical_open_count() >= cap:
+            return False, 'tactical_concurrency_full'
+        return True, 'ok'
+
+    def record_tactical_close(self, symbol: str, pnl: float, close_reason: str, event: dict):
+        self._tactical_daily_pnl = (
+            getattr(self, '_tactical_daily_pnl', 0.0) + float(pnl or 0.0)
+        )
+        if pnl < 0:
+            self._tactical_loss_streak = getattr(self, '_tactical_loss_streak', 0) + 1
+        else:
+            self._tactical_loss_streak = 0
+
+        if self._tactical_loss_streak >= getattr(self, '_tactical_loss_streak_pause_count', 3):
+            pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
+            self._tactical_pause_until = time.time() + pause_minutes * 60
 
     async def setup(self):
         self._load_state()

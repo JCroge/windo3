@@ -126,6 +126,7 @@ class MultiJudge(BaseAgent):
             max_slots=self._max_concurrent_positions,
             enabled=ranking_enabled,
             low_rr_extra_slot=low_rr_extra if (config.get('low_rr_slot_enabled', True) if config else True) else 0,
+            tactical_slot=1,
             logger=self.logger,
         )
 
@@ -1900,6 +1901,24 @@ class MultiJudge(BaseAgent):
                                 "attribution": gate_attr,
                             }, symbol=symbol)
                             return
+                    elif slot_type == 'tactical':
+                        occupied = self._open_positions | self._pending_open_symbols
+                        all_slots = {**self._position_slots, **self._pending_open_slots}
+                        tactical_count = sum(1 for s in occupied if all_slots.get(s) == 'tactical')
+                        tactical_cap = self._candidate_ranker.tactical_slot if hasattr(self, '_candidate_ranker') else 1
+                        if tactical_count >= tactical_cap:
+                            gate_attr = self._rejection_attribution(final_action, plan, "tactical_slot_full", tech=tech)
+                            self._record_rejected_plan(symbol, final_action, plan, score, final_conf, "tactical_slot_full", gate_attr)
+                            await self.publish("trade_decision", {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": f"Tactical slot full ({tactical_count}/{tactical_cap})",
+                                "key_factors": ["slot_gate:tactical_full"],
+                                "risk_warnings": ["concurrent_limit_reached"],
+                                "attribution": gate_attr,
+                            }, symbol=symbol)
+                            return
                     elif slot_type == 'probe_short':
                         occupied = self._open_positions | self._pending_open_symbols
                         all_slots = {**self._position_slots, **self._pending_open_slots}
@@ -2018,6 +2037,22 @@ class MultiJudge(BaseAgent):
                     "plan": None, "size_pct": 0,
                     "reasoning": f"Low R:R extra slot full ({low_rr_count}/{low_rr_cap})",
                     "key_factors": ["slot_gate:low_rr_full"],
+                    "risk_warnings": ["concurrent_limit_reached"],
+                    "attribution": gate_attr,
+                }, symbol=symbol)
+                return False
+        elif slot_type == 'tactical':
+            tactical_count = sum(1 for s in occupied if all_slots.get(s) == 'tactical')
+            tactical_cap = self._candidate_ranker.tactical_slot if hasattr(self, '_candidate_ranker') else 1
+            if tactical_count >= tactical_cap:
+                gate_attr = self._rejection_attribution(action, plan, "tactical_slot_full")
+                self._record_rejected_plan(symbol, action, plan, 0, 0, "tactical_slot_full", gate_attr)
+                await self.publish("trade_decision", {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": "hold", "confidence": 0,
+                    "plan": None, "size_pct": 0,
+                    "reasoning": f"Tactical slot full ({tactical_count}/{tactical_cap})",
+                    "key_factors": ["slot_gate:tactical_full"],
                     "risk_warnings": ["concurrent_limit_reached"],
                     "attribution": gate_attr,
                 }, symbol=symbol)
@@ -2164,6 +2199,7 @@ class MultiJudge(BaseAgent):
         slot_occupancy = {
             'main': sum(1 for s in occupied if all_slots.get(s, 'main') == 'main'),
             'low_rr_extra': sum(1 for s in occupied if all_slots.get(s) == 'low_rr_extra'),
+            'tactical': sum(1 for s in occupied if all_slots.get(s) == 'tactical'),
             'probe_short': sum(1 for s in occupied if all_slots.get(s) == 'probe_short'),
             'probe_long': sum(1 for s in occupied if all_slots.get(s) == 'probe_long'),
         }
