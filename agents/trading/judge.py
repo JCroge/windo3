@@ -2883,6 +2883,143 @@ class MultiJudge(BaseAgent):
         plan['probe_trigger_reason'] = 'rsi_overbought_momentum'
         plan['probe_evidence'] = {'type': 'momentum_probe_long', 'slot_type': 'probe_long'}
 
+    def _extract_provenance_confidence(self, attribution: dict) -> float:
+        prov = (attribution or {}).get('provenance') or {}
+        val = prov.get('weakest_confidence')
+        return 1.0 if val is None else float(val)
+
+    def _has_trend_exhaustion_warning(self, llm_result: dict) -> bool:
+        text = ' '.join([
+            str((llm_result or {}).get('reasoning', '')),
+            ' '.join(str(x) for x in (llm_result or {}).get('risk_warnings', []) or []),
+        ])
+        return any(k in text for k in (
+            '趋势末期', '趋势衰竭', '追空风险', '追多风险', '反弹风险', '回撤风险',
+        ))
+
+    def _volume_or_oi_confirmed(self, tech: dict, action: str) -> bool:
+        momentum = (tech or {}).get('momentum', {}) or {}
+        market = (tech or {}).get('market', {}) or {}
+        volume_ratio = float(momentum.get('volume_ratio', 0) or 0)
+        oi_change = market.get('oi_1h_change_pct')
+        if volume_ratio >= 1.0:
+            return True
+        if oi_change is None:
+            return False
+        return abs(float(oi_change)) >= 0.001
+
+    def _directionally_aligned(self, action: str, tech: dict) -> bool:
+        trend = (tech or {}).get('trend', {}) or {}
+        timing = (tech or {}).get('entry_timing', {}) or {}
+        expected = 'bullish' if action == 'open_long' else 'bearish'
+        opposing = 'bearish' if expected == 'bullish' else 'bullish'
+        return (
+            trend.get('higher_tf_bias') == expected
+            and trend.get('daily_bias') == expected
+            and timing.get('tf_15m_bias', expected) != opposing
+        )
+
+    def _passes_main_trend_quality(self, action: str, tech: dict,
+                                   llm_result: dict, attribution: dict) -> dict:
+        if not getattr(self, '_main_quality_gate_enabled', True):
+            return {'passed': True, 'reason': 'quality_gate_disabled', 'flags': {}}
+
+        flags = {}
+        regime = self._regime_manager.snapshot().get('effective_regime', 'mixed')
+        expected_regime = 'bullish' if action == 'open_long' else 'bearish'
+        flags['regime'] = regime
+        if (regime != expected_regime
+                and not getattr(self, '_main_quality_allow_mixed_override', False)):
+            flags['regime_weak'] = True
+
+        if getattr(self, '_main_quality_block_llm_reversal', True):
+            llm_reversal = (
+                (attribution or {}).get('llm_short_reversal_risk')
+                or (attribution or {}).get('llm_reversal_risk')
+            )
+            if llm_reversal:
+                flags['llm_reversal_risk'] = True
+
+        if self._has_trend_exhaustion_warning(llm_result):
+            flags['trend_exhaustion_warning'] = True
+
+        if (getattr(self, '_main_quality_require_volume_or_oi', True)
+                and not self._volume_or_oi_confirmed(tech, action)):
+            flags['weak_volume_oi'] = True
+
+        prov = self._extract_provenance_confidence(attribution)
+        flags['provenance'] = prov
+        if prov < getattr(self, '_main_quality_min_provenance', 0.20):
+            flags['weak_provenance'] = True
+
+        blockers = [k for k, v in flags.items() if k != 'provenance' and v is True]
+        return {
+            'passed': not blockers,
+            'reason': 'pass' if not blockers else 'main_quality_failed:' + ','.join(blockers),
+            'flags': flags,
+        }
+
+    def _tactical_hard_veto_reason(self, symbol: str, action: str, plan: dict,
+                                   tech: dict, attribution: dict = None) -> str:
+        timing = (tech or {}).get('entry_timing', {}) or {}
+        if action == 'open_short' and timing.get('tf_15m_block_short'):
+            return '15m_opposing_block'
+        if action == 'open_long' and timing.get('tf_15m_block_long'):
+            return '15m_opposing_block'
+
+        attr = attribution or {}
+        blocked_by = attr.get('blocked_by') or attr.get('reject_reason') or ''
+        if action == 'open_short' and (
+            attr.get('short_gate_rejected')
+            or attr.get('short_structural_gate') == 'reject'
+            or blocked_by in {'short_side_guard', 'short_structural_guard', 'daily_bias_block'}
+        ):
+            return 'short_structural_hard_veto'
+
+        if (plan or {}).get('same_symbol_position') or attr.get('same_symbol_position'):
+            return 'same_symbol_stack_block'
+
+        return ''
+
+    def _classify_track(self, symbol: str, action: str, plan: dict, tech: dict,
+                        score: float, llm_result: dict,
+                        attribution: dict = None) -> dict:
+        if action not in ('open_long', 'open_short'):
+            return {'track': 'none', 'exit_profile': 'none', 'reason': 'not_open',
+                    'quality_flags': {}}
+
+        if not getattr(self, '_tactical_track_enabled', False):
+            return {'track': 'main', 'exit_profile': 'trend_runner',
+                    'reason': 'tactical_disabled', 'quality_flags': {}}
+
+        hard_veto = self._tactical_hard_veto_reason(symbol, action, plan, tech, attribution or {})
+        if hard_veto:
+            return {'track': 'reject', 'exit_profile': 'none', 'reason': hard_veto,
+                    'quality_flags': {}}
+
+        if not self._directionally_aligned(action, tech):
+            return {'track': 'shadow_only', 'exit_profile': 'none',
+                    'reason': 'direction_not_aligned', 'quality_flags': {}}
+
+        quality = self._passes_main_trend_quality(action, tech, llm_result, attribution or {})
+        if quality['passed']:
+            return {'track': 'main', 'exit_profile': 'trend_runner',
+                    'reason': 'main_quality_pass', 'quality_flags': quality['flags']}
+
+        prov = self._extract_provenance_confidence(attribution or {})
+        if prov < getattr(self, '_main_quality_min_provenance', 0.20) / 2:
+            return {'track': 'shadow_only', 'exit_profile': 'none',
+                    'reason': quality['reason'] + ':shadow_only',
+                    'quality_flags': quality['flags']}
+
+        if getattr(self, '_tactical_shadow_only', True):
+            return {'track': 'shadow_only', 'exit_profile': 'none',
+                    'reason': quality['reason'] + ':tactical_shadow_only',
+                    'quality_flags': quality['flags']}
+
+        return {'track': 'tactical', 'exit_profile': 'tactical_v1',
+                'reason': quality['reason'], 'quality_flags': quality['flags']}
+
     @staticmethod
     def _coalesce_float(*vals, default: float) -> float:
         """Return first non-None value as float; only an absent (None) value
