@@ -225,6 +225,24 @@ def _install_config_flags(judge, config):
     judge._low_rr_long_aligned_enabled = g("low_rr_long_aligned_enabled", True)
     judge._low_rr_max_leverage = g("low_rr_max_leverage", 5)
     judge._low_rr_max_position_pct = g("low_rr_max_position_pct", 0.5)
+
+    # ── Tactical exit track ──
+    judge._tactical_track_enabled = g("tactical_track_enabled", False)
+    judge._tactical_shadow_only = g("tactical_shadow_only", True)
+    judge._main_quality_gate_enabled = g("main_quality_gate_enabled", True)
+    judge._main_quality_min_provenance = g("main_quality_min_provenance", 0.20)
+    judge._main_quality_block_llm_reversal = g("main_quality_block_llm_reversal", True)
+    judge._main_quality_allow_mixed_override = g("main_quality_allow_mixed_override", False)
+    judge._main_quality_require_volume_or_oi = g("main_quality_require_volume_or_oi", True)
+    judge._tactical_max_leverage = g("tactical_max_leverage", 5)
+    judge._tactical_default_position_pct = g("tactical_default_position_pct", 0.70)
+    judge._tactical_very_near_position_pct = g("tactical_very_near_position_pct", 1.00)
+    judge._tactical_stop_cap_r_main = g("tactical_stop_cap_r_main", 0.60)
+    judge._tactical_very_near_stop_r_main = g("tactical_very_near_stop_r_main", 0.40)
+    judge._tactical_tp1_r = g("tactical_tp1_r", 0.60)
+    judge._tactical_cost_coverage_min = g("tactical_cost_coverage_min", 4.0)
+    judge._tactical_max_hold_minutes = g("tactical_max_hold_minutes", 90)
+
     # ── trend-entry-rr-fidelity 两杠杆 (默认值须与 judge.__init__ 一致) ──
     # trend-entry-levers-default-on: lever2(ladder) 默认开、lever1(path_evidence) 默认关。
     judge._path_evidence_aligned_enabled = g("path_evidence_aligned_enabled", False)

@@ -17,10 +17,14 @@ class CfResult:
     funding_approx: bool
     hold_hours: float
     source: str             # "attribution_reconstructed" | "tape_exact"
+    track: str = "main"
+    exit_profile: str = "trend_runner"
+    resolution_reason: str = ""
 
 
 def resolve_counterfactual(record: dict, bars: List[dict], *, max_hold_sec: int = 86400,
                            source: str = "attribution_reconstructed",
+                           exit_profile: str = "trend_runner",
                            cost_model=None) -> CfResult:
     cm = cost_model or get_default_cost_model()
     side = record["side"]
@@ -29,24 +33,31 @@ def resolve_counterfactual(record: dict, bars: List[dict], *, max_hold_sec: int 
     tp_list = record.get("take_profit") or []
     tp = float(tp_list[0]) if tp_list else 0
     created = float(record.get("created_at", 0))
+    track = record.get("track", "main")
+    profile = exit_profile or record.get("exit_profile", "trend_runner")
 
     outcome, exit_price, ambiguous, resolved_t = "expired", entry, False, created
+    resolution_reason = ""
     for bar in bars:
         if (bar["open_time"] / 1000.0) - created > max_hold_sec:
+            resolution_reason = "tactical_max_hold" if profile == "tactical_v1" else "max_hold"
             break
         hi, lo = float(bar["high"]), float(bar["low"])
         hit_sl = sl and (lo <= sl if side == "long" else hi >= sl)
         hit_tp = tp and (hi >= tp if side == "long" else lo <= tp)
         if hit_sl and hit_tp:                 # 同根冲突 → SL-first 保守
             outcome, exit_price, ambiguous = "sl", sl, True
+            resolution_reason = "sl_hit_ambiguous"
             resolved_t = bar["open_time"] / 1000.0
             break
         if hit_sl:
             outcome, exit_price = "sl", sl
+            resolution_reason = "sl_hit"
             resolved_t = bar["open_time"] / 1000.0
             break
         if hit_tp:
             outcome, exit_price = "tp", tp
+            resolution_reason = "tp_hit"
             resolved_t = bar["open_time"] / 1000.0
             break
         exit_price = float(bar["close"])      # 过期 mark-to-market
@@ -77,4 +88,6 @@ def resolve_counterfactual(record: dict, bars: List[dict], *, max_hold_sec: int 
                     gross_return_pct=gross_pct * 100,
                     net_usdt=net_usdt, net_return_pct=net_return_pct * 100,
                     price_ambiguous=ambiguous, funding_approx=(funding_rate != 0.0),
-                    hold_hours=hold_hours, source=source)
+                    hold_hours=hold_hours, source=source,
+                    track=track, exit_profile=profile,
+                    resolution_reason=resolution_reason or outcome)
