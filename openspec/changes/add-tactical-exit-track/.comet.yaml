@@ -1,0 +1,16 @@
+workflow: full
+phase: build
+build_mode: subagent-driven-development
+isolation: worktree
+verify_mode: null
+base_ref: f4511f5789040e3df0789c3bcc13122b5ebf1324
+design_doc: docs/superpowers/specs/2026-07-10-tactical-exit-track-design.md
+plan: docs/superpowers/plans/2026-07-10-tactical-exit-track.md
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-07-10
+verified_at: null
+archived: false
+handoff_context: openspec/changes/add-tactical-exit-track/.comet/handoff/design-context.json
+handoff_hash: 2bccc0f2f81525ba11808e504f0af32e98820ba4fcafc5a1cf30f49ce91f20cc

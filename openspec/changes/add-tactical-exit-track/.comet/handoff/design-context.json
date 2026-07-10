@@ -1,0 +1,19 @@
+{
+  "change": "add-tactical-exit-track",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "2bccc0f2f81525ba11808e504f0af32e98820ba4fcafc5a1cf30f49ce91f20cc",
+  "files": [
+    { "path": "openspec/changes/add-tactical-exit-track/proposal.md", "sha256": "c4aadaca59bd2b35f75b022ce056203f64ad1f53e7ad2ab85574fededfda46ed" },
+    { "path": "openspec/changes/add-tactical-exit-track/design.md", "sha256": "0d3efe8bb0d4daada334110517cf1761196cbc9f793d28382ac005d9b859858d" },
+    { "path": "openspec/changes/add-tactical-exit-track/tasks.md", "sha256": "bffd6c32163cd060de230f6b6a47944a8fa6140bc039b0040dab6346f6d4d84e" },
+    { "path": "openspec/changes/add-tactical-exit-track/specs/counterfactual-pnl/spec.md", "sha256": "78248108db0fec8bb9da9c0185eda39d879643c2127729f1ad12fc9feae16624" },
+    { "path": "openspec/changes/add-tactical-exit-track/specs/ladder-weighted-rr/spec.md", "sha256": "9635177a5ea909d2fa936259a10362bb12857797cc3e9ba7d2c6636ffba2a6c8" },
+    { "path": "openspec/changes/add-tactical-exit-track/specs/low-rr-early-trailing/spec.md", "sha256": "f248a12e6ba24a5f97eb483bc91bad379467ac695eae320e7e08beea875ee6f1" },
+    { "path": "openspec/changes/add-tactical-exit-track/specs/pnl-resolution-bus-events/spec.md", "sha256": "b9de56ae15e6ebc581bf5ac927abc1a689b355cdb8e6e8a9e33a420f1b18ffef" },
+    { "path": "openspec/changes/add-tactical-exit-track/specs/short-main-path-risk-guard/spec.md", "sha256": "d069b289a73f93cad4a00daab98a538548a99a63d5105460f8f17774296e9092" },
+    { "path": "openspec/changes/add-tactical-exit-track/specs/tactical-exit-track/spec.md", "sha256": "c32eb37d41dce3cc794cfd3a4e236605b5ed73794baf0be82cda44a431473fde" }
+  ]
+}
