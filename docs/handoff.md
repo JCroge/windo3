@@ -25,7 +25,9 @@
 
 **2026-07-07 归档 3 个 changes**（OpenSpec 状态漂移修复）：(1) `2026-07-07-fix-regime-weighting-logic`（体制修复，新 spec `market-regime-classification`）；(2) `2026-07-07-low-rr-early-trailing`（CF 回测 38672 样本均 R +0.2486/胜率 73.5%，新 spec `low-rr-early-trailing`）；(3) `2026-07-07-llm-streaming-resilience`（修 spec 格式后归档，Live 全链路零 504/截断，新 spec `llm-stream-resilience`）。状态漂移修复：`.comet.yaml` 标记 `archived: true` 的 changes 已物理移入 archive 目录。
 
-**下一阶段**：**核心认知刷新：edge 在趋势单（80% 方向对/+16.9%），choppy/mixed/neutral 无方向（0-15%）；形态路线已证伪、入场门旋钮非杠杆——真改善须回策略上游（信号/时机/体制）。** 衰减期边缘60持续为负=门放水的结果，体制空仓硬门+体制分类修复即是修法。live 扩容仍 CONDITIONAL GO（`BOT_INSTANCE_ID` 写 systemd + TG 命令链验收）。cf_choppy 日更 cron 续攒 n≥30；lever1 阻塞于 0 shadow_opens。
+**2026-07-10 `add-tactical-exit-track` 归档**：围绕 WLD 式弱/混合环境落袋诉求，把 Main Trend Runner 与 Tactical Exit Track 分轨；Tactical 默认 disabled + shadow-only，使用独立 R:R/EV/TP1/cost gate、thesis-health、max-hold、独立风控桶和分桶元数据。验证：Tactical suite 21 passed，邻近回归 118 passed / 3 warnings，OpenSpec strict PASS。
+
+**下一阶段**：**核心认知刷新：edge 在趋势单（80% 方向对/+16.9%），choppy/mixed/neutral 无方向（0-15%）；形态路线已证伪、入场门旋钮非杠杆——真改善须回策略上游（信号/时机/体制）。** Tactical 已提供机械化落袋轨道，但默认 shadow-only；扩容前仍需证明自主机械 edge 与 Tactical 分桶净增量。live 扩容仍 CONDITIONAL GO（`BOT_INSTANCE_ID` 写 systemd + TG 命令链验收）。cf_choppy 日更 cron 续攒 n≥30；lever1 阻塞于 0 shadow_opens。
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -137,6 +139,7 @@ RegimeManager（bullish/bearish/mixed/choppy + 2 次确认 + 30min min_hold）�
 | Agent Health Supervisor | 2026-06-12 | `utils/health_snapshot.py` 纯函数聚合 loop-alive/queue backlog/LLM degraded/data degraded 四维度，扩展 `agent_health.json` + `/status` 总括 + `/health` 明细 + 边沿告警/恢复通知；BaseAgent `_last_alive_ts`/`_last_work_ts` 心跳，collector `_latest_data_health`；observability-only write-only，无需 event_backtest | 1135（其后延伸 tick-stall 见下行） | `docs/superpowers/specs/2026-06-12-agent-health-supervisor-design.md` + `docs/superpowers/plans/2026-06-12-agent-health-supervisor.md` |
 | tick-loop 挂死检测（agent-health-supervisor 延伸） | 2026-06-12 | `BaseAgent._periodic_loop` tick 埋点 `_tick_enter_ts`/`_tick_exit_ts`；`_loop_health` 测"当前 tick 执行多久"（`enter>exit AND now-enter>120s`）并入 loop_health；告警/`/health` 区分 message-loop vs tick 卡死；扁平阈值 120s 锚定最长健康单次 tick 60s | 1146 | `docs/superpowers/specs/2026-06-12-agent-tick-stall-detection-design.md` |
 | bot LLM env 隔离（bot-llm-config-isolation） | 2026-06-13 | `agents/llm_client.py` + `.env.example` 改读 `BOT_LLM_*` 独立变量名，与 Claude Code 自身的 `ANTHROPIC_*` 解耦，止环境串扰；comet 全流程归档 | 1149 | comet change `decouple-bot-llm-env-from-claude-code` + `test_bot_llm_env_isolation.py` |
+| Tactical Exit Track | 2026-07-10 | Main 与 Tactical 出口分轨；Tactical 独立 stop/TP1/R:R/EV/cost gate、local lifecycle、risk governor、Reviewer/CF metadata，默认 disabled + shadow-only | 21 tactical tests + 118 adjacent regression | `openspec/changes/archive/2026-07-10-add-tactical-exit-track/` |
 
 ## 技术债务
 

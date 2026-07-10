@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-06-10）**：两层多 Agent 系统主入口为 `run_agents.py`。**全量回归 `1010 passed / 4 deselected / 1 warning`**；R:R floor 选择收敛到 `Judge._select_rr_floor`，Long Entry Position Guard 收敛到 `Judge._check_entry_position_policy`，Entry Drift Hybrid Policy 收敛到 `executor._classify_entry_drift` / `_recompute_plan_for_drift`，Short 短单结构性风险 gate 收敛到 `Judge._classify_short_entry_risk`（main + deferred 三路径共用）。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 T0/T1/T6 PASS。**下游集成红线**：消费 `execution_result.v2` close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`，不能把保护单失败误当成干净缩仓成功；消费 open/reject 结果时可读取 `attribution.entry_drift` 复盘 drift band/decision/drift_pct，可读取 `attribution.short_gate_version` / `short_gate_decision` / `short_gate_reason` / `llm_short_reversal_risk` 切分短单 pre / post 分布。live 扩容为 CONDITIONAL GO；下游集成应对接 Agent 消息契约，不应再接旧 `live_trading.py` 作为生产入口。
+**系统状态（2026-07-10）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate 和 Tactical Exit Track 均有单点收口函数。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义。生产入口不再接旧 `live_trading.py`。
 
 ## 核心模块接口
 
@@ -228,7 +228,7 @@ class MyAgent(BaseAgent):
 `trade_decision:{symbol}` — Judge发布，open 主链路为 `trade_decision.v2`：
 - schema_version, request_id, action, confidence, reasoning, key_factors[], risk_warnings[]
 - dispatch_path, signal_score, execution_confidence, position_scale, attribution
-- plan: {side, entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt(=margin), order_type, risk_reward_ratio, effective_risk_reward_ratio, funding_cost, est_hold_hours, expected_value, p_win_used, p_win_source}
+- plan: {side, entry_zone, stop_loss, take_profit[], leverage(1-20x), size_usdt(=margin), order_type, risk_reward_ratio, effective_risk_reward_ratio, funding_cost, est_hold_hours, expected_value, p_win_used, p_win_source, track, exit_profile, slot_type}
 
 **`attribution` 字段表（2026-05-26 起）**：
 
@@ -238,9 +238,11 @@ class MyAgent(BaseAgent):
 | `signal_score` | int | 规则信号原始分数（含正负方向） |
 | `execution_confidence` | int | LLM/规则综合置信度（0-100） |
 | `position_scale` | float | 仓位缩放因子（0.0-1.0） |
-| `slot_type` | str | 槽位归属：`main` / `low_rr_extra` / `probe` |
+| `slot_type` | str | 槽位归属：`main` / `low_rr_extra` / `probe_short` / `probe_long` / `tactical` |
+| `track` | str | 出口轨道：`main` / `tactical` / `shadow_only`；Main 默认 `main` |
+| `exit_profile` | str | 出口配置：Main 为 `trend_runner`，Tactical 为 `tactical_v1`，shadow/reject 为 `none` |
 | `regime` | str | 市场 regime：`bullish` / `bearish` / `mixed` / `choppy` |
-| `rr_policy` | str | R:R floor 策略标签：`probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `short_bullish_strong` / `default` |
+| `rr_policy` | str | R:R floor 策略标签：`probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `long_aligned_path_evidence` / `short_bullish_strong` / `default` |
 | `rr_floor_used` | float | 本次开仓实际套用的 R:R floor 值 |
 | `rr_floor_reason` | str | floor 选择原因，机器可读（如 `long_aligned:choppy`、`probe:bullish`、`default:mixed`） |
 | `symbol_trend` | str | TechAnalyst 给出的标的自身趋势方向（`bullish`/`bearish`/`neutral`） |
@@ -258,14 +260,21 @@ class MyAgent(BaseAgent):
 | `ev_bucket_trade_count` | int | bucket 样本数 |
 | `ev_bucket_min_trades` | int | bucket 提高 p_win 所需最小样本数（默认 10） |
 | `ev_bucket_sparse` | bool | 是否稀疏 bucket（trade_count < min_trades）；为 true 时不允许把 p_win 抬高于 bayesian/global |
+| `tactical_source` | str | Tactical 分类来源或 shadow/reject 原因，如 `main_quality_failed`、`direction_not_aligned` |
+| `main_diagnostic_effective_rr` | float | Tactical 改写前的 Main effective R:R 诊断值 |
+| `tactical_effective_rr` | float | Tactical 独立 stop/TP1/成本口径的 effective R:R |
+| `tactical_expected_value` | float | Tactical 独立 EV；不复用 Main EV |
+| `tactical_cost_gate` | str | `pass` / `fail`；`fail` 时应为 `shadow_only` 或拒绝，不应真开 Tactical |
+| `tactical_cost_coverage` | float | Tactical gross profit 对手续费+滑点估算成本的覆盖倍数 |
+| `tactical_stop_quality` | str | `normal` / `very_near`，决定 Tactical 是否可用更高仓位比例 |
 | `rejection_reason` | str | 仅被拒决策出现，配合 `data/journal/events_*.jsonl` 复盘 |
 
-下游消费这些字段做策略复盘 / 分桶胜率 / 反事实账本时，必须按 `attribution.rr_policy` 区分槽位与 floor 来源；不能仅凭 `regime + side` 反推。
+下游消费这些字段做策略复盘 / 分桶胜率 / 反事实账本时，必须按 `attribution.track`、`exit_profile`、`slot_type` 和 `rr_policy` 区分出口轨道、槽位与 floor 来源；不能仅凭 `regime + side` 反推。
 
 `execution_result:{symbol}` — Executor发布，统一为 `execution_result.v2`：
 - schema_version, status, action, symbol, source, request_id, correlation_id, reason, result, timestamp
 - status: executed / force_closed / rejected / risk_reduced / closed_externally / error
-- 可选字段：confidence, used_plan, is_add, reduce_pct, attribution
+- 可选字段：confidence, used_plan, is_add, reduce_pct, attribution, track, exit_profile, tactical_close_reason
 - close 类 payload（`action='close'` 或 status ∈ {force_closed, closed_externally}）必带 close cause 字段（2026-05-28 P0 FR-004）：
   - `exit_reason` ∈ {`local_stop_loss`, `local_take_profit`, `price_fetch_failed`, `partial_tp`, `risk_emergency`, `risk_flash_move`, `risk_position_danger`, `risk_high_leverage_danger`, `risk_trailing_stop`, `system_close_all`, `exchange_sl`, `external_unknown`, `manual_close`}
   - `close_cause`：保留原始 reason 语义，用于细粒度归因
@@ -274,6 +283,11 @@ class MyAgent(BaseAgent):
   - `result.exit_reason` / `result.close_cause` / `result.is_strategy_stop` / `result.is_risk_forced` 镜像顶层
   - `result.protective_cleanup_state` ∈ {`cleaned`, `none`, `failed`, `unknown`}：root `_cleanup_protective_orders_on_close()` 的 SL cancel + orphan algo sweep 结果
   - 历史无新字段的 payload 必须 fail-safe 兼容（默认不计 SL）
+- Tactical close / reduce payload 会透传 `track=tactical`、`exit_profile=tactical_v1`，并在相关路径带 `tactical_close_reason`：
+  - `tactical_tp1`：本地 TP1 触发，按 partial TP 路径减仓 50%
+  - `tactical_max_hold`：达到 Tactical 最大持仓时间后全平
+  - `tactical_invalidated`：15m 反向 block 等 thesis invalidation 后全平
+  - `tactical_weakened_no_progress`：thesis weakened 且超过无进展窗口后全平
 - 下游不得假设 `result` 一定含 entry_price；拒绝、异常和外部平仓都必须按 `status/source/reason` 解释。
 
 `paper_execution_result:{symbol}` — PaperExecutor发布，影子账户执行结果：

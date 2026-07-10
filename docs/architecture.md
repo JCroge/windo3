@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-06-21）**：主入口为 `run_agents.py`，全量回归 `1359 passed / 8 failed / 4 deselected`（8 failed=round2 全量 asyncio 污染，隔离全 PASS，非 change 引入）。**2026-06-21 归 1 个 comet change（基线 1338→1359，新 capability `regime-aware-long-entry-guard`，改 live 开仓决策，已合并 main 未推送、需重启 live 加载）——多头过热阈值体制感知**：针对策略诊断（方向无 edge、问题在入场侧）病根「choppy 追突破」，`_check_entry_position_policy` 的 overheat `range_pos` 阈值经 `_resolve_long_range_thresholds(eff_regime)` 按体制取——choppy/mixed/bearish 收紧（生产起步 0.70/目标 0.55）转 `deferred_pullback_overheat`，bullish 保 0.82，总开关 `long_live_regime_aware_range_enabled` 可回退；归因加 `entry_regime_used`/`entry_range_pos_threshold` + policy `long_overheat_v2_regime`。已知分歧：`event_backtest.py` overheat 仍固定 0.82 未体制感知、`_rejection_attribution` 函数体未带新字段（详见 CLAUDE.md 硬约束）。**2026-06-20 连归 3 个 comet change（基线 1314→1338，余额 1732 USDT 用户出金后确认/cap 仍 300）**：前 2 个 observability-only（重启 live PID 98028 ~10:47）——`fix-shadow-logger-replay-baseline-parity`（影子记录器 lever1 增量口径改两臂同复盘 `replay(lever2-only) vs replay(both)` + baseline 复现自检闸，坐实 lever1 真实增量=0）；`ev-decouple-forward-ab`（新驱动 `cf_ev_decouple_ab.py` 镜像 `cf_lever2_rejected_ab`，gate-toggle 两臂复盘复核胜率解耦放行单前向期望，真跑诚实门拒答、suggestive 不支持"解耦更差"假设）。第 3 个改 live executor.py（需手动重启 live）——`fix-phantom-position-resync`（MODIFIED `position-sync-resilience`：`sync_positions` 补录双确认 persist-2-ticks 防交易所平仓上报延迟产生幽灵持仓 + protection-unknown 告警去重 + migrate_missing_sl halt 自愈；20x 杠杆查明=`_calc_risk_budget` 恒定风险公式按设计非 bug）。**2026-06-18 连归 6 change（1302→1314）见 `docs/handoff.md`**。**2026-06-17 当天在 1285 之上连归 4 个 comet change 并重启 live（PID 46766，资金 cap 仍 300）**：`cf-lab-driver-portfolio-param-parity`（CF 驱动组合参数对齐 live，+0）→ **`trend-entry-levers-default-on`（+3，lever2 阶梯 effective_rr 口径默认开、改 live 决策**，config `ladder_rr_enabled` 默认 True / env `LADDER_RR_ENABLED=false` 回滚；lever1 `path_evidence_aligned_enabled` 仍默认关）→ **`trend-entry-shadow-decision-logger`（+10，前向影子决策记录器** `utils/shadow_decision_logger.py`，observability-only 复用 `replay_decision` 旁路记 both-levers 影子决策=lever1 增量到 `shadow_decision_log.jsonl`）→ **`fix-lever2-low-rr-sizing-tp1`（+4，hotfix**，低 R:R 缩仓判定用 TP1 口径单一收口 `_apply_low_rr_sizing`，地板 gate 仍用阶梯）。lever2 定价=是 bug 非赌（P(达TP2)68%/rejected A/B +0.181R/簇）。**以下为 1285 历史**：1285 = 1270 之上叠加 **`trend-entry-rr-fidelity` +15**：诊断"干净趋势零开仓"→ 实现两入场杠杆 ① `_select_rr_floor` path-evidence 客观路径证据地板（policy `long_aligned_path_evidence`）/ ② `_compute_ladder_rr` 阶梯离场比例口径 effective_rr（彼时两开关均默认关，lever2 现已默认开见上），comet 归档 2 新 capability `trend-aligned-rr-floor`+`ladder-weighted-rr`；1270 = 1255 之上叠加**多旋钮联合扫描** `joint-knob-sweep` +15；1255 = 1238 之上叠加**反事实实验室三连修** `fix-cf-lab-ev-coldstart-deadlock` +9 / `fix-cf-lab-replay-config-parity` +5 / `fix-cf-lab-symbol-state-injection` +3，均 observability-only comet 归档；1238 = 1223 + `decision-tape-capture-fix` +11 + `tick-capture-retention-prune` +4）。1223 = 1149 之上叠加**反事实策略实验室 L1-L4**：决策磁带埋点 + 确定性回放/golden master + 逐决策扰动 + 序列组合态重演 + 旋钮扫描方向推荐，全 observability-only write-only，模块 `utils/{decision_tape,decision_replay,counterfactual_pnl,cf_honesty_gate,perturbation_replay,cf_portfolio,sequential_perturbation,knob_sweep}.py` + `cf_replay_driver.py` + `cf_direction_recommendation.py`（L2 终验 + L4 方向推荐可复用驱动），红线守卫 `tests/test_cf_red_line_guard.py`；详见各层 `docs/superpowers/specs/2026-06-1[3456]-*-design.md`。**2026-06-16 实验室三连修后端到端首次可信**：续 2026-06-15 `decision-tape-capture-fix`（磁带 tech/llm 不再写死为空，经专属侧信道 `_symbol_llm_cache`+`_symbol_tech_tape_cache` 捕获，schema v2/v3）之后，又依次修 CF EV-gate 冷启动死锁（CF rolling 胜率窗口镜像 Reviewer + 暖启动播种 + gate-level fidelity）/ replay config parity（replay 用生产 config 基线 `production_base_config`，磁带录 `config_snapshot`）/ `_inject_cf_state` 还原录制 `_symbol_state`——驱动 `cf_direction_recommendation.py` baseline_fidelity 1.0(虚假)→0.34→0.798→**0.944（untrustworthy=False）**，首个可信结论：放宽 choppy R:R 地板/`min_confidence` 的 PnL delta≈0 → 非高价值杠杆，佐证地板 1.50 维持。各策略 gate 均单点收口：R:R Floor → `Judge._select_rr_floor`、Long Entry Position Guard → `Judge._check_entry_position_policy`、Entry Drift Hybrid Policy → `executor._classify_entry_drift` / `_recompute_plan_for_drift`、短单结构性风险 gate → `Judge._classify_short_entry_risk`（main path 与 deferred 三路径共用同一份语义）、Position TP 写入 → `_set_position_tp`。OKX 真实 testnet 语义验收：long_short_mode T0-T15 13 PASS / 3 SKIP + net_mode 子账户 T0/T2/T3 3 PASS（2026-05-28）+ owner-tag 补验 T0/T1/T6 PASS（2026-05-29）。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-07-10）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner 为主，Tactical Exit Track 已实现为独立出口轨道但默认 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
@@ -220,6 +220,30 @@ PositionAnalyst 裁决引擎（纯规则矩阵）
 
 **执行优先级**：RiskGuard强制平仓 > 硬性覆盖 > 裁决矩阵 > 分析官建议
 
+### Tactical Exit Track（默认 shadow-only）
+
+Tactical 是 Main Trend Runner 之外的短线出口轨道，目标是把弱/混合环境但方向仍有效的机会从 Main 的趋势奔跑假设中拆出，单独定价、单独退出、单独复盘。默认配置为 `TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`，因此生产默认不改变 live 开仓。
+
+**数据流**：
+```text
+TechAnalyst tech_analysis
+  -> Judge._classify_track
+  -> Judge._apply_tactical_profile
+  -> trade_decision.v2 attribution.track/exit_profile/tactical_*
+  -> MultiExecutor slot/risk gate
+  -> ContractExecutor position track/exit_profile
+  -> executor.py local lifecycle
+  -> execution_result.v2 tactical_close_reason
+  -> Reviewer segmented metrics
+```
+
+**关键边界**：
+- Strong aligned setup 留在 `track=main` / `exit_profile=trend_runner`。
+- Tactical 候选使用 `track=tactical` / `exit_profile=tactical_v1` / `slot_type=tactical`，并计算独立 `tactical_effective_rr`、`tactical_expected_value`、`tactical_cost_gate`。
+- `tactical_cost_gate=fail` 只能进入 `shadow_only` 或拒绝，不能借 Main ladder TP2/TP3 的 effective R:R 过门。
+- Executor 本地生命周期处理 `tactical_tp1`、`tactical_invalidated`、`tactical_weakened_no_progress`、`tactical_max_hold`；交易所侧仍只托管保护性 SL，TP owner 仍在本地。
+- Tactical 日亏、连亏暂停、并发槽位独立于 Main；保护单/执行完整性失败仍按系统级 fail-closed 处理。
+
 ## 核心模块
 
 ### 1. K线数据采集器 (kline_collector.py) ✅
@@ -352,11 +376,11 @@ CREATE TABLE klines (
 | `research/symbol_router.py` | 研判 | 标的路由+轮换协议（平仓旧标的） | 无 |
 | `trading/multi_data_collector.py` | 交易 | 9维度数据采集（K线/orderbook/OI/爆仓/费率/Taker/大单/多空比） | 无 |
 | `trading/tech_analyst.py` | 交易 | 9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险） | Claude综合研判 |
-| `trading/judge.py` | 交易 | 精确交易计划（统一风险预算/入场区间/止盈止损/动态杠杆1-20x/仓位/RSI极端值保护/回调入场） | Claude最终裁决 |
-| `trading/executor.py` | 交易 | 多标的交易执行 | 无 |
+| `trading/judge.py` | 交易 | 精确交易计划（统一风险预算/入场区间/止盈止损/动态杠杆/仓位/回调入场/Main-vs-Tactical 轨道分类） | Claude最终裁决 |
+| `trading/executor.py` | 交易 | 多标的交易执行，透传 track/exit_profile/tactical close metadata | 无 |
 | `trading/paper_executor.py` | 交易 | 影子账户（与实盘并行，订阅同样 trade_decision/price_tick，独立余额持久化到 data/paper_*） | 无 |
 | `trading/portfolio_risk_guard.py` | 交易 | 组合级风控盯盘 | 无 |
-| `trading/reviewer.py` | 交易 | 交易复盘+策略衰减+Daily Hard Stop触发 | 无 |
+| `trading/reviewer.py` | 交易 | 交易复盘+按 slot/track 分桶+策略衰减+Daily Hard Stop触发 | 无 |
 | `trading/telegram_notifier.py` | 交易 | Telegram实时告警+每日摘要 | 无 |
 | `trading/position_analyst.py` | 交易 | 持仓7因子评分+裁决引擎（每1h） | 无 |
 | `trading/behavioral_critic.py` | 交易 | 行为金融学偏差检测（7种认知偏差） | Claude检测偏差 |
@@ -388,8 +412,8 @@ CREATE TABLE klines (
 - `market_data:{symbol}`：9维度数据（K线1h/4h/1d/15m+orderbook+OI+爆仓+费率历史+Taker比+大单+多空比）（DataCollector → TechAnalyst, RiskGuard）
 - `price_tick:{symbol}`：10秒价格流（DataCollector → RiskGuard）
 - `tech_analysis:{symbol}`：9维度信号解读（趋势/价位/动量/资金流/微观结构/散户/风险）+ 15m入场时机（TechAnalyst → Judge）
-- `trade_decision:{symbol}`：精确交易计划（入场区间/止盈止损/杠杆/仓位）（Judge → Executor）
-- `execution_result:{symbol}`：执行结果（Executor → RiskGuard, Reviewer, TelegramNotifier）
+- `trade_decision:{symbol}`：精确交易计划（入场区间/止盈止损/杠杆/仓位/track/exit_profile）（Judge → Executor）
+- `execution_result:{symbol}`：执行结果（含 close cause、track/exit_profile、Tactical close reason）（Executor → RiskGuard, Reviewer, TelegramNotifier）
 - `paper_execution_result:{symbol}`：影子账户执行结果（PaperExecutor → 仅记账，不触发风控）
 - `risk_alert`：风控警报（RiskGuard → broadcast，Executor + TelegramNotifier响应）
 - `daily_hard_stop_triggered`：熔断信号（Reviewer → broadcast，Executor + RiskGuard + TelegramNotifier响应）
@@ -432,13 +456,13 @@ CREATE TABLE klines (
 ```
 1. DataCollector 9维度采集（10s价格/30s深度+爆仓/60s全量/5min 4h K线/60s 15m K线）
 2. TechAnalyst 收到数据后：规则引擎解读9维度 + 15m入场时机分析(MA7/25+RSI14) + Claude综合研判
-3. Judge 收到分析后：信号聚合评分 + Claude裁决 → 精确交易计划（入场/止盈止损/杠杆/仓位）
+3. Judge 收到分析后：信号聚合评分 + Claude裁决 → track 分类 → 精确交易计划（入场/止盈止损/杠杆/仓位）
    - 15m 入场确认：block→deferred等待转向 / confirm→通过 / neutral+强信号+HTF同向→通过
    - R:R≥1.5 → 正常入场
    - 1.2≤R:R<1.5 + 强信号(|score|≥50) → 追价入场（缩仓）
    - 1.2≤R:R<1.5 + 弱信号 → deferred_entry等回调（3h有效）
    - R:R<1.2 → 放弃
-4. Executor 收到决策后：风控审核 → 执行交易
+4. Executor 收到决策后：slot / Tactical risk gate / 订单预检 → 执行交易，本地监控 SL/TP/Tactical 生命周期
 5. RiskGuard 持续监控：闪崩检测、敞口超限
 ```
 
