@@ -1,17 +1,17 @@
 workflow: full
-phase: verify
+phase: archive
 build_mode: executing-plans
 isolation: worktree
 verify_mode: full
 base_ref: f4511f5789040e3df0789c3bcc13122b5ebf1324
 design_doc: docs/superpowers/specs/2026-07-10-tactical-exit-track-design.md
 plan: docs/superpowers/plans/2026-07-10-tactical-exit-track.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-07-10-add-tactical-exit-track-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-07-10
-verified_at: null
-archived: false
+verified_at: 2026-07-10
+archived: true
 handoff_context: openspec/changes/add-tactical-exit-track/.comet/handoff/design-context.json
 handoff_hash: 2bccc0f2f81525ba11808e504f0af32e98820ba4fcafc5a1cf30f49ce91f20cc
 build_command: "pytest test_tactical_track_classifier.py test_tactical_plan_math.py test_tactical_risk_governor.py test_tactical_exit_lifecycle.py test_tactical_metadata_flow.py tests/test_tactical_wld_replay.py test_ladder_weighted_rr.py test_low_rr_slots.py test_short_side_guard.py test_ranking_slots.py test_partial_tp_lifecycle.py test_pnl_resolved_event_contract.py test_counterfactual_ledger.py tests/test_counterfactual_pnl.py -q && openspec validate add-tactical-exit-track --strict"

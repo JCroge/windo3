@@ -2,6 +2,7 @@
 change: add-tactical-exit-track
 design-doc: docs/superpowers/specs/2026-07-10-tactical-exit-track-design.md
 base-ref: f4511f5789040e3df0789c3bcc13122b5ebf1324
+archived-with: 2026-07-10-add-tactical-exit-track
 ---
 
 # Tactical Exit Track Implementation Plan
@@ -14,6 +15,7 @@ base-ref: f4511f5789040e3df0789c3bcc13122b5ebf1324
 
 **Tech Stack:** Python, pytest, existing `MultiJudge`, `CandidateRanker`, `ContractExecutor`, `TradingExecutor`, `Reviewer`, `CounterfactualLedger`, OpenSpec/Comet artifacts.
 
+archived-with: 2026-07-10-add-tactical-exit-track
 ---
 
 ## File Structure

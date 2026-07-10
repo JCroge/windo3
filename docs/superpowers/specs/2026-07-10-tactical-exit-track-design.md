@@ -2,6 +2,8 @@
 comet_change: add-tactical-exit-track
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-10-add-tactical-exit-track
+status: final
 ---
 
 # Tactical Exit Track Technical Design
