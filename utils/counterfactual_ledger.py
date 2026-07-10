@@ -54,6 +54,11 @@ class CounterfactualLedger:
             "stop_loss": plan.get('stop_loss', 0),
             "take_profit": plan.get('take_profit', []),
             "leverage": plan.get('leverage', 1),
+            "track": plan.get("track", (attribution or {}).get("track", "main")),
+            "exit_profile": plan.get("exit_profile", (attribution or {}).get("exit_profile", "trend_runner")),
+            "tactical_source": plan.get("tactical_source", (attribution or {}).get("tactical_source", "")),
+            "tactical_effective_rr": plan.get("tactical_effective_rr"),
+            "tactical_expected_value": plan.get("tactical_expected_value"),
             "created_at": time.time(),
             "status": "tracking",
         }

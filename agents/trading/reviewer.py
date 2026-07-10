@@ -199,6 +199,10 @@ class ReviewerAgent(BaseAgent):
                 trade_record['slot_type'] = attribution.get('slot_type', 'main')
                 trade_record['is_probe'] = attribution.get('is_probe', False)
                 trade_record['is_low_rr'] = attribution.get('is_low_rr', False)
+                trade_record['track'] = attribution.get('track', 'main')
+                trade_record['exit_profile'] = attribution.get('exit_profile', 'trend_runner')
+                trade_record['tactical_source'] = attribution.get('tactical_source', '')
+                trade_record['tactical_close_reason'] = attribution.get('tactical_close_reason', '')
 
             self.trade_history.append(trade_record)
             self._save_trade_history()
@@ -263,6 +267,18 @@ class ReviewerAgent(BaseAgent):
             target['realized_pnl_net_usdt'] = pnl
             target['pnl_status'] = 'final'
             target['pnl_source'] = payload.get('pnl_source', '')
+            attr = payload.get('attribution') or {}
+            if attr or payload.get('track'):
+                target['track'] = payload.get('track') or attr.get('track', target.get('track', 'main'))
+                target['exit_profile'] = (
+                    payload.get('exit_profile')
+                    or attr.get('exit_profile', target.get('exit_profile', 'trend_runner'))
+                )
+                target['tactical_source'] = attr.get('tactical_source', target.get('tactical_source', ''))
+                target['tactical_close_reason'] = (
+                    payload.get('tactical_close_reason')
+                    or attr.get('tactical_close_reason', target.get('tactical_close_reason', ''))
+                )
             target['updated_at'] = time.time()
             self._save_trade_history()
             self.logger.info(
@@ -285,6 +301,15 @@ class ReviewerAgent(BaseAgent):
             'pnl_source': payload.get('pnl_source', ''),
             'correlation_id': payload.get('correlation_id', ''),
         }
+        attr = payload.get('attribution') or {}
+        trade_record['track'] = payload.get('track') or attr.get('track', 'main')
+        trade_record['exit_profile'] = (
+            payload.get('exit_profile') or attr.get('exit_profile', 'trend_runner')
+        )
+        trade_record['tactical_source'] = attr.get('tactical_source', '')
+        trade_record['tactical_close_reason'] = (
+            payload.get('tactical_close_reason') or attr.get('tactical_close_reason', '')
+        )
         self.trade_history.append(trade_record)
         self._save_trade_history()
         self.logger.info(
@@ -492,13 +517,22 @@ class ReviewerAgent(BaseAgent):
 
         # By slot_type
         by_slot = {}
-        for slot in ('main', 'low_rr_extra', 'probe_short', 'probe_long'):
+        for slot in ('main', 'low_rr_extra', 'tactical', 'probe_short', 'probe_long'):
             subset = [t for t in recent if t.get('slot_type') == slot]
             m = _metrics_for(subset)
             if m:
                 by_slot[slot] = m
         if by_slot:
             result['metrics_by_slot_type'] = by_slot
+
+        by_track = {}
+        for track in ('main', 'tactical'):
+            subset = [t for t in recent if t.get('track', 'main') == track]
+            m = _metrics_for(subset)
+            if m:
+                by_track[track] = m
+        if by_track:
+            result['metrics_by_track'] = by_track
 
         # By side x regime
         by_side_regime = {}
@@ -521,7 +555,8 @@ class ReviewerAgent(BaseAgent):
             regime = t.get('entry_regime', 'mixed')
             entry_type = t.get('entry_type', 'unknown')
             slot_type = t.get('slot_type', 'main')
-            key = f"{side}_{regime}_{entry_type}_{slot_type}"
+            track = t.get('track', 'main')
+            key = f"{side}_{regime}_{entry_type}_{track}_{slot_type}"
             by_bucket.setdefault(key, []).append(t)
         metrics_by_bucket = {}
         for key, trades in by_bucket.items():

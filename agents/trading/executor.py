@@ -765,6 +765,15 @@ class MultiExecutor(BaseAgent):
         # 平仓单产生,默认 final;tp_advance 走相同 reduce 路径
         elif status == 'risk_reduced' and isinstance(payload.get('result'), dict):
             self._inject_pnl_quality(payload['result'], source)
+        if isinstance(payload.get('result'), dict):
+            inner_attr = payload['result'].get('attribution') or {}
+            if inner_attr:
+                payload.setdefault('attribution', {}).update(inner_attr)
+            for key in ('track', 'exit_profile', 'tactical_close_reason'):
+                val = payload['result'].get(key) or inner_attr.get(key)
+                if val:
+                    payload[key] = val
+                    payload.setdefault('attribution', {})[key] = val
         payload.update(extra)
         return payload
 
