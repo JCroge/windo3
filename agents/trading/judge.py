@@ -1985,6 +1985,9 @@ class MultiJudge(BaseAgent):
         plan = decision.get('plan') or {}
         slot_type = plan.get('slot_type', 'main')
         action = decision.get('action', 'hold')
+        if action in ('open_long', 'open_short'):
+            plan.setdefault('track', 'main')
+            plan.setdefault('exit_profile', 'trend_runner')
         occupied = self._open_positions | self._pending_open_symbols
         all_slots = {**self._position_slots, **self._pending_open_slots}
 
@@ -2091,6 +2094,15 @@ class MultiJudge(BaseAgent):
         if isinstance(decision.get('attribution'), dict):
             decision['attribution']['dispatch_path'] = dp
             decision['attribution']['request_id'] = req_id
+            decision['attribution']['track'] = plan.get('track', 'main')
+            decision['attribution']['exit_profile'] = plan.get('exit_profile', 'trend_runner')
+            decision['attribution']['slot_type'] = plan.get('slot_type', slot_type)
+            for key in (
+                'tactical_source', 'tactical_effective_rr', 'tactical_expected_value',
+                'tactical_cost_gate', 'tactical_cost_coverage', 'tactical_stop_quality',
+            ):
+                if key in plan:
+                    decision['attribution'][key] = plan.get(key)
 
         # Ensure split fields exist at top level for contract compliance
         if 'signal_score' not in decision:
@@ -2513,6 +2525,12 @@ class MultiJudge(BaseAgent):
                                                      trend.get('higher_tf_bias', 'neutral')),
             'symbol_daily_bias': (plan or {}).get('symbol_daily_bias',
                                                   trend.get('daily_bias', 'neutral')),
+            'track': (plan or {}).get('track', 'main'),
+            'exit_profile': (plan or {}).get('exit_profile', 'trend_runner'),
+            'tactical_source': (plan or {}).get('tactical_source', ''),
+            'tactical_rr': (plan or {}).get('tactical_effective_rr'),
+            'tactical_ev': (plan or {}).get('tactical_expected_value'),
+            'tactical_cost_gate': (plan or {}).get('tactical_cost_gate', ''),
             'slot_type': (plan or {}).get('slot_type', 'main'),
             'is_low_rr': (plan or {}).get('is_low_rr', False),
             'is_probe': (plan or {}).get('is_probe', False),
@@ -3019,6 +3037,81 @@ class MultiJudge(BaseAgent):
 
         return {'track': 'tactical', 'exit_profile': 'tactical_v1',
                 'reason': quality['reason'], 'quality_flags': quality['flags']}
+
+    def _apply_tactical_profile(self, plan: dict, tech: dict, track_decision: dict) -> dict:
+        plan = dict(plan or {})
+        side = plan.get('side', 'long')
+        is_short = side == 'short'
+        entry_zone = plan.get('entry_zone') or []
+        entry = float(plan.get('entry_ref') or (entry_zone[0] if entry_zone else 0))
+        main_sl = float(plan.get('stop_loss', entry))
+        main_r_abs = abs(main_sl - entry)
+        if entry <= 0 or main_r_abs <= 0:
+            plan.update({
+                'track': 'shadow_only',
+                'exit_profile': 'none',
+                'tactical_reject_reason': 'invalid_main_r',
+            })
+            return plan
+
+        stop_cap = main_r_abs * getattr(self, '_tactical_stop_cap_r_main', 0.60)
+        tactical_sl = entry + stop_cap if is_short else entry - stop_cap
+
+        configured_tp_dist = stop_cap * getattr(self, '_tactical_tp1_r', 0.60)
+        existing_tps = plan.get('take_profit') or []
+        existing_tp1 = existing_tps[0] if existing_tps else None
+        existing_tp_dist = abs(float(existing_tp1) - entry) if existing_tp1 else configured_tp_dist
+        tp_dist = min(configured_tp_dist, existing_tp_dist)
+        tactical_tp1 = entry - tp_dist if is_short else entry + tp_dist
+
+        size_pct = getattr(self, '_tactical_default_position_pct', 0.70)
+        very_near = stop_cap <= main_r_abs * getattr(self, '_tactical_very_near_stop_r_main', 0.40)
+        if very_near:
+            size_pct = getattr(self, '_tactical_very_near_position_pct', 1.00)
+
+        main_size = float(plan.get('size_usdt', 0) or 0)
+        tactical_size = round(main_size * size_pct, 2)
+        max_lev = int(getattr(self, '_tactical_max_leverage', 5))
+
+        main_rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
+        notional = tactical_size * max_lev
+        gross_profit = notional * (tp_dist / entry)
+        gross_loss = notional * (stop_cap / entry)
+        funding_cost = max(0.0, float(plan.get('funding_cost', 0) or 0))
+        total_cost = funding_cost + max(0.06, notional * 0.002)
+        net_profit = gross_profit - total_cost
+        net_loss = gross_loss + total_cost
+        tactical_rr = round(net_profit / net_loss, 2) if net_loss > 0 else 0.0
+        coverage = (gross_profit / total_cost) if total_cost > 0 else 0.0
+        tactical_ev = round(net_profit * 0.55 - net_loss * 0.45, 4)
+        cost_pass = net_profit > 0 and coverage >= getattr(self, '_tactical_cost_coverage_min', 4.0)
+
+        final_track = 'tactical' if cost_pass else 'shadow_only'
+        plan.update({
+            'track': final_track,
+            'exit_profile': 'tactical_v1' if cost_pass else 'none',
+            'slot_type': 'tactical' if cost_pass else plan.get('slot_type', 'main'),
+            'tactical_source': track_decision.get('reason', 'unknown'),
+            'main_diagnostic_effective_rr': main_rr,
+            'tactical_effective_rr': tactical_rr,
+            'tactical_expected_value': tactical_ev,
+            'tactical_cost_gate': 'pass' if cost_pass else 'fail',
+            'tactical_cost_coverage': round(coverage, 2),
+            'effective_risk_reward_ratio': tactical_rr,
+            'expected_value': tactical_ev,
+            'p_win_used': 0.55,
+            'p_win_source': 'tactical_fixed',
+            'net_profit_usdt': round(net_profit, 3),
+            'net_loss_usdt': round(net_loss, 3),
+            'stop_loss': round(tactical_sl, 6),
+            'take_profit': [round(tactical_tp1, 6)],
+            'leverage': min(int(plan.get('leverage', max_lev)), max_lev),
+            'size_usdt': tactical_size,
+            'max_holding_minutes': getattr(self, '_tactical_max_hold_minutes', 90),
+            'tactical_max_hold_minutes': getattr(self, '_tactical_max_hold_minutes', 90),
+            'tactical_stop_quality': 'very_near' if very_near else 'normal',
+        })
+        return plan
 
     @staticmethod
     def _coalesce_float(*vals, default: float) -> float:
