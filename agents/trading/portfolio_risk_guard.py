@@ -55,6 +55,10 @@ class PortfolioRiskGuard(BaseAgent):
         )
         self._tactical_max_concurrent_calm = 2
         self._tactical_max_concurrent_high_vol = 1
+        self._tactical_quality_window_trades = (
+            config.get('tactical_quality_window_trades', 20) if config else 20
+        )
+        self._tactical_quality_results = []
 
     def _tactical_open_count(self) -> int:
         return sum(1 for p in self._positions.values() if p.get('track') == 'tactical')
@@ -87,6 +91,22 @@ class PortfolioRiskGuard(BaseAgent):
         if self._tactical_loss_streak >= getattr(self, '_tactical_loss_streak_pause_count', 3):
             pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
             self._tactical_pause_until = time.time() + pause_minutes * 60
+
+    def record_tactical_execution_failure(self, symbol: str, reason: str, event: dict):
+        pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
+        self._tactical_pause_until = time.time() + pause_minutes * 60
+        self._tactical_pause_reason = reason or 'tactical_execution_failure'
+
+    def record_tactical_quality_result(self, symbol: str, success: bool, event: dict = None):
+        window = getattr(self, '_tactical_quality_window_trades', 20)
+        self._tactical_quality_results.append(bool(success))
+        self._tactical_quality_results = self._tactical_quality_results[-window:]
+        if len(self._tactical_quality_results) >= window:
+            success_rate = sum(1 for x in self._tactical_quality_results if x) / window
+            if success_rate < 0.5:
+                pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
+                self._tactical_pause_until = time.time() + pause_minutes * 60
+                self._tactical_pause_reason = 'tactical_quality_failure'
 
     async def setup(self):
         self._load_state()
@@ -180,12 +200,33 @@ class PortfolioRiskGuard(BaseAgent):
                         "leverage": result.get('leverage', 1),
                         "stop_loss": result.get('stop_loss'),
                         "take_profit": result.get('take_profit'),
+                        "track": payload.get('track')
+                                 or result.get('track')
+                                 or (payload.get('attribution') or {}).get('track', 'main'),
+                        "exit_profile": payload.get('exit_profile')
+                                        or result.get('exit_profile')
+                                        or (payload.get('attribution') or {}).get('exit_profile', 'trend_runner'),
                         "open_time": time.time(),
                         "highest_price": entry_price,
                         "lowest_price": entry_price,
                     }
                     self.logger.info(f"[风控] 记录持仓: {symbol} {side} lev={result.get('leverage')}x")
             elif action == 'close':
+                pos = self._positions.get(symbol, {})
+                if (payload.get('track') == 'tactical'
+                        or result.get('track') == 'tactical'
+                        or (payload.get('attribution') or {}).get('track') == 'tactical'
+                        or pos.get('track') == 'tactical'):
+                    pnl = result.get('realized_pnl_net_usdt')
+                    if pnl is None:
+                        pnl = result.get('pnl', 0)
+                    self.record_tactical_close(
+                        symbol, float(pnl or 0.0),
+                        payload.get('tactical_close_reason')
+                        or result.get('tactical_close_reason')
+                        or payload.get('reason', ''),
+                        payload,
+                    )
                 if payload.get('reduce_origin'):
                     self.logger.info(f"[风控] {symbol} dust_closed,移除追踪 (来源 reduce 路径)")
                 else:
@@ -193,6 +234,15 @@ class PortfolioRiskGuard(BaseAgent):
                 self._positions.pop(symbol, None)
 
         elif status in ('force_closed', 'closed_externally'):
+            pos = self._positions.get(symbol, {})
+            if (payload.get('track') == 'tactical'
+                    or result.get('track') == 'tactical'
+                    or (payload.get('attribution') or {}).get('track') == 'tactical'
+                    or pos.get('track') == 'tactical'):
+                pnl = result.get('realized_pnl_net_usdt')
+                if pnl is None:
+                    pnl = result.get('pnl', 0)
+                self.record_tactical_close(symbol, float(pnl or 0.0), payload.get('reason', ''), payload)
             if symbol in self._positions:
                 self.logger.info(f"[风控] {symbol} 外部平仓，移除追踪")
             self._positions.pop(symbol, None)
@@ -208,6 +258,10 @@ class PortfolioRiskGuard(BaseAgent):
                 self._positions[symbol]['amount_usdt'] *= (1 - reduce_pct)
             # F4-001: 减仓已成交但保护单异常 → 发独立 protection_failed risk_alert
             if payload.get('protection_failed'):
+                if (payload.get('track') == 'tactical'
+                        or (payload.get('attribution') or {}).get('track') == 'tactical'
+                        or self._positions.get(symbol, {}).get('track') == 'tactical'):
+                    self.record_tactical_execution_failure(symbol, 'protection_failed', payload)
                 await self.publish('risk_alert', {
                     'type': 'protection_failed',
                     'symbol': symbol,
