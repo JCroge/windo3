@@ -9,6 +9,7 @@ def test_tactical_config_defaults_are_present():
     assert DEFAULTS["tactical_max_leverage"] == 5
     assert DEFAULTS["tactical_default_position_pct"] == 0.70
     assert DEFAULTS["tactical_max_hold_minutes"] == 90
+    assert DEFAULTS["tactical_min_progress_r"] == 0.15
     assert DEFAULTS["tactical_daily_loss_limit_usdt"] == -10.0
 
 
@@ -18,6 +19,7 @@ def test_tactical_env_overrides_are_loaded(monkeypatch):
     monkeypatch.setenv("TACTICAL_SHADOW_ONLY", "false")
     monkeypatch.setenv("TACTICAL_MAX_LEVERAGE", "4")
     monkeypatch.setenv("TACTICAL_DEFAULT_POSITION_PCT", "0.5")
+    monkeypatch.setenv("TACTICAL_MIN_PROGRESS_R", "0.2")
 
     from utils.config_loader import load_config
 
@@ -27,6 +29,7 @@ def test_tactical_env_overrides_are_loaded(monkeypatch):
     assert cfg["tactical_shadow_only"] is False
     assert cfg["tactical_max_leverage"] == 4
     assert cfg["tactical_default_position_pct"] == 0.5
+    assert cfg["tactical_min_progress_r"] == 0.2
 
 
 def test_reviewer_persists_tactical_attribution(tmp_path):

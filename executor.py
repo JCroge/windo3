@@ -1994,11 +1994,49 @@ class ContractExecutor:
         # --- Tactical exit profile: local TP/protection lifecycle, exchange SL remains authoritative ---
         if position.get('track') == 'tactical':
             cfg = getattr(self, '_config', {}) or {}
+            now = time.time()
+            thesis_state = str(position.get('tactical_thesis_state') or '').lower()
+
+            if thesis_state == 'invalidated' or position.get('tactical_thesis_invalidated'):
+                position['tactical_close_reason'] = 'tactical_invalidated'
+                position['tactical_close_detail'] = (
+                    position.get('tactical_thesis_reason')
+                    or position.get('tactical_invalidation_reason')
+                    or 'thesis_invalidated'
+                )
+                return 'tactical_invalidated'
+
+            min_progress_r = float(cfg.get('tactical_min_progress_r', 0.15))
+            if profit_r >= min_progress_r:
+                position['tactical_last_progress_time'] = now
+                position['tactical_best_profit_r'] = round(
+                    max(float(position.get('tactical_best_profit_r', 0) or 0), profit_r), 4
+                )
+
+            if thesis_state == 'weakened' or position.get('tactical_thesis_weakened'):
+                no_progress_minutes = (
+                    position.get('tactical_weakened_no_progress_minutes')
+                    or cfg.get('tactical_weakened_no_progress_min_minutes', 30)
+                )
+                last_progress = (
+                    position.get('tactical_last_progress_time')
+                    or position.get('open_time')
+                    or now
+                )
+                if (profit_r < min_progress_r
+                        and now - last_progress >= float(no_progress_minutes) * 60):
+                    position['tactical_close_reason'] = 'tactical_weakened_no_progress'
+                    position['tactical_close_detail'] = (
+                        position.get('tactical_thesis_reason')
+                        or f"profit_r={profit_r:.2f}<min_progress_r={min_progress_r:.2f}"
+                    )
+                    return 'tactical_weakened_no_progress'
+
             max_hold = (
                 position.get('tactical_max_hold_minutes')
                 or cfg.get('tactical_max_hold_minutes', 90)
             )
-            if max_hold and time.time() - position.get('open_time', time.time()) >= max_hold * 60:
+            if max_hold and now - position.get('open_time', now) >= max_hold * 60:
                 position['tactical_close_reason'] = 'tactical_max_hold'
                 return 'tactical_max_hold'
 

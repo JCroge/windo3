@@ -2,12 +2,12 @@ workflow: full
 phase: build
 build_mode: executing-plans
 isolation: worktree
-verify_mode: null
+verify_mode: full
 base_ref: f4511f5789040e3df0789c3bcc13122b5ebf1324
 design_doc: docs/superpowers/specs/2026-07-10-tactical-exit-track-design.md
 plan: docs/superpowers/plans/2026-07-10-tactical-exit-track.md
-verify_result: pending
-verification_report: null
+verify_result: fail
+verification_report: docs/superpowers/reports/2026-07-10-add-tactical-exit-track-verify.md
 branch_status: pending
 created_at: 2026-07-10
 verified_at: null

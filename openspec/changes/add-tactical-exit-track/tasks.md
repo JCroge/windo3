@@ -10,3 +10,4 @@
 - [x] Add focused tests for classifier routing, hard vetoes, Tactical R:R isolation, cost gate, exit-state transitions, risk governor breakers, event attribution, and replay segmentation.
 - [x] Add WLD-like classifier and replay fixtures covering aligned-but-weak Main rejection, Tactical downgrade, Tactical shadow-only, Tactical TP1, and Tactical capped-stop outcomes.
 - [x] Run replay/shadow validation before enabling live Tactical opens; document rollout flags and rollback path.
+- [x] Complete Tactical thesis-health exit triggers for invalidated thesis and weakened-no-progress lifecycle.

@@ -19,13 +19,17 @@ from utils.realized_pnl_resolver import (
     PNL_STATUS_MISMATCH,
     make_resolution_id,
 )
+from utils.symbol import to_internal
 
 load_dotenv()
 
 
 class MultiExecutor(BaseAgent):
     name = "executor"
-    subscriptions = ["trade_decision:*", "risk_alert", "daily_hard_stop_triggered", "system_command"]
+    subscriptions = [
+        "trade_decision:*", "tech_analysis:*", "risk_alert",
+        "daily_hard_stop_triggered", "system_command",
+    ]
 
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -151,8 +155,43 @@ class MultiExecutor(BaseAgent):
             if symbol:
                 decision['symbol'] = symbol
             await self._execute_decision(decision)
+        elif msg['type'] == 'tech_analysis':
+            symbol = msg.get('symbol') or msg.get('payload', {}).get('symbol')
+            self._mark_tactical_thesis_from_tech(symbol, msg.get('payload') or {})
         elif msg['type'] == 'risk_alert':
             await self._handle_risk_alert(msg['payload'])
+
+    def _position_for_symbol(self, symbol: str):
+        positions = getattr(getattr(self, 'executor', None), 'positions', {}) or {}
+        if not symbol:
+            return None
+        internal = to_internal(symbol)
+        candidates = (symbol, internal, f"{internal}-SWAP")
+        for key in candidates:
+            if key in positions:
+                return positions[key]
+        return None
+
+    def _mark_tactical_thesis_from_tech(self, symbol: str, tech: dict):
+        position = self._position_for_symbol(symbol)
+        if not position or position.get('track') != 'tactical':
+            return
+
+        side = position.get('side')
+        timing = (tech or {}).get('entry_timing', {}) or {}
+        block_key = 'tf_15m_block_long' if side == 'long' else 'tf_15m_block_short'
+        if not timing.get(block_key):
+            return
+
+        position['tactical_thesis_state'] = 'invalidated'
+        position['tactical_thesis_reason'] = timing.get('tf_15m_reason', '15m_opposing_block')
+        position['tactical_thesis_event_at'] = time.time()
+        logger = getattr(self, 'logger', None)
+        if logger:
+            logger.info(
+                f"[Tactical] {symbol} thesis invalidated by 15m block: "
+                f"{position['tactical_thesis_reason']}"
+            )
 
     async def _execute_decision(self, decision: dict):
         action = decision.get('action', 'hold')
