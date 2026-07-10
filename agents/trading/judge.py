@@ -1524,12 +1524,77 @@ class MultiJudge(BaseAgent):
                         await self.publish("trade_decision", decision, symbol=symbol)
                         return
 
+                    if getattr(self, '_tactical_track_enabled', False):
+                        track_attr = self._build_attribution(
+                            tech, final_action, score, plan, llm_result, 'track_classifier'
+                        )
+                        track_decision = self._classify_track(
+                            symbol, final_action, plan, tech, score, llm_result, track_attr
+                        )
+                        if track_decision['track'] == 'tactical':
+                            plan = self._apply_tactical_profile(plan, tech, track_decision)
+                            if plan.get('track') != 'tactical':
+                                track_attr.update({
+                                    'track': plan.get('track', 'shadow_only'),
+                                    'exit_profile': plan.get('exit_profile', 'none'),
+                                    'tactical_source': plan.get('tactical_source', track_decision['reason']),
+                                    'tactical_cost_gate': plan.get('tactical_cost_gate', ''),
+                                })
+                                self._record_rejected_plan(
+                                    symbol, final_action, plan, score, final_conf,
+                                    plan.get('tactical_reject_reason', track_decision['reason']),
+                                    track_attr,
+                                )
+                                decision = {
+                                    "symbol": symbol, "timestamp": time.time(),
+                                    "action": "hold", "confidence": 0,
+                                    "plan": None, "size_pct": 0,
+                                    "reasoning": plan.get('tactical_reject_reason', track_decision['reason']),
+                                    "key_factors": ["track_classifier:shadow_only"],
+                                    "risk_warnings": [track_decision['reason']],
+                                    "attribution": track_attr,
+                                }
+                                await self.publish("trade_decision", decision, symbol=symbol)
+                                return
+                        elif track_decision['track'] in ('shadow_only', 'reject'):
+                            track_attr.update({
+                                'track': track_decision['track'],
+                                'exit_profile': track_decision['exit_profile'],
+                                'tactical_source': track_decision['reason'],
+                            })
+                            self._record_rejected_plan(
+                                symbol, final_action, plan, score, final_conf,
+                                track_decision['reason'], track_attr,
+                            )
+                            decision = {
+                                "symbol": symbol, "timestamp": time.time(),
+                                "action": "hold", "confidence": 0,
+                                "plan": None, "size_pct": 0,
+                                "reasoning": track_decision['reason'],
+                                "key_factors": ["track_classifier:shadow_only"],
+                                "risk_warnings": [track_decision['reason']],
+                                "attribution": track_attr,
+                            }
+                            await self.publish("trade_decision", decision, symbol=symbol)
+                            return
+                        else:
+                            plan['track'] = 'main'
+                            plan['exit_profile'] = 'trend_runner'
+                    else:
+                        plan.setdefault('track', 'main')
+                        plan.setdefault('exit_profile', 'trend_runner')
+
                     # R:R分级响应：统一通过 _select_rr_floor 选择 floor
                     rr = plan.get('effective_risk_reward_ratio', plan.get('risk_reward_ratio', 0))
                     is_long = (final_action == 'open_long')
-                    min_rr, rr_policy, rr_reason = self._select_rr_floor(
-                        final_action, plan, tech, score
-                    )
+                    if plan.get('track') == 'tactical':
+                        min_rr, rr_policy, rr_reason = (
+                            0.0, 'tactical_v1', plan.get('tactical_source', 'tactical')
+                        )
+                    else:
+                        min_rr, rr_policy, rr_reason = self._select_rr_floor(
+                            final_action, plan, tech, score
+                        )
                     plan['rr_floor_used'] = min_rr
                     plan['rr_floor_reason'] = rr_reason
                     plan['rr_policy'] = rr_policy
@@ -1538,7 +1603,7 @@ class MultiJudge(BaseAgent):
                     plan['symbol_higher_tf_bias'] = _trend_snap.get('higher_tf_bias', 'neutral')
                     plan['symbol_daily_bias'] = _trend_snap.get('daily_bias', 'neutral')
 
-                    if rr < min_rr:
+                    if plan.get('track') != 'tactical' and rr < min_rr:
                         self.logger.info(
                             f"[Judge] {symbol} R:R={rr:.2f}<{min_rr:.2f}，低于动态地板 "
                             f"policy={rr_policy} reason={rr_reason}"
@@ -1603,7 +1668,7 @@ class MultiJudge(BaseAgent):
 
                     # ═══ P2-N: 期望值门（在所有开仓决策前的最后闸门）═══
                     # 历史交易不足时使用降级胜率（不会过严）；rolling 胜率生效时严格执行
-                    if not self._check_expected_value(symbol, plan, score):
+                    if plan.get('track') != 'tactical' and not self._check_expected_value(symbol, plan, score):
                         self._record_rejected_plan(
                             symbol, final_action, plan, score, final_conf,
                             f"ev_gate:EV={plan.get('expected_value', 0):.3f}"
