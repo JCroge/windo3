@@ -1991,6 +1991,25 @@ class ContractExecutor:
         else:
             profit_r = (entry - price) / entry / R
 
+        # --- Tactical exit profile: local TP/protection lifecycle, exchange SL remains authoritative ---
+        if position.get('track') == 'tactical':
+            cfg = getattr(self, '_config', {}) or {}
+            max_hold = (
+                position.get('tactical_max_hold_minutes')
+                or cfg.get('tactical_max_hold_minutes', 90)
+            )
+            if max_hold and time.time() - position.get('open_time', time.time()) >= max_hold * 60:
+                position['tactical_close_reason'] = 'tactical_max_hold'
+                return 'tactical_max_hold'
+
+            if tp_filled == 0 and tp_levels:
+                tp1 = tp_levels[0]
+                if (is_long and price >= tp1) or (not is_long and price <= tp1):
+                    position['tactical_close_reason'] = 'tactical_tp1'
+                    self.logger.info(f"[Tactical] {symbol} TP1 命中 {tp1},等待 reduce 确认")
+                    return 'tactical_tp1'
+            return None
+
         # --- Low RR 槽提前 trailing（不等 TP1）---
         if position.get('slot_type') == 'low_rr_extra' and tp_filled == 0:
             cfg = getattr(self, '_config', {}) or {}
@@ -2437,6 +2456,14 @@ class ContractExecutor:
                 'entry_type': plan.get('entry_type', 'unknown'),
                 'attribution': plan.get('attribution', {}),
                 'slot_type': plan.get('slot_type', 'main'),
+                'track': plan.get('track', 'main'),
+                'exit_profile': plan.get('exit_profile', 'trend_runner'),
+                'tactical_source': plan.get('tactical_source', ''),
+                'tactical_max_hold_minutes': plan.get(
+                    'tactical_max_hold_minutes',
+                    plan.get('max_holding_minutes', 0),
+                ),
+                'tactical_close_reason': '',
                 'open_time': time.time(),
                 'request_id': plan.get('request_id', ''),
             }

@@ -253,6 +253,12 @@ class MultiExecutor(BaseAgent):
 
         elif action in ('open_long', 'open_short') and position is not None and source == 'position_analyst':
             side = 'long' if action == 'open_long' else 'short'
+            if position.get('track') == 'tactical':
+                await self.publish("execution_result", self._build_execution_result(
+                    status="rejected", action="add", symbol=symbol,
+                    source="executor_reject", reason="tactical_no_add", request_id=request_id,
+                ), symbol=symbol)
+                return
             if position.get('side') != side:
                 self.logger.warning(f"[执行] {symbol} 加仓方向冲突: 持仓{position['side']} vs 请求{side}，跳过")
                 await self.publish("execution_result", self._build_execution_result(
@@ -1327,7 +1333,7 @@ class MultiExecutor(BaseAgent):
                     )
                     await self.publish("execution_result", payload, symbol=symbol)
 
-            elif trigger in ('partial_tp_1', 'partial_tp_2'):
+            elif trigger in ('partial_tp_1', 'partial_tp_2', 'tactical_tp1'):
                 await self._handle_partial_tp_trigger(symbol, trigger)
 
             else:
@@ -1338,11 +1344,21 @@ class MultiExecutor(BaseAgent):
                 result = self.executor.close_position(symbol)
                 if result:
                     result['entry_request_id'] = entry_req_id
+                    if trigger in ('tactical_max_hold', 'tactical_invalidated', 'tactical_weakened_no_progress'):
+                        result['tactical_close_reason'] = trigger
+                        result.setdefault('attribution', {}).update({
+                            'track': (pos or {}).get('track', 'tactical'),
+                            'exit_profile': (pos or {}).get('exit_profile', 'tactical_v1'),
+                            'tactical_close_reason': trigger,
+                        })
                     payload = self._build_execution_result(
                         status="force_closed", action="close", symbol=symbol,
                         source="local_stop", reason=trigger, result=result,
                         request_id=entry_req_id,
                     )
+                    if trigger in ('tactical_max_hold', 'tactical_invalidated', 'tactical_weakened_no_progress'):
+                        payload['tactical_close_reason'] = trigger
+                        payload.setdefault('attribution', {}).update(result.get('attribution', {}))
                     await self.publish("execution_result", payload, symbol=symbol)
 
     async def _handle_partial_tp_trigger(self, symbol: str, trigger: str):
@@ -1351,8 +1367,8 @@ class MultiExecutor(BaseAgent):
         减仓结果经 _classify_reduce_outcome 分流，actual reduce_pct 写入 payload，
         protection_failed=True 时下游可见。partial_tp 默认 action='close'（与原逻辑一致）。
         """
-        pct = 0.5 if trigger == 'partial_tp_1' else 0.25
-        tp_advance = 1 if trigger == 'partial_tp_1' else 2
+        pct = 0.5 if trigger in ('partial_tp_1', 'tactical_tp1') else 0.25
+        tp_advance = 1 if trigger in ('partial_tp_1', 'tactical_tp1') else 2
         self.logger.info(f"[Trailing] {symbol} {trigger}，减仓{int(pct*100)}%")
         pos = self.executor.positions.get(symbol)
         entry_req_id = (pos or {}).get('request_id', '')
