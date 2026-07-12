@@ -59,6 +59,12 @@ class CounterfactualLedger:
             "tactical_source": plan.get("tactical_source", (attribution or {}).get("tactical_source", "")),
             "tactical_effective_rr": plan.get("tactical_effective_rr"),
             "tactical_expected_value": plan.get("tactical_expected_value"),
+            "tactical_track_gate": plan.get("tactical_track_gate"),
+            "tactical_gate_failed": plan.get("tactical_gate_failed"),
+            "tactical_min_rr_for_track": plan.get("tactical_min_rr_for_track"),
+            "tactical_min_ev_for_track": plan.get("tactical_min_ev_for_track"),
+            "tactical_max_hold_minutes": plan.get("tactical_max_hold_minutes",
+                                                 plan.get("max_holding_minutes")),
             "created_at": time.time(),
             "status": "tracking",
         }
@@ -131,6 +137,20 @@ class CounterfactualLedger:
                 resolved.append(rid)
                 continue
 
+            max_hold_min = rec.get('tactical_max_hold_minutes')
+            if rec.get('exit_profile') == 'tactical_v1' and max_hold_min:
+                if now - rec['created_at'] >= float(max_hold_min) * 60:
+                    rec['status'] = 'shadow_tactical_max_hold'
+                    rec['resolved_at'] = now
+                    rec['resolved_price'] = price
+                    if rec['side'] == 'long':
+                        rec['pnl_pct'] = (price - rec['entry_price']) / rec['entry_price'] * 100 if rec['entry_price'] else 0
+                    else:
+                        rec['pnl_pct'] = (rec['entry_price'] - price) / rec['entry_price'] * 100 if rec['entry_price'] else 0
+                    self._append_event("shadow_tactical_max_hold", rec)
+                    resolved.append(rid)
+                    continue
+
             entry = rec['entry_price']
             sl = rec['stop_loss']
             side = rec['side']
@@ -186,6 +206,7 @@ class CounterfactualLedger:
         tp_count = 0
         sl_count = 0
         expired_count = 0
+        max_hold_count = 0
 
         try:
             with open(self._events_path, 'r') as f:
@@ -203,6 +224,8 @@ class CounterfactualLedger:
                         tp_count += 1
                     elif evt_type == 'shadow_sl':
                         sl_count += 1
+                    elif evt_type == 'shadow_tactical_max_hold':
+                        max_hold_count += 1
                     elif evt_type == 'shadow_expired':
                         expired_count += 1
         except FileNotFoundError:
@@ -214,10 +237,11 @@ class CounterfactualLedger:
         return {
             "tp": tp_count,
             "sl": sl_count,
+            "max_hold": max_hold_count,
             "expired": expired_count,
             "total_decided": total_decided,
             "win_rate": win_rate,
-            "sample_size": total_decided + expired_count,
+            "sample_size": total_decided + max_hold_count + expired_count,
         }
 
     def active_count(self) -> int:

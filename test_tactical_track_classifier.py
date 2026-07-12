@@ -28,8 +28,10 @@ def make_judge():
         judge._tactical_very_near_position_pct = 1.00
         judge._tactical_stop_cap_r_main = 0.60
         judge._tactical_very_near_stop_r_main = 0.40
-        judge._tactical_tp1_r = 0.60
+        judge._tactical_tp1_r = 1.00
         judge._tactical_cost_coverage_min = 4.0
+        judge._tactical_min_rr_for_track = 0.75
+        judge._tactical_min_ev_for_track = -0.04
 
         class Regime:
             _effective_regime = "bearish"

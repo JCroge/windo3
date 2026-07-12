@@ -6,7 +6,7 @@
 - 生产、paper、testnet、实盘验收主入口统一为 `python3 run_agents.py`。
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
 - 已记录完整基线：`1490 passed`（2026-07-07）。Tactical Exit Track 变更验证：Tactical suite `21 passed`，邻近回归 `118 passed / 3 warnings`，OpenSpec strict PASS（2026-07-10）。历史基线见 `docs/handoff.md`。
-- Tactical Exit Track 已实现但默认不改 live：`TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`。真开 Tactical 前必须先有 replay/shadow 分桶证据。
+- Tactical Exit Track 已实现但默认不改 live：`TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`。shadow-only 证据必须来自 `_apply_tactical_shadow_profile` 写入的 `data/rejected_signal_*` Tactical counterfactual，不要把 PaperExecutor 当 Tactical shadow；`_apply_tactical_profile` 先过 cost gate，再用 `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 筛 true-open 样本，成本门过但阈值门失败的样本仍保留 `exit_profile=tactical_v1` 做 counterfactual 结算；真开 Tactical 前必须先有 replay/shadow 分桶证据。
 - 当前 Go/No-Go：小额 live 灰度 GO（维持现有 cap）；live 扩容 CONDITIONAL GO，扩容前置 = 运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置 + 真实 TG 命令链与 drift gate 运维验收。
 - OKX 验收状态：mock 执行语义 10 case PASS；真实 testnet long_short_mode 13 PASS + net_mode 子账户 3 PASS。
 - TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap /health`。

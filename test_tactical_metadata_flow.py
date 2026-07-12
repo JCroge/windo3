@@ -8,6 +8,9 @@ def test_tactical_config_defaults_are_present():
     assert DEFAULTS["main_quality_block_llm_reversal"] is True
     assert DEFAULTS["tactical_max_leverage"] == 5
     assert DEFAULTS["tactical_default_position_pct"] == 0.70
+    assert DEFAULTS["tactical_tp1_r"] == 1.0
+    assert DEFAULTS["tactical_min_rr_for_track"] == 0.75
+    assert DEFAULTS["tactical_min_ev_for_track"] == -0.04
     assert DEFAULTS["tactical_max_hold_minutes"] == 90
     assert DEFAULTS["tactical_min_progress_r"] == 0.15
     assert DEFAULTS["tactical_daily_loss_limit_usdt"] == -10.0
@@ -19,6 +22,8 @@ def test_tactical_env_overrides_are_loaded(monkeypatch):
     monkeypatch.setenv("TACTICAL_SHADOW_ONLY", "false")
     monkeypatch.setenv("TACTICAL_MAX_LEVERAGE", "4")
     monkeypatch.setenv("TACTICAL_DEFAULT_POSITION_PCT", "0.5")
+    monkeypatch.setenv("TACTICAL_MIN_RR_FOR_TRACK", "0.76")
+    monkeypatch.setenv("TACTICAL_MIN_EV_FOR_TRACK", "-0.02")
     monkeypatch.setenv("TACTICAL_MIN_PROGRESS_R", "0.2")
 
     from utils.config_loader import load_config
@@ -29,6 +34,8 @@ def test_tactical_env_overrides_are_loaded(monkeypatch):
     assert cfg["tactical_shadow_only"] is False
     assert cfg["tactical_max_leverage"] == 4
     assert cfg["tactical_default_position_pct"] == 0.5
+    assert cfg["tactical_min_rr_for_track"] == 0.76
+    assert cfg["tactical_min_ev_for_track"] == -0.02
     assert cfg["tactical_min_progress_r"] == 0.2
 
 

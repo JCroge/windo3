@@ -118,6 +118,69 @@ class TestShadowResolution:
         stats = ledger.get_stats()
         assert stats['expired'] == 1
 
+    def test_tactical_shadow_max_hold_resolves_with_current_price(self, ledger):
+        plan = {
+            'entry_zone': [100.0, 100.0],
+            'stop_loss': 95.0,
+            'take_profit': [110.0],
+            'effective_risk_reward_ratio': 1.0,
+            'leverage': 5,
+            'track': 'tactical',
+            'exit_profile': 'tactical_v1',
+            'tactical_max_hold_minutes': 90,
+        }
+        ledger.record_rejection('BTC-USDT', 'long', plan, 'mixed', 58, 65, 'tactical_shadow_only')
+        rec = next(iter(ledger._active.values()))
+        future = rec['created_at'] + 91 * 60
+
+        ledger.check_price('BTC-USDT', 102.0, future)
+
+        assert ledger.active_count() == 0
+        events = [
+            json.loads(line)
+            for line in open(ledger._events_path)
+            if line.strip()
+        ]
+        assert events[-1]['event_type'] == 'shadow_tactical_max_hold'
+        assert events[-1]['record']['status'] == 'shadow_tactical_max_hold'
+        assert events[-1]['record']['resolved_price'] == 102.0
+        assert events[-1]['record']['pnl_pct'] == 2.0
+
+    def test_filtered_tactical_shadow_only_still_uses_tactical_max_hold(self, ledger):
+        plan = {
+            'entry_zone': [100.0, 100.0],
+            'stop_loss': 95.0,
+            'take_profit': [110.0],
+            'effective_risk_reward_ratio': 0.75,
+            'leverage': 5,
+            'track': 'shadow_only',
+            'exit_profile': 'tactical_v1',
+            'tactical_track_gate': 'fail',
+            'tactical_gate_failed': 'min_rr_or_ev',
+            'tactical_max_hold_minutes': 90,
+        }
+        ledger.record_rejection(
+            'BTC-USDT', 'long', plan, 'mixed', 58, 65,
+            'tactical_gate_failed:min_rr_or_ev',
+        )
+        rec = next(iter(ledger._active.values()))
+        assert rec['tactical_track_gate'] == 'fail'
+        assert rec['tactical_gate_failed'] == 'min_rr_or_ev'
+        future = rec['created_at'] + 91 * 60
+
+        ledger.check_price('BTC-USDT', 102.0, future)
+
+        assert ledger.active_count() == 0
+        events = [
+            json.loads(line)
+            for line in open(ledger._events_path)
+            if line.strip()
+        ]
+        assert events[-1]['event_type'] == 'shadow_tactical_max_hold'
+        assert events[-1]['record']['track'] == 'shadow_only'
+        assert events[-1]['record']['exit_profile'] == 'tactical_v1'
+        assert events[-1]['record']['pnl_pct'] == 2.0
+
 
 class TestStats:
     def test_stats_by_side(self, ledger):

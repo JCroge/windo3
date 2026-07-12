@@ -140,6 +140,8 @@ RegimeManager（bullish/bearish/mixed/choppy + 2 次确认 + 30min min_hold）�
 | tick-loop 挂死检测（agent-health-supervisor 延伸） | 2026-06-12 | `BaseAgent._periodic_loop` tick 埋点 `_tick_enter_ts`/`_tick_exit_ts`；`_loop_health` 测"当前 tick 执行多久"（`enter>exit AND now-enter>120s`）并入 loop_health；告警/`/health` 区分 message-loop vs tick 卡死；扁平阈值 120s 锚定最长健康单次 tick 60s | 1146 | `docs/superpowers/specs/2026-06-12-agent-tick-stall-detection-design.md` |
 | bot LLM env 隔离（bot-llm-config-isolation） | 2026-06-13 | `agents/llm_client.py` + `.env.example` 改读 `BOT_LLM_*` 独立变量名，与 Claude Code 自身的 `ANTHROPIC_*` 解耦，止环境串扰；comet 全流程归档 | 1149 | comet change `decouple-bot-llm-env-from-claude-code` + `test_bot_llm_env_isolation.py` |
 | Tactical Exit Track | 2026-07-10 | Main 与 Tactical 出口分轨；Tactical 独立 stop/TP1/R:R/EV/cost gate、local lifecycle、risk governor、Reviewer/CF metadata，默认 disabled + shadow-only | 21 tactical tests + 118 adjacent regression | `openspec/changes/archive/2026-07-10-add-tactical-exit-track/` |
+| Tactical shadow-only live observation | 2026-07-11 | 云服打开 `TACTICAL_TRACK_ENABLED=true` + `TACTICAL_SHADOW_ONLY=true` + `TACTICAL_TP1_R=1.00` 跑 24h；shadow-only 通过 `_apply_tactical_shadow_profile` 写 true Tactical counterfactual 到 `rejected_signal_*`，ledger 支持 `shadow_tactical_max_hold`，不真开 Tactical | 32 tactical/counterfactual tests | `docs/runbook.md#tactical-exit-track` |
+| Tactical threshold-gated observation | 2026-07-12 | 按 24h ledger 回放收紧 shadow 样本：`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`；成本门过但 RR/EV 阈值门失败的样本保留 `exit_profile=tactical_v1` 做 max-hold counterfactual，但不算 true-open Tactical | 32 tactical/counterfactual tests | `docs/runbook.md#tactical-exit-track` |
 
 ## 技术债务
 

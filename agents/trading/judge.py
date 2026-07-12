@@ -198,8 +198,10 @@ class MultiJudge(BaseAgent):
         self._tactical_very_near_position_pct = config.get('tactical_very_near_position_pct', 1.00) if config else 1.00
         self._tactical_stop_cap_r_main = config.get('tactical_stop_cap_r_main', 0.60) if config else 0.60
         self._tactical_very_near_stop_r_main = config.get('tactical_very_near_stop_r_main', 0.40) if config else 0.40
-        self._tactical_tp1_r = config.get('tactical_tp1_r', 0.60) if config else 0.60
+        self._tactical_tp1_r = config.get('tactical_tp1_r', 1.00) if config else 1.00
         self._tactical_cost_coverage_min = config.get('tactical_cost_coverage_min', 4.0) if config else 4.0
+        self._tactical_min_rr_for_track = config.get('tactical_min_rr_for_track', 0.75) if config else 0.75
+        self._tactical_min_ev_for_track = config.get('tactical_min_ev_for_track', -0.04) if config else -0.04
         self._tactical_max_hold_minutes = config.get('tactical_max_hold_minutes', 90) if config else 90
         self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
         self._probe_short_max_leverage = config.get('probe_short_max_leverage', 3) if config else 3
@@ -1557,13 +1559,30 @@ class MultiJudge(BaseAgent):
                                 await self.publish("trade_decision", decision, symbol=symbol)
                                 return
                         elif track_decision['track'] in ('shadow_only', 'reject'):
+                            record_plan = self._apply_tactical_shadow_profile(
+                                plan, tech, track_decision
+                            )
                             track_attr.update({
-                                'track': track_decision['track'],
-                                'exit_profile': track_decision['exit_profile'],
-                                'tactical_source': track_decision['reason'],
+                                'track': record_plan.get('track', track_decision['track']),
+                                'exit_profile': record_plan.get(
+                                    'exit_profile', track_decision['exit_profile']
+                                ),
+                                'tactical_source': record_plan.get(
+                                    'tactical_source', track_decision['reason']
+                                ),
                             })
+                            for key in (
+                                'tactical_effective_rr', 'tactical_expected_value',
+                                'tactical_cost_gate', 'tactical_cost_coverage',
+                                'tactical_track_gate', 'tactical_gate_failed',
+                                'tactical_min_rr_for_track', 'tactical_min_ev_for_track',
+                                'tactical_stop_quality', 'tactical_max_hold_minutes',
+                                'tactical_shadow_only',
+                            ):
+                                if key in record_plan:
+                                    track_attr[key] = record_plan.get(key)
                             self._record_rejected_plan(
-                                symbol, final_action, plan, score, final_conf,
+                                symbol, final_action, record_plan, score, final_conf,
                                 track_decision['reason'], track_attr,
                             )
                             decision = {
@@ -2200,6 +2219,8 @@ class MultiJudge(BaseAgent):
             for key in (
                 'tactical_source', 'tactical_effective_rr', 'tactical_expected_value',
                 'tactical_cost_gate', 'tactical_cost_coverage', 'tactical_stop_quality',
+                'tactical_track_gate', 'tactical_gate_failed',
+                'tactical_min_rr_for_track', 'tactical_min_ev_for_track',
             ):
                 if key in plan:
                     decision['attribution'][key] = plan.get(key)
@@ -3158,7 +3179,7 @@ class MultiJudge(BaseAgent):
         stop_cap = main_r_abs * getattr(self, '_tactical_stop_cap_r_main', 0.60)
         tactical_sl = entry + stop_cap if is_short else entry - stop_cap
 
-        configured_tp_dist = stop_cap * getattr(self, '_tactical_tp1_r', 0.60)
+        configured_tp_dist = stop_cap * getattr(self, '_tactical_tp1_r', 1.00)
         existing_tps = plan.get('take_profit') or []
         existing_tp1 = existing_tps[0] if existing_tps else None
         existing_tp_dist = abs(float(existing_tp1) - entry) if existing_tp1 else configured_tp_dist
@@ -3186,8 +3207,17 @@ class MultiJudge(BaseAgent):
         coverage = (gross_profit / total_cost) if total_cost > 0 else 0.0
         tactical_ev = round(net_profit * 0.55 - net_loss * 0.45, 4)
         cost_pass = net_profit > 0 and coverage >= getattr(self, '_tactical_cost_coverage_min', 4.0)
+        min_rr = getattr(self, '_tactical_min_rr_for_track', 0.75)
+        min_ev = getattr(self, '_tactical_min_ev_for_track', -0.04)
+        threshold_pass = tactical_rr >= min_rr and tactical_ev > min_ev
+        track_pass = cost_pass and threshold_pass
+        gate_failures = []
+        if not cost_pass:
+            gate_failures.append('cost_gate')
+        if not threshold_pass:
+            gate_failures.append('min_rr_or_ev')
 
-        final_track = 'tactical' if cost_pass else 'shadow_only'
+        final_track = 'tactical' if track_pass else 'shadow_only'
         plan.update({
             'track': final_track,
             'exit_profile': 'tactical_v1' if cost_pass else 'none',
@@ -3197,6 +3227,10 @@ class MultiJudge(BaseAgent):
             'tactical_effective_rr': tactical_rr,
             'tactical_expected_value': tactical_ev,
             'tactical_cost_gate': 'pass' if cost_pass else 'fail',
+            'tactical_track_gate': 'pass' if track_pass else 'fail',
+            'tactical_gate_failed': ','.join(gate_failures),
+            'tactical_min_rr_for_track': min_rr,
+            'tactical_min_ev_for_track': min_ev,
             'tactical_cost_coverage': round(coverage, 2),
             'effective_risk_reward_ratio': tactical_rr,
             'expected_value': tactical_ev,
@@ -3213,6 +3247,29 @@ class MultiJudge(BaseAgent):
             'tactical_stop_quality': 'very_near' if very_near else 'normal',
         })
         return plan
+
+    def _apply_tactical_shadow_profile(self, plan: dict, tech: dict,
+                                       track_decision: dict) -> dict:
+        """Build the tactical counterfactual plan while keeping live execution on hold.
+
+        In shadow-only mode the classifier intentionally returns ``shadow_only``.
+        For tomorrow's review, the rejected ledger still needs the actual
+        tactical SL/TP/max-hold profile that would have been traded.
+        """
+        reason = str((track_decision or {}).get('reason', ''))
+        if ((track_decision or {}).get('track') != 'shadow_only'
+                or not reason.endswith(':tactical_shadow_only')):
+            return plan
+
+        tactical_decision = dict(track_decision or {})
+        tactical_decision.update({
+            'track': 'tactical',
+            'exit_profile': 'tactical_v1',
+            'reason': reason.rsplit(':tactical_shadow_only', 1)[0] or reason,
+        })
+        profiled = self._apply_tactical_profile(plan, tech, tactical_decision)
+        profiled['tactical_shadow_only'] = True
+        return profiled
 
     @staticmethod
     def _coalesce_float(*vals, default: float) -> float:

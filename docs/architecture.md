@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-07-10）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner 为主，Tactical Exit Track 已实现为独立出口轨道但默认 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-07-11）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner 为主，Tactical Exit Track 已实现为独立出口轨道；代码默认 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`，云服 2026-07-11 20:49 CST 起临时打开 track 跑 24h shadow-only 观察，不真开 Tactical。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
@@ -228,8 +228,10 @@ Tactical 是 Main Trend Runner 之外的短线出口轨道，目标是把弱/混
 ```text
 TechAnalyst tech_analysis
   -> Judge._classify_track
-  -> Judge._apply_tactical_profile
+  -> Judge._apply_tactical_profile (live Tactical)
+     or Judge._apply_tactical_shadow_profile (TACTICAL_SHADOW_ONLY=true)
   -> trade_decision.v2 attribution.track/exit_profile/tactical_*
+     or CounterfactualLedger rejected_signal_* Tactical counterfactual
   -> MultiExecutor slot/risk gate
   -> ContractExecutor position track/exit_profile
   -> executor.py local lifecycle
@@ -239,8 +241,9 @@ TechAnalyst tech_analysis
 
 **关键边界**：
 - Strong aligned setup 留在 `track=main` / `exit_profile=trend_runner`。
-- Tactical 候选使用 `track=tactical` / `exit_profile=tactical_v1` / `slot_type=tactical`，并计算独立 `tactical_effective_rr`、`tactical_expected_value`、`tactical_cost_gate`。
-- `tactical_cost_gate=fail` 只能进入 `shadow_only` 或拒绝，不能借 Main ladder TP2/TP3 的 effective R:R 过门。
+- Tactical 候选使用 `track=tactical` / `exit_profile=tactical_v1` / `slot_type=tactical`，并计算独立 `tactical_effective_rr`、`tactical_expected_value`、`tactical_cost_gate`、`tactical_track_gate`。
+- `TACTICAL_SHADOW_ONLY=true` 不经过 PaperExecutor 真建仓；它经 `_apply_tactical_shadow_profile` 构建 Tactical counterfactual plan，写入 `data/rejected_signal_events.jsonl` / `data/rejected_signal_lifecycle.json`，用于 24h shadow 盈利复盘。
+- 门控顺序是 `tactical_cost_gate` 在前，`TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 的 `tactical_track_gate` 在后。成本门失败只能进入 `shadow_only` 或拒绝，不能借 Main ladder TP2/TP3 的 effective R:R 过门；成本门通过但阈值门失败保留 `exit_profile=tactical_v1` 做 max-hold counterfactual，但不算 true-open Tactical 样本。
 - Executor 本地生命周期处理 `tactical_tp1`、`tactical_invalidated`、`tactical_weakened_no_progress`、`tactical_max_hold`；交易所侧仍只托管保护性 SL，TP owner 仍在本地。
 - Tactical 日亏、连亏暂停、并发槽位独立于 Main；保护单/执行完整性失败仍按系统级 fail-closed 处理。
 
@@ -395,7 +398,7 @@ CREATE TABLE klines (
 | `utils/event_journal.py` | 关键事件JSONL落盘（trade_decision/execution_result/system_command/risk_alert），MessageBus自动触发 |
 | `utils/position_reconciler.py` | 4路对账（exchange/executor/riskguard/paper），blocking vs advisory issue分离 |
 | `utils/market_regime.py` | 市场Regime检测（BTC/ETH bias + 全标的趋势共识 → bullish/bearish/mixed/choppy） |
-| `utils/counterfactual_ledger.py` | 被拒信号影子追踪，24h TP/SL解析验证策略有效性 |
+| `utils/counterfactual_ledger.py` | 被拒信号影子追踪，解析 TP/SL/24h expiry 与 Tactical max-hold，验证策略有效性 |
 | `requirements.lock` | 精确版本锁定，ccxt升级需走`docs/dependency_upgrade_runbook.md`门控流程 |
 
 **研判层消息类型**：

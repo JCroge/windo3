@@ -163,6 +163,8 @@ result = selector.analyze()  # 返回优质币种列表及评分
 | `data/halt_state.json` | 全局熔断状态 | 加载损坏 fail-closed |
 | `data/live_order_events.jsonl` | 订单事件流 | LiveLedger append-only |
 | `data/live_position_lifecycle.json` | 持仓生命周期 | LiveLedger 原子写入 |
+| `data/rejected_signal_events.jsonl` | 被拒/影子决策事件流 | CounterfactualLedger append-only；Tactical shadow-only 复盘主输入 |
+| `data/rejected_signal_lifecycle.json` | 被拒/影子决策生命周期 | CounterfactualLedger 原子写入；记录当前 tracking 与结算状态 |
 
 **状态文件命名空间（FR-008，2026-05-28）**：路径由 `utils/state_paths.py` 单一真相源派生。命名空间优先级 `STATE_NAMESPACE=live|testnet|paper` > `USE_TESTNET=true` 推断 testnet > 默认 live。live 默认完全兼容历史路径；testnet/paper 自动加 `testnet_` / `paper_` 前缀（如 `data/testnet_positions.json`）。下游若复用同一台机器跑多个 namespace，必须设置 `STATE_NAMESPACE` 隔离 6 个状态文件（`positions` / `risk_state` / `riskguard_state` / `halt_state` / `live_order_events` / `live_position_lifecycle`）。启动 banner 会打印当前 namespace 与全部 6 个路径。
 
@@ -239,8 +241,8 @@ class MyAgent(BaseAgent):
 | `execution_confidence` | int | LLM/规则综合置信度（0-100） |
 | `position_scale` | float | 仓位缩放因子（0.0-1.0） |
 | `slot_type` | str | 槽位归属：`main` / `low_rr_extra` / `probe_short` / `probe_long` / `tactical` |
-| `track` | str | 出口轨道：`main` / `tactical` / `shadow_only`；Main 默认 `main` |
-| `exit_profile` | str | 出口配置：Main 为 `trend_runner`，Tactical 为 `tactical_v1`，shadow/reject 为 `none` |
+| `track` | str | 出口轨道：`main` / `tactical` / `shadow_only`；Main 默认 `main`，Tactical shadow-only counterfactual 也可能携带 `tactical` |
+| `exit_profile` | str | 出口配置：Main 为 `trend_runner`，Tactical 为 `tactical_v1`，generic shadow/reject 为 `none` |
 | `regime` | str | 市场 regime：`bullish` / `bearish` / `mixed` / `choppy` |
 | `rr_policy` | str | R:R floor 策略标签：`probe` / `long_bullish_low_rr` / `long_aligned_low_rr` / `long_aligned_path_evidence` / `short_bullish_strong` / `default` |
 | `rr_floor_used` | float | 本次开仓实际套用的 R:R floor 值 |
@@ -265,11 +267,27 @@ class MyAgent(BaseAgent):
 | `tactical_effective_rr` | float | Tactical 独立 stop/TP1/成本口径的 effective R:R |
 | `tactical_expected_value` | float | Tactical 独立 EV；不复用 Main EV |
 | `tactical_cost_gate` | str | `pass` / `fail`；`fail` 时应为 `shadow_only` 或拒绝，不应真开 Tactical |
+| `tactical_track_gate` | str | `pass` / `fail`；成本门和 RR/EV 阈值门都通过才为 `pass`，用于筛 true-open Tactical 样本 |
+| `tactical_gate_failed` | str | 逗号分隔失败原因，如 `cost_gate`、`min_rr_or_ev` |
+| `tactical_min_rr_for_track` | float | 本次决策使用的 `TACTICAL_MIN_RR_FOR_TRACK` |
+| `tactical_min_ev_for_track` | float | 本次决策使用的 `TACTICAL_MIN_EV_FOR_TRACK` |
 | `tactical_cost_coverage` | float | Tactical gross profit 对手续费+滑点估算成本的覆盖倍数 |
 | `tactical_stop_quality` | str | `normal` / `very_near`，决定 Tactical 是否可用更高仓位比例 |
+| `tactical_max_hold_minutes` | int | Tactical 最大持仓分钟数；shadow-only 记录也会写入，用于 `shadow_tactical_max_hold` 结算 |
+| `tactical_shadow_only` | bool | `TACTICAL_SHADOW_ONLY=true` 的 hold attribution 可出现；表示未发 live Tactical 订单。CounterfactualLedger 顶层复盘以 `track` / `exit_profile` 为准 |
 | `rejection_reason` | str | 仅被拒决策出现，配合 `data/journal/events_*.jsonl` 复盘 |
 
 下游消费这些字段做策略复盘 / 分桶胜率 / 反事实账本时，必须按 `attribution.track`、`exit_profile`、`slot_type` 和 `rr_policy` 区分出口轨道、槽位与 floor 来源；不能仅凭 `regime + side` 反推。
+
+**Tactical shadow-only counterfactual**：
+
+`TACTICAL_SHADOW_ONLY=true` 时，Tactical 不发布 live 订单，也不走 PaperExecutor 的 `paper_execution_result`；Judge 会把可交易的 Tactical counterfactual 写入 `data/rejected_signal_events.jsonl` 与 `data/rejected_signal_lifecycle.json`。复盘 Tactical 是否赚钱时，优先筛 `track=tactical`、`exit_profile=tactical_v1`、`tactical_cost_gate=pass`、`tactical_track_gate=pass` 的 ledger 记录；`tactical_cost_gate=fail` 或 `tactical_track_gate=fail` 的记录可保留诊断字段，其中成本门已过但 RR/EV 阈值门失败的记录仍可用来观察 Tactical max-hold 结局，但不计入“本应真开 Tactical”的盈利样本。
+
+CounterfactualLedger 事件类型：
+- `rejected_plan_created`：创建影子计划。
+- `shadow_tp` / `shadow_sl`：价格触达 Tactical TP1 或 stop。
+- `shadow_tactical_max_hold`：Tactical 最大持仓时间到期，按到期价格结算。
+- `shadow_expired` / `shadow_invalidated`：24h 过期或信号反转失效。
 
 `execution_result:{symbol}` — Executor发布，统一为 `execution_result.v2`：
 - schema_version, status, action, symbol, source, request_id, correlation_id, reason, result, timestamp

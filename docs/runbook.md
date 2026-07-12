@@ -195,7 +195,7 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | EV_BUCKET_SPARSE_ALLOW_UPLIFT | 是否允许稀疏 bucket 抬高 p_win（默认禁止，仅允许降低/缩仓） | false | 否 |
 | LADDER_RR_ENABLED | **lever2 逃生阀**（2026-06-17 `trend-entry-levers-default-on`）：阶梯加权 effective_rr 口径（按 executor 真实 50/25/25 离场加权，影响 R:R 地板 gate=多开仓）。**默认开**；设 `false` 即时回退 TP1-only 旧口径（live 决策回滚，无需改代码） | true | 否 |
 | TACTICAL_TRACK_ENABLED | Tactical Exit Track 总开关。`false`=所有候选按 Main/hold 旧行为；`true`=Judge 执行 Main-vs-Tactical 分类 | false | 否 |
-| TACTICAL_SHADOW_ONLY | Tactical 分类只记录 shadow/reject，不真开 Tactical。首次启用必须保持 `true`，分桶验证后再小额灰度 `false` | true | 否 |
+| TACTICAL_SHADOW_ONLY | Tactical 分类只记录 counterfactual，不真开 Tactical。`true` 时合格候选写入 `data/rejected_signal_*`，不发布 live Tactical 订单；首次启用必须保持 `true`，分桶验证后再小额灰度 `false` | true | 否 |
 | MAIN_QUALITY_GATE_ENABLED | Main Trend quality gate。开启后强趋势候选才留 Main，弱/混合但方向有效的候选才可能降级 Tactical | true | 否 |
 | MAIN_QUALITY_MIN_PROVENANCE | Main quality gate 对数据 provenance 的最低要求；低于一半阈值直接 shadow-only | 0.20 | 否 |
 | MAIN_QUALITY_BLOCK_LLM_REVERSAL | LLM 明确反向/反转风险时阻止留在 Main | true | 否 |
@@ -206,8 +206,10 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | TACTICAL_VERY_NEAR_POSITION_PCT | Tactical stop 极近时允许的保证金比例上限 | 1.00 | 否 |
 | TACTICAL_STOP_CAP_R_MAIN | Tactical stop 相对 Main stop 的上限比例 | 0.60 | 否 |
 | TACTICAL_VERY_NEAR_STOP_R_MAIN | 判定 `tactical_stop_quality=very_near` 的 stop 比例 | 0.40 | 否 |
-| TACTICAL_TP1_R | Tactical TP1 相对 Tactical stop 的 R 倍数；实际 TP1 还会被原 Main TP1 就近约束 | 0.60 | 否 |
+| TACTICAL_TP1_R | Tactical TP1 相对 Tactical stop 的 R 倍数；实际 TP1 还会被原 Main TP1 就近约束 | 1.00 | 否 |
 | TACTICAL_COST_COVERAGE_MIN | Tactical gross profit 覆盖手续费+滑点成本的最低倍数 | 4.0 | 否 |
+| TACTICAL_MIN_RR_FOR_TRACK | 成本门通过后，进入 `track=tactical` true-open 样本所需的最低 Tactical effective R:R | 0.75 | 否 |
+| TACTICAL_MIN_EV_FOR_TRACK | 成本门通过后，进入 `track=tactical` true-open 样本所需的最低 Tactical EV；代码使用 `>` 比较 | -0.04 | 否 |
 | TACTICAL_MAX_HOLD_MINUTES | Tactical 最大持仓分钟数；超时走本地全平 | 90 | 否 |
 | TACTICAL_MIN_PROGRESS_R | Tactical weakened 状态下视为“有进展”的最低 best-profit R | 0.15 | 否 |
 | TACTICAL_WEAKENED_NO_PROGRESS_MIN_MINUTES | thesis weakened 且无进展后的最短退出等待分钟 | 30 | 否 |
@@ -246,16 +248,22 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 
 ## Tactical Exit Track
 
-Tactical 是 Main Trend Runner 之外的短线落袋轨道。它不复用 Main ladder TP2/TP3 的 R:R 假设；Judge 先通过 `_classify_track` 判断 `main` / `tactical` / `shadow_only` / `reject`，再由 `_apply_tactical_profile` 改写 stop、TP1、size、leverage、`tactical_effective_rr`、`tactical_expected_value` 和 `tactical_cost_gate`。
+Tactical 是 Main Trend Runner 之外的短线落袋轨道。它不复用 Main ladder TP2/TP3 的 R:R 假设；Judge 先通过 `_classify_track` 判断 `main` / `tactical` / `shadow_only` / `reject`，再由 `_apply_tactical_profile` 改写 stop、TP1、size、leverage、`tactical_effective_rr`、`tactical_expected_value`、`tactical_cost_gate` 和 `tactical_track_gate`。Tactical 门控顺序固定为：先成本门，再 `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 阈值门。
+
+`TACTICAL_SHADOW_ONLY=true` 时，系统不会生成 live Tactical 订单，也不是 PaperExecutor 影子持仓；Judge 会通过 `_apply_tactical_shadow_profile` 生成“如果真开 Tactical 会使用的” counterfactual plan，并写入 `data/rejected_signal_events.jsonl` 与 `data/rejected_signal_lifecycle.json`。true-open 样本应带 `track=tactical`、`exit_profile=tactical_v1`、`tactical_cost_gate=pass`、`tactical_track_gate=pass`、`tactical_max_hold_minutes=90`；成本门通过但 RR/EV 阈值门失败的候选会保留 `track=shadow_only` / `exit_profile=tactical_v1` 继续做 90 分钟 max-hold counterfactual，不计入“会真开 Tactical”的盈利样本；成本门失败则为 `track=shadow_only` / `exit_profile=none`。
+
+`TACTICAL_TP1_R=1.00` 表示 TP1 距离为 1 倍 Tactical stop 距离；若原 Main TP1 更近，则使用更近的 Main TP1 作为上限。
 
 **上线顺序**：
 
 ```bash
-# 1. 只打开分类与记录，不真开 Tactical
+# 1. 只打开分类与 Tactical counterfactual 记录，不真开 Tactical
 TACTICAL_TRACK_ENABLED=true
 TACTICAL_SHADOW_ONLY=true
+TACTICAL_MIN_RR_FOR_TRACK=0.75
+TACTICAL_MIN_EV_FOR_TRACK=-0.04
 
-# 2. 重启后观察 trade_decision.attribution.track / exit_profile / tactical_cost_gate
+# 2. 重启后观察 rejected_signal_* 里的 Tactical counterfactual
 python3 -m pytest -q test_tactical_*.py tests/test_tactical_wld_replay.py
 
 # 3. 只有 shadow/replay 分桶达标后，再小额灰度真开
@@ -275,9 +283,30 @@ TACTICAL_SHADOW_ONLY=true
 
 **运维观察点**：
 - `trade_decision.attribution.track` / `exit_profile` / `slot_type` 用于区分 Main 与 Tactical。
+- shadow-only 复盘以 `data/rejected_signal_events.jsonl` 和 `data/rejected_signal_lifecycle.json` 为准，不看 PaperExecutor 的 `paper_execution_result`。
+- true-open Tactical counterfactual 的核心字段：`track=tactical`、`exit_profile=tactical_v1`、`tactical_expected_value`、`tactical_effective_rr`、`tactical_cost_gate=pass`、`tactical_track_gate=pass`、`tactical_max_hold_minutes=90`。
+- ledger 结局事件包括 `shadow_tp`、`shadow_sl`、`shadow_tactical_max_hold`、`shadow_expired`；`shadow_tactical_max_hold` 是 Tactical 最大持仓时间到期的影子结算。
 - `tactical_close_reason` 只在 Tactical TP1、最大持仓、thesis invalidated、weakened-no-progress 等路径出现。
 - `tactical_cost_gate=fail` 的候选应保持 `shadow_only`，不能借 Main ladder effective R:R 过门。
+- `tactical_track_gate=fail` 且 `tactical_gate_failed=min_rr_or_ev` 表示成本门已过但未达到当前 RR/EV 样本筛选阈值；它可以继续保留 Tactical exit profile 做 shadow 结算，但不能按“会真开 Tactical”统计。
 - Tactical 日亏、连亏暂停和并发槽位独立于 Main；系统级执行/保护单失败仍应触发全局 fail-closed。
+
+快速查看当前仍在跟踪或已结算的 Tactical shadow 记录：
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("data/rejected_signal_lifecycle.json")
+data = json.loads(path.read_text()) if path.exists() else {}
+records = data.values() if isinstance(data, dict) else data
+for r in records:
+    if r.get("track") == "tactical" or r.get("exit_profile") == "tactical_v1":
+        print(r.get("id"), r.get("symbol"), r.get("side"), r.get("status"),
+              r.get("track"), r.get("exit_profile"), r.get("tactical_expected_value"))
+PY
+```
 
 ## Long Entry Position Guard
 
