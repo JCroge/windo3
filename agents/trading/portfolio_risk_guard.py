@@ -42,8 +42,10 @@ class PortfolioRiskGuard(BaseAgent):
         self._correlation_exposure_limit = 2400.0
         self._stale_position_hours = 24
         self._tactical_daily_pnl = 0.0
+        self._tactical_daily_date = self._tactical_day_key()
         self._tactical_loss_streak = 0
         self._tactical_pause_until = 0
+        self._tactical_pause_reason = ''
         self._tactical_daily_loss_limit_usdt = (
             config.get('tactical_daily_loss_limit_usdt', -10.0) if config else -10.0
         )
@@ -60,10 +62,37 @@ class PortfolioRiskGuard(BaseAgent):
         )
         self._tactical_quality_results = []
 
+    @staticmethod
+    def _tactical_day_key(ts: float = None) -> str:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc) if ts is None else datetime.fromtimestamp(ts, timezone.utc)
+        return now.date().isoformat()
+
+    def _reset_tactical_daily_if_needed(self, ts: float = None):
+        today = self._tactical_day_key(ts)
+        if getattr(self, '_tactical_daily_date', '') != today:
+            self._tactical_daily_date = today
+            self._tactical_daily_pnl = 0.0
+
+    def _tactical_circuit_state(self) -> dict:
+        self._reset_tactical_daily_if_needed()
+        return {
+            'daily_date': getattr(self, '_tactical_daily_date', self._tactical_day_key()),
+            'daily_pnl': getattr(self, '_tactical_daily_pnl', 0.0),
+            'daily_loss_limit_usdt': getattr(self, '_tactical_daily_loss_limit_usdt', -10.0),
+            'loss_streak': getattr(self, '_tactical_loss_streak', 0),
+            'loss_streak_pause_count': getattr(self, '_tactical_loss_streak_pause_count', 3),
+            'pause_until': getattr(self, '_tactical_pause_until', 0),
+            'pause_reason': getattr(self, '_tactical_pause_reason', ''),
+            'quality_results': getattr(self, '_tactical_quality_results', []),
+        }
+
     def _tactical_open_count(self) -> int:
         return sum(1 for p in self._positions.values() if p.get('track') == 'tactical')
 
     def can_open_tactical(self, symbol: str, plan: dict, market_state: dict):
+        self._reset_tactical_daily_if_needed()
         now = time.time()
         if now < getattr(self, '_tactical_pause_until', 0):
             return False, 'tactical_paused'
@@ -80,6 +109,7 @@ class PortfolioRiskGuard(BaseAgent):
         return True, 'ok'
 
     def record_tactical_close(self, symbol: str, pnl: float, close_reason: str, event: dict):
+        self._reset_tactical_daily_if_needed()
         self._tactical_daily_pnl = (
             getattr(self, '_tactical_daily_pnl', 0.0) + float(pnl or 0.0)
         )
@@ -91,6 +121,7 @@ class PortfolioRiskGuard(BaseAgent):
         if self._tactical_loss_streak >= getattr(self, '_tactical_loss_streak_pause_count', 3):
             pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
             self._tactical_pause_until = time.time() + pause_minutes * 60
+            self._tactical_pause_reason = 'loss_streak'
 
     def record_tactical_execution_failure(self, symbol: str, reason: str, event: dict):
         pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
@@ -632,6 +663,7 @@ class PortfolioRiskGuard(BaseAgent):
             'prices': self._prices,
             'trading_halted': self._trading_halted,
             'last_alert_times': self._last_alert_times,
+            'tactical_circuit': self._tactical_circuit_state(),
         }
 
         try:
@@ -658,6 +690,20 @@ class PortfolioRiskGuard(BaseAgent):
                 self._prices = {to_internal(k): v for k, v in raw_prices.items()}
                 self._trading_halted = state.get('trading_halted', False)
                 self._last_alert_times = state.get('last_alert_times', {})
+                tactical = state.get('tactical_circuit') or {}
+                if tactical:
+                    today = self._tactical_day_key()
+                    stored_day = tactical.get('daily_date') or today
+                    self._tactical_daily_date = today
+                    self._tactical_daily_pnl = (
+                        float(tactical.get('daily_pnl', 0.0) or 0.0)
+                        if stored_day == today else 0.0
+                    )
+                    self._tactical_loss_streak = int(tactical.get('loss_streak', 0) or 0)
+                    self._tactical_pause_until = float(tactical.get('pause_until', 0) or 0)
+                    self._tactical_pause_reason = tactical.get('pause_reason', '') or ''
+                    quality = tactical.get('quality_results', [])
+                    self._tactical_quality_results = list(quality) if isinstance(quality, list) else []
 
                 if self._trading_halted:
                     self.logger.warning("系统处于熔断状态（从上次会话恢复）")

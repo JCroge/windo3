@@ -203,6 +203,7 @@ class MultiJudge(BaseAgent):
         self._tactical_min_rr_for_track = config.get('tactical_min_rr_for_track', 0.75) if config else 0.75
         self._tactical_min_ev_for_track = config.get('tactical_min_ev_for_track', -0.04) if config else -0.04
         self._tactical_max_hold_minutes = config.get('tactical_max_hold_minutes', 90) if config else 90
+        self._tactical_daily_loss_limit_usdt = config.get('tactical_daily_loss_limit_usdt', -10.0) if config else -10.0
         self._probe_short_max_position_pct = config.get('probe_short_max_position_pct', 0.3) if config else 0.3
         self._probe_short_max_leverage = config.get('probe_short_max_leverage', 3) if config else 3
         self._probe_short_max_concurrent = config.get('probe_short_max_concurrent', 1) if config else 1
@@ -2078,6 +2079,60 @@ class MultiJudge(BaseAgent):
 
     # ═══ Unified Open Dispatch ═══
 
+    @staticmethod
+    def _tactical_day_key(ts: float = None) -> str:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc) if ts is None else datetime.fromtimestamp(ts, timezone.utc)
+        return now.date().isoformat()
+
+    def _load_tactical_circuit_state(self) -> dict:
+        import json
+        import os
+
+        try:
+            from utils.state_paths import get_state_paths
+            path = get_state_paths().riskguard_state
+            if not os.path.exists(path):
+                return {}
+            with open(path, 'r') as f:
+                state = json.load(f)
+            tactical = state.get('tactical_circuit') or {}
+            return tactical if isinstance(tactical, dict) else {}
+        except Exception as e:
+            logger = getattr(self, 'logger', None)
+            if logger:
+                logger.warning(f"[Tactical] circuit state read skipped: {e}")
+            return {}
+
+    def _tactical_circuit_reject_reason(self, plan: dict) -> str:
+        plan = plan or {}
+        if plan.get('slot_type') != 'tactical' and plan.get('track') != 'tactical':
+            return ''
+
+        state = self._load_tactical_circuit_state()
+        if not state:
+            return ''
+
+        now = time.time()
+        pause_until = float(state.get('pause_until', 0) or 0)
+        if now < pause_until:
+            return 'tactical_paused'
+
+        today = self._tactical_day_key(now)
+        daily_pnl = (
+            float(state.get('daily_pnl', 0.0) or 0.0)
+            if state.get('daily_date') == today else 0.0
+        )
+        limit = float(getattr(
+            self, '_tactical_daily_loss_limit_usdt',
+            (getattr(self, 'config', {}) or {}).get('tactical_daily_loss_limit_usdt', -10.0),
+        ))
+        if daily_pnl <= limit:
+            return 'tactical_daily_loss_limit'
+
+        return ''
+
     async def _gate_and_publish_open(self, symbol: str, decision: dict, state: dict) -> bool:
         """Unified open dispatch: final slot gate + pending reservation + publish.
 
@@ -2126,6 +2181,20 @@ class MultiJudge(BaseAgent):
                 }, symbol=symbol)
                 return False
         elif slot_type == 'tactical':
+            circuit_reason = self._tactical_circuit_reject_reason(plan)
+            if circuit_reason:
+                gate_attr = self._rejection_attribution(action, plan, circuit_reason)
+                self._record_rejected_plan(symbol, action, plan, 0, 0, circuit_reason, gate_attr)
+                await self.publish("trade_decision", {
+                    "symbol": symbol, "timestamp": time.time(),
+                    "action": "hold", "confidence": 0,
+                    "plan": None, "size_pct": 0,
+                    "reasoning": f"Tactical circuit blocked: {circuit_reason}",
+                    "key_factors": [f"tactical_circuit:{circuit_reason}"],
+                    "risk_warnings": ["tactical_circuit_block"],
+                    "attribution": gate_attr,
+                }, symbol=symbol)
+                return False
             tactical_count = sum(1 for s in occupied if all_slots.get(s) == 'tactical')
             tactical_cap = self._candidate_ranker.tactical_slot if hasattr(self, '_candidate_ranker') else 1
             if tactical_count >= tactical_cap:
