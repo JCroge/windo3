@@ -95,6 +95,27 @@ _EPOCH_FALLBACK = {
     "pseudo_resonance_downweight_enabled": False,    # 真翻转：pseudo-resonance-downweight 新增，纪元前无伪共振降权=off
     "ma_bloc_cap": 50,                               # 防御性 no-op：仅 downweight enabled=True 生效，旧纪元 enabled=False 不影响判定
     "regime_flat_gate_enabled": False,               # 真翻转：choppy-flat-gate 新增，纪元前无 flat-gate=off，replay 忠实还原旧判定（同 ladder_rr_enabled 模式）
+    "main_quality_gate_enabled": False,              # 真翻转：tactical track 引入后才有 main quality gate；旧纪元无该 gate
+    "main_quality_min_provenance": 0.20,             # 防御性 no-op：仅 gate enabled=True 生效，旧纪元 gate=False
+    "main_quality_block_llm_reversal": True,         # 防御性 no-op：仅 gate enabled=True 生效
+    "main_quality_allow_mixed_override": False,      # 防御性 no-op：仅 gate enabled=True 生效
+    "main_quality_require_volume_or_oi": True,       # 防御性 no-op：仅 gate enabled=True 生效
+    "tactical_track_enabled": False,                 # 防御性 no-op：旧纪元无 tactical track
+    "tactical_shadow_only": True,                    # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_max_leverage": 5,                      # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_default_position_pct": 0.70,           # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_very_near_position_pct": 1.00,         # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_stop_cap_r_main": 0.60,                # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_very_near_stop_r_main": 0.40,          # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_tp1_r": 0.60,                          # 真翻转：旧 tactical 纪元 tp1=0.60，后续 live 默认提到 1.00
+    "tactical_cost_coverage_min": 4.0,               # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_min_rr_for_track": 0.75,               # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_min_ev_for_track": -0.04,              # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_max_hold_minutes": 90,                 # 防御性 no-op：仅 tactical track enabled=True 生效
+    "tactical_min_progress_r": 0.15,                 # 防御性 no-op：executor tactical exit 参数，不改 Judge gate
+    "tactical_weakened_no_progress_min_minutes": 30, # 防御性 no-op：executor tactical exit 参数，不改 Judge gate
+    "tactical_weakened_no_progress_max_minutes": 45, # 防御性 no-op：executor tactical exit 参数，不改 Judge gate
+    "tactical_daily_loss_limit_usdt": -10.0,         # 防御性 no-op：仅 tactical slot circuit 生效
 }
 
 # 晚加但不影响 Judge gate 决策的键。守卫测试（CF-T2）消费此集合：snapshot-缺键
@@ -102,6 +123,12 @@ _EPOCH_FALLBACK = {
 _GATE_IRRELEVANT = {
     "rotation_close_held_enabled",       # 轮换平仓开关，不进 Judge 决策
     "position_resync_confirm_ticks",     # executor 仓位同步补录双确认 tick 数，不进 Judge 决策
+    "tactical_loss_streak_pause_count",  # PortfolioRiskGuard 后验 circuit 参数，不进 Judge replay gate
+    "tactical_loss_streak_pause_minutes",# PortfolioRiskGuard 后验 circuit 参数，不进 Judge replay gate
+    "tactical_quality_window_trades",    # PortfolioRiskGuard 后验质量窗口，不进 Judge replay gate
+    "tactical_success_window_trades",    # 上 live 样本门槛/观测指标，不进 Judge replay gate
+    "tactical_success_min_win_rate",     # 上 live 样本门槛/观测指标，不进 Judge replay gate
+    "tactical_success_min_profit_factor",# 上 live 样本门槛/观测指标，不进 Judge replay gate
 }
 
 
