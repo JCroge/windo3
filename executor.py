@@ -428,6 +428,28 @@ class ContractExecutor:
             self.logger.warning(f"[SL Resolve] {symbol} 查询 algo 失败: {e}")
             return None
 
+    def _verify_attached_sl_after_fill(self, symbol: str, clord_id: str,
+                                       *, attempts: int = 3,
+                                       sleep_sec: float = 0.5) -> Optional[str]:
+        if not clord_id:
+            return None
+        attempts = max(1, int(attempts or 1))
+        for idx in range(attempts):
+            algo_id = self._resolve_attached_sl_algo_id(symbol, clord_id)
+            if algo_id:
+                return algo_id
+
+            for algo in self._list_pending_algos(symbol):
+                if algo.get("algoClOrdId") != clord_id:
+                    continue
+                has_sl = algo.get("sl_trigger") not in (None, "", "0")
+                if algo.get("algoId") and has_sl:
+                    return algo.get("algoId")
+
+            if idx < attempts - 1 and sleep_sec > 0:
+                time.sleep(sleep_sec)
+        return None
+
     def _list_pending_algos(self, symbol: str) -> list:
         """列出 OKX 指定 symbol 的 pending algo orders。
 
@@ -2448,7 +2470,7 @@ class ContractExecutor:
             protection_state_resolved = 'unprotected'
             if self.exchange_id == 'okx' and sl_clord_id and stop_loss:
                 try:
-                    sl_algo_id_resolved = self._resolve_attached_sl_algo_id(
+                    sl_algo_id_resolved = self._verify_attached_sl_after_fill(
                         symbol, sl_clord_id,
                     )
                 except Exception as e:
@@ -2527,7 +2549,7 @@ class ContractExecutor:
         共用,但仅 OKX 路径会真正把 attachAlgoOrds 加进 create_order 参数;
         reduceOnly/posSide 仍由 _build_open_order_params 决定。
 
-        sl_clord_id 透传到 attach 字段,成交后由 _resolve_attached_sl_algo_id()
+        sl_clord_id 透传到 attach 字段,成交后由 _verify_attached_sl_after_fill()
         匹配并填充 position['sl_algo_id']。
         """
         attach = self._build_okx_attach_algo(stop_loss, take_profit, clord_id=sl_clord_id)

@@ -673,6 +673,55 @@ class TestProtectionFailureFlow:
         ex.exchange.create_order.assert_not_called()
 
 
+class TestAttachedSlVerification:
+    def test_attached_sl_second_attempt_marks_protected_without_halt(self):
+        ex = _make_executor()
+        ex.exchange_id = "okx"
+        ex.testnet = False
+        ex._halt_symbol = MagicMock()
+        ex._resolve_attached_sl_algo_id = MagicMock(side_effect=[None, "algo-1"])
+        ex._list_pending_algos = MagicMock(return_value=[])
+
+        algo_id = ex._verify_attached_sl_after_fill(
+            "BTC-USDT-SWAP", "clord-1", attempts=2, sleep_sec=0
+        )
+
+        assert algo_id == "algo-1"
+        ex._halt_symbol.assert_not_called()
+
+    def test_attached_sl_fallback_matches_pending_algo(self):
+        ex = _make_executor()
+        ex.exchange_id = "okx"
+        ex.testnet = False
+        ex._resolve_attached_sl_algo_id = MagicMock(return_value=None)
+        ex._list_pending_algos = MagicMock(return_value=[{
+            "algoId": "algo-2",
+            "algoClOrdId": "clord-2",
+            "sl_trigger": "101.5",
+            "tp_trigger": "",
+        }])
+
+        algo_id = ex._verify_attached_sl_after_fill(
+            "BTC-USDT-SWAP", "clord-2", attempts=1, sleep_sec=0
+        )
+
+        assert algo_id == "algo-2"
+
+    def test_attached_sl_missing_after_attempts_returns_none(self):
+        ex = _make_executor()
+        ex.exchange_id = "okx"
+        ex.testnet = False
+        ex._resolve_attached_sl_algo_id = MagicMock(return_value=None)
+        ex._list_pending_algos = MagicMock(return_value=[])
+
+        algo_id = ex._verify_attached_sl_after_fill(
+            "BTC-USDT-SWAP", "clord-missing", attempts=2, sleep_sec=0
+        )
+
+        assert algo_id is None
+        assert ex._resolve_attached_sl_algo_id.call_count == 2
+
+
 class TestAlgoMigration:
     """AC-A7: 启动期/sync 时存量 OKX algo 迁移到 single-owner。"""
 
@@ -980,5 +1029,4 @@ class TestAddPositionTpInvariant:
         levels = pos['take_profit_levels']
         assert abs((levels[0] - new_entry) / new_entry - 0.10) < 1e-9
         assert abs((levels[1] - new_entry) / new_entry - 0.20) < 1e-9
-
 
