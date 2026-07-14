@@ -27,7 +27,9 @@
 
 **2026-07-10 `add-tactical-exit-track` 归档**：围绕 WLD 式弱/混合环境落袋诉求，把 Main Trend Runner 与 Tactical Exit Track 分轨；Tactical 默认 disabled + shadow-only，使用独立 R:R/EV/TP1/cost gate、thesis-health、max-hold、独立风控桶和分桶元数据。验证：Tactical suite 21 passed，邻近回归 118 passed / 3 warnings，OpenSpec strict PASS。
 
-**下一阶段**：**核心认知刷新：edge 在趋势单（80% 方向对/+16.9%），choppy/mixed/neutral 无方向（0-15%）；形态路线已证伪、入场门旋钮非杠杆——真改善须回策略上游（信号/时机/体制）。** Tactical 已提供机械化落袋轨道，但默认 shadow-only；扩容前仍需证明自主机械 edge 与 Tactical 分桶净增量。live 扩容仍 CONDITIONAL GO（`BOT_INSTANCE_ID` 写 systemd + TG 命令链验收）。cf_choppy 日更 cron 续攒 n≥30；lever1 阻塞于 0 shadow_opens。
+**2026-07-15 `protective-sl-halt-recovery` 归档**：Tactical live WLD 事件暴露 OKX attached SL 回查延迟导致全局保护单 halt 残留。已补 bounded attached-SL verification、allowlist exact-match 自愈、multi-halt repoint、`/status` 全局/per-symbol/Tactical circuit 分行。全量验证 `1543 passed, 4 deselected, 1 warning`；云服 HEAD `a5396aa`，Tactical live 灰度配置为 track=true、shadow_only=false、RR=0.75、EV=-0.04，当前 `halted=false`、`can_open_new=true`、Tactical circuit 未暂停。
+
+**下一阶段**：**核心认知刷新：edge 在趋势单（80% 方向对/+16.9%），choppy/mixed/neutral 无方向（0-15%）；形态路线已证伪、入场门旋钮非杠杆——真改善须回策略上游（信号/时机/体制）。** Tactical 已进入小额 live 灰度，下一步是继续累计 live Tactical 分桶样本并只按 final PnL 判断是否正收益；live 扩容仍 CONDITIONAL GO（`BOT_INSTANCE_ID` 写 systemd + TG 命令链验收）。cf_choppy 日更 cron 续攒 n≥30；lever1 阻塞于 0 shadow_opens。
 
 ## 重大决策：放弃套利策略（2026-05-06）
 
@@ -142,6 +144,7 @@ RegimeManager（bullish/bearish/mixed/choppy + 2 次确认 + 30min min_hold）�
 | Tactical Exit Track | 2026-07-10 | Main 与 Tactical 出口分轨；Tactical 独立 stop/TP1/R:R/EV/cost gate、local lifecycle、risk governor、Reviewer/CF metadata，默认 disabled + shadow-only | 21 tactical tests + 118 adjacent regression | `openspec/changes/archive/2026-07-10-add-tactical-exit-track/` |
 | Tactical shadow-only live observation | 2026-07-11 | 云服打开 `TACTICAL_TRACK_ENABLED=true` + `TACTICAL_SHADOW_ONLY=true` + `TACTICAL_TP1_R=1.00` 跑 24h；shadow-only 通过 `_apply_tactical_shadow_profile` 写 true Tactical counterfactual 到 `rejected_signal_*`，ledger 支持 `shadow_tactical_max_hold`，不真开 Tactical | 32 tactical/counterfactual tests | `docs/runbook.md#tactical-exit-track` |
 | Tactical threshold-gated observation | 2026-07-12 | 按 24h ledger 回放收紧 shadow 样本：`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`；成本门过但 RR/EV 阈值门失败的样本保留 `exit_profile=tactical_v1` 做 max-hold counterfactual，但不算 true-open Tactical | 32 tactical/counterfactual tests | `docs/runbook.md#tactical-exit-track` |
+| Protective SL Halt Recovery | 2026-07-15 | OKX attached SL 有界验证；`okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl` 保护单 halt 在风险消失后 exact-match 自愈；multi-halt unresolved symbol 会保持全局 halt 并 repoint；`/status` 分开显示全局 halt、per-symbol halt、Tactical circuit | `1543 passed, 4 deselected, 1 warning` | `openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/` + `docs/superpowers/reports/2026-07-14-protective-sl-halt-recovery-verify.md` |
 
 ## 技术债务
 

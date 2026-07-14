@@ -1,14 +1,15 @@
 # To-Do List
 
-更新日期：2026-07-12
-当前基线：已记录完整基线 `1490 passed`（2026-07-07）；Tactical Exit Track 变更验证（2026-07-10）为 Tactical suite `21 passed`、邻近回归 `118 passed / 3 warnings`、OpenSpec strict PASS；Tactical shadow-only 与阈值门修正验证（2026-07-12）为 32 passed。
+更新日期：2026-07-15
+当前基线：`1543 passed, 4 deselected, 1 warning`（2026-07-15，`protective-sl-halt-recovery` 归档）。
 
 > **基线与逐 change 历史以 `CLAUDE.md` 顶部「当前事实」段为权威单一来源**，完整逐基线里程碑见 `docs/handoff.md`。本文件不再内联复制 change changelog（曾累积漂移至 1338，已于 2026-06-26 收口），只维护**当前阻断项、Go/No-Go、后续 P2 优化**。
 
-**当前关键运营状态（2026-07-12）**：
-- 云服 Tactical 仍为 shadow-only：`TACTICAL_TRACK_ENABLED=true`、`TACTICAL_SHADOW_ONLY=true`、`TACTICAL_TP1_R=1.00`、`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`。live Tactical 仍不真下单；复盘 true-open 样本以 `data/rejected_signal_events.jsonl` / `data/rejected_signal_lifecycle.json` 里的 `track=tactical`、`exit_profile=tactical_v1`、`tactical_cost_gate=pass`、`tactical_track_gate=pass` 记录为准。
+**当前关键运营状态（2026-07-15）**：
+- 云服 Tactical 已进入小额 live 灰度：`TACTICAL_TRACK_ENABLED=true`、`TACTICAL_SHADOW_ONLY=false`、`TACTICAL_TP1_R=1.00`、`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`。live Tactical 收益按 LiveLedger / Reviewer final PnL 统计；`rejected_signal_*` 只用于被拒/影子候选复盘。
+- 云服运行状态核对：全局 `halted=false`、`can_open_new=true`、`reconciliation_result=matched`；per-symbol halt 为空；Tactical circuit 未暂停，`daily_pnl=-2.6721`、`loss_streak=1`。WLD 旧 `halt_state.reason` 已按 stale metadata 清理，不代表 active halt。
 - 核心认知：**edge 在趋势单本身，非入场门**；入场门旋钮已近调参极限，方向质量改善须等趋势行情 + 攒够后门开仓样本才能实盘验证。
-- 后续可选（非阻塞）：Tactical 先做 shadow/replay 分桶证明；`cf-neutral-momentum-rescue-ab` 结论 suggestive，待 A 桶样本 n≥30 重判是否放宽 path_evidence 阀门；`cf-choppy-neutral-tp1-floor-ab` 周更 cron 累积中。
+- 后续可选（非阻塞）：Tactical 继续攒 live 分桶样本；`cf-neutral-momentum-rescue-ab` 结论 suggestive，待 A 桶样本 n≥30 重判是否放宽 path_evidence 阀门；`cf-choppy-neutral-tp1-floor-ab` 周更 cron 累积中。
 
 > **2026-06-15 反事实实验室兑现 → 发现空转根因并修复（`decision-tape-capture-fix`，基线 1223→1234，comet 归档入 main）**：用真实磁带跑 L2 终验 + L4 方向推荐时全程空转（L2 fidelity=1.0 虚高、L4 delta=0），根因是 Judge 录制点把 `tech_analysis`/`llm_output` 写死为空致全部磁带不可回放。已修复为经专属侧信道 `_symbol_llm_cache` + `_symbol_tech_tape_cache` 捕获真实输入（schema v2，`replayable` 收紧为有快照且 tech 非空，observability-only），OS 重启后实测生产生效（新磁带 v2/tech 非空/llm 有）。旧磁带永久不可回放。**2026-06-16 新磁带累积后重跑 → 又揪出三层隐藏 bug 并连修（见下行 #1 与基线说明）**，实验室端到端 baseline_fidelity 终达 0.944 首次可信。维持 choppy R:R 地板 1.50 不动（实验室可信结论佐证：放宽地板非高价值杠杆）。
 
@@ -25,6 +26,8 @@
 - `docs/superpowers/specs/2026-06-05-short-main-path-risk-guard-parity-design.md`
 - `docs/superpowers/reports/2026-06-05-short-main-path-risk-guard-parity-verify.md`
 - `openspec/changes/archive/2026-07-10-add-tactical-exit-track/`
+- `openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/`
+- `docs/superpowers/reports/2026-07-14-protective-sl-halt-recovery-verify.md`
 - `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go
@@ -75,6 +78,7 @@
 
 | 状态 | 事项 | 下一步 | 验收标准 |
 |---|---|---|---|
+| DONE 2026-07-15 | Protective SL Halt Recovery | OKX attached SL 有界验证；allowlist 保护单 halt 在风险消失后 exact-match 自愈；multi-halt unresolved symbol 保持全局 halt；`/status` 分开显示全局/per-symbol/Tactical circuit | `1543 passed, 4 deselected, 1 warning`；云服 `halted=false` / `can_open_new=true` / Tactical circuit 未暂停 |
 | DONE 2026-06-07 | 研究层低流动性硬过滤器（BABY-USDT 事件根因） | `agents/research/market_scanner.py` 新增 `_apply_liquidity_hard_filter` / `_liquidity_rejection_reason`，enrichment 后、发布 `research_market_data` 前按 `volume_24h >= research_min_volume_24h_usdt`(默认 50M) + `open_interest_usd >= research_min_open_interest_usd`(默认 10M) 双门槛硬过滤，缺 OI fail-closed 剔除；payload 带 `liquidity_filter` summary，degraded `last_good` 兜底带 summary；`utils/config_loader.py` 加 DEFAULTS/HARD_LIMITS + `RESEARCH_MIN_VOLUME_24H_USDT`/`RESEARCH_MIN_OPEN_INTEREST_USD` env 覆盖 | `test_research_market_scanner_failover.py` 8 case PASS（含 liquidity 专项 2 case）；OpenSpec change `2026-06-07-research-liquidity-hard-filter` + master spec `research-liquidity-filter` 已归档；verify 报告 `docs/superpowers/reports/2026-06-07-research-liquidity-hard-filter-verify.md`（2026-06-10 事后补流程闭环，代码 2026-06-07 commit 2047187 已上线） |
 | DONE 2026-05-28 | 保护单 owner 收敛（P0 FR-001/FR-002） | EarlyReview 收敛到 `ContractExecutor.move_protective_sl`；`_replace_protective_sl` cancel/place fail-closed；live OKX 失败 halt | `test_protective_sl_owner.py` 11 case + `test_partial_tp_lifecycle.py::TestProtectiveSlSingleEntry` PASS；AC-P0-001 至 AC-P0-006 通过 |
 | DONE 2026-05-28 | Agent close path 不直接撤保护单（P0 FR-003） | trade_decision close / risk_alert / close_all / local_stop 全部走 `close_position()`；新增 `_cleanup_protective_orders_on_close` sweep + `protective_cleanup_state` 字段 | `test_judge_close_cause.py::TestCloseDoesNotDirectlyCancel` 6 case + 静态扫描 `rg cancel_order\( agents/trading/executor.py` 仅剩 helper 与 sweep 引用；AC-P0-007 至 AC-P0-011 通过 |
