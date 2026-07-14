@@ -454,3 +454,65 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
         assert "全局熔断: 否" in text
         assert "Tactical circuit: 是" in text
         assert "loss_streak" in text
+
+    @pytest.mark.asyncio
+    async def test_missing_tactical_circuit_reports_unknown(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+        from utils.state_paths import reset_state_paths
+        import utils.halt_state as hs_mod
+        reset_state_paths()
+        hs_mod._instance = None
+        monkeypatch.chdir(tmp_path)
+        self._write_status_files(
+            tmp_path,
+            {"halted": False, "reason": ""},
+            {},
+        )
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+
+        await n._cmd_status()
+
+        text = "\n".join(sent)
+        assert "Tactical circuit: ?" in text
+
+    @pytest.mark.asyncio
+    async def test_malformed_tactical_circuit_reports_unknown(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+        from utils.state_paths import reset_state_paths
+        import utils.halt_state as hs_mod
+        reset_state_paths()
+        hs_mod._instance = None
+        monkeypatch.chdir(tmp_path)
+        self._write_status_files(
+            tmp_path,
+            {"halted": False, "reason": ""},
+            {
+                "tactical_circuit": {
+                    "daily_pnl": -12.0,
+                    "loss_streak": 3,
+                    "pause_until": "not-a-number",
+                    "pause_reason": "loss_streak",
+                }
+            },
+        )
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+
+        try:
+            await n._cmd_status()
+        except Exception as exc:
+            pytest.fail(f"/status should not crash on malformed tactical state: {exc!r}")
+
+        text = "\n".join(sent)
+        assert "Tactical circuit: ?" in text

@@ -826,18 +826,25 @@ class TelegramNotifier(BaseAgent):
         try:
             with open(_riskguard_path(), "r") as f:
                 state = json.load(f)
-            return (state.get("tactical_circuit") or {})
+            tactical = state.get("tactical_circuit") if isinstance(state, dict) else None
+            if not isinstance(tactical, dict):
+                return None
+            return tactical
         except Exception:
             return None
 
     def _format_tactical_circuit_line(self, tactical):
-        if tactical is None:
+        if tactical is None or not isinstance(tactical, dict):
             return "Tactical circuit: ?"
+        try:
+            pause_until = float(tactical.get("pause_until") or 0)
+            daily_pnl = float(tactical.get("daily_pnl") or 0.0)
+            loss_streak = int(tactical.get("loss_streak") or 0)
+        except (TypeError, ValueError):
+            return "Tactical circuit: ?"
+
         now = time.time()
-        pause_until = float(tactical.get("pause_until") or 0)
         reason = tactical.get("pause_reason") or ""
-        daily_pnl = float(tactical.get("daily_pnl") or 0.0)
-        loss_streak = int(tactical.get("loss_streak") or 0)
         if pause_until > now:
             until = time.strftime("%H:%M", time.localtime(pause_until))
             return (
