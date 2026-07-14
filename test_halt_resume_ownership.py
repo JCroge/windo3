@@ -181,3 +181,34 @@ class TestReconcilerBlockingAdvisory:
         assert len(result['advisory_issues']) == 1
         assert result['advisory_issues'][0]['type'] == 'paper_live_mismatch'
         assert len(result['blocking_issues']) == 0
+
+
+class TestHaltStateAutoClear:
+    def test_auto_clear_if_reason_exact_match(self, clean_halt_state):
+        state = HaltState()
+        state.halt("okx_sl_algo_unresolved:WLD-USDT-SWAP", "executor")
+
+        cleared = state.auto_clear_if_reason(
+            "okx_sl_algo_unresolved:WLD-USDT-SWAP",
+            cleared_by="self_heal:protection_resolved",
+        )
+
+        assert cleared is True
+        assert state.halted is False
+        assert state.can_open_new is True
+        assert state.resume_by == "self_heal:protection_resolved"
+        assert state.reconciliation_result == "auto_protection_resolved"
+
+    def test_auto_clear_if_reason_mismatch_keeps_halt(self, clean_halt_state):
+        state = HaltState()
+        state.halt("manual", "telegram")
+
+        cleared = state.auto_clear_if_reason(
+            "okx_sl_algo_unresolved:WLD-USDT-SWAP",
+            cleared_by="self_heal:protection_resolved",
+        )
+
+        assert cleared is False
+        assert state.halted is True
+        assert state.reason == "manual"
+        assert state.can_open_new is False
