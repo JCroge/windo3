@@ -680,6 +680,14 @@ class ContractExecutor:
                     f"{position.get('sl_algo_id')} @ {target_sl}"
                 )
                 self._save_positions()
+                halt_info = getattr(self, "_halted_symbols", {}).get(symbol)
+                halt_reason = (halt_info or {}).get("reason", "")
+                if halt_reason:
+                    self._maybe_auto_clear_protection_halt(
+                        symbol,
+                        halt_reason,
+                        source="self_heal:protection_resolved",
+                    )
             else:
                 # _replace_protective_sl 失败时已 halt + 写 protection_state
                 summary['halted'] = True
