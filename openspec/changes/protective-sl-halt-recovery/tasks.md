@@ -20,4 +20,4 @@
 
 - [x] 4.1 Run focused executor and Telegram status tests.
 - [x] 4.2 Run the project test suite or the agreed equivalent verification subset.
-- [ ] 4.3 Sync to cloud only after local verification and restart/validate cloud status output.
+- [x] 4.3 Sync to cloud only after local verification and restart/validate cloud status output.
