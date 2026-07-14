@@ -358,3 +358,99 @@ class TestStatusEnhancement:
         assert "运行" in text
         # health 行降级
         assert "缺失" in text or "?" in text
+
+
+class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
+    def _write_status_files(self, tmp_path, halt_state, riskguard_state, health=None):
+        os.makedirs(tmp_path / "data", exist_ok=True)
+        with open(tmp_path / "data/testnet_positions.json", "w") as f:
+            json.dump({}, f)
+        with open(tmp_path / "data/testnet_halt_state.json", "w") as f:
+            json.dump(halt_state, f)
+        with open(tmp_path / "data/testnet_riskguard_state.json", "w") as f:
+            json.dump(riskguard_state, f)
+        with open(tmp_path / "data/testnet_agent_health.json", "w") as f:
+            json.dump(health or {
+                "agents_registered": 17,
+                "tasks_alive": 17,
+                "tasks_failed": 0,
+                "halted_symbols": {},
+                "bus_dlq_size": 0,
+            }, f)
+
+    @pytest.mark.asyncio
+    async def test_global_protection_halt_tactical_not_paused(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+        from utils.state_paths import reset_state_paths
+        import utils.halt_state as hs_mod
+        reset_state_paths()
+        hs_mod._instance = None
+        monkeypatch.chdir(tmp_path)
+        self._write_status_files(
+            tmp_path,
+            {
+                "halted": True,
+                "reason": "okx_sl_algo_unresolved:WLD-USDT-SWAP",
+                "reconciliation_pending": False,
+                "reconciliation_result": None,
+            },
+            {
+                "tactical_circuit": {
+                    "daily_pnl": -2.6721,
+                    "loss_streak": 1,
+                    "pause_until": 0,
+                    "pause_reason": "",
+                }
+            },
+            health={"halted_symbols": {"WLD-USDT-SWAP": {"reason": "sl_algo_unresolved"}}},
+        )
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+
+        await n._cmd_status()
+
+        text = "\n".join(sent)
+        assert "全局熔断: 是" in text
+        assert "okx_sl_algo_unresolved:WLD-USDT-SWAP" in text
+        assert "Per-symbol halt: 1" in text
+        assert "Tactical circuit: 否" in text
+
+    @pytest.mark.asyncio
+    async def test_tactical_paused_global_clear(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+        from utils.state_paths import reset_state_paths
+        import utils.halt_state as hs_mod
+        reset_state_paths()
+        hs_mod._instance = None
+        monkeypatch.chdir(tmp_path)
+        self._write_status_files(
+            tmp_path,
+            {"halted": False, "reason": ""},
+            {
+                "tactical_circuit": {
+                    "daily_pnl": -12.0,
+                    "loss_streak": 3,
+                    "pause_until": time.time() + 3600,
+                    "pause_reason": "loss_streak",
+                }
+            },
+        )
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+
+        await n._cmd_status()
+
+        text = "\n".join(sent)
+        assert "全局熔断: 否" in text
+        assert "Tactical circuit: 是" in text
+        assert "loss_streak" in text
