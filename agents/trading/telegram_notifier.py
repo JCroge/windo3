@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import time
 import datetime
@@ -839,14 +840,21 @@ class TelegramNotifier(BaseAgent):
         try:
             pause_until = float(tactical.get("pause_until") or 0)
             daily_pnl = float(tactical.get("daily_pnl") or 0.0)
-            loss_streak = int(tactical.get("loss_streak") or 0)
-        except (TypeError, ValueError):
+            loss_streak_value = tactical.get("loss_streak") or 0
+            loss_streak_float = float(loss_streak_value)
+            if not all(math.isfinite(v) for v in (pause_until, daily_pnl, loss_streak_float)):
+                return "Tactical circuit: ?"
+            loss_streak = int(loss_streak_value)
+        except (TypeError, ValueError, OverflowError):
             return "Tactical circuit: ?"
 
         now = time.time()
         reason = tactical.get("pause_reason") or ""
         if pause_until > now:
-            until = time.strftime("%H:%M", time.localtime(pause_until))
+            try:
+                until = time.strftime("%H:%M", time.localtime(pause_until))
+            except (OverflowError, OSError, ValueError):
+                return "Tactical circuit: ?"
             return (
                 f"Tactical circuit: 是 ({reason or 'paused'}, until {until}, "
                 f"daily_pnl={daily_pnl:+.2f}, loss_streak={loss_streak})"

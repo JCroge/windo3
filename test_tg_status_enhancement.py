@@ -516,3 +516,72 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
 
         text = "\n".join(sent)
         assert "Tactical circuit: ?" in text
+
+    async def _assert_tactical_state_reports_unknown(self, tmp_path, monkeypatch, tactical_state):
+        monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+        from utils.state_paths import reset_state_paths
+        import utils.halt_state as hs_mod
+        reset_state_paths()
+        hs_mod._instance = None
+        monkeypatch.chdir(tmp_path)
+        self._write_status_files(
+            tmp_path,
+            {"halted": False, "reason": ""},
+            {"tactical_circuit": tactical_state},
+        )
+        n = self._make_notifier()
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        n._send_message = fake_send
+
+        try:
+            await n._cmd_status()
+        except Exception as exc:
+            pytest.fail(f"/status should not crash on invalid tactical state: {exc!r}")
+
+        text = "\n".join(sent)
+        assert "Tactical circuit: ?" in text
+        return text
+
+    @pytest.mark.asyncio
+    async def test_infinite_pause_until_reports_unknown(self, tmp_path, monkeypatch):
+        await self._assert_tactical_state_reports_unknown(
+            tmp_path,
+            monkeypatch,
+            {
+                "daily_pnl": -12.0,
+                "loss_streak": 3,
+                "pause_until": float("inf"),
+                "pause_reason": "loss_streak",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_pause_until_reports_unknown(self, tmp_path, monkeypatch):
+        await self._assert_tactical_state_reports_unknown(
+            tmp_path,
+            monkeypatch,
+            {
+                "daily_pnl": -12.0,
+                "loss_streak": 3,
+                "pause_until": 1e100,
+                "pause_reason": "loss_streak",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_nan_daily_pnl_reports_unknown(self, tmp_path, monkeypatch):
+        text = await self._assert_tactical_state_reports_unknown(
+            tmp_path,
+            monkeypatch,
+            {
+                "daily_pnl": float("nan"),
+                "loss_streak": 3,
+                "pause_until": 0,
+                "pause_reason": "",
+            },
+        )
+        assert "nan" not in text.lower()
