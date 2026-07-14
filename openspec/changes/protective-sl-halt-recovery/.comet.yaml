@@ -1,7 +1,7 @@
 workflow: full
 phase: build
-build_mode: null
-isolation: null
+build_mode: subagent-driven-development
+isolation: branch
 verify_mode: null
 base_ref: 35671ae7af2806abddc2700b01d07f778103f4ed
 design_doc: docs/superpowers/specs/2026-07-14-protective-sl-halt-recovery-design.md
