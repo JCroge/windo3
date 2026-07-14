@@ -1053,20 +1053,52 @@ class ContractExecutor:
     def _global_halt_reason_for(self, symbol: str, reason: str) -> str:
         return f"okx_{reason}:{symbol}"
 
+    def _position_protection_unresolved(self, position: Optional[dict]) -> bool:
+        if not position:
+            return False
+        return (position.get("protection_state") or "unknown") != "protected"
+
+    def _find_other_unresolved_protection_halt(self, symbol: str) -> Optional[tuple]:
+        halted = getattr(self, "_halted_symbols", {}) or {}
+        for other_symbol, info in sorted(halted.items()):
+            if other_symbol == symbol:
+                continue
+            reason = (info or {}).get("reason", "")
+            if not self._is_protection_halt_reason(reason):
+                continue
+            if self._position_protection_unresolved(self.positions.get(other_symbol)):
+                return other_symbol, reason
+        return None
+
     def _maybe_auto_clear_protection_halt(
         self, symbol: str, reason: str, *, source: str
     ) -> bool:
         if not self._is_protection_halt_reason(reason):
             return False
         pos = self.positions.get(symbol)
-        if pos and pos.get("protection_state") in {"unknown", "pending"}:
+        if self._position_protection_unresolved(pos):
             return False
         try:
             from utils.halt_state import get_halt_state
             expected = self._global_halt_reason_for(symbol, reason)
-            cleared = get_halt_state().auto_clear_if_reason(
-                expected, cleared_by=source
-            )
+            halt_state = get_halt_state()
+            other = self._find_other_unresolved_protection_halt(symbol)
+            if other:
+                other_symbol, other_reason = other
+                if not halt_state.halted or halt_state.reason != expected:
+                    return False
+                halt_state.halt(
+                    reason=self._global_halt_reason_for(other_symbol, other_reason),
+                    triggered_by=source,
+                )
+                self.clear_symbol_halt(symbol, source=source)
+                self.logger.info(
+                    f"[SelfHeal] {symbol} protection halt cleared locally; "
+                    f"global halt remains for {other_symbol} "
+                    f"(reason={other_reason}, source={source})"
+                )
+                return False
+            cleared = halt_state.auto_clear_if_reason(expected, cleared_by=source)
         except Exception as e:
             self.logger.warning(
                 f"[SelfHeal] {symbol} protection halt auto-clear failed: {e}"
