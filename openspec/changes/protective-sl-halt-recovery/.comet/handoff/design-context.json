@@ -1,0 +1,15 @@
+{
+  "change": "protective-sl-halt-recovery",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "40576741fa366c19903fee36674523b406293cece22fab15fd088ae786fc4811",
+  "files": [
+    { "path": "openspec/changes/protective-sl-halt-recovery/proposal.md", "sha256": "b48aca365dabaac217f49b2f282ab046376feae36af73bcca7129513da65d183" },
+    { "path": "openspec/changes/protective-sl-halt-recovery/design.md", "sha256": "438440b04663a8e557762e3cd190bc7c427fe0f75e6cce9354e160d5cbe93422" },
+    { "path": "openspec/changes/protective-sl-halt-recovery/tasks.md", "sha256": "cb75a9bf3b09b589865dbf61478e29a03fb0717b4e2fc1b1d89f7fc540d9f364" },
+    { "path": "openspec/changes/protective-sl-halt-recovery/specs/position-sync-resilience/spec.md", "sha256": "07dabd7590ceb75cdb4f5bee877e11c1b43241d6e10c40e2766c3e927f0a07cb" },
+    { "path": "openspec/changes/protective-sl-halt-recovery/specs/tg-status-enhancement/spec.md", "sha256": "c721fb70d498190fbe384dfc289c939b75654f5e1faf1999deb65c1eff467b82" }
+  ]
+}
