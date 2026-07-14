@@ -3341,6 +3341,11 @@ class MultiJudge(BaseAgent):
         return profiled
 
     @staticmethod
+    def _is_live_tactical_plan(plan: dict) -> bool:
+        plan = plan or {}
+        return plan.get('track') == 'tactical' or plan.get('slot_type') == 'tactical'
+
+    @staticmethod
     def _coalesce_float(*vals, default: float) -> float:
         """Return first non-None value as float; only an absent (None) value
         falls back to default. Unlike `a or b or default`, a present 0.0 is
@@ -3380,6 +3385,15 @@ class MultiJudge(BaseAgent):
             }
 
         # Step 1: Not applicable cases — pass immediately
+        if self._is_live_tactical_plan(plan):
+            return {
+                "allowed": True,
+                "decision": "pass",
+                "reason": "",
+                "llm_short_reversal_risk": False,
+                "short_gate_version": "tactical_bypass_main_short_gate_v1",
+                "metrics": {},
+            }
         if not self._short_regime_guard_enabled or 'long' in action or plan.get('is_probe'):
             return {
                 "allowed": True,
@@ -3585,6 +3599,9 @@ class MultiJudge(BaseAgent):
             'pre_12h_return_pct': round(pre_move, 4),
             'prev_daily_return_pct': round(prev_daily, 4),
         }
+
+        if self._is_live_tactical_plan(plan):
+            return result
 
         # Long overheat guard
         if (is_long and self._long_live_position_guard_enabled

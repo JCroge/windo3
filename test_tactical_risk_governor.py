@@ -8,6 +8,7 @@ def make_guard():
     guard.logger = MagicMock()
     guard._positions = {}
     guard._tactical_daily_pnl = 0.0
+    guard._tactical_daily_date = guard._tactical_day_key()
     guard._tactical_loss_streak = 0
     guard._tactical_pause_until = 0
     guard._tactical_daily_loss_limit_usdt = -10.0

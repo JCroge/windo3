@@ -83,6 +83,40 @@ def base_plan():
     }
 
 
+def enable_main_short_guards(judge):
+    judge._short_regime_guard_enabled = True
+    judge._short_live_min_score = 55
+    judge._short_live_min_rsi = 40
+    judge._short_live_min_range_pos = 0.45
+    judge._short_live_require_daily_bearish = True
+    judge._short_live_min_htf_votes = 2
+    judge._short_live_max_pre_move = -0.01
+    judge._long_live_position_guard_enabled = True
+    judge._long_live_max_range_pos = 0.82
+    judge._long_live_daily_gain_range_pos = 0.75
+    judge._long_live_max_pre_move = 0.08
+    judge._long_live_max_daily_gain = 0.12
+    judge._long_live_pullback_min_pct = 0.005
+    judge._long_live_regime_aware_range_enabled = True
+    judge._long_live_max_range_pos_choppy = 0.55
+    judge._long_live_daily_gain_range_pos_choppy = 0.50
+
+
+def low_range_short_tech():
+    tech = strong_short_tech()
+    tech["short_context"] = {
+        "position_in_24h_range": 0.0814,
+        "pre_12h_return_pct": -0.0112,
+    }
+    tech["entry_context"] = {
+        "position_in_24h_range": 0.0814,
+        "pre_12h_return_pct": -0.0112,
+        "prev_daily_return_pct": -0.0099,
+    }
+    tech["indicators"] = {"rsi": 55, "price": 1.0}
+    return tech
+
+
 def test_clean_aligned_candidate_stays_main():
     judge = make_judge()
     llm = {"risk_warnings": [], "reasoning": ""}
@@ -116,6 +150,37 @@ def test_wld_like_aligned_but_weak_candidate_is_not_main():
     assert decision["track"] == "tactical"
     assert decision["track"] != "main"
     assert "main_quality" in decision["reason"]
+
+
+def test_tactical_short_that_passed_tactical_gate_bypasses_main_range_guards():
+    judge = make_judge()
+    enable_main_short_guards(judge)
+    tech = low_range_short_tech()
+
+    main_gate = judge._classify_short_entry_risk(
+        "XRP-USDT", "open_short", base_plan(), tech, -70, llm_result={}
+    )
+    assert main_gate["reason"] == "range_position_too_low"
+
+    tactical_plan = base_plan()
+    tactical_plan["size_usdt"] = 8.57
+    tactical_plan = judge._apply_tactical_profile(tactical_plan, tech, {
+        "track": "tactical",
+        "exit_profile": "tactical_v1",
+        "reason": "main_quality_failed:weak_volume_oi",
+    })
+    assert tactical_plan["track"] == "tactical"
+    assert tactical_plan["tactical_track_gate"] == "pass"
+
+    tactical_short_gate = judge._classify_short_entry_risk(
+        "XRP-USDT", "open_short", tactical_plan, tech, -70, llm_result={}
+    )
+    tactical_position_gate = judge._check_entry_position_policy(
+        "XRP-USDT", "open_short", tactical_plan, tech, -70, context="main"
+    )
+
+    assert tactical_short_gate["allowed"] is True
+    assert tactical_position_gate["allowed"] is True
 
 
 def test_15m_opposing_block_is_hard_veto_not_tactical():
