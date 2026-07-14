@@ -40,6 +40,7 @@ class DriftDecision:
 
 # OKX 拒单错误码：与持仓状态相关，必须做交易所状态复核
 OKX_POSITION_REJECT_CODES = ('51169', '51205', '51112', '51333')
+PROTECTION_HALT_REASONS = {"sl_algo_unresolved", "migrate_missing_sl"}
 
 
 def _is_okx_position_reject(err_msg: str) -> bool:
@@ -750,6 +751,12 @@ class ContractExecutor:
             pass
         summary['matched_sl'] = algo['algoId']
         self._save_positions()
+        halt_info = getattr(self, "_halted_symbols", {}).get(symbol)
+        halt_reason = (halt_info or {}).get("reason", "")
+        if halt_reason:
+            self._maybe_auto_clear_protection_halt(
+                symbol, halt_reason, source="self_heal:protection_resolved"
+            )
         self.logger.info(
             f"[Migrate] {symbol} SL algo {algo['algoId']} 归属本地仓位,"
             f"protection_state=protected"
@@ -1031,6 +1038,40 @@ class ContractExecutor:
             )
             return 1
         return 0
+
+    def _is_protection_halt_reason(self, reason: str) -> bool:
+        return reason in PROTECTION_HALT_REASONS
+
+    def _global_halt_reason_for(self, symbol: str, reason: str) -> str:
+        return f"okx_{reason}:{symbol}"
+
+    def _maybe_auto_clear_protection_halt(
+        self, symbol: str, reason: str, *, source: str
+    ) -> bool:
+        if not self._is_protection_halt_reason(reason):
+            return False
+        pos = self.positions.get(symbol)
+        if pos and pos.get("protection_state") in {"unknown", "pending"}:
+            return False
+        try:
+            from utils.halt_state import get_halt_state
+            expected = self._global_halt_reason_for(symbol, reason)
+            cleared = get_halt_state().auto_clear_if_reason(
+                expected, cleared_by=source
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"[SelfHeal] {symbol} protection halt auto-clear failed: {e}"
+            )
+            return False
+        if not cleared:
+            return False
+        self.clear_symbol_halt(symbol, source=source)
+        self.logger.info(
+            f"[SelfHeal] {symbol} protection halt cleared "
+            f"(reason={reason}, source={source})"
+        )
+        return True
 
     def get_halted_symbols(self) -> Dict[str, dict]:
         """返回 _halted_symbols 顶层浅拷贝快照。
@@ -2847,14 +2888,13 @@ class ContractExecutor:
                     removed_symbols.append(sym)
                     del self.positions[sym]
                     self._sl_check_failures.pop(sym, None)
-                    # 幽灵移除自愈: 仅当该 symbol 因 migrate_missing_sl 被 halt
-                    # （症状根因已随仓位移除消失）才自动解 halt；其它 fail-closed
-                    # halt（reconcile_conflict / multiple_sl / side_conflict 等）不动。
                     halt_info = getattr(self, '_halted_symbols', {}).get(sym)
-                    if halt_info and halt_info.get('reason') == 'migrate_missing_sl':
-                        self.clear_symbol_halt(sym, source='self_heal:phantom_removed')
-                        self.logger.info(
-                            f"[SelfHeal] {sym} 幽灵移除, 自动清 migrate_missing_sl halt"
+                    halt_reason = (halt_info or {}).get("reason", "")
+                    if halt_reason:
+                        self._maybe_auto_clear_protection_halt(
+                            sym,
+                            halt_reason,
+                            source="self_heal:protection_resolved",
                         )
                     if hasattr(self, '_last_protection_alert'):
                         self._last_protection_alert.pop(sym, None)
