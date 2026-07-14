@@ -2,6 +2,7 @@
 change: protective-sl-halt-recovery
 design-doc: docs/superpowers/specs/2026-07-14-protective-sl-halt-recovery-design.md
 base-ref: 35671ae7af2806abddc2700b01d07f778103f4ed
+archived-with: 2026-07-15-protective-sl-halt-recovery
 ---
 
 # Protective SL Halt Recovery Implementation Plan
@@ -13,8 +14,6 @@ base-ref: 35671ae7af2806abddc2700b01d07f778103f4ed
 **Architecture:** Add one exact-match auto-clear method to `HaltState`, one bounded OKX attached-SL verification helper in `ContractExecutor`, and one sync/migration recovery helper that only clears allowlisted protection halt reasons after the risk is proven gone. Telegram `/status` remains read-only and gains a compact Tactical circuit line sourced from `riskguard_state.json`.
 
 **Tech Stack:** Python 3, pytest, existing `ContractExecutor`, `HaltState`, Telegram notifier, OKX ccxt mocks.
-
----
 
 ## File Structure
 
