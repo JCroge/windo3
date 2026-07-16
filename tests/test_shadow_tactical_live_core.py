@@ -1,8 +1,10 @@
 import json
 
 from utils.shadow_tactical_live import (
+    ShadowTacticalOwnerRegistry,
     SidecarStateStore,
     append_audit_event,
+    blocks_same_symbol_account_exposure,
     is_tactical_shadow_event,
     iter_new_shadow_events,
     map_shadow_record_to_plan,
@@ -112,3 +114,63 @@ def test_append_audit_event_writes_jsonl(tmp_path):
     assert row["event_type"] == "rejected"
     assert row["shadow_id"] == "s1"
     assert row["reason"] == "missing_stop_loss"
+
+
+def test_owner_registry_records_and_matches_active_symbol_side(tmp_path):
+    path = tmp_path / "owners.json"
+    reg = ShadowTacticalOwnerRegistry(str(path))
+
+    reg.record_open(
+        shadow_id="shadow-1",
+        symbol="WLD-USDT-SWAP",
+        side="long",
+        amount_usdt=30.0,
+        order_id="ord-1",
+        entry_clord_id="stlWLD1",
+        sl_algo_id="algo-1",
+        sl_algo_clord_id="castliveWLD1",
+    )
+
+    assert reg.active_for("WLD-USDT-SWAP", "long")["shadow_id"] == "shadow-1"
+    assert reg.matches_position("WLD-USDT-SWAP", "long")
+    assert not reg.matches_position("WLD-USDT-SWAP", "short")
+
+
+def test_same_symbol_guard_ignores_sidecar_owned_exposure(tmp_path):
+    reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
+    reg.record_open(
+        "shadow-1",
+        "WLD-USDT-SWAP",
+        "long",
+        30.0,
+        "ord-1",
+        "stl1",
+        "algo-1",
+        "castlive1",
+    )
+    exchange_positions = [{"symbol": "WLD/USDT:USDT", "side": "long", "contracts": 10}]
+
+    blocked, reason = blocks_same_symbol_account_exposure(
+        exchange_positions,
+        "WLD-USDT-SWAP",
+        "long",
+        reg,
+    )
+
+    assert blocked is False
+    assert reason == ""
+
+
+def test_same_symbol_guard_blocks_non_sidecar_exposure(tmp_path):
+    reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
+    exchange_positions = [{"symbol": "WLD/USDT:USDT", "side": "long", "contracts": 10}]
+
+    blocked, reason = blocks_same_symbol_account_exposure(
+        exchange_positions,
+        "WLD-USDT-SWAP",
+        "long",
+        reg,
+    )
+
+    assert blocked is True
+    assert reason == "same_symbol_account_exposure"

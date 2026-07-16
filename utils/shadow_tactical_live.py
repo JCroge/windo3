@@ -150,3 +150,89 @@ def map_shadow_record_to_plan(record: dict, *, return_error: bool = False):
         "gate_metadata": {key: record.get(key) for key in gate_keys if key in record},
     }
     return (plan, None) if return_error else plan
+
+
+def normalize_swap_symbol(symbol: str) -> str:
+    if not symbol:
+        return ""
+    if "/" in symbol and ":" in symbol:
+        return f"{symbol.split('/')[0]}-USDT-SWAP"
+    return symbol
+
+
+class ShadowTacticalOwnerRegistry:
+    def __init__(self, path: str):
+        self.path = path
+
+    def load(self) -> dict:
+        if not os.path.exists(self.path):
+            return {"schema_version": "shadow_tactical_owners.v1", "owners": {}}
+        with open(self.path, "r") as fh:
+            data = json.load(fh)
+        data.setdefault("schema_version", "shadow_tactical_owners.v1")
+        data.setdefault("owners", {})
+        return data
+
+    def save(self, data: dict) -> None:
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        atomic_write_json(self.path, data)
+
+    def record_open(
+        self,
+        shadow_id: str,
+        symbol: str,
+        side: str,
+        amount_usdt: float,
+        order_id: str,
+        entry_clord_id: str,
+        sl_algo_id: str,
+        sl_algo_clord_id: str,
+    ) -> dict:
+        data = self.load()
+        row = {
+            "shadow_id": shadow_id,
+            "symbol": normalize_swap_symbol(symbol),
+            "side": side,
+            "amount_usdt": float(amount_usdt),
+            "order_id": order_id,
+            "entry_clord_id": entry_clord_id,
+            "sl_algo_id": sl_algo_id,
+            "sl_algo_clord_id": sl_algo_clord_id,
+            "status": "open",
+            "opened_at": time.time(),
+        }
+        data["owners"][shadow_id] = row
+        self.save(data)
+        return row
+
+    def active_for(self, symbol: str, side: str) -> Optional[dict]:
+        wanted = normalize_swap_symbol(symbol)
+        for row in self.load().get("owners", {}).values():
+            if (
+                row.get("status") == "open"
+                and row.get("symbol") == wanted
+                and row.get("side") == side
+            ):
+                return row
+        return None
+
+    def matches_position(self, symbol: str, side: str) -> bool:
+        return self.active_for(symbol, side) is not None
+
+
+def blocks_same_symbol_account_exposure(
+    exchange_positions: list,
+    symbol: str,
+    side: str,
+    owners: ShadowTacticalOwnerRegistry,
+) -> tuple[bool, str]:
+    wanted = normalize_swap_symbol(symbol)
+    for pos in exchange_positions or []:
+        contracts = float(pos.get("contracts") or pos.get("amount") or 0)
+        if contracts <= 0:
+            continue
+        pos_symbol = normalize_swap_symbol(pos.get("symbol", ""))
+        pos_side = "long" if pos.get("side") == "long" else "short"
+        if pos_symbol == wanted and pos_side == side and not owners.matches_position(wanted, side):
+            return True, "same_symbol_account_exposure"
+    return False, ""
