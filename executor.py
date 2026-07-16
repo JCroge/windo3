@@ -405,6 +405,37 @@ class ContractExecutor:
         prefix = f"ca{ns}{bot}"
         return clord_id.startswith(prefix)
 
+    @classmethod
+    def _is_foreign_owner_clord_id(cls, clord_id: Optional[str]) -> bool:
+        """Owner-tagged clOrdId that does not belong to this executor instance."""
+        if not clord_id:
+            return False
+        clord = str(clord_id)
+        return clord.startswith("ca") and not cls._is_owner_clord_id(clord)
+
+    def _load_sidecar_owner_registry(self):
+        try:
+            from utils.shadow_tactical_live import ShadowTacticalOwnerRegistry, SidecarPaths
+            path = os.getenv("SHADOW_TACTICAL_OWNER_REGISTRY") or SidecarPaths().owners
+            return ShadowTacticalOwnerRegistry(path)
+        except Exception as e:
+            self.logger.warning(f"[SidecarOwner] load failed: {e}")
+            return None
+
+    def _is_sidecar_owned_algo_clord_id(self, clord_id: Optional[str]) -> bool:
+        if not clord_id:
+            return False
+        owners = self._load_sidecar_owner_registry()
+        if owners is None:
+            return False
+        try:
+            for row in owners.load().get("owners", {}).values():
+                if row.get("status") == "open" and row.get("sl_algo_clord_id") == clord_id:
+                    return True
+        except Exception as e:
+            self.logger.warning(f"[SidecarOwner] owner lookup failed: {e}")
+        return False
+
     def _resolve_attached_sl_algo_id(self, symbol: str,
                                        clord_id: str) -> Optional[str]:
         """在 OKX pending algo 列表中按 algoClOrdId 找回真实 algoId。
@@ -578,6 +609,7 @@ class ContractExecutor:
             'missing_sl': False,
             'halted': False,
             'oco_replaced': 0,
+            'foreign_algos': 0,
         }
         if self.exchange_id != 'okx':
             return summary
@@ -595,6 +627,17 @@ class ContractExecutor:
             sl_trigger = algo.get('sl_trigger')
             has_tp = tp_trigger not in (None, '', '0')
             has_sl = sl_trigger not in (None, '', '0')
+            algo_clord = algo.get('algoClOrdId')
+            if (has_tp or has_sl) and (
+                self._is_sidecar_owned_algo_clord_id(algo_clord)
+                or self._is_foreign_owner_clord_id(algo_clord)
+            ):
+                summary['foreign_algos'] += 1
+                self.logger.info(
+                    f"[Migrate] {symbol} preserve foreign/sidecar algo "
+                    f"{algo_id} clord={algo_clord}"
+                )
+                continue
             if has_tp and not has_sl:
                 # 纯 TP algo,exit_owner 是本地 → 必须撤
                 if self._cancel_algo_by_id(symbol, algo_id):
@@ -3118,6 +3161,7 @@ class ContractExecutor:
                 self._pending_resync = {}
             confirm_ticks = (getattr(self, '_config', {}) or {}).get(
                 'position_resync_confirm_ticks', 2)
+            sidecar_owners = self._load_sidecar_owner_registry()
             for sym, ex_pos in active.items():
                 # 第一道防线: 刚平仓的symbol在冷却期内不补录、不计双确认 tick
                 # （防止API延迟导致幽灵持仓）
@@ -3131,6 +3175,10 @@ class ContractExecutor:
                         local['amount_usdt'] = ex_pos['amount_usdt']
                     local['unrealized_pnl'] = ex_pos['unrealized_pnl']
                 else:
+                    if sidecar_owners and sidecar_owners.matches_position(sym, ex_pos['side']):
+                        self._pending_resync.pop(sym, None)
+                        self.logger.info(f"仓位同步: {sym} ignored as sidecar-owned")
+                        continue
                     # 双确认: 本地缺失、交易所新出现的持仓必须连续 confirm_ticks
                     # 个 sync tick 都见到才补录（防交易所平仓后上报延迟产生幽灵持仓）。
                     cnt = self._pending_resync.get(sym, 0) + 1
