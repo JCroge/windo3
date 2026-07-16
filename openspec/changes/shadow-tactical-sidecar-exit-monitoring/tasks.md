@@ -18,6 +18,6 @@
 
 ## 4. Stop, migration, and regression coverage
 
-- [ ] 4.1 Refactor `cmd_stop` to reuse the same proven-owner drain path as the monitor.
-- [ ] 4.2 Add regression tests for legacy owner rows and ONDO-style internal symbol opens.
-- [ ] 4.3 Verify the change with sidecar idle-loop and stop-path integration tests.
+- [x] 4.1 Refactor `cmd_stop` to reuse the same proven-owner drain path as the monitor.
+- [x] 4.2 Add regression tests for legacy owner rows and ONDO-style internal symbol opens.
+- [x] 4.3 Verify the change with sidecar idle-loop and stop-path integration tests.

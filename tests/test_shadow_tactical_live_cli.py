@@ -277,6 +277,64 @@ def test_stop_closes_only_proven_sidecar_owned_exposure(tmp_path, monkeypatch):
     ]
 
 
+def test_stop_matches_legacy_internal_symbol_position(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    owners = tmp_path / "owners.json"
+    audit = tmp_path / "audit.jsonl"
+    owners.write_text(
+        json.dumps(
+            {
+                "owners": {
+                    "s1": {
+                        "shadow_id": "s1",
+                        "status": "open",
+                        "symbol": "ONDO-USDT",
+                        "internal_symbol": "ONDO-USDT",
+                        "exchange_symbol": "ONDO-USDT-SWAP",
+                        "side": "long",
+                        "sl_algo_id": "algo-1",
+                        "sl_algo_clord_id": "castliveONDO1",
+                    }
+                }
+            }
+        )
+    )
+    fake = MagicMock()
+    fake.positions = {
+        "ONDO-USDT": {
+            "symbol": "ONDO-USDT",
+            "internal_symbol": "ONDO-USDT",
+            "side": "long",
+            "shadow_id": "s1",
+        }
+    }
+    fake._cancel_algo_by_id.return_value = True
+    fake.close_position.return_value = {"id": "close-1"}
+    monkeypatch.setattr(mod, "_build_executor", lambda paths: fake)
+
+    code = mod.main(
+        [
+            "stop",
+            "--owners",
+            str(owners),
+            "--audit",
+            str(audit),
+            "--state",
+            str(tmp_path / "state.json"),
+        ]
+    )
+
+    assert code == 0
+    fake._cancel_algo_by_id.assert_called_once_with("ONDO-USDT", "algo-1")
+    fake.close_position.assert_called_once_with(
+        "ONDO-USDT",
+        action_kind="sidecar_stop",
+    )
+
+
 def test_monitor_routes_tactical_tp1_reduce(tmp_path):
     spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
     mod = importlib.util.module_from_spec(spec)

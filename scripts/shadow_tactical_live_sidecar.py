@@ -352,9 +352,8 @@ def stop_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecutor)
     for shadow_id, row in data.get("owners", {}).items():
         if row.get("status") != "open":
             continue
-        symbol = row.get("symbol")
-        local = getattr(executor, "positions", {}).get(symbol)
-        proven = bool(symbol and local and local.get("shadow_id") == shadow_id)
+        symbol, local = _sidecar_position_for_owner(executor, row)
+        proven = bool(symbol and local)
         if not proven:
             skipped += 1
             append_audit_event(
