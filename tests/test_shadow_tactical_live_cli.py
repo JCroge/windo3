@@ -275,3 +275,127 @@ def test_stop_closes_only_proven_sidecar_owned_exposure(tmp_path, monkeypatch):
         "stop_closed",
         "stop_skipped_unproven",
     ]
+
+
+def test_monitor_routes_tactical_tp1_reduce(tmp_path):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+    )
+    mod.ShadowTacticalOwnerRegistry(paths.owners).record_open(
+        shadow_id="s1",
+        symbol="ONDO-USDT-SWAP",
+        side="long",
+        amount_usdt=30.0,
+        order_id="ord-1",
+        entry_clord_id="cl-1",
+        sl_algo_id="algo-1",
+        sl_algo_clord_id="sl-1",
+    )
+    fake = MagicMock()
+    fake.positions = {
+        "ONDO-USDT-SWAP": {
+            "symbol": "ONDO-USDT-SWAP",
+            "internal_symbol": "ONDO-USDT",
+            "side": "long",
+            "shadow_id": "s1",
+            "sidecar_source": "shadow_tactical_live",
+            "take_profit_levels": [1.32, 1.38],
+            "tp_filled": 0,
+            "entry_price": 1.25,
+            "stop_loss": 1.20,
+            "original_sl": 1.20,
+            "highest_price": 1.25,
+            "lowest_price": 1.25,
+            "atr_pct": 0.02,
+            "open_time": 0,
+        }
+    }
+    fake.check_stop_loss_take_profit.return_value = "tactical_tp1"
+    fake.reduce_position.return_value = {"ok": True}
+
+    result = mod.monitor_sidecar_owned_exposure(paths, fake)
+
+    fake.reduce_position.assert_called_once_with(
+        "ONDO-USDT-SWAP",
+        0.5,
+        tp_advance=1,
+        action_kind="sidecar_tactical_tp1",
+    )
+    assert result["reduced"] == 1
+
+
+def test_run_once_monitors_open_sidecar_position_without_new_events(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    events = tmp_path / "events.jsonl"
+    state = tmp_path / "state.json"
+    audit = tmp_path / "audit.jsonl"
+    owners = tmp_path / "owners.json"
+    state.write_text(json.dumps({"last_offset": 0, "seen_shadow_ids": {}}))
+    owners.write_text(
+        json.dumps(
+            {
+                "owners": {
+                    "s1": {
+                        "shadow_id": "s1",
+                        "status": "open",
+                        "symbol": "ONDO-USDT-SWAP",
+                        "internal_symbol": "ONDO-USDT",
+                        "exchange_symbol": "ONDO-USDT-SWAP",
+                        "side": "long",
+                        "sl_algo_id": "algo-1",
+                        "sl_algo_clord_id": "sl-1",
+                    }
+                }
+            }
+        )
+    )
+    fake = MagicMock()
+    fake.positions = {
+        "ONDO-USDT-SWAP": {
+            "symbol": "ONDO-USDT-SWAP",
+            "internal_symbol": "ONDO-USDT",
+            "side": "long",
+            "shadow_id": "s1",
+            "sidecar_source": "shadow_tactical_live",
+            "take_profit_levels": [1.32, 1.38],
+            "tp_filled": 0,
+            "entry_price": 1.25,
+            "stop_loss": 1.20,
+            "original_sl": 1.20,
+            "highest_price": 1.25,
+            "lowest_price": 1.25,
+            "atr_pct": 0.02,
+            "open_time": 0,
+        }
+    }
+    fake.check_stop_loss_take_profit.return_value = "tactical_tp1"
+    fake.reduce_position.return_value = {"ok": True}
+    monkeypatch.setattr(mod, "_build_executor", lambda paths: fake)
+
+    code = mod.main(
+        [
+            "run",
+            "--once",
+            "--events",
+            str(events),
+            "--state",
+            str(state),
+            "--audit",
+            str(audit),
+            "--owners",
+            str(owners),
+            "--duration-hours",
+            "1",
+        ]
+    )
+
+    assert code == 0
+    fake.check_stop_loss_take_profit.assert_called_once_with("ONDO-USDT-SWAP")

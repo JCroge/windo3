@@ -12,9 +12,9 @@
 
 ## 3. Sidecar monitor loop
 
-- [ ] 3.1 Add a per-poll scan of open sidecar-owned positions in `scripts/shadow_tactical_live_sidecar.py`.
-- [ ] 3.2 Prove ownership, fetch price, evaluate the Tactical exit intent, and call `reduce_position()` or `close_position()` accordingly.
-- [ ] 3.3 Record audit events and update owner status for partial exits, closes, skips, and failures.
+- [x] 3.1 Add a per-poll scan of open sidecar-owned positions in `scripts/shadow_tactical_live_sidecar.py`.
+- [x] 3.2 Prove ownership, fetch price, evaluate the Tactical exit intent, and call `reduce_position()` or `close_position()` accordingly.
+- [x] 3.3 Record audit events and update owner status for partial exits, closes, skips, and failures.
 
 ## 4. Stop, migration, and regression coverage
 

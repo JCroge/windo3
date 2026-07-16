@@ -111,7 +111,135 @@ def _record_owner_if_open(
         entry_clord_id=position.get("entry_clord_id") or "",
         sl_algo_id=position.get("sl_algo_id") or "",
         sl_algo_clord_id=position.get("sl_algo_clord_id") or "",
+        internal_symbol=position.get("internal_symbol") or "",
+        exchange_symbol=position.get("exchange_symbol") or position.get("symbol") or "",
     )
+
+
+def _sidecar_position_for_owner(executor: ContractExecutor, row: dict):
+    positions = getattr(executor, "positions", {}) or {}
+    exchange_symbol = row.get("exchange_symbol") or row.get("symbol")
+    internal_symbol = row.get("internal_symbol")
+    shadow_id = row.get("shadow_id")
+    local = positions.get(exchange_symbol)
+    if not local:
+        for key, candidate in positions.items():
+            if (
+                candidate.get("shadow_id") == shadow_id
+                and (
+                    candidate.get("internal_symbol") == internal_symbol
+                    or candidate.get("exchange_symbol") == exchange_symbol
+                    or candidate.get("symbol") == exchange_symbol
+                    or key == exchange_symbol
+                )
+            ):
+                exchange_symbol = key
+                local = candidate
+                break
+    if not local:
+        return exchange_symbol, None
+    source = local.get("sidecar_source")
+    source_ok = source in (None, "", "shadow_tactical_live")
+    proven = (
+        local.get("shadow_id") == shadow_id
+        and local.get("side") == row.get("side")
+        and source_ok
+    )
+    return exchange_symbol, local if proven else None
+
+
+def _reduce_action_for_trigger(trigger: str):
+    if trigger in ("tactical_tp1", "partial_tp_1"):
+        return 0.5, 1, "sidecar_tactical_tp1"
+    if trigger in ("partial_tp_2", "tactical_tp2"):
+        return 0.25, 2, "sidecar_tactical_tp2"
+    return None
+
+
+def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecutor) -> dict:
+    registry = ShadowTacticalOwnerRegistry(paths.owners)
+    data = registry.load()
+    summary = {"scanned": 0, "reduced": 0, "closed": 0, "skipped": 0, "failed": 0}
+    for shadow_id, row in data.get("owners", {}).items():
+        if row.get("status") != "open":
+            continue
+        summary["scanned"] += 1
+        symbol, local = _sidecar_position_for_owner(executor, row)
+        if not local:
+            summary["skipped"] += 1
+            append_audit_event(
+                paths.audit,
+                "monitor_skipped_unproven",
+                {"shadow_id": shadow_id, "symbol": symbol},
+            )
+            continue
+
+        trigger = executor.check_stop_loss_take_profit(symbol)
+        if not trigger:
+            row["last_monitor_at"] = time.time()
+            continue
+
+        row["last_monitor_at"] = time.time()
+        row["last_exit_trigger"] = trigger
+        reduce_action = _reduce_action_for_trigger(trigger)
+        if reduce_action:
+            pct, tp_advance, action_kind = reduce_action
+            result = executor.reduce_position(
+                symbol,
+                pct,
+                tp_advance=tp_advance,
+                action_kind=action_kind,
+            )
+            row["last_exit_ok"] = bool(result)
+            row["last_exit_action_kind"] = action_kind
+            if result:
+                summary["reduced"] += 1
+                append_audit_event(
+                    paths.audit,
+                    "monitor_reduced",
+                    {
+                        "shadow_id": shadow_id,
+                        "symbol": symbol,
+                        "trigger": trigger,
+                        "result": True,
+                    },
+                )
+            else:
+                summary["failed"] += 1
+                append_audit_event(
+                    paths.audit,
+                    "monitor_reduce_failed",
+                    {"shadow_id": shadow_id, "symbol": symbol, "trigger": trigger},
+                )
+            continue
+
+        action_kind = f"sidecar_{trigger}"
+        result = executor.close_position(symbol, action_kind=action_kind)
+        row["last_exit_ok"] = bool(result)
+        row["last_exit_action_kind"] = action_kind
+        if result:
+            row["status"] = "closed"
+            row["closed_at"] = time.time()
+            summary["closed"] += 1
+            append_audit_event(
+                paths.audit,
+                "monitor_closed",
+                {
+                    "shadow_id": shadow_id,
+                    "symbol": symbol,
+                    "trigger": trigger,
+                    "result": True,
+                },
+            )
+        else:
+            summary["failed"] += 1
+            append_audit_event(
+                paths.audit,
+                "monitor_close_failed",
+                {"shadow_id": shadow_id, "symbol": symbol, "trigger": trigger},
+            )
+    registry.save(data)
+    return summary
 
 
 def _process_event(args, paths, state, registry, executor, event) -> None:
@@ -200,6 +328,8 @@ def cmd_run(args) -> int:
             state["last_offset"] = row.next_offset
             _process_event(args, paths, state, registry, executor, row.event)
             store.save(state)
+        if executor is not None:
+            monitor_sidecar_owned_exposure(paths, executor)
         if args.once:
             break
         time.sleep(float(args.poll_seconds))
