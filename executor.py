@@ -2077,6 +2077,15 @@ class ContractExecutor:
 
         self._sl_check_failures[symbol] = 0
 
+        return self._evaluate_local_exit_trigger(symbol, position, current_price)
+
+    def _evaluate_local_exit_trigger(
+        self,
+        symbol: str,
+        position: dict,
+        current_price: float,
+    ) -> Optional[str]:
+        """Evaluate local TP/SL/trailing exits once a fresh price is known."""
         # 更新最高/最低价（用于trailing计算）
         if position['side'] == 'long':
             position['highest_price'] = max(position.get('highest_price', current_price), current_price)
@@ -2202,6 +2211,12 @@ class ContractExecutor:
                     position['tactical_close_reason'] = 'tactical_tp1'
                     self.logger.info(f"[Tactical] {symbol} TP1 命中 {tp1},等待 reduce 确认")
                     return 'tactical_tp1'
+            if tp_filled == 1 and len(tp_levels) >= 2:
+                tp2 = tp_levels[1]
+                if (is_long and price >= tp2) or (not is_long and price <= tp2):
+                    position['tactical_close_reason'] = 'tactical_tp2'
+                    self.logger.info(f"[Tactical] {symbol} TP2 命中 {tp2},等待 reduce 确认")
+                    return 'partial_tp_2'
             return None
 
         # --- Low RR 槽提前 trailing（不等 TP1）---

@@ -6,9 +6,9 @@
 
 ## 2. Shared Tactical exit evaluator
 
-- [ ] 2.1 Extract a reusable Tactical exit decision helper from `executor.py` and keep `check_stop_loss_take_profit()` as a wrapper.
-- [ ] 2.2 Route Tactical TP1, TP2, invalidation, weakened-no-progress, and max-hold through the shared helper.
-- [ ] 2.3 Add unit tests for Tactical exit intent, partial-reduce sizing, and max-hold close reasons.
+- [x] 2.1 Extract a reusable Tactical exit decision helper from `executor.py` and keep `check_stop_loss_take_profit()` as a wrapper.
+- [x] 2.2 Route Tactical TP1, TP2, invalidation, weakened-no-progress, and max-hold through the shared helper.
+- [x] 2.3 Add unit tests for Tactical exit intent, partial-reduce sizing, and max-hold close reasons.
 
 ## 3. Sidecar monitor loop
 

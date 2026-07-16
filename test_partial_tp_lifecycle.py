@@ -930,6 +930,7 @@ class TestAlgoMigration:
             'missing_sl': False,
             'halted': False,
             'oco_replaced': 0,
+            'foreign_algos': 0,
         }
 
     def test_legacy_oco_replaced_with_pure_sl(self):
