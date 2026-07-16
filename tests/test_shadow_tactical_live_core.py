@@ -5,6 +5,7 @@ from utils.shadow_tactical_live import (
     SidecarStateStore,
     append_audit_event,
     blocks_same_symbol_account_exposure,
+    canonical_sidecar_symbols,
     is_tactical_shadow_event,
     iter_new_shadow_events,
     map_shadow_record_to_plan,
@@ -86,6 +87,17 @@ def test_map_shadow_record_preserves_execution_fields():
     assert plan["gate_metadata"]["tactical_track_gate"] == "fail"
 
 
+def test_canonical_sidecar_symbols_split_internal_and_exchange():
+    assert canonical_sidecar_symbols("ONDO-USDT") == {
+        "internal_symbol": "ONDO-USDT",
+        "exchange_symbol": "ONDO-USDT-SWAP",
+    }
+    assert canonical_sidecar_symbols("ONDO/USDT:USDT") == {
+        "internal_symbol": "ONDO-USDT",
+        "exchange_symbol": "ONDO-USDT-SWAP",
+    }
+
+
 def test_missing_required_field_rejects_without_plan():
     plan, reason = map_shadow_record_to_plan(
         _tactical_record(stop_loss=0), return_error=True
@@ -158,6 +170,31 @@ def test_owner_registry_records_and_matches_active_symbol_side(tmp_path):
     assert not reg.matches_position("WLD-USDT-SWAP", "short")
 
 
+def test_owner_registry_migrates_legacy_symbol_rows(tmp_path):
+    path = tmp_path / "owners.json"
+    path.write_text(
+        json.dumps(
+            {
+                "owners": {
+                    "shadow-1": {
+                        "shadow_id": "shadow-1",
+                        "symbol": "ONDO-USDT",
+                        "side": "long",
+                        "status": "open",
+                    }
+                }
+            }
+        )
+    )
+    reg = ShadowTacticalOwnerRegistry(str(path))
+
+    row = reg.active_for("ONDO-USDT", "long")
+
+    assert row["internal_symbol"] == "ONDO-USDT"
+    assert row["exchange_symbol"] == "ONDO-USDT-SWAP"
+    assert row["symbol"] == "ONDO-USDT-SWAP"
+
+
 def test_same_symbol_guard_ignores_sidecar_owned_exposure(tmp_path):
     reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
     reg.record_open(
@@ -175,6 +212,31 @@ def test_same_symbol_guard_ignores_sidecar_owned_exposure(tmp_path):
     blocked, reason = blocks_same_symbol_account_exposure(
         exchange_positions,
         "WLD-USDT-SWAP",
+        "long",
+        reg,
+    )
+
+    assert blocked is False
+    assert reason == ""
+
+
+def test_same_symbol_guard_understands_internal_sidecar_rows(tmp_path):
+    reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
+    reg.record_open(
+        "shadow-1",
+        "ONDO-USDT",
+        "long",
+        30.0,
+        "ord-1",
+        "stl1",
+        "algo-1",
+        "castlive1",
+    )
+    exchange_positions = [{"symbol": "ONDO/USDT:USDT", "side": "long", "contracts": 10}]
+
+    blocked, reason = blocks_same_symbol_account_exposure(
+        exchange_positions,
+        "ONDO-USDT",
         "long",
         reg,
     )

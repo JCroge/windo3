@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Iterator, Optional
 
 from utils.atomic_io import atomic_write_json
+from utils.symbol import to_internal, to_okx_inst
 
 
 DEFAULT_EVENTS_PATH = "data/rejected_signal_events.jsonl"
@@ -153,12 +154,38 @@ def map_shadow_record_to_plan(record: dict, *, return_error: bool = False):
     return (plan, None) if return_error else plan
 
 
+def canonical_sidecar_symbols(symbol: str) -> dict:
+    internal_symbol = to_internal(symbol)
+    exchange_symbol = to_okx_inst(internal_symbol)
+    return {
+        "internal_symbol": internal_symbol,
+        "exchange_symbol": exchange_symbol,
+    }
+
+
 def normalize_swap_symbol(symbol: str) -> str:
-    if not symbol:
-        return ""
-    if "/" in symbol and ":" in symbol:
-        return f"{symbol.split('/')[0]}-USDT-SWAP"
-    return symbol
+    return canonical_sidecar_symbols(symbol).get("exchange_symbol", symbol)
+
+
+def _canonical_owner_row(row: dict) -> dict:
+    normalized = dict(row or {})
+    seed = (
+        normalized.get("exchange_symbol")
+        or normalized.get("symbol")
+        or normalized.get("internal_symbol")
+        or ""
+    )
+    canonical = canonical_sidecar_symbols(seed)
+    if normalized.get("internal_symbol"):
+        canonical["internal_symbol"] = to_internal(normalized["internal_symbol"])
+    if normalized.get("exchange_symbol"):
+        canonical["exchange_symbol"] = normalize_swap_symbol(normalized["exchange_symbol"])
+    elif normalized.get("symbol"):
+        canonical["exchange_symbol"] = normalize_swap_symbol(normalized["symbol"])
+    normalized["internal_symbol"] = canonical["internal_symbol"]
+    normalized["exchange_symbol"] = canonical["exchange_symbol"]
+    normalized["symbol"] = canonical["exchange_symbol"]
+    return normalized
 
 
 class ShadowTacticalOwnerRegistry:
@@ -171,7 +198,11 @@ class ShadowTacticalOwnerRegistry:
         with open(self.path, "r") as fh:
             data = json.load(fh)
         data.setdefault("schema_version", "shadow_tactical_owners.v1")
-        data.setdefault("owners", {})
+        owners = data.setdefault("owners", {})
+        if isinstance(owners, dict):
+            for key, row in list(owners.items()):
+                if isinstance(row, dict):
+                    owners[key] = _canonical_owner_row(row)
         return data
 
     def save(self, data: dict) -> None:
@@ -188,11 +219,20 @@ class ShadowTacticalOwnerRegistry:
         entry_clord_id: str,
         sl_algo_id: str,
         sl_algo_clord_id: str,
+        internal_symbol: Optional[str] = None,
+        exchange_symbol: Optional[str] = None,
     ) -> dict:
         data = self.load()
+        canonical = canonical_sidecar_symbols(exchange_symbol or symbol or internal_symbol or "")
+        if internal_symbol:
+            canonical["internal_symbol"] = to_internal(internal_symbol)
+        if exchange_symbol:
+            canonical["exchange_symbol"] = normalize_swap_symbol(exchange_symbol)
         row = {
             "shadow_id": shadow_id,
-            "symbol": normalize_swap_symbol(symbol),
+            "symbol": canonical["exchange_symbol"],
+            "internal_symbol": canonical["internal_symbol"],
+            "exchange_symbol": canonical["exchange_symbol"],
             "side": side,
             "amount_usdt": float(amount_usdt),
             "order_id": order_id,
@@ -207,14 +247,15 @@ class ShadowTacticalOwnerRegistry:
         return row
 
     def active_for(self, symbol: str, side: str) -> Optional[dict]:
-        wanted = normalize_swap_symbol(symbol)
+        wanted = canonical_sidecar_symbols(symbol)["internal_symbol"]
         for row in self.load().get("owners", {}).values():
+            normalized = _canonical_owner_row(row) if isinstance(row, dict) else row
             if (
-                row.get("status") == "open"
-                and row.get("symbol") == wanted
-                and row.get("side") == side
+                normalized.get("status") == "open"
+                and normalized.get("internal_symbol") == wanted
+                and normalized.get("side") == side
             ):
-                return row
+                return normalized
         return None
 
     def matches_position(self, symbol: str, side: str) -> bool:
@@ -227,16 +268,16 @@ def blocks_same_symbol_account_exposure(
     side: str,
     owners: ShadowTacticalOwnerRegistry,
 ) -> tuple[bool, str]:
-    wanted = normalize_swap_symbol(symbol)
+    wanted = canonical_sidecar_symbols(symbol)["internal_symbol"]
     for pos in exchange_positions or []:
         contracts = float(pos.get("contracts") or pos.get("amount") or 0)
         if contracts <= 0:
             continue
-        pos_symbol = normalize_swap_symbol(pos.get("symbol", ""))
+        pos_symbol = canonical_sidecar_symbols(pos.get("symbol", ""))["internal_symbol"]
         pos_side = "long" if pos.get("side") == "long" else "short"
         if pos_symbol != wanted:
             continue
-        if owners.matches_position(pos_symbol, pos_side):
+        if owners.matches_position(pos.get("symbol", ""), pos_side):
             continue
         return True, "same_symbol_account_exposure"
     return False, ""

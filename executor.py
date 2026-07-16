@@ -2381,7 +2381,11 @@ class ContractExecutor:
 
     def open_sidecar_plan(self, plan: dict, *, size_usdt: Optional[float] = None) -> Optional[Dict]:
         """Open a Shadow Tactical sidecar plan with mechanical checks only."""
-        symbol = plan["symbol"]
+        from utils.shadow_tactical_live import canonical_sidecar_symbols
+
+        canonical = canonical_sidecar_symbols(plan["symbol"])
+        internal_symbol = plan.get("internal_symbol") or canonical["internal_symbol"]
+        symbol = plan.get("exchange_symbol") or canonical["exchange_symbol"]
         side = plan["side"]
         if self.is_symbol_halted(symbol):
             self.logger.warning(f"[Sidecar] {symbol} halted, reject open")
@@ -2501,6 +2505,8 @@ class ContractExecutor:
 
         position = {
             "symbol": symbol,
+            "internal_symbol": internal_symbol,
+            "exchange_symbol": symbol,
             "side": side,
             "entry_price": current_price,
             "amount": amount,

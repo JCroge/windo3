@@ -82,6 +82,16 @@ def test_open_sidecar_plan_places_order_without_drift_gate():
     assert not hasattr(ex, "_pending_drift_alerts") or ex._pending_drift_alerts == []
 
 
+def test_open_sidecar_plan_canonicalizes_internal_symbol_to_swap():
+    ex = _executor()
+
+    pos = ex.open_sidecar_plan(_plan(symbol="ONDO-USDT"), size_usdt=30.0)
+
+    assert pos["symbol"] == "ONDO-USDT-SWAP"
+    assert pos["internal_symbol"] == "ONDO-USDT"
+    ex.exchange.fetch_ticker.assert_called_with("ONDO-USDT-SWAP")
+
+
 def test_open_sidecar_plan_rejects_invalid_long_stop_side():
     ex = _executor()
 
