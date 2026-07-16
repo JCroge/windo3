@@ -2517,6 +2517,7 @@ class ContractExecutor:
             "protection_state": protection_state,
             "shadow_id": plan.get("shadow_id"),
             "sidecar_source": plan.get("sidecar_source", "shadow_tactical_live"),
+            "entry_order_id": order.get("id") if order else None,
             "entry_clord_id": plan.get("entry_clord_id"),
             "open_time": time.time(),
         }
