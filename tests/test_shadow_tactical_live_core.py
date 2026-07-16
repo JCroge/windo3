@@ -35,16 +35,38 @@ def _tactical_record(**overrides):
     return rec
 
 
-def test_tactical_identity_accepts_track_or_exit_profile():
-    assert is_tactical_shadow_event(_event(_tactical_record(track="tactical")))
+def test_tactical_identity_accepts_only_true_open_tactical_records():
     assert is_tactical_shadow_event(
-        _event(_tactical_record(track="main", exit_profile="tactical_v1"))
+        _event(_tactical_record(track="tactical", tactical_track_gate="pass"))
+    )
+    assert not is_tactical_shadow_event(
+        _event(
+            _tactical_record(
+                track="main",
+                exit_profile="tactical_v1",
+                tactical_track_gate="pass",
+            )
+        )
     )
     assert not is_tactical_shadow_event(
         _event(_tactical_record(track="main", exit_profile="trend_runner"))
     )
     assert not is_tactical_shadow_event(
         {"event_type": "shadow_tp", "record": _tactical_record()}
+    )
+
+
+def test_tactical_shadow_event_requires_true_open_track_and_gate_pass():
+    assert is_tactical_shadow_event(
+        _event(_tactical_record(track="tactical", tactical_track_gate="pass"))
+    )
+
+    assert not is_tactical_shadow_event(
+        _event(_tactical_record(track="shadow_only", tactical_track_gate="fail"))
+    )
+
+    assert not is_tactical_shadow_event(
+        _event(_tactical_record(track="tactical", tactical_track_gate="fail"))
     )
 
 
@@ -164,6 +186,21 @@ def test_same_symbol_guard_ignores_sidecar_owned_exposure(tmp_path):
 def test_same_symbol_guard_blocks_non_sidecar_exposure(tmp_path):
     reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
     exchange_positions = [{"symbol": "WLD/USDT:USDT", "side": "long", "contracts": 10}]
+
+    blocked, reason = blocks_same_symbol_account_exposure(
+        exchange_positions,
+        "WLD-USDT-SWAP",
+        "long",
+        reg,
+    )
+
+    assert blocked is True
+    assert reason == "same_symbol_account_exposure"
+
+
+def test_same_symbol_guard_blocks_opposite_side_non_sidecar_exposure(tmp_path):
+    reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
+    exchange_positions = [{"symbol": "WLD-USDT-SWAP", "side": "short", "contracts": 1}]
 
     blocked, reason = blocks_same_symbol_account_exposure(
         exchange_positions,

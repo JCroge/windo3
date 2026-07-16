@@ -63,6 +63,7 @@ def test_run_dry_run_processes_new_tactical_event(tmp_path):
         "leverage": 20,
         "track": "tactical",
         "exit_profile": "tactical_v1",
+        "tactical_track_gate": "pass",
     }
     events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
 
@@ -105,6 +106,7 @@ def test_run_defaults_to_no_backfill_on_first_start(tmp_path):
         "leverage": 20,
         "track": "tactical",
         "exit_profile": "tactical_v1",
+        "tactical_track_gate": "pass",
     }
     events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
 
@@ -148,6 +150,7 @@ def test_run_preserves_existing_watermark_when_no_backfill_default(tmp_path):
                 "leverage": 20,
                 "track": "tactical",
                 "exit_profile": "tactical_v1",
+                "tactical_track_gate": "pass",
             },
         }
     ) + "\n"
@@ -178,6 +181,7 @@ def test_run_preserves_existing_watermark_when_no_backfill_default(tmp_path):
                         "leverage": 20,
                         "track": "tactical",
                         "exit_profile": "tactical_v1",
+                        "tactical_track_gate": "pass",
                     },
                 }
             )

@@ -99,7 +99,8 @@ def is_tactical_shadow_event(event: dict) -> bool:
     record = event.get("record") or {}
     return (
         record.get("track") == "tactical"
-        or record.get("exit_profile") == "tactical_v1"
+        and record.get("exit_profile") == "tactical_v1"
+        and record.get("tactical_track_gate") == "pass"
     )
 
 
@@ -233,6 +234,9 @@ def blocks_same_symbol_account_exposure(
             continue
         pos_symbol = normalize_swap_symbol(pos.get("symbol", ""))
         pos_side = "long" if pos.get("side") == "long" else "short"
-        if pos_symbol == wanted and pos_side == side and not owners.matches_position(wanted, side):
-            return True, "same_symbol_account_exposure"
+        if pos_symbol != wanted:
+            continue
+        if owners.matches_position(pos_symbol, pos_side):
+            continue
+        return True, "same_symbol_account_exposure"
     return False, ""
