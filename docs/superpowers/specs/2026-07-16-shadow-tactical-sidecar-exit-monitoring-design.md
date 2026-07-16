@@ -2,6 +2,8 @@
 comet_change: shadow-tactical-sidecar-exit-monitoring
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-17-shadow-tactical-sidecar-exit-monitoring
+status: final
 ---
 
 # Shadow Tactical Sidecar Exit Monitoring Technical Design

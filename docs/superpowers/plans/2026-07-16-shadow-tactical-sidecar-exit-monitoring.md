@@ -2,6 +2,7 @@
 change: shadow-tactical-sidecar-exit-monitoring
 design-doc: docs/superpowers/specs/2026-07-16-shadow-tactical-sidecar-exit-monitoring-design.md
 base-ref: 3a3b003dea6a3ca0c57f162817db6a5ffc7e8ead
+archived-with: 2026-07-17-shadow-tactical-sidecar-exit-monitoring
 ---
 
 # Shadow Tactical Sidecar Exit Monitoring Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 3a3b003dea6a3ca0c57f162817db6a5ffc7e8ead
 
 **Tech Stack:** Python 3, pytest, existing `ContractExecutor`, JSON owner registry/state files, OKX ccxt-compatible symbols, OpenSpec/Comet artifacts.
 
+archived-with: 2026-07-17-shadow-tactical-sidecar-exit-monitoring
 ---
 
 ## File Structure
