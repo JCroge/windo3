@@ -1,0 +1,14 @@
+{
+  "change": "promote-shadow-tactical-live-48h",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "de7ab8ced16aeb26d96a83083a2b6bbcd870e05642b7eedcd441bcb83975349a",
+  "files": [
+    { "path": "openspec/changes/promote-shadow-tactical-live-48h/proposal.md", "sha256": "33dfe2072efc00921b4fe03fde4b23812ce3320bbef3c8020d58b5f510fd5260" },
+    { "path": "openspec/changes/promote-shadow-tactical-live-48h/design.md", "sha256": "2aeb8d597f86b3ad8106772bf4c3d87d8e6629c33758068c788b8df15ca9341d" },
+    { "path": "openspec/changes/promote-shadow-tactical-live-48h/tasks.md", "sha256": "324e3b93af9d3bd22b0e6a646d2d69e96291af9411ccdb43b688a5ace44ffd49" },
+    { "path": "openspec/changes/promote-shadow-tactical-live-48h/specs/tactical-exit-track/spec.md", "sha256": "3c47118118bff6758a1677743a059c8afa9b5dacf30fd865c603514153f3a66b" }
+  ]
+}

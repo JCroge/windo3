@@ -87,6 +87,22 @@ class HaltState:
         self._save()
         return self.to_dict()
 
+    def auto_clear_if_reason(self, expected_reason: str, cleared_by: str) -> bool:
+        """Clear only when the current global halt reason exactly matches.
+
+        This is for machine-proven protection recovery. It deliberately does
+        not replace /resume or /force_resume.
+        """
+        if not self.halted or self.reason != expected_reason:
+            return False
+        self.halted = False
+        self.resume_at = time.time()
+        self.resume_by = cleared_by
+        self.reconciliation_pending = False
+        self.reconciliation_result = "auto_protection_resolved"
+        self._save()
+        return True
+
     def to_dict(self) -> dict:
         return {
             "halted": self.halted,

@@ -1,0 +1,14 @@
+{
+  "change": "shadow-tactical-sidecar-exit-monitoring",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "a84a9cb8f8bfc51938a4746a105809229f62faaaaf8ffa46825e7b244b110715",
+  "files": [
+    { "path": "openspec/changes/shadow-tactical-sidecar-exit-monitoring/proposal.md", "sha256": "3ee1f9ab9e8f75aa3f465054287bb28245372d675af4bb7b83c22029b5e8b2d8" },
+    { "path": "openspec/changes/shadow-tactical-sidecar-exit-monitoring/design.md", "sha256": "81628ecbd04d21d7a7f83ecaa80fba9aed52434db6ca3d26d0e7aa64d0fc7827" },
+    { "path": "openspec/changes/shadow-tactical-sidecar-exit-monitoring/tasks.md", "sha256": "b10de6b7399afd3dc77f6c8cbe3739c6d71517b6e68775def557892a0b10aa66" },
+    { "path": "openspec/changes/shadow-tactical-sidecar-exit-monitoring/specs/shadow-tactical-sidecar-exit-monitoring/spec.md", "sha256": "482868cbfe2cf24829f303e91ba32b71fc3a5bf7659c8b7446d8490d033a3703" }
+  ]
+}

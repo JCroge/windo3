@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import time
 import datetime
@@ -822,6 +823,47 @@ class TelegramNotifier(BaseAgent):
         gap = compute_gap(load_trades(), window_days=days, min_trades=10)
         await self._send_message(format_gap(gap))
 
+    def _read_tactical_circuit_state(self):
+        try:
+            with open(_riskguard_path(), "r") as f:
+                state = json.load(f)
+            tactical = state.get("tactical_circuit") if isinstance(state, dict) else None
+            if not isinstance(tactical, dict):
+                return None
+            return tactical
+        except Exception:
+            return None
+
+    def _format_tactical_circuit_line(self, tactical):
+        if tactical is None or not isinstance(tactical, dict):
+            return "Tactical circuit: ?"
+        try:
+            pause_until = float(tactical.get("pause_until") or 0)
+            daily_pnl = float(tactical.get("daily_pnl") or 0.0)
+            loss_streak_value = tactical.get("loss_streak") or 0
+            loss_streak_float = float(loss_streak_value)
+            if not all(math.isfinite(v) for v in (pause_until, daily_pnl, loss_streak_float)):
+                return "Tactical circuit: ?"
+            loss_streak = int(loss_streak_value)
+        except (TypeError, ValueError, OverflowError):
+            return "Tactical circuit: ?"
+
+        now = time.time()
+        reason = tactical.get("pause_reason") or ""
+        if pause_until > now:
+            try:
+                until = time.strftime("%H:%M", time.localtime(pause_until))
+            except (OverflowError, OSError, ValueError):
+                return "Tactical circuit: ?"
+            return (
+                f"Tactical circuit: 是 ({reason or 'paused'}, until {until}, "
+                f"daily_pnl={daily_pnl:+.2f}, loss_streak={loss_streak})"
+            )
+        return (
+            f"Tactical circuit: 否 "
+            f"(daily_pnl={daily_pnl:+.2f}, loss_streak={loss_streak})"
+        )
+
     async def _cmd_status(self):
         uptime = time.time() - self._start_time
         hours = uptime / 3600
@@ -856,9 +898,10 @@ class TelegramNotifier(BaseAgent):
         text += f"运行: {hours:.1f}h\n"
         text += f"持仓: {len(positions)}个\n"
         if halted:
-            text += f"熔断: 是 ({halt_reason})\n"
+            text += f"全局熔断: 是 ({halt_reason})\n"
         else:
-            text += f"熔断: 否\n"
+            text += "全局熔断: 否\n"
+        text += f"{self._format_tactical_circuit_line(self._read_tactical_circuit_state())}\n"
         if reconciliation:
             text += f"{reconciliation}\n"
         text += f"今日交易: {self._daily_summary['trades']}笔\n"

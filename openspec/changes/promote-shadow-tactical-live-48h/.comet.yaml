@@ -1,0 +1,18 @@
+workflow: full
+phase: archive
+build_mode: executing-plans
+isolation: worktree
+verify_mode: full
+base_ref: be5aafbaac38e9e585c5b37ba4ff77b8e53718d0
+design_doc: docs/superpowers/specs/2026-07-16-shadow-tactical-live-sidecar-design.md
+plan: docs/superpowers/plans/2026-07-16-shadow-tactical-live-sidecar.md
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-07-16-promote-shadow-tactical-live-48h-verify.md
+branch_status: handled
+created_at: 2026-07-16
+verified_at: 2026-07-16
+archived: false
+handoff_context: openspec/changes/promote-shadow-tactical-live-48h/.comet/handoff/design-context.json
+handoff_hash: de7ab8ced16aeb26d96a83083a2b6bbcd870e05642b7eedcd441bcb83975349a
+build_command: pytest tests/test_shadow_tactical_live_core.py tests/test_shadow_tactical_live_executor.py tests/test_shadow_tactical_owner_isolation.py tests/test_shadow_tactical_live_cli.py tests/test_phantom_position_resync.py test_okx_posmode_executor.py -q
+verify_command: pytest tests/test_shadow_tactical_live_core.py tests/test_shadow_tactical_live_executor.py tests/test_shadow_tactical_owner_isolation.py tests/test_shadow_tactical_live_cli.py tests/test_phantom_position_resync.py test_okx_posmode_executor.py -q

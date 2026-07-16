@@ -45,7 +45,12 @@ def pe(tmp_path, monkeypatch):
         'paper_limit_tick_staleness_sec': 60,
     })
     executor.bus = _MockBus()
-    asyncio.get_event_loop().run_until_complete(executor.setup())
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    loop.run_until_complete(executor.setup())
     return executor
 
 

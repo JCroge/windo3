@@ -673,6 +673,55 @@ class TestProtectionFailureFlow:
         ex.exchange.create_order.assert_not_called()
 
 
+class TestAttachedSlVerification:
+    def test_attached_sl_second_attempt_marks_protected_without_halt(self):
+        ex = _make_executor()
+        ex.exchange_id = "okx"
+        ex.testnet = False
+        ex._halt_symbol = MagicMock()
+        ex._resolve_attached_sl_algo_id = MagicMock(side_effect=[None, "algo-1"])
+        ex._list_pending_algos = MagicMock(return_value=[])
+
+        algo_id = ex._verify_attached_sl_after_fill(
+            "BTC-USDT-SWAP", "clord-1", attempts=2, sleep_sec=0
+        )
+
+        assert algo_id == "algo-1"
+        ex._halt_symbol.assert_not_called()
+
+    def test_attached_sl_fallback_matches_pending_algo(self):
+        ex = _make_executor()
+        ex.exchange_id = "okx"
+        ex.testnet = False
+        ex._resolve_attached_sl_algo_id = MagicMock(return_value=None)
+        ex._list_pending_algos = MagicMock(return_value=[{
+            "algoId": "algo-2",
+            "algoClOrdId": "clord-2",
+            "sl_trigger": "101.5",
+            "tp_trigger": "",
+        }])
+
+        algo_id = ex._verify_attached_sl_after_fill(
+            "BTC-USDT-SWAP", "clord-2", attempts=1, sleep_sec=0
+        )
+
+        assert algo_id == "algo-2"
+
+    def test_attached_sl_missing_after_attempts_returns_none(self):
+        ex = _make_executor()
+        ex.exchange_id = "okx"
+        ex.testnet = False
+        ex._resolve_attached_sl_algo_id = MagicMock(return_value=None)
+        ex._list_pending_algos = MagicMock(return_value=[])
+
+        algo_id = ex._verify_attached_sl_after_fill(
+            "BTC-USDT-SWAP", "clord-missing", attempts=2, sleep_sec=0
+        )
+
+        assert algo_id is None
+        assert ex._resolve_attached_sl_algo_id.call_count == 2
+
+
 class TestAlgoMigration:
     """AC-A7: 启动期/sync 时存量 OKX algo 迁移到 single-owner。"""
 
@@ -729,6 +778,43 @@ class TestAlgoMigration:
         # SL trigger 同步到本地 stop_loss
         assert abs(pos['stop_loss'] - 94.0) < 1e-6
         assert summary['matched_sl'] == 'sl-1'
+
+    def test_sl_algo_unresolved_halt_clears_when_migration_finds_sl(
+        self, monkeypatch
+    ):
+        import utils.halt_state as hs_mod
+
+        ex = _make_executor()
+        ex.testnet = False
+        self._local_long(ex)
+        ex.positions["BTC-USDT-SWAP"]["protection_state"] = "unknown"
+        ex._halted_symbols = {
+            "BTC-USDT-SWAP": {"reason": "sl_algo_unresolved", "halted_at": 1.0}
+        }
+        halt_state = MagicMock()
+        halt_state.auto_clear_if_reason.return_value = True
+        monkeypatch.setattr(hs_mod, "get_halt_state", lambda: halt_state)
+        ex._save_positions = MagicMock()
+        ex.exchange.private_get_trade_orders_algo_pending = MagicMock(
+            return_value={"data": [{
+                "algoId": "sl-1",
+                "algoClOrdId": "clord-1",
+                "instId": "BTC-USDT-SWAP",
+                "side": "sell",
+                "tpTriggerPx": "0",
+                "slTriggerPx": "94",
+            }]}
+        )
+
+        summary = ex._migrate_okx_algos_for_symbol("BTC-USDT-SWAP")
+
+        assert summary["matched_sl"] == "sl-1"
+        assert ex.positions["BTC-USDT-SWAP"]["protection_state"] == "protected"
+        assert "BTC-USDT-SWAP" not in ex._halted_symbols
+        halt_state.auto_clear_if_reason.assert_called_once_with(
+            "okx_sl_algo_unresolved:BTC-USDT-SWAP",
+            cleared_by="self_heal:protection_resolved",
+        )
 
     def test_missing_sl_halts_live(self):
         """本地有仓位但交易所无 SL,live 必须 halt。"""
@@ -844,6 +930,7 @@ class TestAlgoMigration:
             'missing_sl': False,
             'halted': False,
             'oco_replaced': 0,
+            'foreign_algos': 0,
         }
 
     def test_legacy_oco_replaced_with_pure_sl(self):
@@ -906,6 +993,79 @@ class TestAlgoMigration:
         assert pos['sl_algo_id'] == 'sl-new'
         assert pos['protection_state'] == 'protected'
         assert pos['sl_sync_state'] == 'active'
+
+    def test_oco_recovery_clears_protection_halt_after_global_exact_match(
+        self, monkeypatch
+    ):
+        import utils.halt_state as hs_mod
+
+        ex = _make_executor()
+        ex.testnet = False
+        self._local_long(ex)
+        ex.positions['BTC-USDT-SWAP']['protection_state'] = 'unknown'
+        ex._halted_symbols = {
+            'BTC-USDT-SWAP': {'reason': 'sl_algo_unresolved', 'halted_at': 1.0}
+        }
+        ex._save_positions = MagicMock()
+        ex._halt_symbol = MagicMock()
+
+        def _pending(params):
+            ord_type = (params or {}).get('ordType')
+            if ord_type == 'oco':
+                return {'data': [
+                    {'algoId': 'oco-old', 'algoClOrdId': 'oco-clord',
+                     'instId': 'BTC-USDT-SWAP',
+                     'side': 'sell', 'posSide': 'net',
+                     'tpTriggerPx': '110', 'slTriggerPx': '94',
+                     'ordType': 'oco'},
+                ]}
+            return {'data': []}
+
+        ex.exchange.private_get_trade_orders_algo_pending = MagicMock(
+            side_effect=_pending,
+        )
+        ex.exchange.cancel_orders = MagicMock(
+            return_value=[{'id': 'oco-old', 'status': 'canceled'}],
+        )
+        ex.exchange.create_order = MagicMock(
+            return_value={'id': 'sl-new', 'info': {
+                'algoId': 'sl-new',
+                'algoClOrdId': 'sl-new-clord',
+            }},
+        )
+
+        order = []
+        halt_state = MagicMock()
+
+        def auto_clear(expected, *, cleared_by):
+            order.append('global')
+            return True
+
+        halt_state.auto_clear_if_reason.side_effect = auto_clear
+        monkeypatch.setattr(hs_mod, 'get_halt_state', lambda: halt_state)
+        real_clear_symbol_halt = ex.clear_symbol_halt
+
+        def clear_symbol_halt(*args, **kwargs):
+            order.append('local')
+            return real_clear_symbol_halt(*args, **kwargs)
+
+        ex.clear_symbol_halt = MagicMock(side_effect=clear_symbol_halt)
+
+        summary = ex._migrate_okx_algos_for_symbol('BTC-USDT-SWAP')
+
+        assert summary['oco_replaced'] == 1, summary
+        assert summary['matched_sl'] == 'sl-new'
+        assert ex.positions['BTC-USDT-SWAP']['protection_state'] == 'protected'
+        assert 'BTC-USDT-SWAP' not in ex._halted_symbols
+        assert order == ['global', 'local']
+        halt_state.auto_clear_if_reason.assert_called_once_with(
+            'okx_sl_algo_unresolved:BTC-USDT-SWAP',
+            cleared_by='self_heal:protection_resolved',
+        )
+        ex.clear_symbol_halt.assert_called_once_with(
+            'BTC-USDT-SWAP', source='self_heal:protection_resolved',
+        )
+        ex._halt_symbol.assert_not_called()
 
 
 class TestAddPositionTpInvariant:
@@ -980,5 +1140,3 @@ class TestAddPositionTpInvariant:
         levels = pos['take_profit_levels']
         assert abs((levels[0] - new_entry) / new_entry - 0.10) < 1e-9
         assert abs((levels[1] - new_entry) / new_entry - 0.20) < 1e-9
-
-

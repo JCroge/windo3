@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-07-10）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate 和 Tactical Exit Track 均有单点收口函数。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义。生产入口不再接旧 `live_trading.py`。
+**系统状态（2026-07-15）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate、Tactical Exit Track 和 protection halt recovery 均有单点收口函数。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义；消费状态时必须区分全局 halt、per-symbol halt、Tactical circuit。生产入口不再接旧 `live_trading.py`。
 
 ## 核心模块接口
 
@@ -159,8 +159,9 @@ result = selector.analyze()  # 返回优质币种列表及评分
 | `data/positions.json` | 当前持仓 | Executor重启后恢复 |
 | `data/risk_state.json` | 峰值余额 | 回撤计算基准 |
 | `data/trade_history.json` | 交易历史 | Reviewer追踪盈亏/策略衰减 |
-| `data/riskguard_state.json` | RiskGuard状态 | 持仓追踪/价格/熔断状态重启恢复 |
-| `data/halt_state.json` | 全局熔断状态 | 加载损坏 fail-closed |
+| `data/riskguard_state.json` | RiskGuard状态 | 持仓追踪/价格/熔断状态重启恢复；`tactical_circuit` 是 Tactical 独立暂停/日亏状态 |
+| `data/halt_state.json` | 全局熔断状态 | 加载损坏 fail-closed；以 `halted` / `can_open_new` 判定 active block，`halted=false` 时残留 `reason` 只能当 stale metadata |
+| `data/agent_health.json` | Agent健康与 per-symbol halt 快照 | `/status` / `/health` 输入；`halted_symbols` 来自 Executor 快照，允许约 30s 延迟 |
 | `data/live_order_events.jsonl` | 订单事件流 | LiveLedger append-only |
 | `data/live_position_lifecycle.json` | 持仓生命周期 | LiveLedger 原子写入 |
 | `data/rejected_signal_events.jsonl` | 被拒/影子决策事件流 | CounterfactualLedger append-only；Tactical shadow-only 复盘主输入 |
@@ -282,6 +283,14 @@ class MyAgent(BaseAgent):
 **Tactical shadow-only counterfactual**：
 
 `TACTICAL_SHADOW_ONLY=true` 时，Tactical 不发布 live 订单，也不走 PaperExecutor 的 `paper_execution_result`；Judge 会把可交易的 Tactical counterfactual 写入 `data/rejected_signal_events.jsonl` 与 `data/rejected_signal_lifecycle.json`。复盘 Tactical 是否赚钱时，优先筛 `track=tactical`、`exit_profile=tactical_v1`、`tactical_cost_gate=pass`、`tactical_track_gate=pass` 的 ledger 记录；`tactical_cost_gate=fail` 或 `tactical_track_gate=fail` 的记录可保留诊断字段，其中成本门已过但 RR/EV 阈值门失败的记录仍可用来观察 Tactical max-hold 结局，但不计入“本应真开 Tactical”的盈利样本。
+
+`TACTICAL_SHADOW_ONLY=false` 时，合格 Tactical 会进入 live `trade_decision.v2` / `execution_result.v2` 链路，仓位和 close payload 仍以 `track=tactical`、`exit_profile=tactical_v1`、`slot_type=tactical`、`tactical_close_reason` 识别。此时 `rejected_signal_*` 只代表被拒/影子候选，不等同 live Tactical 成交账本；live 收益以 LiveLedger / Reviewer final PnL 为准。
+
+**状态消费约定**：
+- 全局 halt：读 `data/halt_state.json` 的 `halted` / `can_open_new` / `reason`。
+- Per-symbol halt：读 `data/agent_health.json.halted_symbols` 或 `/halts`。
+- Tactical circuit：读 `data/riskguard_state.json.tactical_circuit.pause_until` / `pause_reason`。
+- 保护单自愈只覆盖 `okx_sl_algo_unresolved:<symbol>` 与 `migrate_missing_sl`；其它 halt 原因仍需 `/resume` 或 `/force_resume`。
 
 CounterfactualLedger 事件类型：
 - `rejected_plan_created`：创建影子计划。

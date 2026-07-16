@@ -66,14 +66,20 @@ kill -SIGINT $(pgrep -f run_agents.py)
 **Telegram远程命令**（需配置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID）：
 | 命令 | 功能 |
 |------|------|
-| `/status` | 运行时长、持仓数、熔断状态、今日PnL |
+| `/status` | 运行时长、持仓数、今日PnL、全局熔断、per-symbol halt、Tactical circuit、agent/bus 健康总括 |
 | `/positions` | 每个持仓的方向/杠杆/入场价/SL/TP |
-| `/stop` | 优雅退出 |
-| `/restart` | 优雅退出后自动重启 |
 | `/halt` | 手动熔断（停止新交易，保留持仓） |
 | `/resume` | 对账通过后解除熔断 |
 | `/force_resume` | 跳过对账强制解除熔断 |
 | `/reconcile` | 执行持仓对账 |
+| `/halts` | 查看 per-symbol halt 列表 |
+| `/resume_symbol <SYMBOL>` | 清除指定 per-symbol halt；若全局 halt 仍 active，回显会提示仍需 `/resume` |
+| `/pnl` | 查看 PnL 汇总 |
+| `/pnl_id <ID>` | 按订单/仓位 ID 查询 PnL 解析 |
+| `/paper_gap <SYMBOL>` | 查看 paper/live gap |
+| `/health` | 查看 agent loop、queue、LLM、data 四维健康明细 |
+| `/stop` | 优雅退出 |
+| `/restart` | 优雅退出后自动重启 |
 | `/log` | 最近10条关键日志 |
 
 **强制停止**：
@@ -118,14 +124,17 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | `data/positions.json` | ContractExecutor | 实盘持仓快照 | 重启恢复 |
 | `data/risk_state.json` | RiskManager | 回撤基准（v2 schema：session_peak_equity/baseline_mode/legacy_peak_balance） | 重启不丢，启动时按 baseline_mode 决定是否重置 |
 | `data/trade_history.json` | ReviewerAgent | 已平仓历史+策略衰减 | 缺失时空起 |
-| `data/riskguard_state.json` | PortfolioRiskGuard | 持仓追踪/价格缓存/熔断状态 | 缺失时空起 |
-| `data/halt_state.json` | HaltState | 全局熔断状态 | 缺失/损坏 fail-closed |
+| `data/riskguard_state.json` | PortfolioRiskGuard | 持仓追踪/价格缓存/熔断状态/Tactical circuit | 缺失时空起；`tactical_circuit` 保存 Tactical 日亏、连亏暂停和 pause_until |
+| `data/halt_state.json` | HaltState | 全局熔断状态 | 缺失/损坏 fail-closed；`halted=false` 时残留 `reason` 只能当 stale metadata，不代表 active halt |
+| `data/agent_health.json` | Orchestrator | agent/bus/per-symbol halt 快照 | `/status` / `/health` 读取；`halted_symbols` 最多有 30s 延迟 |
 | `data/judge_state.json` | MultiJudge | deferred_entry/sl_timestamps/cooldown | 缺失时空起，启动时清理过期条目 |
 | `data/live_order_events.jsonl` | LiveLedger | 订单事件流（open/reduce/close） | append-only |
 | `data/live_position_lifecycle.json` | LiveLedger | 持仓生命周期聚合 | 原子写入 |
 | `data/paper_positions.json` | PaperExecutor | 影子持仓快照 | 缺失=从初始 equity 起 |
 | `data/paper_equity.json` | PaperExecutor | 影子账户余额 | 首次启动=EFFECTIVE_BALANCE_CAP 或 1000 |
 | `data/paper_trades.jsonl` | PaperExecutor | 影子已平仓 append-only 流水 | 与实盘 trade_history 互不影响 |
+| `data/rejected_signal_events.jsonl` | CounterfactualLedger | 被拒/影子决策事件流 | append-only；Tactical shadow-only 复盘主输入 |
+| `data/rejected_signal_lifecycle.json` | CounterfactualLedger | 被拒/影子决策生命周期 | 原子写入；记录 tracking 与结算状态 |
 | `data/.restart_flag` | TelegramNotifier | 远程 /restart 标记 | run_agents.py 检测后重启 |
 
 ## 环境变量
@@ -226,6 +235,8 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
+**云服 Tactical 运行快照（2026-07-15）**：`TACTICAL_TRACK_ENABLED=true`、`TACTICAL_SHADOW_ONLY=false`、`TACTICAL_TP1_R=1.00`、`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`。这是生产灰度配置，不改变代码默认值；重启或回滚前必须重新核对 `.env` 与启动 banner。
+
 ## R:R Floor 策略
 
 `Judge._select_rr_floor(action, plan, tech, score)` 是 R:R floor 的**唯一入口**，主开仓路径与 `_apply_regime_policy`（deferred 路径）共用，禁止在调用点重新写 if/else 分支。函数返回 `(min_rr, rr_policy, rr_floor_reason)` 三元组，按以下顺序匹配第一个命中的分支：
@@ -251,6 +262,8 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 Tactical 是 Main Trend Runner 之外的短线落袋轨道。它不复用 Main ladder TP2/TP3 的 R:R 假设；Judge 先通过 `_classify_track` 判断 `main` / `tactical` / `shadow_only` / `reject`，再由 `_apply_tactical_profile` 改写 stop、TP1、size、leverage、`tactical_effective_rr`、`tactical_expected_value`、`tactical_cost_gate` 和 `tactical_track_gate`。Tactical 门控顺序固定为：先成本门，再 `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 阈值门。
 
 `TACTICAL_SHADOW_ONLY=true` 时，系统不会生成 live Tactical 订单，也不是 PaperExecutor 影子持仓；Judge 会通过 `_apply_tactical_shadow_profile` 生成“如果真开 Tactical 会使用的” counterfactual plan，并写入 `data/rejected_signal_events.jsonl` 与 `data/rejected_signal_lifecycle.json`。true-open 样本应带 `track=tactical`、`exit_profile=tactical_v1`、`tactical_cost_gate=pass`、`tactical_track_gate=pass`、`tactical_max_hold_minutes=90`；成本门通过但 RR/EV 阈值门失败的候选会保留 `track=shadow_only` / `exit_profile=tactical_v1` 继续做 90 分钟 max-hold counterfactual，不计入“会真开 Tactical”的盈利样本；成本门失败则为 `track=shadow_only` / `exit_profile=none`。
+
+`TACTICAL_SHADOW_ONLY=false` 时，合格 Tactical 会进入 live 执行链路；仍必须通过全局订单预检、Tactical risk gate 和保护单完整性检查。Tactical circuit 暂停只阻止 Tactical 新开仓，不等同全局 halt；全局保护单/执行完整性失败仍可停全系统。
 
 `TACTICAL_TP1_R=1.00` 表示 TP1 距离为 1 倍 Tactical stop 距离；若原 Main TP1 更近，则使用更近的 Main TP1 作为上限。
 
@@ -290,6 +303,7 @@ TACTICAL_SHADOW_ONLY=true
 - `tactical_cost_gate=fail` 的候选应保持 `shadow_only`，不能借 Main ladder effective R:R 过门。
 - `tactical_track_gate=fail` 且 `tactical_gate_failed=min_rr_or_ev` 表示成本门已过但未达到当前 RR/EV 样本筛选阈值；它可以继续保留 Tactical exit profile 做 shadow 结算，但不能按“会真开 Tactical”统计。
 - Tactical 日亏、连亏暂停和并发槽位独立于 Main；系统级执行/保护单失败仍应触发全局 fail-closed。
+- `/status` 会分开显示 `全局熔断`、`Per-symbol halt`、`Tactical circuit`。TG 里看到“熔断”时先确认是哪一行，不能把全局保护单 halt 误判为 Tactical 连亏暂停。
 
 快速查看当前仍在跟踪或已结算的 Tactical shadow 记录：
 
@@ -564,6 +578,30 @@ pip3 install --upgrade ccxt
 rg -n "cancel_order\(" agents/trading/executor.py    # 应该只剩 helper / sweep 内部引用
 rg -n "is_strategy_stop|_record_sl_hit" agents/trading/judge.py
 python3 -m pytest -q test_protective_sl_owner.py test_judge_close_cause.py
+```
+
+---
+
+### 问题：TG 显示熔断，但 Tactical circuit 未暂停（2026-07-15 修复）
+
+**症状**：`/status` 显示全局熔断或旧的 `okx_sl_algo_unresolved:<symbol>` 原因，容易误判为 Tactical 连亏暂停；或某个保护单 halt 已无仓位风险但仍影响开新仓。
+
+**状态**：2026-07-15 `protective-sl-halt-recovery` 已修复：
+- OKX attached SL 首次回查不到 `algoId` 时，Executor 先做有界验证；验证找到 SL 就标 `protection_state=protected`，不写终态保护单 halt。
+- allowlist 保护单原因（`okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl`）只在对应仓位已关闭或已恢复保护，且没有其它 unresolved protection halt 时自动清除。若还有另一个 unresolved symbol，全局 halt 保持 active 并 repoint 到那个 symbol。
+- manual halt、daily hard stop、reconciliation mismatch、未知原因不走自愈，仍需 `/resume` 或 `/force_resume`。
+- `/status` 分开显示全局 halt、per-symbol halt、Tactical circuit；`halt_state.halted=false` 且 `can_open_new=true` 时，残留 `reason` 是 stale metadata，不代表 active block。
+
+**复检**：
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+for p in ["data/halt_state.json", "data/riskguard_state.json", "data/agent_health.json"]:
+    data = json.loads(Path(p).read_text()) if Path(p).exists() else {}
+    print(p, {k: data.get(k) for k in ("halted", "reason", "can_open_new", "reconciliation_pending", "tactical_circuit", "halted_symbols")})
+PY
+python3 -m pytest -q test_halt_resume_ownership.py tests/test_phantom_position_resync.py test_tg_status_enhancement.py
 ```
 
 ---

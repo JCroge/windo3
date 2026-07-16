@@ -40,6 +40,7 @@ class DriftDecision:
 
 # OKX 拒单错误码：与持仓状态相关，必须做交易所状态复核
 OKX_POSITION_REJECT_CODES = ('51169', '51205', '51112', '51333')
+PROTECTION_HALT_REASONS = {"sl_algo_unresolved", "migrate_missing_sl"}
 
 
 def _is_okx_position_reject(err_msg: str) -> bool:
@@ -57,7 +58,10 @@ class ContractExecutor:
                  password: str = None,
                  testnet: bool = True,
                  leverage: int = 1,
-                 positions_file: Optional[str] = None):
+                 positions_file: Optional[str] = None,
+                 risk_state_file: Optional[str] = None,
+                 ledger_events_file: Optional[str] = None,
+                 ledger_lifecycle_file: Optional[str] = None):
         """
         Args:
             exchange_id: 交易所ID (binance/okx)
@@ -69,6 +73,8 @@ class ContractExecutor:
             positions_file: 持仓持久化文件路径；None 时按 STATE_NAMESPACE 自动派生
                             (live → data/positions.json, testnet → data/testnet_positions.json,
                              paper → data/paper_positions.json)
+            risk_state_file / ledger_*: sidecar 等隔离进程可显式注入,
+                                      避免污染 Main live 状态文件。
         """
         self.logger = setup_logger('executor')
         self.exchange_id = exchange_id
@@ -135,7 +141,7 @@ class ContractExecutor:
             max_trade_amount=max_amount,
             max_drawdown_pct=max_dd,
             max_daily_loss=max_daily,
-            state_file=sp.risk_state,
+            state_file=risk_state_file or sp.risk_state,
             effective_balance_cap=_cap,
             baseline_mode=_baseline_mode,
         )
@@ -185,7 +191,12 @@ class ContractExecutor:
         # 实盘账本：真实成交 PnL 记录
         try:
             from utils.live_ledger import LiveLedger
-            self.ledger = LiveLedger(self.exchange, logger=self.logger)
+            self.ledger = LiveLedger(
+                self.exchange,
+                events_path=ledger_events_file or sp.live_order_events,
+                lifecycle_path=ledger_lifecycle_file or sp.live_position_lifecycle,
+                logger=self.logger,
+            )
             # 启动时从 ledger 同步当日 PnL 到 risk_manager
             self.risk_manager.sync_from_ledger(self.ledger)
         except Exception as e:
@@ -394,6 +405,37 @@ class ContractExecutor:
         prefix = f"ca{ns}{bot}"
         return clord_id.startswith(prefix)
 
+    @classmethod
+    def _is_foreign_owner_clord_id(cls, clord_id: Optional[str]) -> bool:
+        """Owner-tagged clOrdId that does not belong to this executor instance."""
+        if not clord_id:
+            return False
+        clord = str(clord_id)
+        return clord.startswith("ca") and not cls._is_owner_clord_id(clord)
+
+    def _load_sidecar_owner_registry(self):
+        try:
+            from utils.shadow_tactical_live import ShadowTacticalOwnerRegistry, SidecarPaths
+            path = os.getenv("SHADOW_TACTICAL_OWNER_REGISTRY") or SidecarPaths().owners
+            return ShadowTacticalOwnerRegistry(path)
+        except Exception as e:
+            self.logger.warning(f"[SidecarOwner] load failed: {e}")
+            return None
+
+    def _is_sidecar_owned_algo_clord_id(self, clord_id: Optional[str]) -> bool:
+        if not clord_id:
+            return False
+        owners = self._load_sidecar_owner_registry()
+        if owners is None:
+            return False
+        try:
+            for row in owners.load().get("owners", {}).values():
+                if row.get("status") == "open" and row.get("sl_algo_clord_id") == clord_id:
+                    return True
+        except Exception as e:
+            self.logger.warning(f"[SidecarOwner] owner lookup failed: {e}")
+        return False
+
     def _resolve_attached_sl_algo_id(self, symbol: str,
                                        clord_id: str) -> Optional[str]:
         """在 OKX pending algo 列表中按 algoClOrdId 找回真实 algoId。
@@ -427,6 +469,28 @@ class ContractExecutor:
         except Exception as e:
             self.logger.warning(f"[SL Resolve] {symbol} 查询 algo 失败: {e}")
             return None
+
+    def _verify_attached_sl_after_fill(self, symbol: str, clord_id: str,
+                                       *, attempts: int = 3,
+                                       sleep_sec: float = 0.5) -> Optional[str]:
+        if not clord_id:
+            return None
+        attempts = max(1, int(attempts or 1))
+        for idx in range(attempts):
+            algo_id = self._resolve_attached_sl_algo_id(symbol, clord_id)
+            if algo_id:
+                return algo_id
+
+            for algo in self._list_pending_algos(symbol):
+                if algo.get("algoClOrdId") != clord_id:
+                    continue
+                has_sl = algo.get("sl_trigger") not in (None, "", "0")
+                if algo.get("algoId") and has_sl:
+                    return algo.get("algoId")
+
+            if idx < attempts - 1 and sleep_sec > 0:
+                time.sleep(sleep_sec)
+        return None
 
     def _list_pending_algos(self, symbol: str) -> list:
         """列出 OKX 指定 symbol 的 pending algo orders。
@@ -545,6 +609,7 @@ class ContractExecutor:
             'missing_sl': False,
             'halted': False,
             'oco_replaced': 0,
+            'foreign_algos': 0,
         }
         if self.exchange_id != 'okx':
             return summary
@@ -562,6 +627,17 @@ class ContractExecutor:
             sl_trigger = algo.get('sl_trigger')
             has_tp = tp_trigger not in (None, '', '0')
             has_sl = sl_trigger not in (None, '', '0')
+            algo_clord = algo.get('algoClOrdId')
+            if (has_tp or has_sl) and (
+                self._is_sidecar_owned_algo_clord_id(algo_clord)
+                or self._is_foreign_owner_clord_id(algo_clord)
+            ):
+                summary['foreign_algos'] += 1
+                self.logger.info(
+                    f"[Migrate] {symbol} preserve foreign/sidecar algo "
+                    f"{algo_id} clord={algo_clord}"
+                )
+                continue
             if has_tp and not has_sl:
                 # 纯 TP algo,exit_owner 是本地 → 必须撤
                 if self._cancel_algo_by_id(symbol, algo_id):
@@ -657,6 +733,14 @@ class ContractExecutor:
                     f"{position.get('sl_algo_id')} @ {target_sl}"
                 )
                 self._save_positions()
+                halt_info = getattr(self, "_halted_symbols", {}).get(symbol)
+                halt_reason = (halt_info or {}).get("reason", "")
+                if halt_reason:
+                    self._maybe_auto_clear_protection_halt(
+                        symbol,
+                        halt_reason,
+                        source="self_heal:protection_resolved",
+                    )
             else:
                 # _replace_protective_sl 失败时已 halt + 写 protection_state
                 summary['halted'] = True
@@ -728,6 +812,12 @@ class ContractExecutor:
             pass
         summary['matched_sl'] = algo['algoId']
         self._save_positions()
+        halt_info = getattr(self, "_halted_symbols", {}).get(symbol)
+        halt_reason = (halt_info or {}).get("reason", "")
+        if halt_reason:
+            self._maybe_auto_clear_protection_halt(
+                symbol, halt_reason, source="self_heal:protection_resolved"
+            )
         self.logger.info(
             f"[Migrate] {symbol} SL algo {algo['algoId']} 归属本地仓位,"
             f"protection_state=protected"
@@ -1009,6 +1099,72 @@ class ContractExecutor:
             )
             return 1
         return 0
+
+    def _is_protection_halt_reason(self, reason: str) -> bool:
+        return reason in PROTECTION_HALT_REASONS
+
+    def _global_halt_reason_for(self, symbol: str, reason: str) -> str:
+        return f"okx_{reason}:{symbol}"
+
+    def _position_protection_unresolved(self, position: Optional[dict]) -> bool:
+        if not position:
+            return False
+        return (position.get("protection_state") or "unknown") != "protected"
+
+    def _find_other_unresolved_protection_halt(self, symbol: str) -> Optional[tuple]:
+        halted = getattr(self, "_halted_symbols", {}) or {}
+        for other_symbol, info in sorted(halted.items()):
+            if other_symbol == symbol:
+                continue
+            reason = (info or {}).get("reason", "")
+            if not self._is_protection_halt_reason(reason):
+                continue
+            if self._position_protection_unresolved(self.positions.get(other_symbol)):
+                return other_symbol, reason
+        return None
+
+    def _maybe_auto_clear_protection_halt(
+        self, symbol: str, reason: str, *, source: str
+    ) -> bool:
+        if not self._is_protection_halt_reason(reason):
+            return False
+        pos = self.positions.get(symbol)
+        if self._position_protection_unresolved(pos):
+            return False
+        try:
+            from utils.halt_state import get_halt_state
+            expected = self._global_halt_reason_for(symbol, reason)
+            halt_state = get_halt_state()
+            other = self._find_other_unresolved_protection_halt(symbol)
+            if other:
+                other_symbol, other_reason = other
+                if not halt_state.halted or halt_state.reason != expected:
+                    return False
+                halt_state.halt(
+                    reason=self._global_halt_reason_for(other_symbol, other_reason),
+                    triggered_by=source,
+                )
+                self.clear_symbol_halt(symbol, source=source)
+                self.logger.info(
+                    f"[SelfHeal] {symbol} protection halt cleared locally; "
+                    f"global halt remains for {other_symbol} "
+                    f"(reason={other_reason}, source={source})"
+                )
+                return False
+            cleared = halt_state.auto_clear_if_reason(expected, cleared_by=source)
+        except Exception as e:
+            self.logger.warning(
+                f"[SelfHeal] {symbol} protection halt auto-clear failed: {e}"
+            )
+            return False
+        if not cleared:
+            return False
+        self.clear_symbol_halt(symbol, source=source)
+        self.logger.info(
+            f"[SelfHeal] {symbol} protection halt cleared "
+            f"(reason={reason}, source={source})"
+        )
+        return True
 
     def get_halted_symbols(self) -> Dict[str, dict]:
         """返回 _halted_symbols 顶层浅拷贝快照。
@@ -1921,6 +2077,15 @@ class ContractExecutor:
 
         self._sl_check_failures[symbol] = 0
 
+        return self._evaluate_local_exit_trigger(symbol, position, current_price)
+
+    def _evaluate_local_exit_trigger(
+        self,
+        symbol: str,
+        position: dict,
+        current_price: float,
+    ) -> Optional[str]:
+        """Evaluate local TP/SL/trailing exits once a fresh price is known."""
         # 更新最高/最低价（用于trailing计算）
         if position['side'] == 'long':
             position['highest_price'] = max(position.get('highest_price', current_price), current_price)
@@ -2046,6 +2211,12 @@ class ContractExecutor:
                     position['tactical_close_reason'] = 'tactical_tp1'
                     self.logger.info(f"[Tactical] {symbol} TP1 命中 {tp1},等待 reduce 确认")
                     return 'tactical_tp1'
+            if tp_filled == 1 and len(tp_levels) >= 2:
+                tp2 = tp_levels[1]
+                if (is_long and price >= tp2) or (not is_long and price <= tp2):
+                    position['tactical_close_reason'] = 'tactical_tp2'
+                    self.logger.info(f"[Tactical] {symbol} TP2 命中 {tp2},等待 reduce 确认")
+                    return 'partial_tp_2'
             return None
 
         # --- Low RR 槽提前 trailing（不等 TP1）---
@@ -2222,6 +2393,172 @@ class ContractExecutor:
     def get_all_positions(self) -> Dict:
         """获取所有持仓"""
         return self.positions.copy()
+
+    def open_sidecar_plan(self, plan: dict, *, size_usdt: Optional[float] = None) -> Optional[Dict]:
+        """Open a Shadow Tactical sidecar plan with mechanical checks only."""
+        from utils.shadow_tactical_live import canonical_sidecar_symbols
+
+        canonical = canonical_sidecar_symbols(plan["symbol"])
+        internal_symbol = plan.get("internal_symbol") or canonical["internal_symbol"]
+        symbol = plan.get("exchange_symbol") or canonical["exchange_symbol"]
+        side = plan["side"]
+        if self.is_symbol_halted(symbol):
+            self.logger.warning(f"[Sidecar] {symbol} halted, reject open")
+            return None
+        if self.exchange_id == "okx" and getattr(self, "_okx_pos_mode", None) not in (
+            "net_mode",
+            "long_short_mode",
+        ):
+            self.logger.error(f"[Sidecar] {symbol} OKX posMode unknown, reject open")
+            return None
+
+        balance = self.get_balance()
+        can_trade, msg = self.risk_manager.check_can_trade(balance)
+        if not can_trade:
+            self.logger.warning(f"[Sidecar] risk reject: {msg}")
+            return None
+
+        leverage = int(plan.get("leverage") or self.leverage)
+        requested_size = float(size_usdt or self.risk_manager.max_trade_amount)
+        capped_size = min(requested_size, self.risk_manager.max_trade_amount)
+        free_balance = (
+            self.balance_adapter.get_free()
+            if self.balance_adapter
+            else self.exchange.fetch_balance()["USDT"]["free"]
+        )
+        if free_balance < capped_size * 1.1:
+            self.logger.warning(
+                f"[Sidecar] free balance too low: {free_balance:.2f} < {capped_size * 1.1:.2f}"
+            )
+            return None
+
+        ticker = self.exchange.fetch_ticker(symbol)
+        current_price = float(ticker["last"])
+        stop_loss = float(plan["stop_loss"])
+        take_profit = list(plan.get("take_profit") or [])
+        if side == "long" and stop_loss >= current_price:
+            self.logger.error(f"[Sidecar] invalid long SL {stop_loss} >= {current_price}")
+            return None
+        if side == "short" and stop_loss <= current_price:
+            self.logger.error(f"[Sidecar] invalid short SL {stop_loss} <= {current_price}")
+            return None
+        if not take_profit:
+            self.logger.error("[Sidecar] missing take_profit")
+            return None
+
+        try:
+            self.exchange.set_leverage(leverage, symbol)
+        except Exception as e:
+            self.logger.warning(f"[Sidecar] set leverage failed: {e}")
+
+        if not self._check_slippage(symbol, capped_size, current_price):
+            return None
+
+        order_side = "buy" if side == "long" else "sell"
+        if self.caps:
+            ok, reason, _ = self.caps.precheck_order(
+                symbol=symbol,
+                side=order_side,
+                size_usdt=capped_size,
+                price=current_price,
+                leverage=leverage,
+            )
+            if not ok:
+                self.logger.warning(f"[Sidecar] precheck reject: {reason}")
+                return None
+
+        market = self.exchange.market(symbol)
+        contract_size = float(market.get("contractSize", 1) or 1)
+        amount = float(
+            self.exchange.amount_to_precision(
+                symbol,
+                capped_size * leverage / (current_price * contract_size),
+            )
+        )
+        min_amount = market.get("limits", {}).get("amount", {}).get("min", 0)
+        if min_amount and amount < min_amount:
+            self.logger.warning(
+                f"[Sidecar] amount {amount:.8f} below exchange min {min_amount}"
+            )
+            return None
+
+        sl_clord_id = (
+            self._make_owner_tag_clord_id(symbol)
+            if self.exchange_id == "okx" and stop_loss
+            else None
+        )
+        tp_sl_params = self._build_tp_sl_params(
+            side,
+            stop_loss,
+            take_profit[0],
+            sl_clord_id=sl_clord_id,
+        )
+        attach_algo = self._build_attach_algo_from_tp_sl(tp_sl_params)
+        params = self._build_open_order_params(
+            side,
+            clord_id=plan.get("entry_clord_id"),
+            attach_algo=attach_algo,
+        )
+        order = self.exchange.create_order(
+            symbol=symbol,
+            type="market",
+            side=order_side,
+            amount=amount,
+            params=params,
+        )
+
+        sl_algo_id = None
+        sl_sync_state = "pending"
+        protection_state = "unprotected"
+        if self.exchange_id == "okx" and sl_clord_id:
+            sl_algo_id = self._verify_attached_sl_after_fill(symbol, sl_clord_id)
+            if not sl_algo_id:
+                self._halt_symbol(symbol, reason="sidecar_sl_unverified")
+                return None
+            sl_sync_state = "active"
+            protection_state = "protected"
+
+        position = {
+            "symbol": symbol,
+            "internal_symbol": internal_symbol,
+            "exchange_symbol": symbol,
+            "side": side,
+            "entry_price": current_price,
+            "amount": amount,
+            "amount_usdt": capped_size,
+            "leverage": leverage,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit[0],
+            "take_profit_levels": take_profit,
+            "sl_order_id": sl_algo_id,
+            "exit_owner": "sidecar_tactical_exchange_sl",
+            "sl_algo_id": sl_algo_id,
+            "sl_algo_clord_id": sl_clord_id,
+            "sl_sync_state": sl_sync_state,
+            "protection_state": protection_state,
+            "shadow_id": plan.get("shadow_id"),
+            "sidecar_source": plan.get("sidecar_source", "shadow_tactical_live"),
+            "entry_order_id": order.get("id") if order else None,
+            "entry_clord_id": plan.get("entry_clord_id"),
+            "open_time": time.time(),
+        }
+        self.positions[symbol] = position
+        self._save_positions()
+
+        if self.ledger and order:
+            try:
+                self.ledger.record_open(
+                    order_id=order["id"],
+                    symbol=symbol,
+                    side=side,
+                    amount_usdt=capped_size,
+                    leverage=leverage,
+                    estimated_price=current_price,
+                )
+            except Exception as e:
+                self.logger.warning(f"[Sidecar] ledger open record failed: {e}")
+
+        return position
 
     def open_position_with_plan(self, symbol: str, side: str, plan: dict) -> Optional[Dict]:
         """基于Judge plan的智能开仓"""
@@ -2448,7 +2785,7 @@ class ContractExecutor:
             protection_state_resolved = 'unprotected'
             if self.exchange_id == 'okx' and sl_clord_id and stop_loss:
                 try:
-                    sl_algo_id_resolved = self._resolve_attached_sl_algo_id(
+                    sl_algo_id_resolved = self._verify_attached_sl_after_fill(
                         symbol, sl_clord_id,
                     )
                 except Exception as e:
@@ -2527,7 +2864,7 @@ class ContractExecutor:
         共用,但仅 OKX 路径会真正把 attachAlgoOrds 加进 create_order 参数;
         reduceOnly/posSide 仍由 _build_open_order_params 决定。
 
-        sl_clord_id 透传到 attach 字段,成交后由 _resolve_attached_sl_algo_id()
+        sl_clord_id 透传到 attach 字段,成交后由 _verify_attached_sl_after_fill()
         匹配并填充 position['sl_algo_id']。
         """
         attach = self._build_okx_attach_algo(stop_loss, take_profit, clord_id=sl_clord_id)
@@ -2825,14 +3162,13 @@ class ContractExecutor:
                     removed_symbols.append(sym)
                     del self.positions[sym]
                     self._sl_check_failures.pop(sym, None)
-                    # 幽灵移除自愈: 仅当该 symbol 因 migrate_missing_sl 被 halt
-                    # （症状根因已随仓位移除消失）才自动解 halt；其它 fail-closed
-                    # halt（reconcile_conflict / multiple_sl / side_conflict 等）不动。
                     halt_info = getattr(self, '_halted_symbols', {}).get(sym)
-                    if halt_info and halt_info.get('reason') == 'migrate_missing_sl':
-                        self.clear_symbol_halt(sym, source='self_heal:phantom_removed')
-                        self.logger.info(
-                            f"[SelfHeal] {sym} 幽灵移除, 自动清 migrate_missing_sl halt"
+                    halt_reason = (halt_info or {}).get("reason", "")
+                    if halt_reason:
+                        self._maybe_auto_clear_protection_halt(
+                            sym,
+                            halt_reason,
+                            source="self_heal:protection_resolved",
                         )
                     if hasattr(self, '_last_protection_alert'):
                         self._last_protection_alert.pop(sym, None)
@@ -2847,6 +3183,7 @@ class ContractExecutor:
                 self._pending_resync = {}
             confirm_ticks = (getattr(self, '_config', {}) or {}).get(
                 'position_resync_confirm_ticks', 2)
+            sidecar_owners = self._load_sidecar_owner_registry()
             for sym, ex_pos in active.items():
                 # 第一道防线: 刚平仓的symbol在冷却期内不补录、不计双确认 tick
                 # （防止API延迟导致幽灵持仓）
@@ -2860,6 +3197,10 @@ class ContractExecutor:
                         local['amount_usdt'] = ex_pos['amount_usdt']
                     local['unrealized_pnl'] = ex_pos['unrealized_pnl']
                 else:
+                    if sidecar_owners and sidecar_owners.matches_position(sym, ex_pos['side']):
+                        self._pending_resync.pop(sym, None)
+                        self.logger.info(f"仓位同步: {sym} ignored as sidecar-owned")
+                        continue
                     # 双确认: 本地缺失、交易所新出现的持仓必须连续 confirm_ticks
                     # 个 sync tick 都见到才补录（防交易所平仓后上报延迟产生幽灵持仓）。
                     cnt = self._pending_resync.get(sym, 0) + 1

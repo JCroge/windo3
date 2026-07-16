@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-07-11）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner 为主，Tactical Exit Track 已实现为独立出口轨道；代码默认 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`，云服 2026-07-11 20:49 CST 起临时打开 track 跑 24h shadow-only 观察，不真开 Tactical。当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-07-15）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner + Tactical Exit Track 分轨运行；代码默认仍是 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`，云服已切到 Tactical live 灰度（track=true、shadow_only=false）。Executor 已支持 OKX attached SL 有界验证与保护单 halt 自愈；当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
@@ -220,9 +220,9 @@ PositionAnalyst 裁决引擎（纯规则矩阵）
 
 **执行优先级**：RiskGuard强制平仓 > 硬性覆盖 > 裁决矩阵 > 分析官建议
 
-### Tactical Exit Track（默认 shadow-only）
+### Tactical Exit Track
 
-Tactical 是 Main Trend Runner 之外的短线出口轨道，目标是把弱/混合环境但方向仍有效的机会从 Main 的趋势奔跑假设中拆出，单独定价、单独退出、单独复盘。默认配置为 `TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`，因此生产默认不改变 live 开仓。
+Tactical 是 Main Trend Runner 之外的短线出口轨道，目标是把弱/混合环境但方向仍有效的机会从 Main 的趋势奔跑假设中拆出，单独定价、单独退出、单独复盘。代码默认配置为 `TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`；生产是否真开由 `.env` / 启动 banner 决定，2026-07-15 云服为 Tactical live 灰度。
 
 **数据流**：
 ```text
@@ -245,7 +245,26 @@ TechAnalyst tech_analysis
 - `TACTICAL_SHADOW_ONLY=true` 不经过 PaperExecutor 真建仓；它经 `_apply_tactical_shadow_profile` 构建 Tactical counterfactual plan，写入 `data/rejected_signal_events.jsonl` / `data/rejected_signal_lifecycle.json`，用于 24h shadow 盈利复盘。
 - 门控顺序是 `tactical_cost_gate` 在前，`TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 的 `tactical_track_gate` 在后。成本门失败只能进入 `shadow_only` 或拒绝，不能借 Main ladder TP2/TP3 的 effective R:R 过门；成本门通过但阈值门失败保留 `exit_profile=tactical_v1` 做 max-hold counterfactual，但不算 true-open Tactical 样本。
 - Executor 本地生命周期处理 `tactical_tp1`、`tactical_invalidated`、`tactical_weakened_no_progress`、`tactical_max_hold`；交易所侧仍只托管保护性 SL，TP owner 仍在本地。
-- Tactical 日亏、连亏暂停、并发槽位独立于 Main；保护单/执行完整性失败仍按系统级 fail-closed 处理。
+- Tactical 日亏、连亏暂停、并发槽位独立于 Main；保护单/执行完整性失败仍按系统级 fail-closed 处理。`/status` 将全局 halt、per-symbol halt、Tactical circuit 拆成三行，避免把保护单 halt 误判为 Tactical 亏损暂停。
+
+### Protection Halt Recovery
+
+保护单完整性仍采用 fail-closed 原则，但 WLD 类 OKX attached SL 回查延迟不再直接永久卡死全局恢复。
+
+```text
+OKX open with attachAlgoClOrdId
+  -> bounded attached-SL verification
+  -> found SL: protection_state=protected, no terminal protection halt
+  -> exhausted: _halt_symbol(reason=sl_algo_unresolved/migrate_missing_sl)
+  -> sync/close proves risk gone
+  -> exact-match HaltState.auto_clear_if_reason if no other unresolved protection halt
+```
+
+关键边界：
+- 自动恢复只覆盖 allowlist 保护单原因：`okx_sl_algo_unresolved:<symbol>` 与 `migrate_missing_sl`。
+- 自动恢复前必须证明该 symbol 已无 unresolved protection risk：仓位已关闭，或本地/交易所状态恢复为 `protection_state=protected`。
+- 如果另一个 symbol 仍 unresolved，全局 halt 继续保持 active，并把 reason 指向仍 unresolved 的 symbol。
+- manual halt、daily hard stop、reconciliation mismatch、未知 halt reason 不允许通过保护单自愈路径清除。
 
 ## 核心模块
 
@@ -344,6 +363,7 @@ CREATE TABLE klines (
 - 杠杆设置、开仓/平仓、止损止盈检查
 - 持仓持久化（`data/positions.json`）
 - reduceOnly参数、盈亏计算含杠杆
+- OKX attached SL 有界验证、保护单 halt exact-match 自愈、multi-halt repoint
 
 ### 6. 风控管理器 (risk_manager.py) ✅
 

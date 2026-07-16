@@ -90,17 +90,26 @@ def test_protection_alert_resets_on_clear():
     assert again is True                            # 恢复后能重新告警
 
 
-def test_migrate_halt_self_heals_on_removal():
+def test_migrate_halt_self_heals_on_removal(monkeypatch):
+    import utils.halt_state as hs_mod
+
     # migrate_missing_sl halt → sync 移除该 symbol → halt 自动清
     ex = _mk_executor()
     ex.positions = {"XRP-USDT-SWAP": {"symbol": "XRP-USDT-SWAP", "amount": 3.7}}
     ex._halted_symbols = {"XRP-USDT-SWAP": {"reason": "migrate_missing_sl", "halted_at": 1.0}}
+    halt_state = MagicMock()
+    halt_state.auto_clear_if_reason.return_value = True
+    monkeypatch.setattr(hs_mod, "get_halt_state", lambda: halt_state)
     cleared = []
     ex.clear_symbol_halt = MagicMock(side_effect=lambda s, **k: cleared.append(s) or 1)
     ex._fetch_positions_with_retry = MagicMock(side_effect=[[]])   # 交易所已无 XRP
     ex.sync_positions()
     assert "XRP-USDT-SWAP" not in ex.positions       # 移除
     assert cleared == ["XRP-USDT-SWAP"]              # halt 自愈
+    halt_state.auto_clear_if_reason.assert_called_once_with(
+        "okx_migrate_missing_sl:XRP-USDT-SWAP",
+        cleared_by="self_heal:protection_resolved",
+    )
 
 
 def test_non_migrate_halt_not_cleared_on_removal():
@@ -112,3 +121,138 @@ def test_non_migrate_halt_not_cleared_on_removal():
     ex._fetch_positions_with_retry = MagicMock(side_effect=[[]])
     ex.sync_positions()
     ex.clear_symbol_halt.assert_not_called()         # 非 migrate_missing_sl 不清
+
+
+def test_sl_algo_unresolved_halt_self_heals_on_removal(monkeypatch):
+    import utils.halt_state as hs_mod
+
+    ex = _mk_executor()
+    ex.positions = {
+        "WLD-USDT-SWAP": {
+            "symbol": "WLD-USDT-SWAP",
+            "amount": 261.0,
+            "protection_state": "unknown",
+        }
+    }
+    ex._halted_symbols = {
+        "WLD-USDT-SWAP": {
+            "reason": "sl_algo_unresolved",
+            "halted_at": 1.0,
+        }
+    }
+    halt_state = MagicMock()
+    halt_state.auto_clear_if_reason.return_value = True
+    monkeypatch.setattr(hs_mod, "get_halt_state", lambda: halt_state)
+    ex._fetch_positions_with_retry = MagicMock(return_value=[])
+
+    ex.sync_positions()
+
+    assert "WLD-USDT-SWAP" not in ex.positions
+    ex.clear_symbol_halt.assert_called_once_with(
+        "WLD-USDT-SWAP", source="self_heal:protection_resolved"
+    )
+    halt_state.auto_clear_if_reason.assert_called_once_with(
+        "okx_sl_algo_unresolved:WLD-USDT-SWAP",
+        cleared_by="self_heal:protection_resolved",
+    )
+
+
+def test_protection_halt_repoints_global_when_other_symbol_unresolved(monkeypatch):
+    import utils.halt_state as hs_mod
+
+    ex = _mk_executor()
+    ex.positions = {
+        "WLD-USDT-SWAP": {
+            "symbol": "WLD-USDT-SWAP",
+            "amount": 261.0,
+            "protection_state": "protected",
+        },
+        "ETH-USDT-SWAP": {
+            "symbol": "ETH-USDT-SWAP",
+            "amount": 0.1,
+            "protection_state": "unknown",
+        },
+    }
+    ex._halted_symbols = {
+        "WLD-USDT-SWAP": {
+            "reason": "sl_algo_unresolved",
+            "halted_at": 1.0,
+        },
+        "ETH-USDT-SWAP": {
+            "reason": "migrate_missing_sl",
+            "halted_at": 2.0,
+        },
+    }
+    halt_state = MagicMock()
+    halt_state.halted = True
+    halt_state.reason = "okx_sl_algo_unresolved:WLD-USDT-SWAP"
+    halt_state.auto_clear_if_reason.return_value = True
+    monkeypatch.setattr(hs_mod, "get_halt_state", lambda: halt_state)
+
+    cleared = ex._maybe_auto_clear_protection_halt(
+        "WLD-USDT-SWAP",
+        "sl_algo_unresolved",
+        source="self_heal:protection_resolved",
+    )
+
+    assert cleared is False
+    ex.clear_symbol_halt.assert_called_once_with(
+        "WLD-USDT-SWAP", source="self_heal:protection_resolved"
+    )
+    halt_state.auto_clear_if_reason.assert_not_called()
+    halt_state.halt.assert_called_once_with(
+        reason="okx_migrate_missing_sl:ETH-USDT-SWAP",
+        triggered_by="self_heal:protection_resolved",
+    )
+
+
+def test_allowlisted_halt_does_not_clear_local_when_global_exact_match_fails(
+    monkeypatch,
+):
+    import utils.halt_state as hs_mod
+
+    ex = _mk_executor()
+    ex.positions = {
+        "WLD-USDT-SWAP": {
+            "symbol": "WLD-USDT-SWAP",
+            "amount": 261.0,
+            "protection_state": "unknown",
+        }
+    }
+    ex._halted_symbols = {
+        "WLD-USDT-SWAP": {
+            "reason": "sl_algo_unresolved",
+            "halted_at": 1.0,
+        }
+    }
+    halt_state = MagicMock()
+    halt_state.auto_clear_if_reason.return_value = False
+    monkeypatch.setattr(hs_mod, "get_halt_state", lambda: halt_state)
+    ex._fetch_positions_with_retry = MagicMock(return_value=[])
+
+    ex.sync_positions()
+
+    assert "WLD-USDT-SWAP" not in ex.positions
+    ex.clear_symbol_halt.assert_not_called()
+    halt_state.auto_clear_if_reason.assert_called_once_with(
+        "okx_sl_algo_unresolved:WLD-USDT-SWAP",
+        cleared_by="self_heal:protection_resolved",
+    )
+
+
+def test_non_allowlisted_halt_does_not_auto_clear_global(monkeypatch):
+    import utils.halt_state as hs_mod
+
+    ex = _mk_executor()
+    ex.positions = {"WLD-USDT-SWAP": {"symbol": "WLD-USDT-SWAP", "amount": 1.0}}
+    ex._halted_symbols = {
+        "WLD-USDT-SWAP": {"reason": "reconcile_conflict", "halted_at": 1.0}
+    }
+    halt_state = MagicMock()
+    monkeypatch.setattr(hs_mod, "get_halt_state", lambda: halt_state)
+    ex._fetch_positions_with_retry = MagicMock(return_value=[])
+
+    ex.sync_positions()
+
+    ex.clear_symbol_halt.assert_not_called()
+    halt_state.auto_clear_if_reason.assert_not_called()

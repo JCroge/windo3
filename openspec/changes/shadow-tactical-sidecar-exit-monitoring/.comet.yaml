@@ -1,0 +1,18 @@
+workflow: full
+phase: verify
+build_mode: executing-plans
+isolation: branch
+verify_mode: full
+base_ref: 3a3b003dea6a3ca0c57f162817db6a5ffc7e8ead
+design_doc: docs/superpowers/specs/2026-07-16-shadow-tactical-sidecar-exit-monitoring-design.md
+plan: docs/superpowers/plans/2026-07-16-shadow-tactical-sidecar-exit-monitoring.md
+verify_result: pending
+verification_report: docs/superpowers/reports/2026-07-16-shadow-tactical-sidecar-exit-monitoring-verify.md
+branch_status: pending
+created_at: 2026-07-16
+verified_at: null
+archived: false
+handoff_context: openspec/changes/shadow-tactical-sidecar-exit-monitoring/.comet/handoff/design-context.json
+handoff_hash: a84a9cb8f8bfc51938a4746a105809229f62faaaaf8ffa46825e7b244b110715
+build_command: pytest tests/test_shadow_tactical_live_core.py tests/test_shadow_tactical_live_executor.py tests/test_shadow_tactical_live_cli.py tests/test_shadow_tactical_owner_isolation.py tests/test_shadow_tactical_exit_monitoring.py -q && pytest test_partial_tp_lifecycle.py test_executor_terminal_result.py test_owner_tag_clord_id_callsites.py -q
+verify_command: pytest tests/test_shadow_tactical_live_core.py tests/test_shadow_tactical_live_executor.py tests/test_shadow_tactical_live_cli.py tests/test_shadow_tactical_owner_isolation.py tests/test_shadow_tactical_exit_monitoring.py -q && pytest test_partial_tp_lifecycle.py test_executor_terminal_result.py test_owner_tag_clord_id_callsites.py -q

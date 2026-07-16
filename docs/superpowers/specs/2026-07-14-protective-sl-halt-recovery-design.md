@@ -2,6 +2,8 @@
 comet_change: protective-sl-halt-recovery
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-15-protective-sl-halt-recovery
+status: final
 ---
 
 # Technical Design: Protective SL Halt Recovery

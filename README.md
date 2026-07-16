@@ -4,9 +4,10 @@
 
 ## 系统状态
 
-- 已记录完整基线（2026-07-07）：`1490 passed`。Tactical Exit Track 变更验证（2026-07-10）：Tactical suite `21 passed`，邻近回归 `118 passed / 3 warnings`，OpenSpec strict PASS。
+- 当前完整基线（2026-07-15）：`1543 passed, 4 deselected, 1 warning`。对应归档 change：`openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/`。
 - 当前能力：**Tactical Exit Track** 已归档到 `openspec/changes/archive/2026-07-10-add-tactical-exit-track/`。它把弱/混合环境候选从 Main Trend Runner 中拆出，使用独立 `track=tactical` / `exit_profile=tactical_v1`、独立 R:R/EV、TP1 落袋、thesis-health、最大持仓时间和 Tactical 风控桶。
-- 默认上线状态：`TACTICAL_TRACK_ENABLED=false` 且 `TACTICAL_SHADOW_ONLY=true`。若只打开 track 并保留 shadow-only，系统只写 Tactical counterfactual 到 `data/rejected_signal_*`，不发 live Tactical 订单；真开必须先经过 replay/shadow 证明，再小额灰度。
+- 代码默认上线状态仍是 `TACTICAL_TRACK_ENABLED=false` 且 `TACTICAL_SHADOW_ONLY=true`；2026-07-15 云服核对为 Tactical live 灰度（track=true、shadow_only=false、RR=0.75、EV=-0.04）。实际运行状态以 `.env` 与启动 banner 为准。
+- 保护单 halt recovery 已落地：OKX attached SL 先做有界验证；`okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl` 这类保护单 halt 只在风险已消失且无其它 unresolved symbol 时自动清除，manual/daily/reconcile halt 仍保持 fail-closed。
 - live 结构：OKX 实盘 paper+live 双轨、逻辑账户拆分、`trade_decision.v2` / `execution_result.v2` 消息契约、TG 运维命令、Entry Drift、Pullback Paper Parity、Short Main Path Risk Guard、Realized PnL Ledger 和反事实实验室均保留。
 - OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode T0/T1/T4/T5/T6/T8/T9/T10/T11/T12/T13/T14/T15 13 PASS（T2/T3 SKIP、T7 SKIP mock_only），net_mode 单独 T0/T2/T3 3 PASS；2026-05-29 owner-tag 补验 T0/T1/T6 PASS。
 
@@ -30,9 +31,9 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 - 交易层：9 维度数据采集 → 规则+LLM 综合研判 → 精确开仓计划 → CCXT 合约执行
 - 风控闭环：动态杠杆 + 动态 R:R floor + EV 门 + RSI 极端值保护 + Daily Hard Stop + 组合级 RiskGuard
 - 持仓管理：PositionAnalyst 7 因子 + BehavioralCritic 偏差检测 + 裁决引擎
-- 出口轨道：Main Trend Runner 与 Tactical Exit Track 分离，Tactical 默认 shadow-only；shadow-only 复盘看 CounterfactualLedger 的 `rejected_signal_*`
+- 出口轨道：Main Trend Runner 与 Tactical Exit Track 分离；Tactical 支持 shadow-only 复盘和 live 灰度，shadow-only 复盘看 CounterfactualLedger 的 `rejected_signal_*`
 - PaperExecutor 影子账户与 live 信号并行（不下真单，独立 topic 隔离）
-- Telegram 远程命令：`/status` `/positions` `/stop` `/restart` `/halt` `/resume` `/log`
+- Telegram 远程命令：`/status` `/positions` `/halt` `/resume` `/force_resume` `/reconcile` `/halts` `/resume_symbol` `/pnl` `/pnl_id` `/stop` `/restart` `/log` `/paper_gap` `/health`
 - LLM 不可用时自动降级为规则引擎；事件 journal + LLM audit 可观测
 
 ## 配置入口
@@ -49,7 +50,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 | 多头位置保护 | `LONG_LIVE_POSITION_GUARD_ENABLED` / `LONG_LIVE_MAX_RANGE_POS` / `LONG_LIVE_MAX_PRE_MOVE` / `LONG_LIVE_MAX_DAILY_GAIN` | 山顶接货防护，命中走 `deferred_pullback_overheat`（2026-05-26） |
 | 多头位置保护·体制感知 | `LONG_LIVE_REGIME_AWARE_RANGE_ENABLED` / `LONG_LIVE_MAX_RANGE_POS_CHOPPY` / `LONG_LIVE_DAILY_GAIN_RANGE_POS_CHOPPY` | choppy/mixed/bearish 收紧 range_pos 阈值转回调入场，bullish 保 0.82；总开关可回退（2026-06-21，生产起步 0.70/目标 0.55） |
 | EV 分桶 | `EV_BUCKET_MIN_TRADES` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT` | 稀疏 bucket 不抬 p_win（2026-05-26） |
-| Tactical 出口轨道 | `TACTICAL_TRACK_ENABLED` / `TACTICAL_SHADOW_ONLY` / `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` / `TACTICAL_TP1_R` / `TACTICAL_MAX_HOLD_MINUTES` | 默认 disabled + shadow-only；开启后先过 cost gate，再按 Tactical R:R≥0.75 且 EV>-0.04 筛“会真开”样本，TP1 默认 1.00R |
+| Tactical 出口轨道 | `TACTICAL_TRACK_ENABLED` / `TACTICAL_SHADOW_ONLY` / `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` / `TACTICAL_TP1_R` / `TACTICAL_MAX_HOLD_MINUTES` | 代码默认 disabled + shadow-only；live 灰度需 track=true 且 shadow_only=false，先过 cost gate，再按 Tactical R:R≥0.75 且 EV>-0.04 筛“会真开”样本，TP1 默认 1.00R |
 
 完整列表与默认值见 `utils/config_loader.py` 的 `DEFAULTS` 与 `HARD_LIMITS`。
 

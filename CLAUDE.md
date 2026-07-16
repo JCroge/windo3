@@ -5,11 +5,11 @@
 - 当前系统是多 Agent 加密货币趋势交易系统，不是跨交易所套利系统。
 - 生产、paper、testnet、实盘验收主入口统一为 `python3 run_agents.py`。
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
-- 已记录完整基线：`1490 passed`（2026-07-07）。Tactical Exit Track 变更验证：Tactical suite `21 passed`，邻近回归 `118 passed / 3 warnings`，OpenSpec strict PASS（2026-07-10）。历史基线见 `docs/handoff.md`。
-- Tactical Exit Track 已实现但默认不改 live：`TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`。shadow-only 证据必须来自 `_apply_tactical_shadow_profile` 写入的 `data/rejected_signal_*` Tactical counterfactual，不要把 PaperExecutor 当 Tactical shadow；`_apply_tactical_profile` 先过 cost gate，再用 `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 筛 true-open 样本，成本门过但阈值门失败的样本仍保留 `exit_profile=tactical_v1` 做 counterfactual 结算；真开 Tactical 前必须先有 replay/shadow 分桶证据。
+- 当前完整基线：`1543 passed, 4 deselected, 1 warning`（2026-07-15，`protective-sl-halt-recovery` 归档）。历史基线见 `docs/handoff.md`。
+- Tactical Exit Track 已实现；代码默认仍保守（`TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`），但 2026-07-15 云服核对为 live 灰度（track=true、shadow_only=false、RR=0.75、EV=-0.04）。判定线上状态必须看 `.env` / 启动 banner。shadow-only 证据来自 `_apply_tactical_shadow_profile` 写入的 `data/rejected_signal_*`，不要把 PaperExecutor 当 Tactical shadow；`_apply_tactical_profile` 先过 cost gate，再用 `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 筛 true-open 样本，成本门过但阈值门失败的样本仍保留 `exit_profile=tactical_v1` 做 counterfactual 结算。
 - 当前 Go/No-Go：小额 live 灰度 GO（维持现有 cap）；live 扩容 CONDITIONAL GO，扩容前置 = 运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置 + 真实 TG 命令链与 drift gate 运维验收。
 - OKX 验收状态：mock 执行语义 10 case PASS；真实 testnet long_short_mode 13 PASS + net_mode 子账户 3 PASS。
-- TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap /health`。
+- TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap /health`。`/status` 必须把全局熔断、per-symbol halt、Tactical circuit 分开看；全局保护单 halt 不等于 Tactical 连亏暂停。
 - 各特性的单点收口函数与硬约束见下方「风控红线」；当前待办看 `docs/to-do-list.md`，最新审计报告看 `docs/generated_reports/系统性审计报告_20260610_第五次.md`，完整历史演进与逐基线里程碑看 `docs/handoff.md`。
 
 ## 快速命令
@@ -111,6 +111,7 @@ Reviewer / RiskGuard
 - 扩大 live 前必须完成 OKX 真实 testnet 语义验收。
 - 熔断恢复的最终 owner 是 Executor；Telegram 只发请求和展示结果。
 - `HaltState` 加载损坏必须 fail-closed，不允许默认恢复交易。
+- 保护单触发的全局 halt 只能在 exact-match allowlist（`okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl`）且对应仓位已关闭或已恢复 `protection_state=protected`、没有其它 unresolved protection halt 时自动清除；manual/daily/reconcile/未知原因必须保持 sticky，走 `/resume` 或 `/force_resume`。
 - `RiskGuard`、Executor、交易所、Paper 状态对账中，live 阻断问题必须阻止 `/resume`；paper/live mismatch 默认 advisory。
 - close/reduce 不应被开仓风控阻断；open/add 必须经过余额、回撤、slot、订单能力预检。
 
@@ -118,7 +119,7 @@ Reviewer / RiskGuard
 - **仓位同步补录**：`executor.sync_positions` 双确认机制（`position_resync_confirm_ticks`=2，防幽灵持仓）。详见 `docs/superpowers/specs/2026-06-20-fix-phantom-position-resync-design.md`。
 - **R:R floor**：`Judge._select_rr_floor` 单一函数，返回 policy 标签（probe/long_bullish_low_rr/long_aligned_low_rr/long_aligned_path_evidence/short_bullish_strong/default）。
 - **lever2 阶梯 vs 低 R:R 缩仓解耦**：`Judge._compute_ladder_rr` 计算阶梯加权（只用于地板 gate）；`Judge._apply_low_rr_sizing` 单一收口缩仓判定（必须用 TP1 口径 `effective_rr_tp1`）。详见 `docs/superpowers/specs/2026-06-17-trend-entry-levers-default-on-design.md`。
-- **Tactical Exit Track**：分类只改 `Judge._classify_track`；计划数学只改 `Judge._apply_tactical_profile`；本地生命周期只改 `ContractExecutor._update_trailing` 的 Tactical 分支；15m thesis invalidation 只改 `MultiExecutor._mark_tactical_thesis_from_tech`。默认 disabled + shadow-only，live 灰度前必须先更新 replay/shadow 证据与 `docs/runbook.md`。
+- **Tactical Exit Track**：分类只改 `Judge._classify_track`；计划数学只改 `Judge._apply_tactical_profile`；本地生命周期只改 `ContractExecutor._update_trailing` 的 Tactical 分支；15m thesis invalidation 只改 `MultiExecutor._mark_tactical_thesis_from_tech`。改 live/shadow 状态前必须同步 `.env`、启动验证和 `docs/runbook.md`。
 - **Long Entry Position Guard**：`Judge._check_entry_position_policy` 单一函数，主路径与三条 deferred 路径共用。体制感知阈值经 `Judge._resolve_long_range_thresholds(eff_regime)` 取值（choppy/mixed/bearish 收紧至 0.70，config `long_live_regime_aware_range_enabled`）。详见 `docs/superpowers/specs/2026-06-21-regime-aware-long-entry-guard-design.md`。
 - **体制空仓硬门**：`Judge._classify_regime_flat_gate(action, plan, tech, score) -> (allow, reason)` 单一收口（long-only，choppy/mixed + 无方向论据 → 拒 open_long）。方向论据 = `_has_directional_thesis` = `aligned OR path_evidence_raw`（ungated）。4 处调用点（主 + 三 deferred），config `regime_flat_gate_enabled` 默认 True。详见 `docs/superpowers/specs/2026-06-25-fix-open-direction-regression-choppy-flat-gate-design.md`。
 - **保护单 owner**：`ContractExecutor.move_protective_sl(symbol, new_sl, reason=...)` 唯一入口。详见 `docs/audit_remediation_20260528_acceptance.md` §8.1。
