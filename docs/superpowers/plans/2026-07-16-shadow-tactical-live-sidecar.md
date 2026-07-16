@@ -1163,7 +1163,7 @@ def main(argv=None) -> int:
     run.add_argument("--size-usdt", default=os.getenv("MAX_TRADE_AMOUNT", "30"))
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--once", action="store_true")
-    run.add_argument("--from-end", action="store_true")
+    run.add_argument("--backfill-from-start", action="store_true")
     args = p.parse_args(argv)
     return {"run": cmd_run, "status": cmd_status, "stop": cmd_stop}[args.cmd](args)
 
@@ -1252,10 +1252,12 @@ export BOT_INSTANCE_ID=stlive
 export SHADOW_TACTICAL_OWNER_REGISTRY=data/shadow_tactical_live_owners.json
 nohup python3 scripts/shadow_tactical_live_sidecar.py run \
   --duration-hours 24 \
-  --from-end \
   --poll-seconds 2 \
   > logs/shadow_tactical_live_sidecar.log 2>&1 &
 ```
+
+The runner defaults to no backfill on first start; use `--backfill-from-start`
+only for an intentional replay test.
 
 ## Stop Command
 

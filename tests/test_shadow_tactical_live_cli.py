@@ -73,6 +73,7 @@ def test_run_dry_run_processes_new_tactical_event(tmp_path):
             "run",
             "--dry-run",
             "--once",
+            "--backfill-from-start",
             "--events",
             str(events),
             "--state",
@@ -88,6 +89,122 @@ def test_run_dry_run_processes_new_tactical_event(tmp_path):
     row = json.loads(audit.read_text().splitlines()[0])
     assert row["event_type"] == "dry_run_plan"
     assert row["shadow_id"] == "s1"
+
+
+def test_run_defaults_to_no_backfill_on_first_start(tmp_path):
+    events = tmp_path / "events.jsonl"
+    state = tmp_path / "state.json"
+    audit = tmp_path / "audit.jsonl"
+    rec = {
+        "id": "old",
+        "symbol": "WLD-USDT-SWAP",
+        "side": "long",
+        "entry_price": 1.25,
+        "stop_loss": 1.20,
+        "take_profit": [1.32],
+        "leverage": 20,
+        "track": "tactical",
+        "exit_profile": "tactical_v1",
+    }
+    events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
+
+    subprocess.check_call(
+        [
+            sys.executable,
+            SCRIPT,
+            "run",
+            "--dry-run",
+            "--once",
+            "--events",
+            str(events),
+            "--state",
+            str(state),
+            "--audit",
+            str(audit),
+        ],
+        cwd=str(ROOT),
+    )
+
+    loaded = json.loads(state.read_text())
+    assert loaded["last_offset"] == events.stat().st_size
+    assert loaded["seen_shadow_ids"] == {}
+    assert not audit.exists()
+
+
+def test_run_preserves_existing_watermark_when_no_backfill_default(tmp_path):
+    events = tmp_path / "events.jsonl"
+    state = tmp_path / "state.json"
+    audit = tmp_path / "audit.jsonl"
+    old_line = json.dumps(
+        {
+            "event_type": "rejected_plan_created",
+            "record": {
+                "id": "old",
+                "symbol": "WLD-USDT-SWAP",
+                "side": "long",
+                "entry_price": 1.25,
+                "stop_loss": 1.20,
+                "take_profit": [1.32],
+                "leverage": 20,
+                "track": "tactical",
+                "exit_profile": "tactical_v1",
+            },
+        }
+    ) + "\n"
+    events.write_text(old_line)
+    old_offset = events.stat().st_size
+    state.write_text(
+        json.dumps(
+            {
+                "started_at": 1,
+                "stop_at": None,
+                "last_offset": old_offset,
+                "seen_shadow_ids": {},
+            }
+        )
+    )
+    with events.open("a") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "event_type": "rejected_plan_created",
+                    "record": {
+                        "id": "new",
+                        "symbol": "WLD-USDT-SWAP",
+                        "side": "long",
+                        "entry_price": 1.25,
+                        "stop_loss": 1.20,
+                        "take_profit": [1.32],
+                        "leverage": 20,
+                        "track": "tactical",
+                        "exit_profile": "tactical_v1",
+                    },
+                }
+            )
+            + "\n"
+        )
+
+    subprocess.check_call(
+        [
+            sys.executable,
+            SCRIPT,
+            "run",
+            "--dry-run",
+            "--once",
+            "--events",
+            str(events),
+            "--state",
+            str(state),
+            "--audit",
+            str(audit),
+        ],
+        cwd=str(ROOT),
+    )
+
+    row = json.loads(audit.read_text().splitlines()[0])
+    assert row["shadow_id"] == "new"
+    loaded = json.loads(state.read_text())
+    assert loaded["last_offset"] == events.stat().st_size
 
 
 def test_stop_closes_only_proven_sidecar_owned_exposure(tmp_path, monkeypatch):

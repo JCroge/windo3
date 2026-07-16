@@ -3,8 +3,9 @@
 ## Local Verification
 
 - Focused pytest command: PASS
-- Focused pytest result: `69 passed in 3.26s`
+- Focused pytest result: `71 passed in 4.96s`
 - OpenSpec strict validation: PASS
+- Verify-fix note: default sidecar start does not backfill old shadow events; `--backfill-from-start` is explicit.
 
 ## Cloud Start Command
 
@@ -17,10 +18,12 @@ export BOT_INSTANCE_ID=stlive
 export SHADOW_TACTICAL_OWNER_REGISTRY=data/shadow_tactical_live_owners.json
 nohup python3 scripts/shadow_tactical_live_sidecar.py run \
   --duration-hours 24 \
-  --from-end \
   --poll-seconds 2 \
   > logs/shadow_tactical_live_sidecar.log 2>&1 &
 ```
+
+The sidecar defaults to no backfill on first start. Use `--backfill-from-start`
+only for a deliberate replay test, not for this 24-hour live run.
 
 ## Status Command
 

@@ -179,14 +179,18 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
 
 def cmd_run(args) -> int:
     paths = _paths(args)
+    state_exists = os.path.exists(paths.state)
     store = SidecarStateStore(paths.state)
     state = store.load()
     now = time.time()
     state.setdefault("started_at", now)
     state["stop_at"] = state.get("stop_at") or now + float(args.duration_hours) * 3600
     state.setdefault("seen_shadow_ids", {})
-    if args.from_end and os.path.exists(paths.events):
-        state["last_offset"] = os.path.getsize(paths.events)
+    if not state_exists:
+        if args.backfill_from_start:
+            state["last_offset"] = 0
+        elif os.path.exists(paths.events):
+            state["last_offset"] = os.path.getsize(paths.events)
 
     registry = ShadowTacticalOwnerRegistry(paths.owners)
     executor = None if args.dry_run else _build_executor(paths)
@@ -271,7 +275,8 @@ def main(argv=None) -> int:
     run.add_argument("--max-active", default=os.getenv("MAX_CONCURRENT_POSITIONS", "3"))
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--once", action="store_true")
-    run.add_argument("--from-end", action="store_true")
+    run.add_argument("--from-end", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument("--backfill-from-start", action="store_true")
 
     args = parser.parse_args(argv)
     return {"run": cmd_run, "status": cmd_status, "stop": cmd_stop}[args.cmd](args)
