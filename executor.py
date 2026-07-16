@@ -58,7 +58,10 @@ class ContractExecutor:
                  password: str = None,
                  testnet: bool = True,
                  leverage: int = 1,
-                 positions_file: Optional[str] = None):
+                 positions_file: Optional[str] = None,
+                 risk_state_file: Optional[str] = None,
+                 ledger_events_file: Optional[str] = None,
+                 ledger_lifecycle_file: Optional[str] = None):
         """
         Args:
             exchange_id: 交易所ID (binance/okx)
@@ -70,6 +73,8 @@ class ContractExecutor:
             positions_file: 持仓持久化文件路径；None 时按 STATE_NAMESPACE 自动派生
                             (live → data/positions.json, testnet → data/testnet_positions.json,
                              paper → data/paper_positions.json)
+            risk_state_file / ledger_*: sidecar 等隔离进程可显式注入,
+                                      避免污染 Main live 状态文件。
         """
         self.logger = setup_logger('executor')
         self.exchange_id = exchange_id
@@ -136,7 +141,7 @@ class ContractExecutor:
             max_trade_amount=max_amount,
             max_drawdown_pct=max_dd,
             max_daily_loss=max_daily,
-            state_file=sp.risk_state,
+            state_file=risk_state_file or sp.risk_state,
             effective_balance_cap=_cap,
             baseline_mode=_baseline_mode,
         )
@@ -186,7 +191,12 @@ class ContractExecutor:
         # 实盘账本：真实成交 PnL 记录
         try:
             from utils.live_ledger import LiveLedger
-            self.ledger = LiveLedger(self.exchange, logger=self.logger)
+            self.ledger = LiveLedger(
+                self.exchange,
+                events_path=ledger_events_file or sp.live_order_events,
+                lifecycle_path=ledger_lifecycle_file or sp.live_position_lifecycle,
+                logger=self.logger,
+            )
             # 启动时从 ledger 同步当日 PnL 到 risk_manager
             self.risk_manager.sync_from_ledger(self.ledger)
         except Exception as e:
@@ -2325,6 +2335,165 @@ class ContractExecutor:
     def get_all_positions(self) -> Dict:
         """获取所有持仓"""
         return self.positions.copy()
+
+    def open_sidecar_plan(self, plan: dict, *, size_usdt: Optional[float] = None) -> Optional[Dict]:
+        """Open a Shadow Tactical sidecar plan with mechanical checks only."""
+        symbol = plan["symbol"]
+        side = plan["side"]
+        if self.is_symbol_halted(symbol):
+            self.logger.warning(f"[Sidecar] {symbol} halted, reject open")
+            return None
+        if self.exchange_id == "okx" and getattr(self, "_okx_pos_mode", None) not in (
+            "net_mode",
+            "long_short_mode",
+        ):
+            self.logger.error(f"[Sidecar] {symbol} OKX posMode unknown, reject open")
+            return None
+
+        balance = self.get_balance()
+        can_trade, msg = self.risk_manager.check_can_trade(balance)
+        if not can_trade:
+            self.logger.warning(f"[Sidecar] risk reject: {msg}")
+            return None
+
+        leverage = int(plan.get("leverage") or self.leverage)
+        requested_size = float(size_usdt or self.risk_manager.max_trade_amount)
+        capped_size = min(requested_size, self.risk_manager.max_trade_amount)
+        free_balance = (
+            self.balance_adapter.get_free()
+            if self.balance_adapter
+            else self.exchange.fetch_balance()["USDT"]["free"]
+        )
+        if free_balance < capped_size * 1.1:
+            self.logger.warning(
+                f"[Sidecar] free balance too low: {free_balance:.2f} < {capped_size * 1.1:.2f}"
+            )
+            return None
+
+        ticker = self.exchange.fetch_ticker(symbol)
+        current_price = float(ticker["last"])
+        stop_loss = float(plan["stop_loss"])
+        take_profit = list(plan.get("take_profit") or [])
+        if side == "long" and stop_loss >= current_price:
+            self.logger.error(f"[Sidecar] invalid long SL {stop_loss} >= {current_price}")
+            return None
+        if side == "short" and stop_loss <= current_price:
+            self.logger.error(f"[Sidecar] invalid short SL {stop_loss} <= {current_price}")
+            return None
+        if not take_profit:
+            self.logger.error("[Sidecar] missing take_profit")
+            return None
+
+        try:
+            self.exchange.set_leverage(leverage, symbol)
+        except Exception as e:
+            self.logger.warning(f"[Sidecar] set leverage failed: {e}")
+
+        if not self._check_slippage(symbol, capped_size, current_price):
+            return None
+
+        order_side = "buy" if side == "long" else "sell"
+        if self.caps:
+            ok, reason, _ = self.caps.precheck_order(
+                symbol=symbol,
+                side=order_side,
+                size_usdt=capped_size,
+                price=current_price,
+                leverage=leverage,
+            )
+            if not ok:
+                self.logger.warning(f"[Sidecar] precheck reject: {reason}")
+                return None
+
+        market = self.exchange.market(symbol)
+        contract_size = float(market.get("contractSize", 1) or 1)
+        amount = float(
+            self.exchange.amount_to_precision(
+                symbol,
+                capped_size * leverage / (current_price * contract_size),
+            )
+        )
+        min_amount = market.get("limits", {}).get("amount", {}).get("min", 0)
+        if min_amount and amount < min_amount:
+            self.logger.warning(
+                f"[Sidecar] amount {amount:.8f} below exchange min {min_amount}"
+            )
+            return None
+
+        sl_clord_id = (
+            self._make_owner_tag_clord_id(symbol)
+            if self.exchange_id == "okx" and stop_loss
+            else None
+        )
+        tp_sl_params = self._build_tp_sl_params(
+            side,
+            stop_loss,
+            take_profit[0],
+            sl_clord_id=sl_clord_id,
+        )
+        attach_algo = self._build_attach_algo_from_tp_sl(tp_sl_params)
+        params = self._build_open_order_params(
+            side,
+            clord_id=plan.get("entry_clord_id"),
+            attach_algo=attach_algo,
+        )
+        order = self.exchange.create_order(
+            symbol=symbol,
+            type="market",
+            side=order_side,
+            amount=amount,
+            params=params,
+        )
+
+        sl_algo_id = None
+        sl_sync_state = "pending"
+        protection_state = "unprotected"
+        if self.exchange_id == "okx" and sl_clord_id:
+            sl_algo_id = self._verify_attached_sl_after_fill(symbol, sl_clord_id)
+            if not sl_algo_id:
+                self._halt_symbol(symbol, reason="sidecar_sl_unverified")
+                return None
+            sl_sync_state = "active"
+            protection_state = "protected"
+
+        position = {
+            "symbol": symbol,
+            "side": side,
+            "entry_price": current_price,
+            "amount": amount,
+            "amount_usdt": capped_size,
+            "leverage": leverage,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit[0],
+            "take_profit_levels": take_profit,
+            "sl_order_id": sl_algo_id,
+            "exit_owner": "sidecar_tactical_exchange_sl",
+            "sl_algo_id": sl_algo_id,
+            "sl_algo_clord_id": sl_clord_id,
+            "sl_sync_state": sl_sync_state,
+            "protection_state": protection_state,
+            "shadow_id": plan.get("shadow_id"),
+            "sidecar_source": plan.get("sidecar_source", "shadow_tactical_live"),
+            "entry_clord_id": plan.get("entry_clord_id"),
+            "open_time": time.time(),
+        }
+        self.positions[symbol] = position
+        self._save_positions()
+
+        if self.ledger and order:
+            try:
+                self.ledger.record_open(
+                    order_id=order["id"],
+                    symbol=symbol,
+                    side=side,
+                    amount_usdt=capped_size,
+                    leverage=leverage,
+                    estimated_price=current_price,
+                )
+            except Exception as e:
+                self.logger.warning(f"[Sidecar] ledger open record failed: {e}")
+
+        return position
 
     def open_position_with_plan(self, symbol: str, side: str, plan: dict) -> Optional[Dict]:
         """基于Judge plan的智能开仓"""
