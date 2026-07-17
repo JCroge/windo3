@@ -2,6 +2,7 @@
 change: promote-shadow-tactical-live-48h
 design-doc: docs/superpowers/specs/2026-07-16-shadow-tactical-live-sidecar-design.md
 base-ref: fb7ea653c184c896290f2b793f7488488ec6bd7d
+archived-with: 2026-07-17-promote-shadow-tactical-live-48h
 ---
 
 # Shadow Tactical Live Sidecar Implementation Plan
@@ -14,6 +15,7 @@ base-ref: fb7ea653c184c896290f2b793f7488488ec6bd7d
 
 **Tech Stack:** Python 3, pytest, existing `ContractExecutor`, `RiskManager`, `LiveLedger`, `CounterfactualLedger`, JSON/JSONL state files, OKX ccxt client.
 
+archived-with: 2026-07-17-promote-shadow-tactical-live-48h
 ---
 
 ## File Structure

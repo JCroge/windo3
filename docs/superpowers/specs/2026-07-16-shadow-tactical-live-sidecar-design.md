@@ -2,6 +2,8 @@
 comet_change: promote-shadow-tactical-live-48h
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-17-promote-shadow-tactical-live-48h
+status: final
 ---
 
 # Shadow Tactical Live Sidecar
