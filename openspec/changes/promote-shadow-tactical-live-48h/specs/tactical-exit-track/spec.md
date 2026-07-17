@@ -29,6 +29,11 @@ The sidecar SHALL map the live order plan directly from the shadow record payloa
 - **THEN** the live plan SHALL use the record's side, SL, TP list, leverage, Tactical max hold, and exit profile
 - **AND** it SHALL include the shadow record id as the entry request id or equivalent audit key
 
+#### Scenario: Tactical fields are persisted on live sidecar position
+- **WHEN** a mapped Tactical shadow record is opened by the sidecar
+- **THEN** the persisted sidecar position SHALL include `track=tactical`, `exit_profile=tactical_v1`, `tactical_source`, `tactical_max_hold_minutes`, `entry_ref`, and sidecar gate metadata
+- **AND** local sidecar monitoring SHALL evaluate Tactical exit rules from the persisted position rather than treating it as a generic position
+
 #### Scenario: Missing mechanical fields fail closed
 - **WHEN** a Tactical shadow record is missing side, entry price, stop loss, take profit, or leverage
 - **THEN** the sidecar SHALL reject that record without placing a live order
@@ -70,6 +75,12 @@ The sidecar SHALL use state and ledger paths separate from the Main process. It 
 - **WHEN** the sidecar records an attempted, filled, rejected, closed, or skipped mirror event
 - **THEN** it SHALL write to sidecar-specific state/audit files
 - **AND** it SHALL NOT mutate Main position or ledger files
+
+#### Scenario: Exchange-flat reconciliation records a sidecar close event
+- **WHEN** sidecar monitoring proves that an active sidecar-owned local position is flat on the exchange
+- **THEN** it SHALL close the sidecar owner record and remove the local sidecar position
+- **AND** it SHALL write a sidecar ledger close event or pending external close event with the original shadow id, symbol, side, opened timestamp, closed timestamp, amount, leverage, and protection identifiers
+- **AND** it SHALL leave the exchange-derived final PnL resolution pending when fills are not yet resolved locally
 
 #### Scenario: Main process is not restarted
 - **WHEN** the sidecar starts for the 24-hour run

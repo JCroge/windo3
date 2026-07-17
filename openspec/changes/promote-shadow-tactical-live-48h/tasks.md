@@ -39,3 +39,10 @@
 - [x] 5.6 Add tests proving Main sync skips sidecar-owned positions.
 - [x] 5.7 Add tests proving Main migration does not cancel or adopt foreign owner-tag SL algos.
 - [x] 5.8 Run OpenSpec validation for `promote-shadow-tactical-live-48h`.
+
+## 6. Post-Live Corrective Fixes
+
+- [x] 6.1 Add exchange-flat reconciliation so stale sidecar owner/position/halt state is cleared only after OKX confirms no position.
+- [x] 6.2 Persist Tactical metadata from mapped shadow plans onto sidecar live positions so local Tactical exits run from durable state.
+- [x] 6.3 Record a sidecar ledger close or pending external close when exchange-flat reconciliation closes an owner.
+- [x] 6.4 Re-run focused sidecar tests and OpenSpec validation after corrective fixes.

@@ -19,10 +19,20 @@ from utils.shadow_tactical_live import (
     SidecarStateStore,
     append_audit_event,
     blocks_same_symbol_account_exposure,
+    canonical_sidecar_symbols,
     is_tactical_shadow_event,
     iter_new_shadow_events,
     map_shadow_record_to_plan,
 )
+
+SIDECAR_FLAT_CLEAR_HALT_REASONS = {
+    "migrate_missing_sl",
+    "sidecar_sl_unverified",
+    "sl_algo_unresolved",
+    "sl_cancel_failed",
+    "sl_replace_failed",
+    "sl_restore_failed",
+}
 
 
 def _paths(args) -> SidecarPaths:
@@ -97,6 +107,246 @@ def _fetch_exchange_positions(executor: ContractExecutor) -> list:
         return []
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _canonical_exchange_symbol(symbol: str) -> str:
+    return canonical_sidecar_symbols(symbol or "").get("exchange_symbol") or symbol
+
+
+def _exchange_position_matches_symbol(position: dict, symbol: str) -> bool:
+    wanted = _canonical_exchange_symbol(symbol)
+    candidates = [
+        position.get("symbol"),
+        position.get("inst_id"),
+        position.get("instId"),
+        (position.get("info") or {}).get("instId"),
+    ]
+    for candidate in candidates:
+        if candidate and _canonical_exchange_symbol(candidate) == wanted:
+            return True
+    return False
+
+
+def _position_contracts(position: dict) -> float:
+    return abs(
+        _safe_float(
+            position.get("contracts")
+            or position.get("available_contracts")
+            or position.get("amount")
+            or (position.get("info") or {}).get("pos")
+        )
+    )
+
+
+def _sidecar_exchange_position_state(
+    executor: ContractExecutor,
+    symbol: str,
+) -> tuple[str, dict | None]:
+    """Return present/flat/unknown/unsupported for the exchange-side position."""
+    if getattr(executor, "exchange_id", None) != "okx":
+        return "unsupported", None
+
+    fetch_positions = getattr(executor, "_fetch_positions_with_retry", None)
+    normalize = getattr(executor, "_normalize_okx_position", None)
+    if not callable(fetch_positions) or not callable(normalize):
+        return "unknown", None
+
+    try:
+        exchange_positions = fetch_positions()
+    except Exception as exc:
+        logger = getattr(executor, "logger", None)
+        if logger:
+            logger.warning(f"[Sidecar] exchange position check failed: {exc}")
+        return "unknown", None
+
+    for raw in exchange_positions or []:
+        try:
+            normalized = normalize(raw)
+        except Exception:
+            normalized = raw
+        if not normalized or not _exchange_position_matches_symbol(normalized, symbol):
+            continue
+        if _position_contracts(normalized) > 0:
+            return "present", normalized
+    return "flat", None
+
+
+def _remove_local_sidecar_position(executor: ContractExecutor, symbol: str) -> bool:
+    marker = getattr(executor, "_mark_external_closed", None)
+    if callable(marker):
+        try:
+            marker(symbol, reason="sidecar_monitor_exchange_flat")
+            return True
+        except Exception as exc:
+            logger = getattr(executor, "logger", None)
+            if logger:
+                logger.warning(f"[Sidecar] mark external flat failed: {exc}")
+
+    positions = getattr(executor, "positions", None)
+    if isinstance(positions, dict) and symbol in positions:
+        positions.pop(symbol, None)
+    for attr in ("_sl_check_failures", "_last_protection_alert"):
+        store = getattr(executor, attr, None)
+        if isinstance(store, dict):
+            store.pop(symbol, None)
+    saver = getattr(executor, "_save_positions", None)
+    if callable(saver):
+        saver()
+    return True
+
+
+def _record_exchange_flat_close(
+    executor: ContractExecutor,
+    symbol: str,
+    local: dict,
+    row: dict,
+    *,
+    closed_at: float,
+) -> dict:
+    ledger = getattr(executor, "ledger", None)
+    recorder = getattr(ledger, "record_pending_external_close", None)
+    if not callable(recorder):
+        return {"ledger_close_recorded": False}
+
+    try:
+        event = recorder(
+            symbol=symbol,
+            side=local.get("side") or row.get("side"),
+            entry_price=_safe_float(local.get("entry_price") or row.get("entry_price")),
+            amount_usdt=_safe_float(local.get("amount_usdt") or row.get("amount_usdt")),
+            leverage=int(_safe_float(local.get("leverage") or row.get("leverage"), 1.0) or 1),
+            estimated_pnl=None,
+            position_id=local.get("position_id"),
+            entry_request_id=local.get("shadow_id") or row.get("shadow_id"),
+            opened_at=local.get("open_time") or row.get("opened_at"),
+            closed_at=closed_at,
+            sl_algo_id=local.get("sl_algo_id") or row.get("sl_algo_id"),
+            sl_algo_clord_id=local.get("sl_algo_clord_id") or row.get("sl_algo_clord_id"),
+            entry_attribution=local.get("gate_metadata")
+            or local.get("entry_attribution")
+            or {},
+        )
+    except Exception as exc:
+        logger = getattr(executor, "logger", None)
+        if logger:
+            logger.warning(f"[Sidecar] pending external close ledger failed: {exc}")
+        return {
+            "ledger_close_recorded": False,
+            "ledger_close_error": str(exc),
+        }
+
+    return {
+        "ledger_close_recorded": True,
+        "ledger_close_event_id": (event or {}).get("event_id", ""),
+        "ledger_close_pnl_status": (event or {}).get("pnl_status", ""),
+    }
+
+
+def _halt_reason_from_global_state(reason: str, symbol: str) -> str:
+    prefix = "okx_"
+    suffix = f":{symbol}"
+    if reason.startswith(prefix) and reason.endswith(suffix):
+        return reason[len(prefix) : -len(suffix)]
+    return ""
+
+
+def _flat_halt_reason_candidates(
+    executor: ContractExecutor,
+    symbol: str,
+    halt_state=None,
+) -> list[str]:
+    reasons = []
+    halted = getattr(executor, "_halted_symbols", {}) or {}
+    if isinstance(halted, dict):
+        local_reason = (halted.get(symbol) or {}).get("reason")
+        if local_reason:
+            reasons.append(local_reason)
+    global_reason = getattr(halt_state, "reason", "") if halt_state else ""
+    parsed_global_reason = _halt_reason_from_global_state(global_reason, symbol)
+    if parsed_global_reason:
+        reasons.append(parsed_global_reason)
+
+    result = []
+    seen = set()
+    for reason in reasons:
+        if reason in SIDECAR_FLAT_CLEAR_HALT_REASONS and reason not in seen:
+            result.append(reason)
+            seen.add(reason)
+    return result
+
+
+def _clear_halt_after_exchange_flat(
+    paths: SidecarPaths,
+    executor: ContractExecutor,
+    symbol: str,
+) -> dict:
+    cleared_symbol = False
+    cleared_global = False
+    global_reason = ""
+
+    halt_state = None
+    try:
+        import utils.halt_state as halt_state_mod
+
+        previous_path = halt_state_mod.HALT_STATE_FILE
+        previous_instance = halt_state_mod._instance
+        switched = previous_path != paths.halt_state
+        if switched:
+            halt_state_mod.HALT_STATE_FILE = paths.halt_state
+            halt_state_mod._instance = None
+        try:
+            halt_state = halt_state_mod.get_halt_state()
+            global_reason = getattr(halt_state, "reason", "") or ""
+            for reason in _flat_halt_reason_candidates(executor, symbol, halt_state):
+                expected = f"okx_{reason}:{symbol}"
+                if halt_state.auto_clear_if_reason(
+                    expected,
+                    cleared_by="sidecar_monitor_exchange_flat",
+                ):
+                    cleared_global = True
+                    break
+        finally:
+            if switched:
+                halt_state_mod.HALT_STATE_FILE = previous_path
+                halt_state_mod._instance = previous_instance
+    except Exception as exc:
+        logger = getattr(executor, "logger", None)
+        if logger:
+            logger.warning(f"[Sidecar] global halt clear after flat failed: {exc}")
+
+    local_reasons = _flat_halt_reason_candidates(executor, symbol, halt_state)
+    if local_reasons:
+        clear_symbol_halt = getattr(executor, "clear_symbol_halt", None)
+        if callable(clear_symbol_halt):
+            try:
+                cleared_symbol = bool(
+                    clear_symbol_halt(
+                        symbol,
+                        source="sidecar_monitor_exchange_flat",
+                    )
+                )
+            except Exception as exc:
+                logger = getattr(executor, "logger", None)
+                if logger:
+                    logger.warning(f"[Sidecar] symbol halt clear after flat failed: {exc}")
+        else:
+            halted = getattr(executor, "_halted_symbols", None)
+            if isinstance(halted, dict) and symbol in halted:
+                halted.pop(symbol, None)
+                cleared_symbol = True
+
+    return {
+        "cleared_symbol_halt": cleared_symbol,
+        "cleared_global_halt": cleared_global,
+        "global_halt_reason": global_reason,
+    }
+
+
 def _record_owner_if_open(
     registry: ShadowTacticalOwnerRegistry,
     shadow_id: str,
@@ -159,7 +409,14 @@ def _reduce_action_for_trigger(trigger: str):
 def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecutor) -> dict:
     registry = ShadowTacticalOwnerRegistry(paths.owners)
     data = registry.load()
-    summary = {"scanned": 0, "reduced": 0, "closed": 0, "skipped": 0, "failed": 0}
+    summary = {
+        "scanned": 0,
+        "reduced": 0,
+        "closed": 0,
+        "exchange_flat": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
     for shadow_id, row in data.get("owners", {}).items():
         if row.get("status") != "open":
             continue
@@ -171,6 +428,52 @@ def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecut
                 paths.audit,
                 "monitor_skipped_unproven",
                 {"shadow_id": shadow_id, "symbol": symbol},
+            )
+            continue
+
+        exchange_state, _exchange_position = _sidecar_exchange_position_state(
+            executor,
+            symbol,
+        )
+        if exchange_state == "unknown":
+            row["last_monitor_at"] = time.time()
+            summary["skipped"] += 1
+            append_audit_event(
+                paths.audit,
+                "monitor_skipped_exchange_unknown",
+                {"shadow_id": shadow_id, "symbol": symbol},
+            )
+            continue
+        if exchange_state == "flat":
+            now = time.time()
+            ledger_close = _record_exchange_flat_close(
+                executor,
+                symbol,
+                local,
+                row,
+                closed_at=now,
+            )
+            row["status"] = "closed"
+            row["closed_at"] = now
+            row["last_monitor_at"] = now
+            row["close_reason"] = "exchange_flat_reconciled"
+            if ledger_close.get("ledger_close_event_id"):
+                row["close_ledger_event_id"] = ledger_close["ledger_close_event_id"]
+            if ledger_close.get("ledger_close_pnl_status"):
+                row["close_pnl_status"] = ledger_close["ledger_close_pnl_status"]
+            _remove_local_sidecar_position(executor, symbol)
+            halt_clear = _clear_halt_after_exchange_flat(paths, executor, symbol)
+            summary["closed"] += 1
+            summary["exchange_flat"] += 1
+            append_audit_event(
+                paths.audit,
+                "monitor_reconciled_flat",
+                {
+                    "shadow_id": shadow_id,
+                    "symbol": symbol,
+                    **ledger_close,
+                    **halt_clear,
+                },
             )
             continue
 

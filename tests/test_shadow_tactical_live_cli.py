@@ -3,7 +3,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -457,3 +458,214 @@ def test_run_once_monitors_open_sidecar_position_without_new_events(tmp_path, mo
 
     assert code == 0
     fake.check_stop_loss_take_profit.assert_called_once_with("ONDO-USDT-SWAP")
+
+
+def test_monitor_reconciles_sidecar_owner_when_exchange_is_flat(tmp_path):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+        positions=str(tmp_path / "positions.json"),
+        risk_state=str(tmp_path / "risk_state.json"),
+        halt_state=str(tmp_path / "halt_state.json"),
+    )
+    mod.ShadowTacticalOwnerRegistry(paths.owners).record_open(
+        shadow_id="s1",
+        symbol="WLD-USDT-SWAP",
+        side="short",
+        amount_usdt=30.0,
+        order_id="ord-1",
+        entry_clord_id="cl-1",
+        sl_algo_id="algo-1",
+        sl_algo_clord_id="sl-1",
+    )
+    Path(paths.halt_state).write_text(
+        json.dumps(
+            {
+                "halted": True,
+                "reason": "okx_sl_cancel_failed:WLD-USDT-SWAP",
+                "triggered_at": 1.0,
+                "triggered_by": "executor",
+                "resume_at": 0.0,
+                "resume_by": "",
+                "reconciliation_pending": False,
+                "reconciliation_result": None,
+            }
+        )
+    )
+    fake = SimpleNamespace(
+        exchange_id="okx",
+        positions={
+            "WLD-USDT-SWAP": {
+                "symbol": "WLD-USDT-SWAP",
+                "internal_symbol": "WLD-USDT",
+                "side": "short",
+                "shadow_id": "s1",
+                "sidecar_source": "shadow_tactical_live",
+            }
+        },
+        _halted_symbols={
+            "WLD-USDT-SWAP": {"reason": "sl_cancel_failed", "halted_at": 1.0}
+        },
+        _fetch_positions_with_retry=MagicMock(return_value=[]),
+        _normalize_okx_position=MagicMock(side_effect=lambda raw: raw),
+        _save_positions=MagicMock(),
+        check_stop_loss_take_profit=MagicMock(return_value=None),
+        clear_symbol_halt=MagicMock(return_value=1),
+        logger=MagicMock(),
+    )
+
+    result = mod.monitor_sidecar_owned_exposure(paths, fake)
+
+    owners = mod.ShadowTacticalOwnerRegistry(paths.owners).load()["owners"]
+    assert owners["s1"]["status"] == "closed"
+    assert owners["s1"]["close_reason"] == "exchange_flat_reconciled"
+    assert "WLD-USDT-SWAP" not in fake.positions
+    assert mod._active_owner_count(mod.ShadowTacticalOwnerRegistry(paths.owners)) == 0
+    assert result["closed"] == 1
+    assert result["exchange_flat"] == 1
+    fake._save_positions.assert_called_once()
+    fake.check_stop_loss_take_profit.assert_not_called()
+    fake.clear_symbol_halt.assert_called_once_with(
+        "WLD-USDT-SWAP",
+        source="sidecar_monitor_exchange_flat",
+    )
+    rows = [json.loads(line) for line in Path(paths.audit).read_text().splitlines()]
+    assert rows[-1]["event_type"] == "monitor_reconciled_flat"
+    assert rows[-1]["cleared_symbol_halt"] is True
+    assert rows[-1]["cleared_global_halt"] is True
+    halt_state = json.loads(Path(paths.halt_state).read_text())
+    assert halt_state["halted"] is False
+
+
+def test_monitor_skips_flat_reconciliation_when_exchange_fetch_fails(tmp_path):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+        positions=str(tmp_path / "positions.json"),
+        risk_state=str(tmp_path / "risk_state.json"),
+        halt_state=str(tmp_path / "halt_state.json"),
+    )
+    mod.ShadowTacticalOwnerRegistry(paths.owners).record_open(
+        shadow_id="s1",
+        symbol="WLD-USDT-SWAP",
+        side="short",
+        amount_usdt=30.0,
+        order_id="ord-1",
+        entry_clord_id="cl-1",
+        sl_algo_id="algo-1",
+        sl_algo_clord_id="sl-1",
+    )
+    fake = SimpleNamespace(
+        exchange_id="okx",
+        positions={
+            "WLD-USDT-SWAP": {
+                "symbol": "WLD-USDT-SWAP",
+                "internal_symbol": "WLD-USDT",
+                "side": "short",
+                "shadow_id": "s1",
+                "sidecar_source": "shadow_tactical_live",
+            }
+        },
+        _fetch_positions_with_retry=MagicMock(side_effect=RuntimeError("timeout")),
+        _normalize_okx_position=MagicMock(side_effect=lambda raw: raw),
+        _save_positions=MagicMock(),
+        check_stop_loss_take_profit=MagicMock(return_value=None),
+        logger=MagicMock(),
+    )
+
+    result = mod.monitor_sidecar_owned_exposure(paths, fake)
+
+    owners = mod.ShadowTacticalOwnerRegistry(paths.owners).load()["owners"]
+    assert owners["s1"]["status"] == "open"
+    assert "WLD-USDT-SWAP" in fake.positions
+    assert result["skipped"] == 1
+    fake._save_positions.assert_not_called()
+    fake.check_stop_loss_take_profit.assert_not_called()
+    rows = [json.loads(line) for line in Path(paths.audit).read_text().splitlines()]
+    assert rows[-1]["event_type"] == "monitor_skipped_exchange_unknown"
+
+
+def test_monitor_records_pending_external_close_when_exchange_is_flat(tmp_path):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+        positions=str(tmp_path / "positions.json"),
+        risk_state=str(tmp_path / "risk_state.json"),
+        halt_state=str(tmp_path / "halt_state.json"),
+    )
+    mod.ShadowTacticalOwnerRegistry(paths.owners).record_open(
+        shadow_id="doge-shadow",
+        symbol="DOGE-USDT-SWAP",
+        side="short",
+        amount_usdt=30.0,
+        order_id="open-1",
+        entry_clord_id="entry-cl",
+        sl_algo_id="sl-algo",
+        sl_algo_clord_id="sl-cl",
+    )
+    ledger = MagicMock()
+    ledger.record_pending_external_close.return_value = {
+        "event_id": "pending-close-1",
+        "pnl_status": "pending",
+    }
+    fake = SimpleNamespace(
+        exchange_id="okx",
+        positions={
+            "DOGE-USDT-SWAP": {
+                "symbol": "DOGE-USDT-SWAP",
+                "internal_symbol": "DOGE-USDT",
+                "side": "short",
+                "shadow_id": "doge-shadow",
+                "sidecar_source": "shadow_tactical_live",
+                "entry_price": 0.07227,
+                "amount_usdt": 30.0,
+                "leverage": 5,
+                "open_time": 123.0,
+                "sl_algo_id": "sl-algo",
+                "sl_algo_clord_id": "sl-cl",
+                "gate_metadata": {"tactical_track_gate": "pass"},
+            }
+        },
+        _fetch_positions_with_retry=MagicMock(return_value=[]),
+        _normalize_okx_position=MagicMock(side_effect=lambda raw: raw),
+        _save_positions=MagicMock(),
+        check_stop_loss_take_profit=MagicMock(return_value=None),
+        logger=MagicMock(),
+        ledger=ledger,
+    )
+
+    result = mod.monitor_sidecar_owned_exposure(paths, fake)
+
+    assert result["exchange_flat"] == 1
+    ledger.record_pending_external_close.assert_called_once_with(
+        symbol="DOGE-USDT-SWAP",
+        side="short",
+        entry_price=0.07227,
+        amount_usdt=30.0,
+        leverage=5,
+        estimated_pnl=None,
+        position_id=None,
+        entry_request_id="doge-shadow",
+        opened_at=123.0,
+        closed_at=ANY,
+        sl_algo_id="sl-algo",
+        sl_algo_clord_id="sl-cl",
+        entry_attribution={"tactical_track_gate": "pass"},
+    )
+    owners = mod.ShadowTacticalOwnerRegistry(paths.owners).load()["owners"]
+    assert owners["doge-shadow"]["close_ledger_event_id"] == "pending-close-1"
+    rows = [json.loads(line) for line in Path(paths.audit).read_text().splitlines()]
+    assert rows[-1]["ledger_close_recorded"] is True
+    assert rows[-1]["ledger_close_event_id"] == "pending-close-1"

@@ -62,8 +62,16 @@ def _plan(**overrides):
         "stop_loss": 1.20,
         "take_profit": [1.32, 1.38],
         "leverage": 20,
+        "track": "tactical",
+        "exit_profile": "tactical_v1",
+        "tactical_source": "shadow_only",
+        "tactical_max_hold_minutes": 90,
         "shadow_id": "shadow-1",
         "sidecar_source": "shadow_tactical_live",
+        "gate_metadata": {
+            "reject_reason": "rr_below_floor",
+            "tactical_track_gate": "pass",
+        },
     }
     plan.update(overrides)
     return plan
@@ -90,6 +98,22 @@ def test_open_sidecar_plan_canonicalizes_internal_symbol_to_swap():
     assert pos["symbol"] == "ONDO-USDT-SWAP"
     assert pos["internal_symbol"] == "ONDO-USDT"
     ex.exchange.fetch_ticker.assert_called_with("ONDO-USDT-SWAP")
+
+
+def test_open_sidecar_plan_persists_tactical_exit_metadata():
+    ex = _executor()
+
+    pos = ex.open_sidecar_plan(_plan(), size_usdt=30.0)
+
+    assert pos["track"] == "tactical"
+    assert pos["exit_profile"] == "tactical_v1"
+    assert pos["tactical_source"] == "shadow_only"
+    assert pos["tactical_max_hold_minutes"] == 90
+    assert pos["entry_ref"] == 1.25
+    assert pos["gate_metadata"] == {
+        "reject_reason": "rr_below_floor",
+        "tactical_track_gate": "pass",
+    }
 
 
 def test_open_sidecar_plan_rejects_invalid_long_stop_side():
