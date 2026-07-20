@@ -1,8 +1,11 @@
 import logging
+import json
 import time
 from unittest.mock import MagicMock
 
 from executor import ContractExecutor
+from scripts.shadow_tactical_live_sidecar import monitor_sidecar_owned_exposure
+from utils.shadow_tactical_live import SidecarPaths
 
 
 SYMBOL = "ONDO-USDT-SWAP"
@@ -95,3 +98,96 @@ def test_tactical_max_hold_returns_close_trigger():
 
     assert ex.check_stop_loss_take_profit(SYMBOL) == "tactical_max_hold"
 
+
+def _sidecar_paths(tmp_path):
+    return SidecarPaths(
+        events=str(tmp_path / "events.jsonl"),
+        state=str(tmp_path / "state.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+        owners=str(tmp_path / "owners.json"),
+        positions=str(tmp_path / "positions.json"),
+        risk_state=str(tmp_path / "risk.json"),
+        halt_state=str(tmp_path / "halt.json"),
+        live_order_events=str(tmp_path / "orders.jsonl"),
+        live_position_lifecycle=str(tmp_path / "lifecycle.json"),
+    )
+
+
+def _write_open_owner(paths, *, shadow_id="stale-owner"):
+    with open(paths.owners, "w") as fh:
+        json.dump(
+            {
+                "schema_version": "shadow_tactical_owners.v1",
+                "owners": {
+                    shadow_id: {
+                        "shadow_id": shadow_id,
+                        "symbol": SYMBOL,
+                        "internal_symbol": "ONDO-USDT",
+                        "exchange_symbol": SYMBOL,
+                        "side": "long",
+                        "amount_usdt": 30.0,
+                        "order_id": "entry-order",
+                        "entry_clord_id": "",
+                        "sl_algo_id": "sl-1",
+                        "sl_algo_clord_id": "sl-client-1",
+                        "status": "open",
+                        "opened_at": 1234.0,
+                    }
+                },
+            },
+            fh,
+        )
+
+
+def _executor_for_monitor(exchange_positions):
+    ex = ContractExecutor.__new__(ContractExecutor)
+    ex.logger = logging.getLogger("test_shadow_tactical_exit_monitoring")
+    ex.exchange_id = "okx"
+    ex.positions = {}
+    ex.ledger = MagicMock()
+    ex.ledger.record_pending_external_close.return_value = {
+        "event_id": "close-event-1",
+        "pnl_status": "pending",
+    }
+    ex._fetch_positions_with_retry = MagicMock(return_value=exchange_positions)
+    ex._normalize_okx_position = MagicMock(side_effect=lambda raw: raw)
+    ex.check_stop_loss_take_profit = MagicMock()
+    ex.close_position = MagicMock()
+    ex.reduce_position = MagicMock()
+    ex._save_positions = MagicMock()
+    return ex
+
+
+def test_unproven_owner_reconciles_closed_when_exchange_is_flat(tmp_path):
+    paths = _sidecar_paths(tmp_path)
+    _write_open_owner(paths)
+    ex = _executor_for_monitor([])
+
+    summary = monitor_sidecar_owned_exposure(paths, ex)
+
+    owners = json.loads(open(paths.owners).read())["owners"]
+    assert owners["stale-owner"]["status"] == "closed"
+    assert owners["stale-owner"]["close_reason"] == "exchange_flat_reconciled"
+    assert owners["stale-owner"]["close_ledger_event_id"] == "close-event-1"
+    assert summary["closed"] == 1
+    assert summary["exchange_flat"] == 1
+    ex.ledger.record_pending_external_close.assert_called_once()
+    ex.close_position.assert_not_called()
+    ex.reduce_position.assert_not_called()
+
+
+def test_unproven_owner_with_exchange_position_is_skipped_without_exit_action(tmp_path):
+    paths = _sidecar_paths(tmp_path)
+    _write_open_owner(paths)
+    ex = _executor_for_monitor(
+        [{"symbol": SYMBOL, "side": "long", "contracts": 1.0}]
+    )
+
+    summary = monitor_sidecar_owned_exposure(paths, ex)
+
+    owners = json.loads(open(paths.owners).read())["owners"]
+    assert owners["stale-owner"]["status"] == "open"
+    assert summary["skipped"] == 1
+    ex.ledger.record_pending_external_close.assert_not_called()
+    ex.close_position.assert_not_called()
+    ex.reduce_position.assert_not_called()

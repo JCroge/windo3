@@ -398,6 +398,23 @@ def _sidecar_position_for_owner(executor: ContractExecutor, row: dict):
     return exchange_symbol, local if proven else None
 
 
+def _owner_row_as_close_metadata(row: dict, symbol: str) -> dict:
+    """Fallback metadata for an owner row whose local position is already gone."""
+    return {
+        "symbol": symbol,
+        "side": row.get("side"),
+        "entry_price": row.get("entry_price"),
+        "amount_usdt": row.get("amount_usdt"),
+        "leverage": row.get("leverage"),
+        "position_id": row.get("position_id"),
+        "shadow_id": row.get("shadow_id"),
+        "open_time": row.get("opened_at"),
+        "sl_algo_id": row.get("sl_algo_id"),
+        "sl_algo_clord_id": row.get("sl_algo_clord_id"),
+        "gate_metadata": row.get("entry_attribution") or {},
+    }
+
+
 def _reduce_action_for_trigger(trigger: str):
     if trigger in ("tactical_tp1", "partial_tp_1"):
         return 0.5, 1, "sidecar_tactical_tp1"
@@ -423,11 +440,52 @@ def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecut
         summary["scanned"] += 1
         symbol, local = _sidecar_position_for_owner(executor, row)
         if not local:
+            exchange_state, _exchange_position = _sidecar_exchange_position_state(
+                executor,
+                symbol,
+            )
+            if exchange_state == "flat":
+                now = time.time()
+                ledger_close = _record_exchange_flat_close(
+                    executor,
+                    symbol,
+                    _owner_row_as_close_metadata(row, symbol),
+                    row,
+                    closed_at=now,
+                )
+                row["status"] = "closed"
+                row["closed_at"] = now
+                row["last_monitor_at"] = now
+                row["close_reason"] = "exchange_flat_reconciled"
+                if ledger_close.get("ledger_close_event_id"):
+                    row["close_ledger_event_id"] = ledger_close["ledger_close_event_id"]
+                if ledger_close.get("ledger_close_pnl_status"):
+                    row["close_pnl_status"] = ledger_close["ledger_close_pnl_status"]
+                halt_clear = _clear_halt_after_exchange_flat(paths, executor, symbol)
+                summary["closed"] += 1
+                summary["exchange_flat"] += 1
+                append_audit_event(
+                    paths.audit,
+                    "monitor_reconciled_flat",
+                    {
+                        "shadow_id": shadow_id,
+                        "symbol": symbol,
+                        "unproven_owner": True,
+                        **ledger_close,
+                        **halt_clear,
+                    },
+                )
+                continue
+
             summary["skipped"] += 1
             append_audit_event(
                 paths.audit,
                 "monitor_skipped_unproven",
-                {"shadow_id": shadow_id, "symbol": symbol},
+                {
+                    "shadow_id": shadow_id,
+                    "symbol": symbol,
+                    "exchange_state": exchange_state,
+                },
             )
             continue
 
