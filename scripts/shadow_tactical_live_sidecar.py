@@ -415,6 +415,39 @@ def _owner_row_as_close_metadata(row: dict, symbol: str) -> dict:
     }
 
 
+def _owner_group_key(row: dict) -> tuple[str, str]:
+    return (
+        row.get("exchange_symbol") or row.get("symbol") or "",
+        row.get("side") or "",
+    )
+
+
+def _open_owner_group_counts(owners: dict) -> dict[tuple[str, str], int]:
+    counts = {}
+    for row in owners.values():
+        if row.get("status") != "open":
+            continue
+        key = _owner_group_key(row)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _pending_protection_state(executor: ContractExecutor, symbol: str) -> str:
+    lister = getattr(executor, "_list_pending_algos", None)
+    if not callable(lister):
+        return "unknown"
+    try:
+        algos = lister(symbol)
+    except Exception:
+        return "unknown"
+    for algo in algos or []:
+        has_sl = algo.get("sl_trigger") not in (None, "", "0")
+        has_tp = algo.get("tp_trigger") not in (None, "", "0")
+        if has_sl or has_tp:
+            return "present"
+    return "absent"
+
+
 def _reduce_action_for_trigger(trigger: str):
     if trigger in ("tactical_tp1", "partial_tp_1"):
         return 0.5, 1, "sidecar_tactical_tp1"
@@ -433,7 +466,10 @@ def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecut
         "exchange_flat": 0,
         "skipped": 0,
         "failed": 0,
+        "ghost_exposure": 0,
+        "ambiguous_stacks": 0,
     }
+    owner_group_counts = _open_owner_group_counts(data.get("owners", {}))
     for shadow_id, row in data.get("owners", {}).items():
         if row.get("status") != "open":
             continue
@@ -477,14 +513,39 @@ def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecut
                 )
                 continue
 
+            protection_state = _pending_protection_state(executor, symbol)
+            operator_action_required = protection_state in ("absent", "unknown")
+            if exchange_state in ("present", "unknown"):
+                summary["ghost_exposure"] += 1
+                summary["skipped"] += 1
+                halt = getattr(executor, "_halt_symbol", None)
+                if callable(halt):
+                    halt(symbol, reason="sidecar_ghost_exposure")
+                append_audit_event(
+                    paths.audit,
+                    "monitor_ghost_exposure",
+                    {
+                        "shadow_id": shadow_id,
+                        "symbol": symbol,
+                        "exchange_state": exchange_state,
+                        "unproven_owner": True,
+                        "pending_protection_state": protection_state,
+                        "operator_action_required": operator_action_required,
+                    },
+                )
+                continue
+
             summary["skipped"] += 1
             append_audit_event(
                 paths.audit,
-                "monitor_skipped_unproven",
+                "monitor_skipped_exchange_unsupported"
+                if exchange_state == "unsupported"
+                else "monitor_skipped_unproven",
                 {
                     "shadow_id": shadow_id,
                     "symbol": symbol,
                     "exchange_state": exchange_state,
+                    "unproven_owner": True,
                 },
             )
             continue
@@ -531,6 +592,22 @@ def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecut
                     "symbol": symbol,
                     **ledger_close,
                     **halt_clear,
+                },
+            )
+            continue
+
+        group_count = owner_group_counts.get(_owner_group_key(row), 0)
+        if group_count > 1:
+            summary["ambiguous_stacks"] += 1
+            summary["skipped"] += 1
+            append_audit_event(
+                paths.audit,
+                "monitor_ambiguous_net_mode_stack",
+                {
+                    "shadow_id": shadow_id,
+                    "symbol": symbol,
+                    "owner_group_count": group_count,
+                    "exchange_state": exchange_state,
                 },
             )
             continue

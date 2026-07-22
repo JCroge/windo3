@@ -114,29 +114,30 @@ def _sidecar_paths(tmp_path):
 
 
 def _write_open_owner(paths, *, shadow_id="stale-owner"):
+    try:
+        with open(paths.owners) as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        data = {
+            "schema_version": "shadow_tactical_owners.v1",
+            "owners": {},
+        }
+    data["owners"][shadow_id] = {
+        "shadow_id": shadow_id,
+        "symbol": SYMBOL,
+        "internal_symbol": "ONDO-USDT",
+        "exchange_symbol": SYMBOL,
+        "side": "long",
+        "amount_usdt": 30.0,
+        "order_id": "entry-order",
+        "entry_clord_id": "",
+        "sl_algo_id": "sl-1",
+        "sl_algo_clord_id": "sl-client-1",
+        "status": "open",
+        "opened_at": 1234.0,
+    }
     with open(paths.owners, "w") as fh:
-        json.dump(
-            {
-                "schema_version": "shadow_tactical_owners.v1",
-                "owners": {
-                    shadow_id: {
-                        "shadow_id": shadow_id,
-                        "symbol": SYMBOL,
-                        "internal_symbol": "ONDO-USDT",
-                        "exchange_symbol": SYMBOL,
-                        "side": "long",
-                        "amount_usdt": 30.0,
-                        "order_id": "entry-order",
-                        "entry_clord_id": "",
-                        "sl_algo_id": "sl-1",
-                        "sl_algo_clord_id": "sl-client-1",
-                        "status": "open",
-                        "opened_at": 1234.0,
-                    }
-                },
-            },
-            fh,
-        )
+        json.dump(data, fh)
 
 
 def _executor_for_monitor(exchange_positions):
@@ -176,18 +177,130 @@ def test_unproven_owner_reconciles_closed_when_exchange_is_flat(tmp_path):
     ex.reduce_position.assert_not_called()
 
 
-def test_unproven_owner_with_exchange_position_is_skipped_without_exit_action(tmp_path):
+def test_unproven_owner_with_exchange_position_is_ghost_skipped_without_exit_action(tmp_path):
     paths = _sidecar_paths(tmp_path)
     _write_open_owner(paths)
     ex = _executor_for_monitor(
         [{"symbol": SYMBOL, "side": "long", "contracts": 1.0}]
     )
+    ex._halt_symbol = MagicMock()
+    ex._list_pending_algos = MagicMock(return_value=[])
 
     summary = monitor_sidecar_owned_exposure(paths, ex)
 
     owners = json.loads(open(paths.owners).read())["owners"]
     assert owners["stale-owner"]["status"] == "open"
     assert summary["skipped"] == 1
+    assert summary["ghost_exposure"] == 1
     ex.ledger.record_pending_external_close.assert_not_called()
+    ex.close_position.assert_not_called()
+    ex.reduce_position.assert_not_called()
+
+
+def test_unproven_owner_with_exchange_position_records_ghost_exposure(tmp_path):
+    paths = _sidecar_paths(tmp_path)
+    _write_open_owner(paths)
+    ex = _executor_for_monitor(
+        [{"symbol": SYMBOL, "side": "long", "contracts": 1.0}]
+    )
+    ex._halt_symbol = MagicMock()
+    ex._list_pending_algos = MagicMock(return_value=[])
+
+    summary = monitor_sidecar_owned_exposure(paths, ex)
+
+    audit_events = [
+        json.loads(line)
+        for line in open(paths.audit).read().splitlines()
+        if line.strip()
+    ]
+    assert summary["ghost_exposure"] == 1
+    assert audit_events[-1]["event_type"] == "monitor_ghost_exposure"
+    assert audit_events[-1]["exchange_state"] == "present"
+    assert audit_events[-1]["operator_action_required"] is True
+    ex._halt_symbol.assert_called_once_with(SYMBOL, reason="sidecar_ghost_exposure")
+    ex.close_position.assert_not_called()
+    ex.reduce_position.assert_not_called()
+
+
+def test_unproven_owner_with_unknown_exchange_state_records_ghost_exposure(tmp_path):
+    paths = _sidecar_paths(tmp_path)
+    _write_open_owner(paths)
+    ex = _executor_for_monitor([])
+    ex._fetch_positions_with_retry.side_effect = RuntimeError("okx unavailable")
+    ex._halt_symbol = MagicMock()
+    ex._list_pending_algos = MagicMock(return_value=[])
+
+    summary = monitor_sidecar_owned_exposure(paths, ex)
+
+    audit_events = [
+        json.loads(line)
+        for line in open(paths.audit).read().splitlines()
+        if line.strip()
+    ]
+    assert summary["ghost_exposure"] == 1
+    assert audit_events[-1]["event_type"] == "monitor_ghost_exposure"
+    assert audit_events[-1]["exchange_state"] == "unknown"
+    ex._halt_symbol.assert_called_once_with(SYMBOL, reason="sidecar_ghost_exposure")
+    ex.close_position.assert_not_called()
+    ex.reduce_position.assert_not_called()
+
+
+def test_unproven_owner_with_unsupported_exchange_state_is_skipped_without_exit_action(tmp_path):
+    paths = _sidecar_paths(tmp_path)
+    _write_open_owner(paths)
+    ex = _executor_for_monitor([])
+    ex.exchange_id = "binance"
+    ex.check_stop_loss_take_profit.return_value = "tactical_max_hold"
+
+    summary = monitor_sidecar_owned_exposure(paths, ex)
+
+    owners = json.loads(open(paths.owners).read())["owners"]
+    audit_events = [
+        json.loads(line)
+        for line in open(paths.audit).read().splitlines()
+        if line.strip()
+    ]
+    assert owners["stale-owner"]["status"] == "open"
+    assert summary["skipped"] == 1
+    assert audit_events[-1]["event_type"] == "monitor_skipped_exchange_unsupported"
+    assert audit_events[-1]["exchange_state"] == "unsupported"
+    ex.check_stop_loss_take_profit.assert_not_called()
+    ex.close_position.assert_not_called()
+    ex.reduce_position.assert_not_called()
+
+
+def test_monitor_does_not_close_one_row_from_ambiguous_net_mode_stack(tmp_path):
+    paths = _sidecar_paths(tmp_path)
+    _write_open_owner(paths, shadow_id="owner-1")
+    _write_open_owner(paths, shadow_id="owner-2")
+    data = json.loads(open(paths.owners).read())
+    data["owners"]["owner-1"]["shadow_id"] = "owner-1"
+    data["owners"]["owner-2"]["shadow_id"] = "owner-2"
+    open(paths.owners, "w").write(json.dumps(data))
+
+    ex = _executor_for_monitor(
+        [{"symbol": SYMBOL, "side": "long", "contracts": 2.0}]
+    )
+    ex.positions[SYMBOL] = {
+        "symbol": SYMBOL,
+        "internal_symbol": "ONDO-USDT",
+        "exchange_symbol": SYMBOL,
+        "shadow_id": "owner-2",
+        "side": "long",
+        "sidecar_source": "shadow_tactical_live",
+        "entry_price": 1.25,
+        "stop_loss": 1.20,
+        "take_profit": 1.32,
+    }
+    ex.check_stop_loss_take_profit.return_value = "tactical_max_hold"
+    ex._list_pending_algos = MagicMock(return_value=[])
+    ex._halt_symbol = MagicMock()
+
+    summary = monitor_sidecar_owned_exposure(paths, ex)
+
+    owners = json.loads(open(paths.owners).read())["owners"]
+    assert owners["owner-1"]["status"] == "open"
+    assert owners["owner-2"]["status"] == "open"
+    assert summary["ambiguous_stacks"] == 1
     ex.close_position.assert_not_called()
     ex.reduce_position.assert_not_called()

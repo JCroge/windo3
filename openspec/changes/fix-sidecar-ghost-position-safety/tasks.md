@@ -2,8 +2,8 @@
 
 - [x] 1.1 Add a Main migration regression proving manual OCO/conditional protection is preserved when a symbol is sidecar-owned and exchange exposure is present or unknown.
 - [x] 1.2 Add sidecar admission regressions proving same-symbol sidecar opens are rejected in OKX `net_mode` when an active owner or present exchange exposure already exists.
-- [ ] 1.3 Add sidecar monitor regressions proving ghost exposure emits fail-closed audit/halt behavior and does not silently loop on `monitor_skipped_unproven`.
-- [ ] 1.4 Add a net-mode stacked-owner regression proving monitor does not close one owner row while leaving remaining same-symbol exposure unproven and unmanaged.
+- [x] 1.3 Add sidecar monitor regressions proving ghost exposure emits fail-closed audit/halt behavior and does not silently loop on `monitor_skipped_unproven`.
+- [x] 1.4 Add a net-mode stacked-owner regression proving monitor does not close one owner row while leaving remaining same-symbol exposure unproven and unmanaged.
 - [ ] 1.5 Add sidecar entry-drift regressions proving large stale drift rejects before `create_order` and accepted opens record drift metadata.
 
 ## 2. Main Migration Protection
@@ -20,9 +20,9 @@
 
 ## 4. Ghost Exposure Monitoring
 
-- [ ] 4.1 Detect ghost exposure in `monitor_sidecar_owned_exposure()` when owners are open, exchange exposure is present, and local sidecar position proof is missing.
-- [ ] 4.2 Emit fail-closed audit/halt metadata for ghost exposure while preserving the rule that unproven exchange exposure is not closed or reduced automatically.
-- [ ] 4.3 Detect ambiguous same-symbol net-mode owner stacks before applying close/reduce actions, and fail closed unless the whole net exposure is proven as one aggregate position.
+- [x] 4.1 Detect ghost exposure in `monitor_sidecar_owned_exposure()` when owners are open, exchange exposure is present, and local sidecar position proof is missing.
+- [x] 4.2 Emit fail-closed audit/halt metadata for ghost exposure while preserving the rule that unproven exchange exposure is not closed or reduced automatically.
+- [x] 4.3 Detect ambiguous same-symbol net-mode owner stacks before applying close/reduce actions, and fail closed unless the whole net exposure is proven as one aggregate position.
 
 ## 5. Sidecar Entry Drift Guard
 
