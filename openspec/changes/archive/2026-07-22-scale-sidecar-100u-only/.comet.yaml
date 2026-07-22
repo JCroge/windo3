@@ -1,0 +1,16 @@
+workflow: tweak
+phase: archive
+build_mode: direct
+isolation: branch
+verify_mode: light
+base_ref: fc4d396d32194848424ae1f72b82ea77032dc9f4
+design_doc: null
+plan: null
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-07-22-scale-sidecar-100u-only-verify.md
+branch_status: handled
+created_at: 2026-07-21
+verified_at: 2026-07-22
+archived: true
+build_command: python3 -m py_compile scripts/shadow_tactical_live_sidecar.py utils/config_loader.py
+verify_command: python3 -m py_compile scripts/shadow_tactical_live_sidecar.py utils/config_loader.py
