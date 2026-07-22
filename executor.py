@@ -436,6 +436,27 @@ class ContractExecutor:
             self.logger.warning(f"[SidecarOwner] owner lookup failed: {e}")
         return False
 
+    def _sidecar_symbol_exchange_state(self, symbol: str) -> str:
+        owners = self._load_sidecar_owner_registry()
+        if owners is None:
+            return "unknown"
+
+        sides = ("long", "short")
+        try:
+            has_owner = any(owners.matches_position(symbol, side) for side in sides)
+        except Exception as e:
+            self.logger.warning(f"[SidecarOwner] symbol state lookup failed: {e}")
+            return "unknown"
+        if not has_owner:
+            return "none"
+
+        try:
+            ex_pos = self._fetch_okx_position_state(symbol, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning(f"[SidecarOwner] exchange state lookup failed: {e}")
+            return "unknown"
+        return "present" if ex_pos is not None else "flat"
+
     def _resolve_attached_sl_algo_id(self, symbol: str,
                                        clord_id: str) -> Optional[str]:
         """在 OKX pending algo 列表中按 algoClOrdId 找回真实 algoId。
@@ -590,7 +611,9 @@ class ContractExecutor:
 
         步骤:
           1. 列 pending algo (含 conditional + oco)
-          2. 任何纯 TP algo 一律撤掉(本系统 exit_owner=local_partial_tp_exchange_sl)
+          2. 本地 Main 仓位的纯 TP algo 一律撤掉
+             (本系统 exit_owner=local_partial_tp_exchange_sl);本地无仓位时先
+             判断 sidecar ownership/exchange state,避免移除 sidecar 风险保护
           3. OCO algo (旧版 SL+TP 一体单) 视为 SL,但必须 _replace_protective_sl
              转成纯 conditional SL,这样本地 partial TP 才能独立运行
           4. 纯 SL algo 尝试归属本地 position;归属成功 → 写 sl_algo_id,
@@ -599,7 +622,8 @@ class ContractExecutor:
           5. 本地有仓位但 pending 中无 SL → live halt,testnet 重挂
 
         返回 dict 摘要,包含 cancelled_tp / matched_sl / orphan_sl /
-        missing_sl / halted / oco_replaced。
+        missing_sl / halted / oco_replaced / foreign_algos /
+        sidecar_protected_algos。
         """
         summary = {
             'symbol': symbol,
@@ -610,6 +634,7 @@ class ContractExecutor:
             'halted': False,
             'oco_replaced': 0,
             'foreign_algos': 0,
+            'sidecar_protected_algos': 0,
         }
         if self.exchange_id != 'okx':
             return summary
@@ -617,6 +642,7 @@ class ContractExecutor:
         algos = self._list_pending_algos(symbol)
         position = self.positions.get(symbol)
 
+        tp_only_algos: list = []
         sl_algos: list = []
         oco_algos: list = []
         for algo in algos:
@@ -639,7 +665,10 @@ class ContractExecutor:
                 )
                 continue
             if has_tp and not has_sl:
-                # 纯 TP algo,exit_owner 是本地 → 必须撤
+                if position is None:
+                    tp_only_algos.append(algo)
+                    continue
+                # 本地 Main 仓位:纯 TP algo,exit_owner 是本地 → 必须撤
                 if self._cancel_algo_by_id(symbol, algo_id):
                     summary['cancelled_tp'] += 1
                     self.logger.info(
@@ -655,7 +684,23 @@ class ContractExecutor:
                 sl_algos.append(algo)
 
         if position is None:
-            # 本地无仓位,所有残留 SL/OCO 全撤
+            sidecar_state = self._sidecar_symbol_exchange_state(symbol)
+            if sidecar_state in ("present", "unknown"):
+                for algo in tp_only_algos + sl_algos + oco_algos:
+                    summary["sidecar_protected_algos"] += 1
+                    self.logger.warning(
+                        f"[Migrate] {symbol} preserve ambiguous protection "
+                        f"{algo['algoId']} for sidecar-owned exposure "
+                        f"(exchange_state={sidecar_state}, ordType={algo.get('ordType')})"
+                    )
+                return summary
+
+            for algo in tp_only_algos:
+                if self._cancel_algo_by_id(symbol, algo['algoId']):
+                    summary['cancelled_tp'] += 1
+                    self.logger.info(
+                        f"[Migrate] {symbol} 取消存量 TP algo {algo['algoId']}"
+                    )
             for algo in sl_algos + oco_algos:
                 if self._cancel_algo_by_id(symbol, algo['algoId']):
                     summary['orphan_sl'] += 1
@@ -932,7 +977,9 @@ class ContractExecutor:
             'inst_id': info.get('instId') or unified_sym,
         }
 
-    def _fetch_okx_position_state(self, symbol: str) -> Optional[dict]:
+    def _fetch_okx_position_state(
+        self, symbol: str, raise_on_error: bool = False
+    ) -> Optional[dict]:
         """从 OKX 拉取指定 symbol 的归一化仓位（找不到返回 None）。"""
         if self.exchange_id != 'okx':
             return None
@@ -943,6 +990,8 @@ class ContractExecutor:
                 positions = self.exchange.fetch_positions()
         except Exception as e:
             self.logger.warning(f"[OKX 仓位复核] fetch_positions 失败: {e}")
+            if raise_on_error:
+                raise
             return None
 
         for raw in positions or []:

@@ -1,6 +1,6 @@
 ## 1. Regression Coverage
 
-- [ ] 1.1 Add a Main migration regression proving manual OCO/conditional protection is preserved when a symbol is sidecar-owned and exchange exposure is present or unknown.
+- [x] 1.1 Add a Main migration regression proving manual OCO/conditional protection is preserved when a symbol is sidecar-owned and exchange exposure is present or unknown.
 - [ ] 1.2 Add sidecar admission regressions proving same-symbol sidecar opens are rejected in OKX `net_mode` when an active owner or present exchange exposure already exists.
 - [ ] 1.3 Add sidecar monitor regressions proving ghost exposure emits fail-closed audit/halt behavior and does not silently loop on `monitor_skipped_unproven`.
 - [ ] 1.4 Add a net-mode stacked-owner regression proving monitor does not close one owner row while leaving remaining same-symbol exposure unproven and unmanaged.
@@ -8,9 +8,9 @@
 
 ## 2. Main Migration Protection
 
-- [ ] 2.1 Extend Main sidecar-owner lookup or migration context so `_migrate_okx_algos_for_symbol()` can determine sidecar-owned present/unknown exchange exposure.
-- [ ] 2.2 Preserve ambiguous/manual OCO and conditional TP/SL algos for sidecar-owned present/unknown exposure instead of canceling them as orphan residuals.
-- [ ] 2.3 Keep existing exchange-flat or non-sidecar orphan cleanup behavior intact.
+- [x] 2.1 Extend Main sidecar-owner lookup or migration context so `_migrate_okx_algos_for_symbol()` can determine sidecar-owned present/unknown exchange exposure.
+- [x] 2.2 Preserve ambiguous/manual OCO and conditional TP/SL algos for sidecar-owned present/unknown exposure instead of canceling them as orphan residuals.
+- [x] 2.3 Keep existing exchange-flat or non-sidecar orphan cleanup behavior intact.
 
 ## 3. Sidecar Admission Safety
 

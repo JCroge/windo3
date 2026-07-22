@@ -931,6 +931,7 @@ class TestAlgoMigration:
             'halted': False,
             'oco_replaced': 0,
             'foreign_algos': 0,
+            'sidecar_protected_algos': 0,
         }
 
     def test_legacy_oco_replaced_with_pure_sl(self):
