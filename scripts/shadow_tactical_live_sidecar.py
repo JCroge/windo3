@@ -366,6 +366,31 @@ def _record_owner_if_open(
     )
 
 
+def _drain_sidecar_entry_drift_alerts(paths: SidecarPaths, executor, shadow_id: str) -> int:
+    alerts = getattr(executor, "_pending_drift_alerts", [])
+    if not isinstance(alerts, list):
+        return 0
+
+    kept = []
+    persisted = 0
+    for alert in alerts:
+        alert_type = (alert or {}).get("type") if isinstance(alert, dict) else None
+        if not alert_type or not alert_type.startswith("sidecar_entry_drift_"):
+            kept.append(alert)
+            continue
+        alert_shadow_id = (alert or {}).get("shadow_id")
+        if alert_shadow_id and alert_shadow_id != shadow_id:
+            kept.append(alert)
+            continue
+        payload = {key: value for key, value in alert.items() if key != "type"}
+        payload["shadow_id"] = alert_shadow_id or shadow_id
+        append_audit_event(paths.audit, alert_type, payload)
+        persisted += 1
+
+    executor._pending_drift_alerts = kept
+    return persisted
+
+
 def _sidecar_position_for_owner(executor: ContractExecutor, row: dict):
     positions = getattr(executor, "positions", {}) or {}
     exchange_symbol = row.get("exchange_symbol") or row.get("symbol")
@@ -736,6 +761,7 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         )
     else:
         state["seen_shadow_ids"][shadow_id] = "rejected"
+        _drain_sidecar_entry_drift_alerts(paths, executor, shadow_id)
         append_audit_event(
             paths.audit,
             "rejected",

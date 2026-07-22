@@ -212,6 +212,155 @@ def test_run_preserves_existing_watermark_when_no_backfill_default(tmp_path):
     assert loaded["last_offset"] == events.stat().st_size
 
 
+def test_process_event_persists_sidecar_entry_drift_rejection_audit(tmp_path):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+    )
+    state = {"seen_shadow_ids": {}}
+    registry = mod.ShadowTacticalOwnerRegistry(paths.owners)
+    event = {
+        "event_type": "rejected_plan_created",
+        "record": {
+            "id": "shadow-drift",
+            "symbol": "WLD-USDT-SWAP",
+            "side": "long",
+            "entry_price": 1.25,
+            "stop_loss": 1.20,
+            "take_profit": [1.32],
+            "leverage": 20,
+            "track": "tactical",
+            "exit_profile": "tactical_v1",
+            "tactical_track_gate": "pass",
+        },
+    }
+    fake = MagicMock()
+    fake._fetch_positions_with_retry.return_value = []
+    fake.logger = MagicMock()
+    fake.open_sidecar_plan.return_value = None
+    fake._pending_drift_alerts = [
+        {
+            "type": "sidecar_entry_drift_rejected",
+            "symbol": "WLD-USDT-SWAP",
+            "side": "long",
+            "drift_pct": 0.12,
+            "decision": "abandon",
+            "reason": "drift_too_large",
+            "source": "sidecar",
+            "shadow_id": "shadow-drift",
+        },
+        {
+            "type": "sidecar_entry_drift_rejected",
+            "symbol": "ETH-USDT-SWAP",
+            "side": "short",
+            "drift_pct": 0.08,
+            "decision": "abandon",
+            "reason": "drift_too_large",
+            "source": "sidecar",
+            "shadow_id": "other-shadow",
+        },
+        {
+            "type": "entry_drift_abandoned",
+            "symbol": "WLD-USDT-SWAP",
+            "side": "long",
+            "source": "main",
+        }
+    ]
+    args = SimpleNamespace(dry_run=False, max_active="3", size_usdt="30")
+
+    mod._process_event(args, paths, state, registry, fake, event)
+
+    rows = [json.loads(line) for line in Path(paths.audit).read_text().splitlines()]
+    drift_rows = [
+        row for row in rows if row["event_type"] == "sidecar_entry_drift_rejected"
+    ]
+    assert drift_rows == [
+        {
+            "ts": ANY,
+            "event_type": "sidecar_entry_drift_rejected",
+            "shadow_id": "shadow-drift",
+            "symbol": "WLD-USDT-SWAP",
+            "side": "long",
+            "drift_pct": 0.12,
+            "decision": "abandon",
+            "reason": "drift_too_large",
+            "source": "sidecar",
+        }
+    ]
+    assert any(
+        row["event_type"] == "rejected" and row["reason"] == "executor_rejected"
+        for row in rows
+    )
+    assert fake._pending_drift_alerts == [
+        {
+            "type": "sidecar_entry_drift_rejected",
+            "symbol": "ETH-USDT-SWAP",
+            "side": "short",
+            "drift_pct": 0.08,
+            "decision": "abandon",
+            "reason": "drift_too_large",
+            "source": "sidecar",
+            "shadow_id": "other-shadow",
+        },
+        {
+            "type": "entry_drift_abandoned",
+            "symbol": "WLD-USDT-SWAP",
+            "side": "long",
+            "source": "main",
+        },
+    ]
+
+
+def test_process_event_passes_scalar_take_profit_as_level_list(tmp_path):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+    )
+    state = {"seen_shadow_ids": {}}
+    registry = mod.ShadowTacticalOwnerRegistry(paths.owners)
+    event = {
+        "event_type": "rejected_plan_created",
+        "record": {
+            "id": "shadow-scalar-tp",
+            "symbol": "WLD-USDT-SWAP",
+            "side": "long",
+            "entry_price": 1.25,
+            "stop_loss": 1.20,
+            "take_profit": 1.32,
+            "leverage": 20,
+            "track": "tactical",
+            "exit_profile": "tactical_v1",
+            "tactical_track_gate": "pass",
+        },
+    }
+    fake = MagicMock()
+    fake._fetch_positions_with_retry.return_value = []
+    fake.logger = MagicMock()
+    fake.open_sidecar_plan.return_value = {
+        "symbol": "WLD-USDT-SWAP",
+        "side": "long",
+        "amount_usdt": 30.0,
+        "entry_order_id": "ord-1",
+        "entry_clord_id": "stl-1",
+        "sl_algo_id": "algo-1",
+        "sl_algo_clord_id": "sl-1",
+    }
+    args = SimpleNamespace(dry_run=False, max_active="3", size_usdt="30")
+
+    mod._process_event(args, paths, state, registry, fake, event)
+
+    plan = fake.open_sidecar_plan.call_args.args[0]
+    assert plan["take_profit"] == [1.32]
+
+
 def test_stop_closes_only_proven_sidecar_owned_exposure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
     mod = importlib.util.module_from_spec(spec)

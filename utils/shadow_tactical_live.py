@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -122,10 +123,29 @@ def _missing_reason(record: dict) -> Optional[str]:
     return None
 
 
+def _normalize_take_profit_levels(value) -> list[float]:
+    if value in (None, "", [], {}):
+        return []
+    raw_levels = value if isinstance(value, (list, tuple)) else [value]
+    levels = []
+    for level in raw_levels:
+        try:
+            normalized = float(level)
+        except (TypeError, ValueError):
+            return []
+        if not math.isfinite(normalized) or normalized <= 0:
+            return []
+        levels.append(normalized)
+    return levels
+
+
 def map_shadow_record_to_plan(record: dict, *, return_error: bool = False):
     reason = _missing_reason(record)
     if reason:
         return (None, reason) if return_error else None
+    take_profit = _normalize_take_profit_levels(record.get("take_profit"))
+    if not take_profit:
+        return (None, "missing_take_profit") if return_error else None
 
     gate_keys = [
         "reject_reason",
@@ -142,7 +162,7 @@ def map_shadow_record_to_plan(record: dict, *, return_error: bool = False):
         "entry_ref": float(record["entry_price"]),
         "entry_price": float(record["entry_price"]),
         "stop_loss": float(record["stop_loss"]),
-        "take_profit": list(record["take_profit"]),
+        "take_profit": take_profit,
         "leverage": int(record["leverage"]),
         "exit_profile": record.get("exit_profile", "tactical_v1"),
         "tactical_source": record.get("tactical_source", ""),

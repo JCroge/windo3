@@ -3,6 +3,7 @@
 
 import ccxt
 import json
+import math
 import os
 import threading
 import time
@@ -2443,6 +2444,88 @@ class ContractExecutor:
         """获取所有持仓"""
         return self.positions.copy()
 
+    def _normalize_sidecar_take_profit(self, value) -> list[float]:
+        if value in (None, "", [], {}):
+            return []
+        raw_levels = value if isinstance(value, (list, tuple)) else [value]
+        levels = []
+        for level in raw_levels:
+            try:
+                normalized = float(level)
+            except (TypeError, ValueError):
+                return []
+            if not math.isfinite(normalized) or normalized <= 0:
+                return []
+            levels.append(normalized)
+        return levels
+
+    def _build_sidecar_drift_plan(self, plan: dict) -> Optional[dict]:
+        entry_ref = plan.get("entry_ref") or plan.get("entry_price")
+        stop_loss = plan.get("stop_loss")
+        take_profit = self._normalize_sidecar_take_profit(plan.get("take_profit"))
+        if not entry_ref or not stop_loss or not take_profit:
+            return None
+        try:
+            entry_ref = float(entry_ref)
+            stop_loss = float(stop_loss)
+            first_tp = float(take_profit[0])
+        except (TypeError, ValueError, IndexError):
+            return None
+        if entry_ref <= 0:
+            return None
+        sl_pct = plan.get("sl_pct")
+        tp_pct = plan.get("tp_pct")
+        if not sl_pct:
+            sl_pct = abs(entry_ref - stop_loss) / entry_ref
+        if not tp_pct:
+            tp_pct = [abs(first_tp - entry_ref) / entry_ref]
+        return {
+            "symbol": plan.get("symbol"),
+            "side": plan.get("side"),
+            "entry_ref": entry_ref,
+            "sl_pct": sl_pct,
+            "tp_pct": tp_pct,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "attribution": dict(plan.get("gate_metadata") or {}),
+        }
+
+    def _check_sidecar_entry_drift(self, plan: dict, live_price: float) -> tuple[bool, dict]:
+        drift_plan = self._build_sidecar_drift_plan(plan)
+        if drift_plan is None:
+            self._enqueue_drift_alert(
+                "sidecar_entry_drift_missing_anchor",
+                symbol=plan.get("symbol"),
+                side=plan.get("side"),
+                source="sidecar",
+                shadow_id=plan.get("shadow_id"),
+            )
+            return False, {"decision": "missing_anchor"}
+
+        decision = self._classify_entry_drift(drift_plan, live_price)
+        reason = decision.reason
+        if decision.decision == "recalc_pass":
+            reason = "sidecar_recalc_required"
+        metadata = {
+            "band": decision.band,
+            "drift_pct": decision.drift_pct,
+            "decision": decision.decision,
+            "reason": reason,
+        }
+        if decision.decision != "accept":
+            self._enqueue_drift_alert(
+                "sidecar_entry_drift_rejected",
+                symbol=plan.get("symbol"),
+                side=plan.get("side"),
+                drift_pct=decision.drift_pct,
+                decision=decision.decision,
+                reason=reason,
+                source="sidecar",
+                shadow_id=plan.get("shadow_id"),
+            )
+            return False, metadata
+        return True, metadata
+
     def open_sidecar_plan(self, plan: dict, *, size_usdt: Optional[float] = None) -> Optional[Dict]:
         """Open a Shadow Tactical sidecar plan with mechanical checks only."""
         from utils.shadow_tactical_live import canonical_sidecar_symbols
@@ -2483,8 +2566,12 @@ class ContractExecutor:
 
         ticker = self.exchange.fetch_ticker(symbol)
         current_price = float(ticker["last"])
+        drift_ok, drift_metadata = self._check_sidecar_entry_drift(plan, current_price)
+        if not drift_ok:
+            return None
+
         stop_loss = float(plan["stop_loss"])
-        take_profit = list(plan.get("take_profit") or [])
+        take_profit = self._normalize_sidecar_take_profit(plan.get("take_profit"))
         if side == "long" and stop_loss >= current_price:
             self.logger.error(f"[Sidecar] invalid long SL {stop_loss} >= {current_price}")
             return None
@@ -2592,7 +2679,10 @@ class ContractExecutor:
             "tactical_source": plan.get("tactical_source", ""),
             "tactical_max_hold_minutes": plan.get("tactical_max_hold_minutes"),
             "entry_ref": plan.get("entry_ref") or plan.get("entry_price"),
-            "gate_metadata": dict(plan.get("gate_metadata") or {}),
+            "gate_metadata": {
+                **dict(plan.get("gate_metadata") or {}),
+                "entry_drift": drift_metadata,
+            },
             "entry_order_id": order.get("id") if order else None,
             "entry_clord_id": plan.get("entry_clord_id"),
             "open_time": time.time(),

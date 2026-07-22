@@ -87,6 +87,29 @@ def test_map_shadow_record_preserves_execution_fields():
     assert plan["gate_metadata"]["tactical_track_gate"] == "fail"
 
 
+def test_map_shadow_record_accepts_scalar_take_profit():
+    plan = map_shadow_record_to_plan(_tactical_record(take_profit=1.32))
+
+    assert plan["take_profit"] == [1.32]
+
+
+def test_map_shadow_record_accepts_numeric_string_take_profit():
+    plan = map_shadow_record_to_plan(_tactical_record(take_profit="1.32"))
+
+    assert plan["take_profit"] == [1.32]
+
+
+def test_map_shadow_record_rejects_invalid_take_profit_levels():
+    for invalid_tp in ("0", "nan", "inf", ["1.32", "nan"]):
+        plan, reason = map_shadow_record_to_plan(
+            _tactical_record(take_profit=invalid_tp),
+            return_error=True,
+        )
+
+        assert plan is None
+        assert reason == "missing_take_profit"
+
+
 def test_canonical_sidecar_symbols_split_internal_and_exchange():
     assert canonical_sidecar_symbols("ONDO-USDT") == {
         "internal_symbol": "ONDO-USDT",

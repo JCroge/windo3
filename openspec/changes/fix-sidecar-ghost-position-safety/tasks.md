@@ -4,7 +4,7 @@
 - [x] 1.2 Add sidecar admission regressions proving same-symbol sidecar opens are rejected in OKX `net_mode` when an active owner or present exchange exposure already exists.
 - [x] 1.3 Add sidecar monitor regressions proving ghost exposure emits fail-closed audit/halt behavior and does not silently loop on `monitor_skipped_unproven`.
 - [x] 1.4 Add a net-mode stacked-owner regression proving monitor does not close one owner row while leaving remaining same-symbol exposure unproven and unmanaged.
-- [ ] 1.5 Add sidecar entry-drift regressions proving large stale drift rejects before `create_order` and accepted opens record drift metadata.
+- [x] 1.5 Add sidecar entry-drift regressions proving large stale drift rejects before `create_order` and accepted opens record drift metadata.
 
 ## 2. Main Migration Protection
 
@@ -26,9 +26,9 @@
 
 ## 5. Sidecar Entry Drift Guard
 
-- [ ] 5.1 Derive sidecar drift anchors from `entry_ref`, `stop_loss`, and first `take_profit` when explicit `sl_pct`/`tp_pct` are absent.
-- [ ] 5.2 Reject large stale sidecar opens before exchange order submission and record drift rejection attribution.
-- [ ] 5.3 Persist drift admission metadata for accepted sidecar opens.
+- [x] 5.1 Derive sidecar drift anchors from `entry_ref`, `stop_loss`, and first `take_profit` when explicit `sl_pct`/`tp_pct` are absent.
+- [x] 5.2 Reject large stale sidecar opens before exchange order submission and record drift rejection attribution.
+- [x] 5.3 Persist drift admission metadata for accepted sidecar opens.
 
 ## 6. Verification And Operations
 
