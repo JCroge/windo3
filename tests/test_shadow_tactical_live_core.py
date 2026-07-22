@@ -195,7 +195,7 @@ def test_owner_registry_migrates_legacy_symbol_rows(tmp_path):
     assert row["symbol"] == "ONDO-USDT-SWAP"
 
 
-def test_same_symbol_guard_ignores_sidecar_owned_exposure(tmp_path):
+def test_same_symbol_guard_blocks_sidecar_owned_exposure(tmp_path):
     reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
     reg.record_open(
         "shadow-1",
@@ -216,11 +216,11 @@ def test_same_symbol_guard_ignores_sidecar_owned_exposure(tmp_path):
         reg,
     )
 
-    assert blocked is False
-    assert reason == ""
+    assert blocked is True
+    assert reason == "same_symbol_sidecar_active"
 
 
-def test_same_symbol_guard_understands_internal_sidecar_rows(tmp_path):
+def test_same_symbol_guard_blocks_internal_sidecar_rows(tmp_path):
     reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
     reg.record_open(
         "shadow-1",
@@ -241,8 +241,32 @@ def test_same_symbol_guard_understands_internal_sidecar_rows(tmp_path):
         reg,
     )
 
-    assert blocked is False
-    assert reason == ""
+    assert blocked is True
+    assert reason == "same_symbol_sidecar_active"
+
+
+def test_same_symbol_guard_blocks_active_owner_without_exchange_positions(tmp_path):
+    reg = ShadowTacticalOwnerRegistry(str(tmp_path / "owners.json"))
+    reg.record_open(
+        "shadow-1",
+        "WLD-USDT-SWAP",
+        "long",
+        30.0,
+        "ord-1",
+        "stl1",
+        "algo-1",
+        "castlive1",
+    )
+
+    blocked, reason = blocks_same_symbol_account_exposure(
+        [],
+        "WLD-USDT-SWAP",
+        "long",
+        reg,
+    )
+
+    assert blocked is True
+    assert reason == "same_symbol_sidecar_active"
 
 
 def test_same_symbol_guard_blocks_non_sidecar_exposure(tmp_path):

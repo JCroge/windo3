@@ -258,6 +258,9 @@ class ShadowTacticalOwnerRegistry:
                 return normalized
         return None
 
+    def has_active_owner(self, symbol: str, side: str) -> bool:
+        return self.active_for(symbol, side) is not None
+
     def matches_position(self, symbol: str, side: str) -> bool:
         return self.active_for(symbol, side) is not None
 
@@ -269,6 +272,8 @@ def blocks_same_symbol_account_exposure(
     owners: ShadowTacticalOwnerRegistry,
 ) -> tuple[bool, str]:
     wanted = canonical_sidecar_symbols(symbol)["internal_symbol"]
+    if owners.has_active_owner(symbol, side):
+        return True, "same_symbol_sidecar_active"
     for pos in exchange_positions or []:
         contracts = float(pos.get("contracts") or pos.get("amount") or 0)
         if contracts <= 0:
@@ -277,7 +282,7 @@ def blocks_same_symbol_account_exposure(
         pos_side = "long" if pos.get("side") == "long" else "short"
         if pos_symbol != wanted:
             continue
-        if owners.matches_position(pos.get("symbol", ""), pos_side):
-            continue
+        if owners.has_active_owner(pos.get("symbol", ""), pos_side):
+            return True, "same_symbol_sidecar_active"
         return True, "same_symbol_account_exposure"
     return False, ""

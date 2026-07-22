@@ -1,7 +1,7 @@
 ## 1. Regression Coverage
 
 - [x] 1.1 Add a Main migration regression proving manual OCO/conditional protection is preserved when a symbol is sidecar-owned and exchange exposure is present or unknown.
-- [ ] 1.2 Add sidecar admission regressions proving same-symbol sidecar opens are rejected in OKX `net_mode` when an active owner or present exchange exposure already exists.
+- [x] 1.2 Add sidecar admission regressions proving same-symbol sidecar opens are rejected in OKX `net_mode` when an active owner or present exchange exposure already exists.
 - [ ] 1.3 Add sidecar monitor regressions proving ghost exposure emits fail-closed audit/halt behavior and does not silently loop on `monitor_skipped_unproven`.
 - [ ] 1.4 Add a net-mode stacked-owner regression proving monitor does not close one owner row while leaving remaining same-symbol exposure unproven and unmanaged.
 - [ ] 1.5 Add sidecar entry-drift regressions proving large stale drift rejects before `create_order` and accepted opens record drift metadata.
@@ -14,9 +14,9 @@
 
 ## 3. Sidecar Admission Safety
 
-- [ ] 3.1 Tighten `blocks_same_symbol_account_exposure()` or sidecar admission logic so active same-symbol sidecar owner rows block new sidecar opens in OKX `net_mode`.
-- [ ] 3.2 Ensure exchange-present same-symbol exposure blocks sidecar opens unless a future aggregate-position model is explicitly available.
-- [ ] 3.3 Add sidecar audit rejection reasons for same-symbol active owner and unmodeled exchange exposure.
+- [x] 3.1 Tighten `blocks_same_symbol_account_exposure()` or sidecar admission logic so active same-symbol sidecar owner rows block new sidecar opens in OKX `net_mode`.
+- [x] 3.2 Ensure exchange-present same-symbol exposure blocks sidecar opens unless a future aggregate-position model is explicitly available.
+- [x] 3.3 Add sidecar audit rejection reasons for same-symbol active owner and unmodeled exchange exposure.
 
 ## 4. Ghost Exposure Monitoring
 
