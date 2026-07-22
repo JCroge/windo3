@@ -1,0 +1,16 @@
+workflow: full
+phase: design
+build_mode: null
+isolation: null
+verify_mode: null
+base_ref: fc4d396d32194848424ae1f72b82ea77032dc9f4
+design_doc: null
+plan: null
+verify_result: pending
+verification_report: null
+branch_status: pending
+created_at: 2026-07-22
+verified_at: null
+archived: false
+handoff_context: openspec/changes/fix-sidecar-ghost-position-safety/.comet/handoff/design-context.json
+handoff_hash: 99b03f9873efb0e288ec770f188bea5603e0b3952af6e419a31cc2e7b65faca2

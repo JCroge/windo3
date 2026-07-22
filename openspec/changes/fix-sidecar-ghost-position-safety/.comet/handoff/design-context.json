@@ -1,0 +1,17 @@
+{
+  "change": "fix-sidecar-ghost-position-safety",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "99b03f9873efb0e288ec770f188bea5603e0b3952af6e419a31cc2e7b65faca2",
+  "files": [
+    { "path": "openspec/changes/fix-sidecar-ghost-position-safety/proposal.md", "sha256": "70335cc4b9d54ec5548dc41ede6278983a84d5c83033fe0c19584d6a64d8bea5" },
+    { "path": "openspec/changes/fix-sidecar-ghost-position-safety/design.md", "sha256": "3246c9f8953f649061ee99ae0fd8da8d811e505ea9979ada5ffef32cbd3d75ae" },
+    { "path": "openspec/changes/fix-sidecar-ghost-position-safety/tasks.md", "sha256": "1bfff6df076adcaf3d48165ae747a6586bd4355cc677abc614d04967b315e8b4" },
+    { "path": "openspec/changes/fix-sidecar-ghost-position-safety/specs/entry-drift-policy/spec.md", "sha256": "effc3e1272014eff9f604906d61383cb4f695ab9e4e92e9a7c5fabe07b208037" },
+    { "path": "openspec/changes/fix-sidecar-ghost-position-safety/specs/protective-sl-owner-tag/spec.md", "sha256": "fb3d88d1c256b746742d85c45596d99f4a01bb6f967230898bc64b3e633e03ca" },
+    { "path": "openspec/changes/fix-sidecar-ghost-position-safety/specs/shadow-tactical-sidecar-exit-monitoring/spec.md", "sha256": "ccd79ee4765d6c3cbc1dc92c656dd0043ac4bb01b8ecfc59d2c16e8f40c23372" },
+    { "path": "openspec/changes/fix-sidecar-ghost-position-safety/specs/tactical-exit-track/spec.md", "sha256": "2fb34bf19ecdcce9e38534801c2c4977715779135e30428ec72c186e9c932128" }
+  ]
+}
