@@ -54,6 +54,7 @@ openspec status --change fix-sidecar-ghost-position-safety --json: all_done, 20/
 openspec instructions apply --change fix-sidecar-ghost-position-safety --json: proposal/design/specs/tasks available
 secret scan on changed runtime/spec/report files: no hardcoded credential literals found
 git diff --check: clean
+code review re-check: no Critical/Important issues; ready to merge
 ```
 
 ## Issues
