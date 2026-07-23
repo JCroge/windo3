@@ -10,7 +10,7 @@ design_doc: docs/superpowers/specs/2026-07-22-fix-sidecar-ghost-position-safety-
 plan: docs/superpowers/plans/2026-07-22-fix-sidecar-ghost-position-safety.md
 verify_result: pending
 verification_report: docs/superpowers/reports/2026-07-22-fix-sidecar-ghost-position-safety-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-07-22
 verified_at: null
 archived: false
