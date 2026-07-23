@@ -361,6 +361,48 @@ def test_process_event_passes_scalar_take_profit_as_level_list(tmp_path):
     assert plan["take_profit"] == [1.32]
 
 
+def test_process_event_rejects_when_exchange_position_guard_fetch_fails(tmp_path):
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+    )
+    state = {"seen_shadow_ids": {}}
+    registry = mod.ShadowTacticalOwnerRegistry(paths.owners)
+    event = {
+        "event_type": "rejected_plan_created",
+        "record": {
+            "id": "shadow-fetch-fail",
+            "symbol": "WLD-USDT-SWAP",
+            "side": "long",
+            "entry_price": 1.25,
+            "stop_loss": 1.20,
+            "take_profit": [1.32],
+            "leverage": 20,
+            "track": "tactical",
+            "exit_profile": "tactical_v1",
+            "tactical_track_gate": "pass",
+        },
+    }
+    fake = MagicMock()
+    fake._fetch_positions_with_retry.side_effect = RuntimeError("okx unavailable")
+    fake.logger = MagicMock()
+    fake.open_sidecar_plan = MagicMock()
+    args = SimpleNamespace(dry_run=False, max_active="3", size_usdt="30")
+
+    mod._process_event(args, paths, state, registry, fake, event)
+
+    rows = [json.loads(line) for line in Path(paths.audit).read_text().splitlines()]
+    assert rows[-1]["event_type"] == "rejected"
+    assert rows[-1]["shadow_id"] == "shadow-fetch-fail"
+    assert rows[-1]["reason"] == "same_symbol_exposure_unknown"
+    assert state["seen_shadow_ids"]["shadow-fetch-fail"] == "rejected"
+    fake.open_sidecar_plan.assert_not_called()
+
+
 def test_stop_closes_only_proven_sidecar_owned_exposure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
     mod = importlib.util.module_from_spec(spec)

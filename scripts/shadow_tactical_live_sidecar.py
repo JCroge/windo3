@@ -99,12 +99,12 @@ def _build_executor(paths: SidecarPaths) -> ContractExecutor:
     )
 
 
-def _fetch_exchange_positions(executor: ContractExecutor) -> list:
+def _fetch_exchange_positions(executor: ContractExecutor) -> list | None:
     try:
         return executor._fetch_positions_with_retry()
     except Exception as exc:
         executor.logger.warning(f"[Sidecar] fetch positions failed for guard: {exc}")
-        return []
+        return None
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -440,19 +440,32 @@ def _owner_row_as_close_metadata(row: dict, symbol: str) -> dict:
     }
 
 
-def _owner_group_key(row: dict) -> tuple[str, str]:
+def _monitor_uses_symbol_netting(executor: ContractExecutor) -> bool:
+    if getattr(executor, "exchange_id", None) != "okx":
+        return False
+    return getattr(executor, "_okx_pos_mode", "net_mode") != "long_short_mode"
+
+
+def _owner_group_key(row: dict, *, symbol_netting: bool = False) -> tuple[str, str]:
+    symbol = row.get("exchange_symbol") or row.get("symbol") or ""
+    if symbol_netting:
+        return symbol, ""
     return (
-        row.get("exchange_symbol") or row.get("symbol") or "",
+        symbol,
         row.get("side") or "",
     )
 
 
-def _open_owner_group_counts(owners: dict) -> dict[tuple[str, str], int]:
+def _open_owner_group_counts(
+    owners: dict,
+    *,
+    symbol_netting: bool = False,
+) -> dict[tuple[str, str], int]:
     counts = {}
     for row in owners.values():
         if row.get("status") != "open":
             continue
-        key = _owner_group_key(row)
+        key = _owner_group_key(row, symbol_netting=symbol_netting)
         counts[key] = counts.get(key, 0) + 1
     return counts
 
@@ -494,7 +507,11 @@ def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecut
         "ghost_exposure": 0,
         "ambiguous_stacks": 0,
     }
-    owner_group_counts = _open_owner_group_counts(data.get("owners", {}))
+    symbol_netting = _monitor_uses_symbol_netting(executor)
+    owner_group_counts = _open_owner_group_counts(
+        data.get("owners", {}),
+        symbol_netting=symbol_netting,
+    )
     for shadow_id, row in data.get("owners", {}).items():
         if row.get("status") != "open":
             continue
@@ -621,7 +638,10 @@ def monitor_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecut
             )
             continue
 
-        group_count = owner_group_counts.get(_owner_group_key(row), 0)
+        group_count = owner_group_counts.get(
+            _owner_group_key(row, symbol_netting=symbol_netting),
+            0,
+        )
         if group_count > 1:
             summary["ambiguous_stacks"] += 1
             summary["skipped"] += 1
@@ -735,8 +755,18 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         )
         return
 
+    exchange_positions = _fetch_exchange_positions(executor)
+    if exchange_positions is None:
+        state["seen_shadow_ids"][shadow_id] = "rejected"
+        append_audit_event(
+            paths.audit,
+            "rejected",
+            {"shadow_id": shadow_id, "reason": "same_symbol_exposure_unknown"},
+        )
+        return
+
     blocked, guard_reason = blocks_same_symbol_account_exposure(
-        _fetch_exchange_positions(executor),
+        exchange_positions,
         plan["symbol"],
         plan["side"],
         registry,

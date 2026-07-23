@@ -304,3 +304,42 @@ def test_monitor_does_not_close_one_row_from_ambiguous_net_mode_stack(tmp_path):
     assert summary["ambiguous_stacks"] == 1
     ex.close_position.assert_not_called()
     ex.reduce_position.assert_not_called()
+
+
+def test_monitor_does_not_close_opposite_side_row_from_net_mode_symbol_stack(tmp_path):
+    paths = _sidecar_paths(tmp_path)
+    _write_open_owner(paths, shadow_id="owner-long")
+    _write_open_owner(paths, shadow_id="owner-short")
+    data = json.loads(open(paths.owners).read())
+    data["owners"]["owner-long"]["shadow_id"] = "owner-long"
+    data["owners"]["owner-long"]["side"] = "long"
+    data["owners"]["owner-short"]["shadow_id"] = "owner-short"
+    data["owners"]["owner-short"]["side"] = "short"
+    open(paths.owners, "w").write(json.dumps(data))
+
+    ex = _executor_for_monitor(
+        [{"symbol": SYMBOL, "side": "long", "contracts": 2.0}]
+    )
+    ex.positions[SYMBOL] = {
+        "symbol": SYMBOL,
+        "internal_symbol": "ONDO-USDT",
+        "exchange_symbol": SYMBOL,
+        "shadow_id": "owner-short",
+        "side": "short",
+        "sidecar_source": "shadow_tactical_live",
+        "entry_price": 1.25,
+        "stop_loss": 1.20,
+        "take_profit": 1.32,
+    }
+    ex.check_stop_loss_take_profit.return_value = "tactical_max_hold"
+    ex._list_pending_algos = MagicMock(return_value=[])
+    ex._halt_symbol = MagicMock()
+
+    summary = monitor_sidecar_owned_exposure(paths, ex)
+
+    owners = json.loads(open(paths.owners).read())["owners"]
+    assert owners["owner-long"]["status"] == "open"
+    assert owners["owner-short"]["status"] == "open"
+    assert summary["ambiguous_stacks"] >= 1
+    ex.close_position.assert_not_called()
+    ex.reduce_position.assert_not_called()

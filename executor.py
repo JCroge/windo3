@@ -2459,26 +2459,57 @@ class ContractExecutor:
             levels.append(normalized)
         return levels
 
+    def _normalize_positive_float(self, value) -> Optional[float]:
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(normalized) or normalized <= 0:
+            return None
+        return normalized
+
+    def _normalize_positive_float_list(self, value) -> list[float]:
+        raw_values = value if isinstance(value, (list, tuple)) else [value]
+        levels = []
+        for raw in raw_values:
+            normalized = self._normalize_positive_float(raw)
+            if normalized is None:
+                return []
+            levels.append(normalized)
+        return levels
+
+    def _is_missing_sidecar_drift_anchor(self, value) -> bool:
+        return value in (None, "", [], {})
+
     def _build_sidecar_drift_plan(self, plan: dict) -> Optional[dict]:
-        entry_ref = plan.get("entry_ref") or plan.get("entry_price")
-        stop_loss = plan.get("stop_loss")
+        entry_ref = self._normalize_positive_float(
+            plan.get("entry_ref") or plan.get("entry_price")
+        )
+        stop_loss = self._normalize_positive_float(plan.get("stop_loss"))
         take_profit = self._normalize_sidecar_take_profit(plan.get("take_profit"))
         if not entry_ref or not stop_loss or not take_profit:
             return None
-        try:
-            entry_ref = float(entry_ref)
-            stop_loss = float(stop_loss)
-            first_tp = float(take_profit[0])
-        except (TypeError, ValueError, IndexError):
-            return None
-        if entry_ref <= 0:
-            return None
-        sl_pct = plan.get("sl_pct")
-        tp_pct = plan.get("tp_pct")
-        if not sl_pct:
+
+        raw_sl_pct = plan.get("sl_pct")
+        if self._is_missing_sidecar_drift_anchor(raw_sl_pct):
             sl_pct = abs(entry_ref - stop_loss) / entry_ref
-        if not tp_pct:
-            tp_pct = [abs(first_tp - entry_ref) / entry_ref]
+        else:
+            sl_pct = self._normalize_positive_float(raw_sl_pct)
+            if sl_pct is None:
+                return None
+        if not math.isfinite(sl_pct) or sl_pct <= 0:
+            return None
+
+        raw_tp_pct = plan.get("tp_pct")
+        if self._is_missing_sidecar_drift_anchor(raw_tp_pct):
+            tp_pct = [abs(take_profit[0] - entry_ref) / entry_ref]
+        else:
+            tp_pct = self._normalize_positive_float_list(raw_tp_pct)
+            if not tp_pct:
+                return None
+        if any(not math.isfinite(level) or level <= 0 for level in tp_pct):
+            return None
+
         return {
             "symbol": plan.get("symbol"),
             "side": plan.get("side"),
@@ -2491,6 +2522,16 @@ class ContractExecutor:
         }
 
     def _check_sidecar_entry_drift(self, plan: dict, live_price: float) -> tuple[bool, dict]:
+        live_price = self._normalize_positive_float(live_price)
+        if live_price is None:
+            self._enqueue_drift_alert(
+                "sidecar_entry_drift_missing_anchor",
+                symbol=plan.get("symbol"),
+                side=plan.get("side"),
+                source="sidecar",
+                shadow_id=plan.get("shadow_id"),
+            )
+            return False, {"decision": "missing_anchor"}
         drift_plan = self._build_sidecar_drift_plan(plan)
         if drift_plan is None:
             self._enqueue_drift_alert(

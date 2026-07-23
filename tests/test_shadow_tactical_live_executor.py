@@ -177,6 +177,34 @@ def test_open_sidecar_plan_rejects_invalid_take_profit_levels():
         ex.exchange.create_order.assert_not_called()
 
 
+def test_open_sidecar_plan_rejects_non_finite_drift_anchors():
+    for field, invalid_value in (
+        ("entry_ref", float("nan")),
+        ("entry_ref", float("inf")),
+        ("stop_loss", float("nan")),
+        ("stop_loss", float("inf")),
+    ):
+        ex = _executor()
+
+        assert ex.open_sidecar_plan(_plan(**{field: invalid_value}), size_usdt=30.0) is None
+
+        ex.exchange.create_order.assert_not_called()
+
+
+def test_open_sidecar_plan_rejects_invalid_explicit_drift_percent_anchors():
+    for overrides in (
+        {"sl_pct": float("nan")},
+        {"sl_pct": 0},
+        {"tp_pct": [float("nan")]},
+        {"tp_pct": [0]},
+    ):
+        ex = _executor()
+
+        assert ex.open_sidecar_plan(_plan(**overrides), size_usdt=30.0) is None
+
+        ex.exchange.create_order.assert_not_called()
+
+
 def test_open_sidecar_plan_persists_tactical_exit_metadata():
     ex = _executor()
 

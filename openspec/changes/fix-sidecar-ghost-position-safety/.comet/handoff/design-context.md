@@ -333,4 +333,3 @@ The live sidecar admission path SHALL enforce Tactical hard vetoes that protect 
 - **THEN** live sidecar admission SHALL reject the event with same-symbol exposure attribution
 - **AND** it SHALL NOT convert the candidate into a sidecar add-to-position action
 ```
-
