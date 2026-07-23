@@ -93,6 +93,51 @@ def test_run_dry_run_processes_new_tactical_event(tmp_path):
     assert row["shadow_id"] == "s1"
 
 
+def test_run_dry_run_processes_shadow_only_tactical_gate_fail_event(tmp_path):
+    events = tmp_path / "events.jsonl"
+    state = tmp_path / "state.json"
+    audit = tmp_path / "audit.jsonl"
+    rec = {
+        "id": "shadow-gate-fail",
+        "symbol": "DOGE-USDT-SWAP",
+        "side": "short",
+        "entry_price": 0.072,
+        "stop_loss": 0.073,
+        "take_profit": [0.071],
+        "leverage": 20,
+        "track": "shadow_only",
+        "exit_profile": "tactical_v1",
+        "tactical_track_gate": "fail",
+        "reject_reason": "main_quality_failed:tactical_shadow_only",
+    }
+    events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
+
+    subprocess.check_call(
+        [
+            sys.executable,
+            SCRIPT,
+            "run",
+            "--dry-run",
+            "--once",
+            "--backfill-from-start",
+            "--events",
+            str(events),
+            "--state",
+            str(state),
+            "--audit",
+            str(audit),
+            "--duration-hours",
+            "24",
+        ],
+        cwd=str(ROOT),
+    )
+
+    row = json.loads(audit.read_text().splitlines()[0])
+    assert row["event_type"] == "dry_run_plan"
+    assert row["shadow_id"] == "shadow-gate-fail"
+    assert row["plan"]["gate_metadata"]["tactical_track_gate"] == "fail"
+
+
 def test_run_defaults_to_no_backfill_on_first_start(tmp_path):
     events = tmp_path / "events.jsonl"
     state = tmp_path / "state.json"

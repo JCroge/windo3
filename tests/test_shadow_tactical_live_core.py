@@ -36,16 +36,22 @@ def _tactical_record(**overrides):
     return rec
 
 
-def test_tactical_identity_accepts_only_true_open_tactical_records():
+def test_tactical_shadow_event_accepts_shadow_mirror_records_without_gate_pass():
     assert is_tactical_shadow_event(
         _event(_tactical_record(track="tactical", tactical_track_gate="pass"))
     )
-    assert not is_tactical_shadow_event(
+    assert is_tactical_shadow_event(
+        _event(_tactical_record(track="tactical", tactical_track_gate="fail"))
+    )
+    assert is_tactical_shadow_event(
+        _event(_tactical_record(track="shadow_only", tactical_track_gate="fail"))
+    )
+    assert is_tactical_shadow_event(
         _event(
             _tactical_record(
                 track="main",
                 exit_profile="tactical_v1",
-                tactical_track_gate="pass",
+                tactical_track_gate="fail",
             )
         )
     )
@@ -55,21 +61,6 @@ def test_tactical_identity_accepts_only_true_open_tactical_records():
     assert not is_tactical_shadow_event(
         {"event_type": "shadow_tp", "record": _tactical_record()}
     )
-
-
-def test_tactical_shadow_event_requires_true_open_track_and_gate_pass():
-    assert is_tactical_shadow_event(
-        _event(_tactical_record(track="tactical", tactical_track_gate="pass"))
-    )
-
-    assert not is_tactical_shadow_event(
-        _event(_tactical_record(track="shadow_only", tactical_track_gate="fail"))
-    )
-
-    assert not is_tactical_shadow_event(
-        _event(_tactical_record(track="tactical", tactical_track_gate="fail"))
-    )
-
 
 def test_map_shadow_record_preserves_execution_fields():
     plan = map_shadow_record_to_plan(_tactical_record())

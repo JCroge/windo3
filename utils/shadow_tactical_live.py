@@ -101,8 +101,7 @@ def is_tactical_shadow_event(event: dict) -> bool:
     record = event.get("record") or {}
     return (
         record.get("track") == "tactical"
-        and record.get("exit_profile") == "tactical_v1"
-        and record.get("tactical_track_gate") == "pass"
+        or record.get("exit_profile") == "tactical_v1"
     )
 
 
