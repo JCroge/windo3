@@ -5,8 +5,9 @@
 - 当前系统是多 Agent 加密货币趋势交易系统，不是跨交易所套利系统。
 - 生产、paper、testnet、实盘验收主入口统一为 `python3 run_agents.py`。
 - `main.py` 和 `live_trading.py` 是归档/调试路径，不能作为生产入口。
-- 当前完整基线：`1543 passed, 4 deselected, 1 warning`（2026-07-15，`protective-sl-halt-recovery` 归档）。历史基线见 `docs/handoff.md`。
+- 2026-07-15 完整基线：`1543 passed, 4 deselected, 1 warning`（`protective-sl-halt-recovery` 归档）。2026-07-23 HEAD 为 `main@9f5d297`，sidecar ghost-position safety 聚焦验证 `142 passed`；历史基线见 `docs/handoff.md`，当前功能域总览见 `docs/project-stage-summary.md`。
 - Tactical Exit Track 已实现；代码默认仍保守（`TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`），但 2026-07-15 云服核对为 live 灰度（track=true、shadow_only=false、RR=0.75、EV=-0.04）。判定线上状态必须看 `.env` / 启动 banner。shadow-only 证据来自 `_apply_tactical_shadow_profile` 写入的 `data/rejected_signal_*`，不要把 PaperExecutor 当 Tactical shadow；`_apply_tactical_profile` 先过 cost gate，再用 `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 筛 true-open 样本，成本门过但阈值门失败的样本仍保留 `exit_profile=tactical_v1` 做 counterfactual 结算。
+- Shadow Tactical live sidecar 是独立进程，入口 `scripts/shadow_tactical_live_sidecar.py`；它只消费 strict eligible shadow 记录，写 sidecar 专属 state/owners/ledger，不得让 Main backfill sidecar-owned 仓位。OKX `net_mode` 下同标的 sidecar 堆叠必须阻断，ghost exposure 必须 fail-closed。
 - 当前 Go/No-Go：小额 live 灰度 GO（维持现有 cap）；live 扩容 CONDITIONAL GO，扩容前置 = 运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置 + 真实 TG 命令链与 drift gate 运维验收。
 - OKX 验收状态：mock 执行语义 10 case PASS；真实 testnet long_short_mode 13 PASS + net_mode 子账户 3 PASS。
 - TG 命令清单：`/status /positions /halt /resume /force_resume /reconcile /halts /resume_symbol /pnl /pnl_id /stop /restart /log /paper_gap /health`。`/status` 必须把全局熔断、per-symbol halt、Tactical circuit 分开看；全局保护单 halt 不等于 Tactical 连亏暂停。
@@ -181,6 +182,7 @@ Reviewer / RiskGuard
 
 | 文档 | 用途 |
 |---|---|
+| `docs/project-stage-summary.md` | 当前阶段、功能域总览、使用场景、sidecar 状态 |
 | `README.md` | 项目入口和当前状态 |
 | `docs/to-do-list.md` | 当前阻断项、后续优化、已关闭事项 |
 | `docs/generated_reports/系统性审计报告_20260610_第五次.md` | 最新系统性审计报告 |

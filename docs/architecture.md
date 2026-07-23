@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-07-15）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner + Tactical Exit Track 分轨运行；代码默认仍是 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`，云服已切到 Tactical live 灰度（track=true、shadow_only=false）。Executor 已支持 OKX attached SL 有界验证与保护单 halt 自愈；当前事实与硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-07-23）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner + Tactical Exit Track 分轨运行；代码默认仍是 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`，云服实际状态必须看 `.env` 与启动 banner。Executor 已支持 OKX attached SL 有界验证与保护单 halt 自愈；Shadow Tactical live sidecar 已作为独立进程能力归档，负责直接镜像 strict eligible Tactical shadow 记录，并具备 owner isolation、exchange-flat reconcile、ghost-position fail-closed、同标的堆叠阻断和 entry drift 保护。当前功能域总览见 `docs/project-stage-summary.md`，硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略

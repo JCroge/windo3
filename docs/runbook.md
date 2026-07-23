@@ -63,6 +63,18 @@ kill -SIGINT $(pgrep -f run_agents.py)
 > ```
 > 验证新代码上线（OKX 路径）：日志出现 `[OKX posMode] 探测成功: net_mode/long_short_mode (testnet=...)`。
 
+**Shadow Tactical live sidecar（独立进程，高风险实验入口）**：
+
+Sidecar 只用于镜像 strict eligible Tactical shadow 记录，写 `data/shadow_tactical_live_*` 专属状态，不应修改 Main `.env` 或重启 Main。OKX `net_mode` 下同标的堆叠会被阻断；ghost exposure 会 fail-closed 并要求人工处理。
+
+```bash
+python3 scripts/shadow_tactical_live_sidecar.py status
+python3 scripts/shadow_tactical_live_sidecar.py run --duration-hours 24 --size-usdt 100 --max-active 3
+python3 scripts/shadow_tactical_live_sidecar.py stop
+```
+
+续跑前先确认 `status` 里 active 合理，并检查 `data/shadow_tactical_live_events.jsonl` 没有 `monitor_ghost_exposure` 或 `monitor_ambiguous_net_mode_stack`。
+
 **Telegram远程命令**（需配置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID）：
 | 命令 | 功能 |
 |------|------|

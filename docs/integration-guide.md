@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-07-15）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate、Tactical Exit Track 和 protection halt recovery 均有单点收口函数。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义；消费状态时必须区分全局 halt、per-symbol halt、Tactical circuit。生产入口不再接旧 `live_trading.py`。
+**系统状态（2026-07-23）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate、Tactical Exit Track、protection halt recovery 和 Shadow Tactical live sidecar owner isolation 均有单点收口函数或明确边界。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义；消费状态时必须区分全局 halt、per-symbol halt、Tactical circuit 和 sidecar 专属 `shadow_tactical_live_*` 状态。生产入口不再接旧 `live_trading.py`。
 
 ## 核心模块接口
 

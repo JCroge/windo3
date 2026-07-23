@@ -1,15 +1,16 @@
 # To-Do List
 
-更新日期：2026-07-15
-当前基线：`1543 passed, 4 deselected, 1 warning`（2026-07-15，`protective-sl-halt-recovery` 归档）。
+更新日期：2026-07-23
+2026-07-15 完整基线：`1543 passed, 4 deselected, 1 warning`（`protective-sl-halt-recovery` 归档）。2026-07-23 HEAD：`main@9f5d297`；sidecar ghost-position safety 聚焦验证 `142 passed` + OpenSpec strict PASS。
 
 > **基线与逐 change 历史以 `CLAUDE.md` 顶部「当前事实」段为权威单一来源**，完整逐基线里程碑见 `docs/handoff.md`。本文件不再内联复制 change changelog（曾累积漂移至 1338，已于 2026-06-26 收口），只维护**当前阻断项、Go/No-Go、后续 P2 优化**。
 
-**当前关键运营状态（2026-07-15）**：
+**当前关键运营状态（2026-07-23）**：
 - 云服 Tactical 已进入小额 live 灰度：`TACTICAL_TRACK_ENABLED=true`、`TACTICAL_SHADOW_ONLY=false`、`TACTICAL_TP1_R=1.00`、`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`。live Tactical 收益按 LiveLedger / Reviewer final PnL 统计；`rejected_signal_*` 只用于被拒/影子候选复盘。
-- 云服运行状态核对：全局 `halted=false`、`can_open_new=true`、`reconciliation_result=matched`；per-symbol halt 为空；Tactical circuit 未暂停，`daily_pnl=-2.6721`、`loss_streak=1`。WLD 旧 `halt_state.reason` 已按 stale metadata 清理，不代表 active halt。
+- Shadow Tactical live sidecar 已上线为独立进程能力：尾随 `data/rejected_signal_events.jsonl`，只消费 strict eligible Tactical shadow 记录，写 sidecar 专属 state/owners/ledger；2026-07-22 支持 100U sidecar-only 放大，2026-07-23 增加 ghost-position safety、同标的堆叠阻断和 entry drift 保护。
+- 2026-07-23 09:40 UTC 云服核对：本地/云服代码对齐 `main@9f5d297`；OKX 非零仓位为空，Main 和 sidecar 本地仓位均为 0；sidecar 历史累计 `opened=21`、`rejected=151`，重启后因 strict eligible filter 未新增 opened/rejected。
 - 核心认知：**edge 在趋势单本身，非入场门**；入场门旋钮已近调参极限，方向质量改善须等趋势行情 + 攒够后门开仓样本才能实盘验证。
-- 后续可选（非阻塞）：Tactical 继续攒 live 分桶样本；`cf-neutral-momentum-rescue-ab` 结论 suggestive，待 A 桶样本 n≥30 重判是否放宽 path_evidence 阀门；`cf-choppy-neutral-tp1-floor-ab` 周更 cron 累积中。
+- 后续可选（非阻塞）：Tactical/sidecar 继续攒 final PnL 分桶样本；sidecar 续跑前先确认无 ghost exposure、无 ambiguous net-mode stack、无未解决保护单；`cf-neutral-momentum-rescue-ab` 和 `cf-choppy-neutral-tp1-floor-ab` 继续等样本门槛。
 
 > **2026-06-15 反事实实验室兑现 → 发现空转根因并修复（`decision-tape-capture-fix`，基线 1223→1234，comet 归档入 main）**：用真实磁带跑 L2 终验 + L4 方向推荐时全程空转（L2 fidelity=1.0 虚高、L4 delta=0），根因是 Judge 录制点把 `tech_analysis`/`llm_output` 写死为空致全部磁带不可回放。已修复为经专属侧信道 `_symbol_llm_cache` + `_symbol_tech_tape_cache` 捕获真实输入（schema v2，`replayable` 收紧为有快照且 tech 非空，observability-only），OS 重启后实测生产生效（新磁带 v2/tech 非空/llm 有）。旧磁带永久不可回放。**2026-06-16 新磁带累积后重跑 → 又揪出三层隐藏 bug 并连修（见下行 #1 与基线说明）**，实验室端到端 baseline_fidelity 终达 0.944 首次可信。维持 choppy R:R 地板 1.50 不动（实验室可信结论佐证：放宽地板非高价值杠杆）。
 
@@ -27,7 +28,13 @@
 - `docs/superpowers/reports/2026-06-05-short-main-path-risk-guard-parity-verify.md`
 - `openspec/changes/archive/2026-07-10-add-tactical-exit-track/`
 - `openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/`
+- `openspec/changes/archive/2026-07-17-promote-shadow-tactical-live-48h/`
+- `openspec/changes/archive/2026-07-17-shadow-tactical-sidecar-exit-monitoring/`
+- `openspec/changes/archive/2026-07-20-fix-sidecar-exchange-flat-reconcile/`
+- `openspec/changes/archive/2026-07-22-scale-sidecar-100u-only/`
+- `openspec/changes/archive/2026-07-23-fix-sidecar-ghost-position-safety/`
 - `docs/superpowers/reports/2026-07-14-protective-sl-halt-recovery-verify.md`
+- `docs/superpowers/reports/2026-07-22-fix-sidecar-ghost-position-safety-verify.md`
 - `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go

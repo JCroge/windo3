@@ -4,7 +4,8 @@
 
 ## 系统状态
 
-- 当前完整基线（2026-07-15）：`1543 passed, 4 deselected, 1 warning`。对应归档 change：`openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/`。
+- 2026-07-15 完整基线：`1543 passed, 4 deselected, 1 warning`。对应归档 change：`openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/`。
+- 2026-07-23 代码阶段：`main@9f5d297`，已补 Shadow Tactical live sidecar 的 exchange-flat reconcile、100U 独立放大、ghost-position safety、同标的堆叠阻断和 entry drift 保护；sidecar 聚焦验证 `142 passed`，阶段总览见 [docs/project-stage-summary.md](docs/project-stage-summary.md)。
 - 当前能力：**Tactical Exit Track** 已归档到 `openspec/changes/archive/2026-07-10-add-tactical-exit-track/`。它把弱/混合环境候选从 Main Trend Runner 中拆出，使用独立 `track=tactical` / `exit_profile=tactical_v1`、独立 R:R/EV、TP1 落袋、thesis-health、最大持仓时间和 Tactical 风控桶。
 - 代码默认上线状态仍是 `TACTICAL_TRACK_ENABLED=false` 且 `TACTICAL_SHADOW_ONLY=true`；2026-07-15 云服核对为 Tactical live 灰度（track=true、shadow_only=false、RR=0.75、EV=-0.04）。实际运行状态以 `.env` 与启动 banner 为准。
 - 保护单 halt recovery 已落地：OKX attached SL 先做有界验证；`okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl` 这类保护单 halt 只在风险已消失且无其它 unresolved symbol 时自动清除，manual/daily/reconcile halt 仍保持 fail-closed。
@@ -70,6 +71,7 @@ python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（
 
 | 文档 | 用途 |
 |---|---|
+| [docs/project-stage-summary.md](docs/project-stage-summary.md) | 当前阶段、功能域总览、使用场景和 sidecar 状态 |
 | [docs/development.md](docs/development.md) | 修改规范、链路契约、验证矩阵 |
 | [docs/architecture.md](docs/architecture.md) | 技术架构与模块设计 |
 | [docs/runbook.md](docs/runbook.md) | 部署、环境变量、故障排查 |
