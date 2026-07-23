@@ -2,6 +2,8 @@ workflow: full
 phase: build
 build_mode: subagent-driven-development
 isolation: branch
+build_command: "pytest tests/test_shadow_tactical_live_core.py tests/test_shadow_tactical_live_cli.py tests/test_shadow_tactical_live_executor.py tests/test_shadow_tactical_owner_isolation.py tests/test_shadow_tactical_exit_monitoring.py tests/test_entry_drift_hybrid_policy.py test_partial_tp_lifecycle.py -q && openspec validate fix-sidecar-ghost-position-safety --strict"
+verify_command: "pytest tests/test_shadow_tactical_live_core.py tests/test_shadow_tactical_live_cli.py tests/test_shadow_tactical_live_executor.py tests/test_shadow_tactical_owner_isolation.py tests/test_shadow_tactical_exit_monitoring.py tests/test_entry_drift_hybrid_policy.py test_partial_tp_lifecycle.py -q && openspec validate fix-sidecar-ghost-position-safety --strict"
 verify_mode: null
 base_ref: fc4d396d32194848424ae1f72b82ea77032dc9f4
 design_doc: docs/superpowers/specs/2026-07-22-fix-sidecar-ghost-position-safety-design.md
