@@ -2,6 +2,8 @@
 comet_change: fix-sidecar-ghost-position-safety
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-23-fix-sidecar-ghost-position-safety
+status: final
 ---
 
 # Sidecar Ghost Position Safety Technical Design

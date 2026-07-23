@@ -1,4 +1,9 @@
-## ADDED Requirements
+## Purpose
+
+Define entry-drift behavior and anchor validation for executor and sidecar live opens so stale or malformed plans cannot submit unsafe orders.
+
+## Requirements
+
 
 ### Requirement: Entry Drift Classification
 The system SHALL classify the relative drift between Judge plan's `entry_ref`
@@ -35,6 +40,11 @@ The system SHALL accept the original plan and emit a
 `sl_pct`, or `tp_pct`. The drift_pct of such a fail-safe accept SHALL be 0.0
 to make the path identifiable in attribution downstream.
 
+#### Scenario: Missing drift fields emit identifiable fail-safe alert
+- **WHEN** a non-sidecar executor plan lacks `entry_ref`, `sl_pct`, or `tp_pct`
+- **THEN** the drift gate SHALL accept the original plan with `drift_pct=0.0`
+- **AND** it SHALL emit a `plan_missing_entry_ref` risk alert
+
 ### Requirement: Two-Gate Execution
 The drift gate SHALL run twice on the limit-then-market path:
 1. Gate 1: at executor entry, before any order submission
@@ -42,6 +52,11 @@ The drift gate SHALL run twice on the limit-then-market path:
 
 Both gates SHALL use the original `plan.entry_ref` as the drift baseline. The
 recomputed plan from Gate 1 SHALL NOT be passed as input to Gate 2.
+
+#### Scenario: Fallback market order rechecks original drift baseline
+- **WHEN** a limit order times out and the executor considers fallback market execution
+- **THEN** the second drift gate SHALL compare the live price to the original `plan.entry_ref`
+- **AND** it SHALL NOT use a recomputed Gate 1 plan as the Gate 2 baseline
 
 ### Requirement: TP Field Single Source of Truth
 All writes to `position.take_profit` and `position.take_profit_levels` SHALL
@@ -77,3 +92,23 @@ invariant.
 - **THEN** `tp_filled` MUST 仍为 1
 - **AND** `take_profit == take_profit_levels[0]` 不变量保持
 - **AND** MUST NOT 触发 `tp_invariant_breach` halt
+
+
+### Requirement: Sidecar live opens SHALL enforce stale-entry drift protection
+The sidecar live open path SHALL evaluate live price drift against the Tactical shadow plan entry reference before submitting a market order. If explicit drift anchors are missing, the sidecar SHALL derive stop and TP percentages from `entry_ref`, `stop_loss`, and the first `take_profit` level when possible. A stale sidecar plan beyond the configured hard drift bound SHALL be rejected before order submission.
+
+#### Scenario: Large sidecar entry drift rejects before order
+- **WHEN** a sidecar Tactical plan has `entry_ref`
+- **AND** the current market price drifts beyond the configured hard drift bound from that entry reference
+- **THEN** `open_sidecar_plan` SHALL reject the open before calling `create_order`
+- **AND** the sidecar SHALL record a drift rejection audit event
+
+#### Scenario: Sidecar drift decision is recorded on accepted open
+- **WHEN** a sidecar Tactical plan passes stale-entry drift protection
+- **THEN** the sidecar SHALL persist enough drift metadata on the position or audit stream to explain the admission decision
+- **AND** the open SHALL still satisfy existing SL-side, slippage, precheck, min-size, and protective-SL verification checks
+
+#### Scenario: Missing drift anchors fail safely
+- **WHEN** a sidecar Tactical plan cannot provide or derive enough information for stale-entry drift protection
+- **THEN** the sidecar SHALL reject the open or emit an explicit fail-safe audit reason before order submission
+- **AND** it SHALL NOT silently bypass drift protection

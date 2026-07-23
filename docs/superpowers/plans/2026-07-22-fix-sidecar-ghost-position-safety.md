@@ -2,6 +2,7 @@
 change: fix-sidecar-ghost-position-safety
 design-doc: docs/superpowers/specs/2026-07-22-fix-sidecar-ghost-position-safety-design.md
 base-ref: fee8268f9c68e37a9733f7102556692ee53de2af
+archived-with: 2026-07-23-fix-sidecar-ghost-position-safety
 ---
 
 # Sidecar Ghost Position Safety Implementation Plan
@@ -13,8 +14,6 @@ base-ref: fee8268f9c68e37a9733f7102556692ee53de2af
 **Architecture:** Keep the fix conservative: do not add aggregate sidecar positions. Main migration preserves ambiguous protection for sidecar-owned present/unknown exposure; sidecar admission blocks new same-symbol stacks; monitor turns unproven present exposure into a fail-closed ghost state; sidecar open reuses the existing drift classifier through a narrow pre-order guard.
 
 **Tech Stack:** Python 3, pytest, existing `ContractExecutor`, `ShadowTacticalOwnerRegistry`, `SidecarPaths`, JSON owner/state files, OKX ccxt-compatible position/algo structures.
-
----
 
 ## File Structure
 

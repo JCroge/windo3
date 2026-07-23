@@ -1,4 +1,9 @@
-## ADDED Requirements
+## Purpose
+
+Define Tactical track admission, exits, risk isolation, metadata propagation, and live sidecar hard-veto behavior.
+
+## Requirements
+
 
 ### Requirement: Main and Tactical track classification
 The system SHALL classify every executable open candidate as `track=main` or `track=tactical` before final R:R and EV acceptance gates. Main Trend SHALL be selected only when the trade direction is aligned with higher-timeframe bias and daily bias, the 15m timing signal is not opposing the trade, and the candidate passes the Main Trend quality gate. Tactical SHALL be available only for directionally valid weak or mixed-environment candidates that do not qualify for Main Trend, or for an explicitly allowed subset of structure-backed hold/reject candidates.
@@ -295,3 +300,17 @@ The sidecar SHALL stop admitting new shadow records after the configured 24-hour
 - **THEN** it SHALL cancel sidecar-owned pending orders where ownership can be proven
 - **AND** it SHALL close sidecar-owned open positions where ownership can be proven
 - **AND** it SHALL refuse to touch positions whose ownership cannot be proven from sidecar state/order tags
+
+
+### Requirement: Live sidecar admission SHALL enforce Tactical hard vetoes
+The live sidecar admission path SHALL enforce Tactical hard vetoes that protect against same-symbol stacking and unbounded duplicate exposure. A Tactical shadow event that would create inseparable same-symbol exposure in the live sidecar SHALL be rejected before order submission and recorded with attribution.
+
+#### Scenario: Sidecar active owner is a hard veto
+- **WHEN** a Tactical shadow event targets a symbol and side with an already open sidecar owner row
+- **THEN** live sidecar admission SHALL reject the event before order submission
+- **AND** the rejection SHALL preserve attribution identifying same-symbol sidecar activity
+
+#### Scenario: Main or unknown same-symbol exposure remains blocked
+- **WHEN** a Tactical shadow event targets a symbol that already has Main, manual, unknown, or otherwise non-sidecar account exposure
+- **THEN** live sidecar admission SHALL reject the event with same-symbol exposure attribution
+- **AND** it SHALL NOT convert the candidate into a sidecar add-to-position action
