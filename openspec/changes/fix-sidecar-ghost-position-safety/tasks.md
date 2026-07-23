@@ -32,6 +32,6 @@
 
 ## 6. Verification And Operations
 
-- [ ] 6.1 Run focused tests for sidecar core, sidecar executor, owner isolation, exit monitoring, entry drift, and algo migration.
-- [ ] 6.2 Update or add verification report documenting the ADA failure-class reproduction, fixed behavior, and any remaining operational constraints.
-- [ ] 6.3 Document rollout ordering: deploy Main migration preservation before resuming sidecar, then verify sidecar status has no ghost exposure.
+- [x] 6.1 Run focused tests for sidecar core, sidecar executor, owner isolation, exit monitoring, entry drift, and algo migration.
+- [x] 6.2 Update or add verification report documenting the ADA failure-class reproduction, fixed behavior, and any remaining operational constraints.
+- [x] 6.3 Document rollout ordering: deploy Main migration preservation before resuming sidecar, then verify sidecar status has no ghost exposure.
