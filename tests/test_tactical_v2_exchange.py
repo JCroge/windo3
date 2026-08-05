@@ -168,6 +168,110 @@ def test_query_entry_uses_exact_okx_client_id_when_ccxt_history_omits_fill(monke
     })
 
 
+def test_canceled_exact_entry_has_zero_remainder_and_is_not_canceled_again(monkeypatch):
+    monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+    monkeypatch.setenv("BOT_INSTANCE_ID", "main01")
+    executor = _executor()
+    intent = _intent(
+        symbol="PUMP-USDT",
+        entry_ref=0.002496,
+        stop_loss=0.00242,
+        take_profit=0.002572,
+    )
+    entry_id = executor.make_tactical_clord_id(intent.intent_id, "entry")
+    executor.exchange.private_get_trade_order.return_value = {
+        "code": "0",
+        "data": [{
+            "ordId": "3805724946214244352",
+            "clOrdId": entry_id,
+            "instId": "PUMP-USDT-SWAP",
+            "state": "canceled",
+            "sz": "200",
+            "accFillSz": "0",
+            "avgPx": "",
+        }],
+    }
+
+    observed = executor.query_tactical_entry(intent)
+    canceled = executor.cancel_tactical_entry(intent)
+
+    assert observed["observation"]["status"] == "canceled"
+    assert observed["observation"]["remaining_qty"] == 0.0
+    assert canceled["proven"] is True
+    assert canceled["reason"] == "no_remainder"
+    executor.exchange.cancel_order.assert_not_called()
+
+
+def test_cancel_entry_rechecks_exact_terminal_state_after_cancel_error(monkeypatch):
+    monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+    monkeypatch.setenv("BOT_INSTANCE_ID", "main01")
+    executor = _executor()
+    intent = _intent(
+        symbol="PUMP-USDT",
+        entry_ref=0.002496,
+        stop_loss=0.00242,
+        take_profit=0.002572,
+    )
+    entry_id = executor.make_tactical_clord_id(intent.intent_id, "entry")
+    open_order = {
+        "ordId": "3805724946214244352",
+        "clOrdId": entry_id,
+        "instId": "PUMP-USDT-SWAP",
+        "state": "live",
+        "sz": "200",
+        "accFillSz": "0",
+        "avgPx": "",
+    }
+    canceled_order = {
+        **open_order,
+        "state": "canceled",
+    }
+    executor.exchange.private_get_trade_order.side_effect = [
+        {"code": "0", "data": [open_order]},
+        {"code": "0", "data": [canceled_order]},
+    ]
+    executor.exchange.cancel_order.side_effect = RuntimeError(
+        "51400 Order cancellation failed as the order has been filled, "
+        "canceled or does not exist"
+    )
+
+    canceled = executor.cancel_tactical_entry(intent)
+
+    assert canceled["proven"] is True
+    assert canceled["reason"] == "cancel_confirmed"
+    executor.exchange.cancel_order.assert_called_once_with(
+        "3805724946214244352", "PUMP-USDT-SWAP"
+    )
+
+
+def test_canceled_partial_fill_preserves_fill_for_position_recovery(monkeypatch):
+    monkeypatch.setenv("STATE_NAMESPACE", "testnet")
+    monkeypatch.setenv("BOT_INSTANCE_ID", "main01")
+    executor = _executor()
+    intent = _intent()
+    entry_id = executor.make_tactical_clord_id(intent.intent_id, "entry")
+    executor.exchange.private_get_trade_order.return_value = {
+        "code": "0",
+        "data": [{
+            "ordId": "partially-filled-entry",
+            "clOrdId": entry_id,
+            "instId": "WLD-USDT-SWAP",
+            "state": "canceled",
+            "sz": "500",
+            "accFillSz": "125",
+            "avgPx": "1.001",
+        }],
+    }
+
+    canceled = executor.cancel_tactical_entry(intent)
+
+    assert canceled["proven"] is True
+    assert canceled["reason"] == "no_remainder"
+    assert canceled["filled_qty"] == 125.0
+    assert canceled["average_price"] == 1.001
+    executor.exchange.cancel_order.assert_not_called()
+
+
 def test_query_and_cancel_entry_use_deterministic_identity_only(monkeypatch):
     monkeypatch.setenv("STATE_NAMESPACE", "testnet")
     monkeypatch.setenv("BOT_INSTANCE_ID", "main01")

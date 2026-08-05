@@ -17,6 +17,14 @@ from utils.logger import setup_logger
 # 持仓同步瞬时错误重试（fetch_positions 偶发 OKX 网络/超时抖动）
 _POS_SYNC_RETRY_ATTEMPTS = 3
 _POS_SYNC_RETRY_BACKOFFS = (0.5, 1.0)  # 第1/2次失败后退避秒数
+_TACTICAL_TERMINAL_ORDER_STATUSES = frozenset({
+    "canceled",
+    "cancelled",
+    "closed",
+    "filled",
+    "rejected",
+    "expired",
+})
 
 # ---------------------------------------------------------------------------
 # Entry Drift Hybrid Policy — threshold constants
@@ -593,10 +601,13 @@ class ContractExecutor:
             for info in exact_rows or []:
                 if not isinstance(info, dict) or info.get("clOrdId") != expected:
                     continue
+                status = str(info.get("state") or "unknown").lower()
                 filled = float(info.get("accFillSz") or 0)
                 try:
                     remaining = max(0.0, float(info.get("sz") or 0) - filled)
                 except (TypeError, ValueError):
+                    remaining = 0.0
+                if status in _TACTICAL_TERMINAL_ORDER_STATUSES:
                     remaining = 0.0
                 average = info.get("avgPx") or info.get("fillPx")
                 return {
@@ -604,7 +615,7 @@ class ContractExecutor:
                     "observation": {
                         "order_id": info.get("ordId"),
                         "client_order_id": expected,
-                        "status": str(info.get("state") or "unknown").lower(),
+                        "status": status,
                         "filled_qty": filled,
                         "remaining_qty": remaining,
                         "average_price": (
@@ -644,6 +655,9 @@ class ContractExecutor:
             if order_id in seen:
                 continue
             seen.add(order_id)
+            status = str(
+                order.get("status") or info.get("state") or "unknown"
+            ).lower()
             filled = order.get("filled", info.get("accFillSz", 0))
             remaining = order.get("remaining")
             if remaining is None:
@@ -651,15 +665,15 @@ class ContractExecutor:
                     remaining = max(0.0, float(info.get("sz", 0)) - float(filled or 0))
                 except (TypeError, ValueError):
                     remaining = 0
+            if status in _TACTICAL_TERMINAL_ORDER_STATUSES:
+                remaining = 0.0
             average = order.get("average", info.get("avgPx"))
             return {
                 "query_state": "found",
                 "observation": {
                     "order_id": order_id,
                     "client_order_id": expected,
-                    "status": str(
-                        order.get("status") or info.get("state") or "unknown"
-                    ).lower(),
+                    "status": status,
                     "filled_qty": float(filled or 0),
                     "remaining_qty": float(remaining or 0),
                     "average_price": (
@@ -736,12 +750,22 @@ class ContractExecutor:
                 "proven": True,
                 "reason": "no_remainder",
                 "order_id": observation["order_id"],
+                "filled_qty": observation.get("filled_qty", 0.0),
+                "average_price": observation.get("average_price"),
             }
         symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
-        self.exchange.cancel_order(observation["order_id"], symbol)
+        cancel_error = None
+        try:
+            self.exchange.cancel_order(observation["order_id"], symbol)
+        except Exception as exc:
+            cancel_error = f"{type(exc).__name__}: {exc}"
+            self.logger.warning(
+                f"[Tactical V2] {symbol} entry cancel returned {cancel_error}; "
+                "rechecking deterministic order identity"
+            )
         confirmation = self.query_tactical_entry(intent)
         if confirmation.get("query_state") != "found":
-            return {
+            result = {
                 "proven": False,
                 "reason": (
                     "cancel_query_error"
@@ -751,24 +775,33 @@ class ContractExecutor:
                 "order_id": observation["order_id"],
                 "query": confirmation,
             }
+            if cancel_error is not None:
+                result["cancel_error"] = cancel_error
+            return result
         confirmed = confirmation["observation"]
-        terminal_statuses = {"canceled", "cancelled", "closed", "filled"}
         if (
             confirmed["remaining_qty"] <= 0
-            and confirmed["status"] in terminal_statuses
+            and confirmed["status"] in _TACTICAL_TERMINAL_ORDER_STATUSES
         ):
-            return {
+            result = {
                 "proven": True,
                 "reason": "cancel_confirmed",
                 "order_id": observation["order_id"],
                 "filled_qty": confirmed["filled_qty"],
+                "average_price": confirmed.get("average_price"),
             }
-        return {
+            if cancel_error is not None:
+                result["cancel_error"] = cancel_error
+            return result
+        result = {
             "proven": False,
             "reason": "cancel_unconfirmed",
             "order_id": observation["order_id"],
             "remaining_qty": confirmed["remaining_qty"],
         }
+        if cancel_error is not None:
+            result["cancel_error"] = cancel_error
+        return result
 
     def verify_tactical_protection(self, intent: Any, *, filled_qty: float) -> dict:
         """Prove exact owner, trigger and filled-quantity coverage for TP and SL."""
