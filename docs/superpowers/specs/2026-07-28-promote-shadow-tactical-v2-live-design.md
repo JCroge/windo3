@@ -2,6 +2,8 @@
 comet_change: promote-shadow-tactical-v2-live
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-08-05-promote-shadow-tactical-v2-live
+status: final
 ---
 
 # Shadow Tactical V2 Live Promotion Technical Design

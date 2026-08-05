@@ -2,6 +2,7 @@
 change: promote-shadow-tactical-v2-live
 design-doc: docs/superpowers/specs/2026-07-28-promote-shadow-tactical-v2-live-design.md
 base-ref: 2e2d1871631bd8a36b8f0775cfe3c1bafd3a9b15
+archived-with: 2026-08-05-promote-shadow-tactical-v2-live
 ---
 
 # Shadow Tactical V2 Live Promotion Implementation Plan

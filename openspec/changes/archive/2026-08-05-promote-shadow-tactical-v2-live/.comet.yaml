@@ -1,17 +1,17 @@
 workflow: full
-phase: verify
+phase: archive
 build_mode: executing-plans
 isolation: branch
 verify_mode: full
 base_ref: 2e2d1871631bd8a36b8f0775cfe3c1bafd3a9b15
 design_doc: docs/superpowers/specs/2026-07-28-promote-shadow-tactical-v2-live-design.md
 plan: docs/superpowers/plans/2026-07-28-promote-shadow-tactical-v2-live.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-07-28-promote-shadow-tactical-v2-live-verify.md
 branch_status: handled
 created_at: 2026-07-28
-verified_at: null
-archived: false
+verified_at: 2026-08-05
+archived: true
 handoff_context: openspec/changes/promote-shadow-tactical-v2-live/.comet/handoff/design-context.json
 handoff_hash: 2b7c81edf968e29b07d8c71a4ff25b94ca452e7f2ed74985994899ecf5025a80
 build_command: /usr/local/anaconda3/bin/python -m compileall -q agents executor.py scripts utils
