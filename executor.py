@@ -2,6 +2,7 @@
 """合约执行器 - 基于ccxt的统一接口"""
 
 import ccxt
+import hashlib
 import json
 import math
 import os
@@ -414,6 +415,632 @@ class ContractExecutor:
         clord = str(clord_id)
         return clord.startswith("ca") and not cls._is_owner_clord_id(clord)
 
+    @classmethod
+    def _is_tactical_v2_clord_id(cls, clord_id: Optional[str]) -> bool:
+        """Recognize this instance's deterministic Tactical V2 command identity."""
+        if not clord_id:
+            return False
+        ns, bot = cls._resolve_owner_tag()
+        prefix = f"ca{ns}{bot}v2"
+        value = str(clord_id)
+        return (
+            len(value) == 32
+            and value.isalnum()
+            and value.startswith(prefix)
+            and len(value) > len(prefix)
+            and value[len(prefix)] in {"e", "t", "s", "c"}
+        )
+
+    @classmethod
+    def make_tactical_clord_id(cls, intent_id: str, purpose: str) -> str:
+        """Derive a stable OKX-safe owner identity for one Tactical command."""
+        normalized_intent = str(intent_id or "").strip()
+        normalized_purpose = str(purpose or "").strip().lower()
+        if not normalized_intent:
+            raise ValueError("intent_id is required")
+        purpose_codes = {
+            "entry": "e",
+            "tp": "t",
+            "sl": "s",
+            "close": "c",
+        }
+        if normalized_purpose not in purpose_codes:
+            raise ValueError("unsupported Tactical client-id purpose")
+        namespace, bot = cls._resolve_owner_tag()
+        prefix = f"ca{namespace}{bot}v2{purpose_codes[normalized_purpose]}"
+        digest = hashlib.sha256(
+            f"{normalized_intent}:{normalized_purpose}".encode("utf-8")
+        ).hexdigest()
+        return (prefix + digest[:max(1, 32 - len(prefix))])[:32]
+
+    def submit_tactical_entry(self, intent: Any, *, order_type: str) -> dict:
+        """Submit one fixed-size Tactical entry without Main sizing or drift policy."""
+        if self.exchange_id != "okx":
+            raise RuntimeError("Tactical V2 live entry currently requires OKX")
+        if getattr(self, "_okx_pos_mode", None) not in {"net_mode", "long_short_mode"}:
+            raise RuntimeError("OKX position mode is unknown")
+
+        normalized_type = str(order_type or "").strip().lower()
+        if normalized_type not in {"market", "limit"}:
+            raise ValueError("order_type must be market or limit")
+        margin_usdt = float(getattr(intent, "margin_usdt", 0))
+        if not math.isclose(margin_usdt, 100.0, rel_tol=0, abs_tol=1e-9):
+            raise ValueError("Tactical V2 margin_usdt must be exactly 100")
+        leverage = int(getattr(intent, "leverage", 0))
+        if not 1 <= leverage <= 5:
+            raise ValueError("Tactical V2 leverage must be between 1 and 5")
+        side = str(getattr(intent, "side", "")).lower()
+        if side not in {"long", "short"}:
+            raise ValueError("Tactical V2 side must be long or short")
+
+        symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
+        ticker = self.exchange.fetch_ticker(symbol) or {}
+        if normalized_type == "limit":
+            price = float(getattr(intent, "entry_ref"))
+        elif side == "long":
+            price = float(ticker.get("ask") or ticker.get("last") or 0)
+        else:
+            price = float(ticker.get("bid") or ticker.get("last") or 0)
+        if not math.isfinite(price) or price <= 0:
+            raise RuntimeError("executable entry price is unavailable")
+
+        free_balance = (
+            self.balance_adapter.get_free()
+            if getattr(self, "balance_adapter", None) is not None
+            else float((self.exchange.fetch_balance().get("USDT") or {}).get("free", 0))
+        )
+        if not math.isfinite(float(free_balance)) or float(free_balance) < margin_usdt:
+            raise RuntimeError("insufficient free balance for Tactical V2 margin")
+
+        self.exchange.set_leverage(leverage, symbol)
+        market = self.exchange.market(symbol)
+        contract_size = float(market.get("contractSize", 1) or 1)
+        quantity = float(self.exchange.amount_to_precision(
+            symbol,
+            margin_usdt * leverage / (price * contract_size),
+        ))
+        minimum = float(
+            ((market.get("limits") or {}).get("amount") or {}).get("min", 0) or 0
+        )
+        if not math.isfinite(quantity) or quantity <= 0 or (minimum and quantity < minimum):
+            raise RuntimeError("Tactical V2 order quantity is below exchange minimum")
+
+        entry_client_id = self.make_tactical_clord_id(intent.intent_id, "entry")
+        tp_client_id = self.make_tactical_clord_id(intent.intent_id, "tp")
+        sl_client_id = self.make_tactical_clord_id(intent.intent_id, "sl")
+        attached = [
+            {
+                "tpTriggerPx": str(float(getattr(intent, "take_profit"))),
+                "tpOrdPx": "-1",
+                "attachAlgoClOrdId": tp_client_id,
+            },
+            {
+                "slTriggerPx": str(float(getattr(intent, "stop_loss"))),
+                "slOrdPx": "-1",
+                "attachAlgoClOrdId": sl_client_id,
+            },
+        ]
+        params = self._build_okx_open_params(
+            side,
+            clord_id=entry_client_id,
+            attach_algo=attached,
+        )
+        order_side = "buy" if side == "long" else "sell"
+        recovered = None
+        try:
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type=normalized_type,
+                side=order_side,
+                amount=quantity,
+                price=price if normalized_type == "limit" else None,
+                params=params,
+            )
+        except Exception:
+            query = self.query_tactical_entry(intent)
+            if query.get("query_state") != "found":
+                raise
+            recovered = query["observation"]
+            order = {
+                "id": recovered.get("order_id"),
+                "status": recovered.get("status", "unknown"),
+            }
+        result = {
+            "order_id": (order or {}).get("id"),
+            "status": (order or {}).get("status", "unknown"),
+            "symbol": symbol,
+            "side": side,
+            "order_type": normalized_type,
+            "limit_price": price if normalized_type == "limit" else None,
+            "requested_qty": quantity,
+            "margin_usdt": margin_usdt,
+            "leverage": leverage,
+            "entry_client_id": entry_client_id,
+            "tp_client_id": tp_client_id,
+            "sl_client_id": sl_client_id,
+        }
+        if recovered is not None:
+            result["recovered_after_submit_error"] = True
+            result["filled_qty"] = recovered.get("filled_qty", 0.0)
+            result["remaining_qty"] = recovered.get("remaining_qty", quantity)
+        return result
+
+    def query_tactical_entry(self, intent: Any) -> dict:
+        """Return found/not-found/error evidence for one deterministic entry id."""
+        symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
+        expected = self.make_tactical_clord_id(intent.intent_id, "entry")
+        successful_sources = []
+        errors = []
+        exact_fetcher = getattr(self.exchange, "private_get_trade_order", None)
+        if self.exchange_id == "okx" and callable(exact_fetcher):
+            try:
+                response = exact_fetcher({
+                    "instId": symbol,
+                    "clOrdId": expected,
+                }) or {}
+                if not isinstance(response, dict):
+                    raise TypeError("private order response must be a mapping")
+                exact_rows = response.get("data") or []
+                if not isinstance(exact_rows, list):
+                    raise TypeError("private order data must be a list")
+                successful_sources.append("private_get_trade_order")
+            except Exception as exc:
+                exact_rows = []
+                errors.append({
+                    "source": "private_get_trade_order",
+                    "error": str(exc),
+                })
+            for info in exact_rows or []:
+                if not isinstance(info, dict) or info.get("clOrdId") != expected:
+                    continue
+                filled = float(info.get("accFillSz") or 0)
+                try:
+                    remaining = max(0.0, float(info.get("sz") or 0) - filled)
+                except (TypeError, ValueError):
+                    remaining = 0.0
+                average = info.get("avgPx") or info.get("fillPx")
+                return {
+                    "query_state": "found",
+                    "observation": {
+                        "order_id": info.get("ordId"),
+                        "client_order_id": expected,
+                        "status": str(info.get("state") or "unknown").lower(),
+                        "filled_qty": filled,
+                        "remaining_qty": remaining,
+                        "average_price": (
+                            float(average) if average not in (None, "") else None
+                        ),
+                    },
+                    "successful_sources": successful_sources,
+                    "errors": errors,
+                }
+        orders = []
+        for method_name in ("fetch_open_orders", "fetch_orders"):
+            fetcher = getattr(self.exchange, method_name, None)
+            if not callable(fetcher):
+                continue
+            try:
+                rows = fetcher(symbol) or []
+                if not isinstance(rows, list):
+                    raise TypeError(f"{method_name} response must be a list")
+                successful_sources.append(method_name)
+            except Exception as exc:
+                errors.append({"source": method_name, "error": str(exc)})
+                continue
+            orders.extend(rows)
+        seen = set()
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            info = order.get("info") or {}
+            client_id = (
+                order.get("clientOrderId")
+                or order.get("clOrdId")
+                or info.get("clOrdId")
+            )
+            if client_id != expected:
+                continue
+            order_id = order.get("id") or info.get("ordId")
+            if order_id in seen:
+                continue
+            seen.add(order_id)
+            filled = order.get("filled", info.get("accFillSz", 0))
+            remaining = order.get("remaining")
+            if remaining is None:
+                try:
+                    remaining = max(0.0, float(info.get("sz", 0)) - float(filled or 0))
+                except (TypeError, ValueError):
+                    remaining = 0
+            average = order.get("average", info.get("avgPx"))
+            return {
+                "query_state": "found",
+                "observation": {
+                    "order_id": order_id,
+                    "client_order_id": expected,
+                    "status": str(
+                        order.get("status") or info.get("state") or "unknown"
+                    ).lower(),
+                    "filled_qty": float(filled or 0),
+                    "remaining_qty": float(remaining or 0),
+                    "average_price": (
+                        float(average) if average not in (None, "") else None
+                    ),
+                },
+                "successful_sources": successful_sources,
+                "errors": errors,
+            }
+        return {
+            "query_state": "not_found" if successful_sources else "query_error",
+            "observation": None,
+            "successful_sources": successful_sources,
+            "errors": errors,
+        }
+
+    def query_tactical_close(self, intent: Any) -> Optional[dict]:
+        """Find the deterministic V2 close command across open and history views."""
+        symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
+        expected = self.make_tactical_clord_id(intent.intent_id, "close")
+        orders = []
+        for method_name in ("fetch_open_orders", "fetch_orders"):
+            fetcher = getattr(self.exchange, method_name, None)
+            if not callable(fetcher):
+                continue
+            try:
+                rows = fetcher(symbol) or []
+            except Exception:
+                continue
+            if isinstance(rows, list):
+                orders.extend(rows)
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            info = order.get("info") or {}
+            client_id = (
+                order.get("clientOrderId")
+                or order.get("clOrdId")
+                or info.get("clOrdId")
+            )
+            if client_id != expected:
+                continue
+            filled = order.get("filled", info.get("accFillSz", 0))
+            remaining = order.get("remaining")
+            if remaining is None:
+                try:
+                    remaining = max(0.0, float(info.get("sz", 0)) - float(filled or 0))
+                except (TypeError, ValueError):
+                    remaining = 0.0
+            return {
+                "order_id": order.get("id") or info.get("ordId"),
+                "client_order_id": expected,
+                "status": str(order.get("status") or info.get("state") or "unknown").lower(),
+                "filled_qty": float(filled or 0),
+                "remaining_qty": float(remaining or 0),
+            }
+        return None
+
+    def cancel_tactical_entry(self, intent: Any) -> dict:
+        query = self.query_tactical_entry(intent)
+        if query.get("query_state") != "found":
+            return {
+                "proven": False,
+                "reason": (
+                    "entry_query_error"
+                    if query.get("query_state") == "query_error"
+                    else "entry_not_found"
+                ),
+                "query": query,
+            }
+        observation = query["observation"]
+        if observation["remaining_qty"] <= 0:
+            return {
+                "proven": True,
+                "reason": "no_remainder",
+                "order_id": observation["order_id"],
+            }
+        symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
+        self.exchange.cancel_order(observation["order_id"], symbol)
+        confirmation = self.query_tactical_entry(intent)
+        if confirmation.get("query_state") != "found":
+            return {
+                "proven": False,
+                "reason": (
+                    "cancel_query_error"
+                    if confirmation.get("query_state") == "query_error"
+                    else "cancel_state_unknown"
+                ),
+                "order_id": observation["order_id"],
+                "query": confirmation,
+            }
+        confirmed = confirmation["observation"]
+        terminal_statuses = {"canceled", "cancelled", "closed", "filled"}
+        if (
+            confirmed["remaining_qty"] <= 0
+            and confirmed["status"] in terminal_statuses
+        ):
+            return {
+                "proven": True,
+                "reason": "cancel_confirmed",
+                "order_id": observation["order_id"],
+                "filled_qty": confirmed["filled_qty"],
+            }
+        return {
+            "proven": False,
+            "reason": "cancel_unconfirmed",
+            "order_id": observation["order_id"],
+            "remaining_qty": confirmed["remaining_qty"],
+        }
+
+    def verify_tactical_protection(self, intent: Any, *, filled_qty: float) -> dict:
+        """Prove exact owner, trigger and filled-quantity coverage for TP and SL."""
+        quantity = float(filled_qty)
+        if not math.isfinite(quantity) or quantity <= 0:
+            return self._incomplete_tactical_proof("invalid_filled_quantity")
+        symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
+        expected_tp_id = self.make_tactical_clord_id(intent.intent_id, "tp")
+        expected_sl_id = self.make_tactical_clord_id(intent.intent_id, "sl")
+        expected_ids = {expected_tp_id, expected_sl_id}
+        expected_tp = float(getattr(intent, "take_profit"))
+        expected_sl = float(getattr(intent, "stop_loss"))
+        tp_algos = []
+        sl_algos = []
+        representation = "separate"
+        saw_ownership_mismatch = False
+        saw_quantity_mismatch = False
+        saw_price_mismatch = False
+
+        for row in self._list_pending_algos(symbol):
+            client_id = row.get("algoClOrdId")
+            tp_raw = row.get("tp_trigger")
+            sl_raw = row.get("sl_trigger")
+            has_tp = tp_raw not in (None, "", "0")
+            has_sl = sl_raw not in (None, "", "0")
+            if not has_tp and not has_sl:
+                continue
+            if client_id not in expected_ids:
+                if self._trigger_matches(tp_raw, expected_tp) or self._trigger_matches(
+                    sl_raw, expected_sl
+                ):
+                    saw_ownership_mismatch = True
+                continue
+            row_qty = row.get("quantity")
+            try:
+                quantity_matches = math.isclose(
+                    float(row_qty), quantity, rel_tol=1e-9, abs_tol=1e-9
+                )
+            except (TypeError, ValueError):
+                quantity_matches = False
+            if not quantity_matches:
+                saw_quantity_mismatch = True
+                continue
+            algo_id = row.get("algoId")
+            if not algo_id:
+                saw_ownership_mismatch = True
+                continue
+            if has_tp:
+                if self._trigger_matches(tp_raw, expected_tp):
+                    tp_algos.append(str(algo_id))
+                else:
+                    saw_price_mismatch = True
+            if has_sl:
+                if self._trigger_matches(sl_raw, expected_sl):
+                    sl_algos.append(str(algo_id))
+                else:
+                    saw_price_mismatch = True
+            if has_tp and has_sl:
+                representation = "combined_oco"
+
+        tp_algos = list(dict.fromkeys(tp_algos))
+        sl_algos = list(dict.fromkeys(sl_algos))
+        if tp_algos and sl_algos:
+            return {
+                "complete": True,
+                "reason": "complete",
+                "representation": representation,
+                "protected_qty": quantity,
+                "tp_algo_ids": tp_algos,
+                "sl_algo_ids": sl_algos,
+                "entry_client_id": self.make_tactical_clord_id(intent.intent_id, "entry"),
+                "tp_client_id": expected_tp_id,
+                "sl_client_id": expected_sl_id,
+            }
+        if saw_ownership_mismatch:
+            reason = "ownership_mismatch"
+        elif saw_quantity_mismatch:
+            reason = "quantity_mismatch"
+        elif saw_price_mismatch:
+            reason = "price_mismatch"
+        elif not tp_algos:
+            reason = "missing_tp"
+        else:
+            reason = "missing_sl"
+        proof = self._incomplete_tactical_proof(reason)
+        proof["tp_algo_ids"] = tp_algos
+        proof["sl_algo_ids"] = sl_algos
+        return proof
+
+    def cancel_tactical_protection(self, intent: Any) -> dict:
+        """Cancel only algos whose client id exactly matches this Tactical intent."""
+        symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
+        expected_ids = {
+            self.make_tactical_clord_id(intent.intent_id, "tp"),
+            self.make_tactical_clord_id(intent.intent_id, "sl"),
+        }
+        cancelled = []
+        preserved = []
+        for row in self._list_pending_algos(symbol):
+            algo_id = row.get("algoId")
+            if not algo_id:
+                continue
+            if row.get("algoClOrdId") not in expected_ids:
+                preserved.append(str(algo_id))
+                continue
+            if self._cancel_algo_by_id(symbol, str(algo_id)):
+                cancelled.append(str(algo_id))
+        return {
+            "cancelled_algo_ids": list(dict.fromkeys(cancelled)),
+            "preserved_algo_ids": list(dict.fromkeys(preserved)),
+        }
+
+    def close_tactical_position(
+        self,
+        intent: Any,
+        *,
+        filled_qty: float,
+        ownership_proof: str,
+        reason: str = "protection_integrity",
+    ) -> dict:
+        """Serialize and idempotently close only this proven V2 exposure."""
+        expected_entry = self.make_tactical_clord_id(intent.intent_id, "entry")
+        if ownership_proof != expected_entry or not self._is_owner_clord_id(ownership_proof):
+            raise RuntimeError("Tactical position ownership is not proven")
+        symbol = self._normalize_symbol(str(getattr(intent, "symbol", "")))
+        close_client_id = self.make_tactical_clord_id(intent.intent_id, "close")
+        acquire, holder = self._try_acquire_exit_lock(
+            symbol,
+            "tactical_v2_close",
+            close_client_id,
+        )
+        if acquire == "locked":
+            return {
+                "status": "exit_locked",
+                "order_id": None,
+                "client_order_id": close_client_id,
+                "closed_qty": 0.0,
+                "reason": reason,
+                "lock_holder": holder,
+            }
+        if acquire == "reentrant":
+            existing = self.query_tactical_close(intent)
+            if existing is not None:
+                return {
+                    **existing,
+                    "closed_qty": existing.get("filled_qty", 0.0),
+                    "reason": reason,
+                    "recovered_existing_close": True,
+                }
+            return {
+                "status": "close_in_progress",
+                "order_id": None,
+                "client_order_id": close_client_id,
+                "closed_qty": 0.0,
+                "reason": reason,
+            }
+
+        try:
+            existing = self.query_tactical_close(intent)
+            if existing is not None:
+                return {
+                    **existing,
+                    "closed_qty": existing.get("filled_qty", 0.0),
+                    "reason": reason,
+                    "recovered_existing_close": True,
+                }
+
+            exchange_position = self._fetch_okx_position_state(
+                symbol,
+                raise_on_error=True,
+            )
+            if exchange_position is None:
+                self.cancel_tactical_protection(intent)
+                return {
+                    "status": "already_flat",
+                    "order_id": None,
+                    "client_order_id": close_client_id,
+                    "closed_qty": 0.0,
+                    "reason": reason,
+                }
+            if exchange_position.get("side") != getattr(intent, "side"):
+                raise RuntimeError("Tactical exchange position direction mismatch")
+
+            cleanup = self.cancel_tactical_protection(intent)
+            exchange_position = self._fetch_okx_position_state(
+                symbol,
+                raise_on_error=True,
+            )
+            if exchange_position is None:
+                return {
+                    "status": "already_flat",
+                    "order_id": None,
+                    "client_order_id": close_client_id,
+                    "closed_qty": 0.0,
+                    "reason": reason,
+                    "protective_cleanup": cleanup,
+                }
+            if exchange_position.get("side") != getattr(intent, "side"):
+                raise RuntimeError("Tactical exchange position direction mismatch")
+
+            requested = float(filled_qty)
+            available = float(exchange_position.get("available_contracts", 0))
+            quantity = min(requested, available)
+            if not math.isfinite(quantity) or quantity <= 0:
+                raise RuntimeError("Tactical close quantity is not proven")
+            quantity = float(self.exchange.amount_to_precision(symbol, quantity))
+            if not math.isfinite(quantity) or quantity <= 0:
+                raise RuntimeError("Tactical close quantity rounds to zero")
+            position = {
+                "side": getattr(intent, "side"),
+                "strategy_owner": "tactical_v2",
+                "intent_id": intent.intent_id,
+            }
+            params = self._build_okx_close_params(position, clord_id=close_client_id)
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type="market",
+                side="sell" if intent.side == "long" else "buy",
+                amount=quantity,
+                price=None,
+                params=params,
+            )
+            risk_forced = str(reason).startswith("risk_forced:")
+            return {
+                "status": (order or {}).get("status", "submitted"),
+                "order_id": (order or {}).get("id"),
+                "client_order_id": close_client_id,
+                "closed_qty": quantity,
+                "reason": reason,
+                "strategy_owner": "tactical_v2",
+                "intent_id": intent.intent_id,
+                "is_risk_forced": risk_forced,
+                "tactical_cost_gate": "fail" if risk_forced else getattr(
+                    intent,
+                    "tactical_cost_gate",
+                    None,
+                ),
+                "protective_cleanup": cleanup,
+                "attribution": {
+                    "strategy_owner": "tactical_v2",
+                    "exit_profile": "tactical_v2",
+                    "close_reason": reason,
+                    "is_risk_forced": risk_forced,
+                },
+            }
+        finally:
+            self._release_exit_lock(symbol, close_client_id)
+
+    @staticmethod
+    def _trigger_matches(raw: Any, expected: float) -> bool:
+        try:
+            observed = float(raw)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(observed) and math.isclose(
+            observed,
+            float(expected),
+            rel_tol=1e-8,
+            abs_tol=max(abs(float(expected)) * 1e-8, 1e-12),
+        )
+
+    @staticmethod
+    def _incomplete_tactical_proof(reason: str) -> dict:
+        return {
+            "complete": False,
+            "reason": reason,
+            "representation": "incomplete",
+            "protected_qty": 0.0,
+            "tp_algo_ids": [],
+            "sl_algo_ids": [],
+        }
+
     def _load_sidecar_owner_registry(self):
         try:
             from utils.shadow_tactical_live import ShadowTacticalOwnerRegistry, SidecarPaths
@@ -573,12 +1200,13 @@ class ContractExecutor:
                 seen_ids.add(algo_id)
             out.append({
                 'algoId': algo_id,
-                'algoClOrdId': row.get('algoClOrdId'),
+                'algoClOrdId': row.get('algoClOrdId') or row.get('attachAlgoClOrdId'),
                 'ordType': row.get('ordType'),
                 'side': row.get('side'),
                 'posSide': row.get('posSide'),
                 'sl_trigger': row.get('slTriggerPx'),
                 'tp_trigger': row.get('tpTriggerPx'),
+                'quantity': row.get('sz') or row.get('qty') or row.get('closeFraction'),
                 'instId': row_inst or inst_id,
                 'state': row.get('state'),
             })
@@ -642,6 +1270,13 @@ class ContractExecutor:
 
         algos = self._list_pending_algos(symbol)
         position = self.positions.get(symbol)
+        if position and position.get('strategy_owner') == 'tactical_v2':
+            summary['tactical_v2_preserved_algos'] = len(algos)
+            self.logger.info(
+                f"[Migrate] {symbol} preserve {len(algos)} Tactical V2 algos; "
+                "protection ownership belongs to TacticalV2Controller"
+            )
+            return summary
 
         tp_only_algos: list = []
         sl_algos: list = []
@@ -655,6 +1290,15 @@ class ContractExecutor:
             has_tp = tp_trigger not in (None, '', '0')
             has_sl = sl_trigger not in (None, '', '0')
             algo_clord = algo.get('algoClOrdId')
+            if (has_tp or has_sl) and self._is_tactical_v2_clord_id(algo_clord):
+                summary['tactical_v2_preserved_algos'] = (
+                    summary.get('tactical_v2_preserved_algos', 0) + 1
+                )
+                self.logger.info(
+                    f"[Migrate] {symbol} preserve Tactical V2 algo "
+                    f"{algo_id} clord={algo_clord}"
+                )
+                continue
             if (has_tp or has_sl) and (
                 self._is_sidecar_owned_algo_clord_id(algo_clord)
                 or self._is_foreign_owner_clord_id(algo_clord)
@@ -1826,6 +2470,9 @@ class ContractExecutor:
         if not position:
             result['reason'] = 'position_missing'
             return result
+        if position.get('strategy_owner') == 'tactical_v2':
+            result['reason'] = 'strategy_owner_isolated'
+            return result
         if new_sl is None or new_sl <= 0:
             result['reason'] = 'invalid_new_sl'
             return result
@@ -1945,6 +2592,11 @@ class ContractExecutor:
         """
         if symbol not in self.positions:
             self.logger.warning(f"没有持仓: {symbol}")
+            return None
+        if self.positions[symbol].get('strategy_owner') == 'tactical_v2':
+            self.logger.warning(
+                f"[OwnerIsolation] {symbol} Tactical V2 拒绝 generic close_position"
+            )
             return None
 
         if action_id is None:
@@ -2136,6 +2788,8 @@ class ContractExecutor:
         current_price: float,
     ) -> Optional[str]:
         """Evaluate local TP/SL/trailing exits once a fresh price is known."""
+        if position.get('strategy_owner') == 'tactical_v2':
+            return None
         # 更新最高/最低价（用于trailing计算）
         if position['side'] == 'long':
             position['highest_price'] = max(position.get('highest_price', current_price), current_price)
@@ -2172,6 +2826,8 @@ class ContractExecutor:
         返回 'partial_tp_1'/'partial_tp_2' 触发分批平仓，None 表示无动作
         SL更新直接修改position dict（棘轮，只向有利方向移动）
         """
+        if position.get('strategy_owner') == 'tactical_v2':
+            return None
         side = position['side']
         # Invariant: take_profit must mirror take_profit_levels[0]
         tp_levels_check = position.get('take_profit_levels') or []
@@ -3479,6 +4135,11 @@ class ContractExecutor:
         """
         if symbol not in self.positions:
             return None
+        if self.positions[symbol].get('strategy_owner') == 'tactical_v2':
+            self.logger.warning(
+                f"[OwnerIsolation] {symbol} Tactical V2 拒绝 generic reduce_position"
+            )
+            return None
 
         if action_kind is None:
             action_kind = f'partial_tp_{tp_advance}' if tp_advance else 'reduce'
@@ -3781,6 +4442,11 @@ class ContractExecutor:
             return None
 
         position = self.positions[symbol]
+        if position.get('strategy_owner') == 'tactical_v2':
+            self.logger.warning(
+                f"[OwnerIsolation] {symbol} Tactical V2 拒绝 generic add_to_position"
+            )
+            return None
         # FR-05: 保护单未就绪时禁止加仓
         prot_state = position.get('protection_state')
         if prot_state and prot_state not in ('protected',):

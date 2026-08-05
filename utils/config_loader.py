@@ -109,6 +109,17 @@ HARD_LIMITS = {
     "tick_capture_retention_days": (1, 3650),
     # Phantom position resync 双确认（fix-phantom-position-resync）
     "position_resync_confirm_ticks": (1, 10),
+    # Tactical V2 first-cohort contract
+    "tactical_v2_margin_usdt": (100.0, 100.0),
+    "tactical_v2_max_concurrent": (3, 3),
+    "tactical_v2_max_leverage": (1, 5),
+    "tactical_v2_entry_max_worse_r": (0.10, 0.10),
+    "tactical_v2_entry_ttl_seconds": (900, 900),
+    "tactical_v2_max_hold_minutes": (90, 90),
+    "tactical_v2_rolling_loss_limit_usdt": (-15.0, -15.0),
+    "tactical_v2_loss_streak_count": (3, 3),
+    "tactical_v2_loss_streak_pause_minutes": (60, 60),
+    "tactical_v2_status_stale_seconds": (90, 90),
 }
 
 
@@ -269,6 +280,18 @@ DEFAULTS = {
     "position_resync_confirm_ticks": 2,
     # 体制空仓硬门(choppy flat gate): choppy/mixed + 无方向论据时拒 open_long，默认开
     "regime_flat_gate_enabled": True,
+    # Tactical V2 is independent from the legacy Tactical track above.
+    "tactical_v2_mode": "off",
+    "tactical_v2_margin_usdt": 100.0,
+    "tactical_v2_max_concurrent": 3,
+    "tactical_v2_max_leverage": 5,
+    "tactical_v2_entry_max_worse_r": 0.10,
+    "tactical_v2_entry_ttl_seconds": 900,
+    "tactical_v2_max_hold_minutes": 90,
+    "tactical_v2_rolling_loss_limit_usdt": -15.0,
+    "tactical_v2_loss_streak_count": 3,
+    "tactical_v2_loss_streak_pause_minutes": 60,
+    "tactical_v2_status_stale_seconds": 90,
 }
 
 
@@ -472,6 +495,18 @@ def _read_env_overrides() -> dict:
         "POSITION_RESYNC_CONFIRM_TICKS": ("position_resync_confirm_ticks", int),
         # 体制空仓硬门回滚开关
         "REGIME_FLAT_GATE_ENABLED": ("regime_flat_gate_enabled", _to_bool),
+        # Tactical V2 durable execution lane
+        "TACTICAL_V2_MODE": ("tactical_v2_mode", lambda v: str(v).strip().lower()),
+        "TACTICAL_V2_MARGIN_USDT": ("tactical_v2_margin_usdt", float),
+        "TACTICAL_V2_MAX_CONCURRENT": ("tactical_v2_max_concurrent", int),
+        "TACTICAL_V2_MAX_LEVERAGE": ("tactical_v2_max_leverage", int),
+        "TACTICAL_V2_ENTRY_MAX_WORSE_R": ("tactical_v2_entry_max_worse_r", float),
+        "TACTICAL_V2_ENTRY_TTL_SECONDS": ("tactical_v2_entry_ttl_seconds", int),
+        "TACTICAL_V2_MAX_HOLD_MINUTES": ("tactical_v2_max_hold_minutes", int),
+        "TACTICAL_V2_ROLLING_LOSS_LIMIT_USDT": ("tactical_v2_rolling_loss_limit_usdt", float),
+        "TACTICAL_V2_LOSS_STREAK_COUNT": ("tactical_v2_loss_streak_count", int),
+        "TACTICAL_V2_LOSS_STREAK_PAUSE_MINUTES": ("tactical_v2_loss_streak_pause_minutes", int),
+        "TACTICAL_V2_STATUS_STALE_SECONDS": ("tactical_v2_status_stale_seconds", int),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         raw = os.getenv(env_key)
@@ -500,6 +535,13 @@ def _validate_hard_limits(cfg: dict):
             raise ConfigError(
                 f"配置项 {key}={val} 超出安全范围 [{lo}, {hi}]，拒绝启动"
             )
+
+    tactical_v2_mode = str(cfg.get("tactical_v2_mode", "off")).strip().lower()
+    if tactical_v2_mode not in {"off", "shadow", "live"}:
+        raise ConfigError(
+            "配置项 tactical_v2_mode 必须为 off、shadow 或 live，拒绝启动"
+        )
+    cfg["tactical_v2_mode"] = tactical_v2_mode
 
 
 def clamp_to_hard_limits(cfg: dict) -> dict:
@@ -582,6 +624,7 @@ def format_banner(cfg: dict) -> str:
     long_pos_guard = "开启" if cfg.get("long_live_position_guard_enabled", True) else "关闭"
     overheat_chase = "禁止" if cfg.get("long_live_overheat_disable_chase", True) else "允许"
     bucket_uplift = "允许" if cfg.get("ev_bucket_sparse_allow_uplift", False) else "禁止"
+    tactical_v2_mode = str(cfg.get("tactical_v2_mode", "off")).strip().upper()
     lines = [
         "=" * 60,
         f"配置摘要（{mode}）",
@@ -592,6 +635,10 @@ def format_banner(cfg: dict) -> str:
         f"  最大回撤:              {cfg.get('max_drawdown_pct')}%",
         f"  每日硬熔断:            {cfg.get('daily_pnl_hard_stop')} USDT",
         f"  连续亏损熔断:          {cfg.get('consecutive_loss_limit')} 次",
+        f"  Tactical V2:           {tactical_v2_mode} | owner=tactical_v2 | "
+        f"{cfg.get('tactical_v2_margin_usdt', 100.0)}U x "
+        f"{cfg.get('tactical_v2_max_concurrent', 3)} | "
+        f"{cfg.get('tactical_v2_rolling_loss_limit_usdt', -15.0)}U/24h",
         f"  EV 胜率门:             {'开启' if cfg.get('ev_winrate_gate_enabled', True) else '关闭'} (neutral_p_win={cfg.get('ev_neutral_p_win', 0.55)})",
         f"  轮换强平持仓:          {'开启' if cfg.get('rotation_close_held_enabled', False) else '关闭'}",
         f"  研判周期:              {cfg.get('research_interval') // 3600}h",

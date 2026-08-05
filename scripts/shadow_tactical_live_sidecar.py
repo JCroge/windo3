@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -23,6 +24,12 @@ from utils.shadow_tactical_live import (
     is_tactical_shadow_event,
     iter_new_shadow_events,
     map_shadow_record_to_plan,
+)
+from utils.state_paths import get_state_paths
+from utils.tactical_v2.cutover import (
+    archive_drain_report,
+    build_drain_report,
+    write_drain_report,
 )
 
 SIDECAR_FLAT_CLEAR_HALT_REASONS = {
@@ -69,6 +76,7 @@ def cmd_status(args) -> int:
     print(
         f"last_offset={state.get('last_offset', 0)} "
         f"opened={opened} rejected={rejected} active={active}"
+        f" admission_enabled={str(state.get('admission_enabled', True)).lower()}"
     )
     return 0
 
@@ -84,7 +92,10 @@ def _build_executor(paths: SidecarPaths) -> ContractExecutor:
     import utils.halt_state as halt_state_mod
 
     halt_state_mod.HALT_STATE_FILE = paths.halt_state
-    os.environ.setdefault("BOT_INSTANCE_ID", "stlive")
+    sidecar_owner = str(
+        os.getenv("SIDECAR_BOT_INSTANCE_ID") or "stlive"
+    ).strip() or "stlive"
+    os.environ["BOT_INSTANCE_ID"] = sidecar_owner
     return ContractExecutor(
         exchange_id="okx",
         api_key=os.getenv("OKX_API_KEY"),
@@ -734,6 +745,18 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         append_audit_event(paths.audit, "duplicate_skipped", {"shadow_id": shadow_id})
         return
 
+    if state.get("admission_enabled", True) is not True:
+        state["seen_shadow_ids"][shadow_id] = "admission_disabled"
+        append_audit_event(
+            paths.audit,
+            "admission_disabled_skipped",
+            {
+                "shadow_id": shadow_id,
+                "disabled_at": state.get("admission_disabled_at"),
+            },
+        )
+        return
+
     plan, reason = map_shadow_record_to_plan(record, return_error=True)
     if reason:
         state["seen_shadow_ids"][shadow_id] = "rejected"
@@ -799,42 +822,230 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         )
 
 
+def collect_sidecar_drain_report(
+    paths: SidecarPaths,
+    executor: ContractExecutor,
+    *,
+    namespace: str,
+    sidecar_bot_owner_id: str,
+    documented_exceptions: list | None = None,
+    generated_at: float | None = None,
+) -> dict:
+    """Collect sidecar facts without treating an unavailable exchange as flat."""
+    state = SidecarStateStore(paths.state).load()
+    owner_data = ShadowTacticalOwnerRegistry(paths.owners).load()
+    owners = list((owner_data.get("owners") or {}).values())
+    shadow_ids = {str(row.get("shadow_id") or "") for row in owners}
+    owner_position_ids = {
+        str(row.get("position_id") or "") for row in owners if row.get("position_id")
+    }
+    sidecar_symbols = {
+        _canonical_exchange_symbol(row.get("exchange_symbol") or row.get("symbol") or "")
+        for row in owners
+        if row.get("exchange_symbol") or row.get("symbol")
+    }
+
+    local_positions = []
+    for key, raw in (getattr(executor, "positions", {}) or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        shadow_id = str(raw.get("shadow_id") or "")
+        if (
+            raw.get("sidecar_source") != "shadow_tactical_live"
+            and shadow_id not in shadow_ids
+        ):
+            continue
+        row = dict(raw)
+        row.setdefault("symbol", key)
+        local_positions.append(row)
+        sidecar_symbols.add(_canonical_exchange_symbol(row.get("symbol") or key))
+
+    exchange_rows = []
+    exchange_query_ok = True
+    try:
+        raw_exchange = executor._fetch_positions_with_retry()
+    except Exception as exc:
+        exchange_query_ok = False
+        raw_exchange = []
+        logger = getattr(executor, "logger", None)
+        if logger:
+            logger.warning(f"[SidecarDrain] exchange position query failed: {exc}")
+    normalize = getattr(executor, "_normalize_okx_position", None)
+    for raw in raw_exchange or []:
+        try:
+            normalized = normalize(raw) if callable(normalize) else raw
+        except Exception:
+            normalized = raw
+        if not isinstance(normalized, dict) or _position_contracts(normalized) <= 0:
+            continue
+        row = dict(normalized)
+        symbol = _canonical_exchange_symbol(
+            row.get("symbol")
+            or row.get("inst_id")
+            or row.get("instId")
+            or (row.get("info") or {}).get("instId")
+            or ""
+        )
+        row["sidecar_relevant"] = symbol in sidecar_symbols
+        exchange_rows.append(row)
+    relevant_exchange = [row for row in exchange_rows if row["sidecar_relevant"]]
+    exchange_state = (
+        "unknown"
+        if not exchange_query_ok
+        else ("present" if relevant_exchange else "flat")
+    )
+
+    protection_rows = []
+    protection_query_ok = True
+    owner_clord_ids = {
+        str(row.get("sl_algo_clord_id") or "")
+        for row in owners
+        if row.get("sl_algo_clord_id")
+    }
+    lister = getattr(executor, "_list_pending_algos", None)
+    if not callable(lister):
+        protection_query_ok = False
+    else:
+        for symbol in sorted(sidecar_symbols):
+            try:
+                algos = lister(symbol)
+            except Exception as exc:
+                protection_query_ok = False
+                protection_rows.append({
+                    "symbol": symbol,
+                    "state": "unknown",
+                    "ownership": "unknown",
+                    "sidecar_relevant": True,
+                    "error": str(exc),
+                })
+                continue
+            for algo in algos or []:
+                if not isinstance(algo, dict):
+                    continue
+                has_protection = (
+                    algo.get("sl_trigger") not in (None, "", "0")
+                    or algo.get("tp_trigger") not in (None, "", "0")
+                )
+                if not has_protection:
+                    continue
+                client_id = str(algo.get("algoClOrdId") or "")
+                row = dict(algo)
+                row.update({
+                    "symbol": symbol,
+                    "state": "present",
+                    "ownership": "proven" if client_id in owner_clord_ids else "ambiguous",
+                    "sidecar_relevant": True,
+                })
+                protection_rows.append(row)
+
+    pending_entries = [
+        dict(row)
+        for row in owners
+        if str(row.get("status") or "").lower() in {"opening", "pending"}
+    ]
+    state_pending = state.get("pending_entries")
+    if isinstance(state_pending, list):
+        pending_entries.extend(
+            dict(row) for row in state_pending if isinstance(row, dict)
+        )
+
+    pending_pnl = []
+    finder = getattr(getattr(executor, "ledger", None), "find_pending_external_closes", None)
+    if callable(finder):
+        try:
+            pending_rows = finder()
+        except Exception:
+            pending_rows = []
+            protection_query_ok = False
+        for row in pending_rows or []:
+            if not isinstance(row, dict):
+                continue
+            entry_id = str(row.get("entry_request_id") or "")
+            position_id = str(row.get("position_id") or "")
+            attribution = row.get("entry_attribution") or {}
+            if (
+                entry_id in shadow_ids
+                or position_id in owner_position_ids
+                or attribution.get("sidecar_source") == "shadow_tactical_live"
+            ):
+                pending_pnl.append(dict(row))
+
+    final_pnl = [
+        {
+            "shadow_id": row.get("shadow_id"),
+            "position_id": row.get("position_id"),
+            "status": row.get("close_pnl_status"),
+            "close_ledger_event_id": row.get("close_ledger_event_id"),
+        }
+        for row in owners
+        if str(row.get("close_pnl_status") or "").lower() == "final"
+    ]
+    owners_closed = all(
+        str(row.get("status") or "unknown").lower() in {"closed", "archived", "retired"}
+        for row in owners
+    )
+    ownership_proof = {
+        "ownership": owners_closed,
+        "orders": protection_query_ok and not pending_entries,
+        "positions": exchange_query_ok and not local_positions and not relevant_exchange,
+        "protection": protection_query_ok and not protection_rows,
+    }
+    return build_drain_report(
+        namespace=namespace,
+        sidecar_bot_owner_id=sidecar_bot_owner_id,
+        admission_state={
+            "admission_enabled": state.get("admission_enabled", True),
+            "admission_disabled_at": state.get("admission_disabled_at"),
+            "admission_disabled_by": state.get("admission_disabled_by"),
+        },
+        pending_entries=pending_entries,
+        owners=owners,
+        local_positions=local_positions,
+        exchange_positions=exchange_rows,
+        protection_orders=protection_rows,
+        ownership_proof=ownership_proof,
+        exchange_state=exchange_state,
+        pending_pnl=pending_pnl,
+        final_pnl=final_pnl,
+        documented_exceptions=documented_exceptions or [],
+        generated_at=generated_at,
+    )
+
+
 def cmd_run(args) -> int:
     paths = _paths(args)
-    state_exists = os.path.exists(paths.state)
     store = SidecarStateStore(paths.state)
-    state = store.load()
-    now = time.time()
-    state.setdefault("started_at", now)
-    state["stop_at"] = state.get("stop_at") or now + float(args.duration_hours) * 3600
-    state.setdefault("seen_shadow_ids", {})
-    if not state_exists:
-        if args.backfill_from_start:
-            state["last_offset"] = 0
-        elif os.path.exists(paths.events):
-            state["last_offset"] = os.path.getsize(paths.events)
+    with store.locked():
+        state_exists = os.path.exists(paths.state)
+        state = store.load()
+        now = time.time()
+        state.setdefault("started_at", now)
+        state["stop_at"] = None
+        state.setdefault("seen_shadow_ids", {})
+        if not state_exists:
+            if args.backfill_from_start:
+                state["last_offset"] = 0
+            elif os.path.exists(paths.events):
+                state["last_offset"] = os.path.getsize(paths.events)
+        store.save(state)
 
     registry = ShadowTacticalOwnerRegistry(paths.owners)
     executor = None if args.dry_run else _build_executor(paths)
 
-    while time.time() < state["stop_at"]:
+    while True:
         for row in iter_new_shadow_events(paths.events, state.get("last_offset", 0)):
-            state["last_offset"] = row.next_offset
-            _process_event(args, paths, state, registry, executor, row.event)
-            store.save(state)
+            with store.locked():
+                state = store.load()
+                state["last_offset"] = max(
+                    int(state.get("last_offset", 0)), row.next_offset
+                )
+                _process_event(args, paths, state, registry, executor, row.event)
+                store.save(state)
         if executor is not None:
             monitor_sidecar_owned_exposure(paths, executor)
         if args.once:
             break
         time.sleep(float(args.poll_seconds))
-
-    if time.time() >= state["stop_at"]:
-        append_audit_event(
-            paths.audit,
-            "window_expired",
-            {"processed": len(state.get("seen_shadow_ids", {}))},
-        )
-    store.save(state)
     return 0
 
 
@@ -881,10 +1092,92 @@ def cmd_stop(args) -> int:
     return 0
 
 
+def cmd_stop_admission(args) -> int:
+    paths = _paths(args)
+    store = SidecarStateStore(paths.state)
+    state = store.disable_admission(source="cutover")
+    append_audit_event(
+        paths.audit,
+        "admission_stopped",
+        {
+            "admission_enabled": False,
+            "admission_disabled_at": state.get("admission_disabled_at"),
+            "source": state.get("admission_disabled_by"),
+        },
+    )
+    print(
+        "admission_enabled=false "
+        f"disabled_at={state.get('admission_disabled_at')} monitoring=resident"
+    )
+    return 0
+
+
+def _load_documented_exceptions(path: str | None) -> list[dict]:
+    if not path:
+        return []
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    rows = raw.get("documented_exceptions") if isinstance(raw, dict) else raw
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ValueError(
+            "exceptions JSON must be a list or contain documented_exceptions list"
+        )
+    return [dict(row) for row in rows]
+
+
+def cmd_drain_report(args) -> int:
+    paths = _paths(args)
+    state_paths = get_state_paths(args.namespace)
+    output = args.output or state_paths.sidecar_retirement
+    owner_id = str(
+        args.sidecar_bot_owner_id
+        or os.getenv("SIDECAR_BOT_INSTANCE_ID")
+        or os.getenv("BOT_INSTANCE_ID")
+        or "stlive"
+    ).strip()
+    try:
+        exceptions = _load_documented_exceptions(args.exceptions)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(f"invalid documented exceptions: {exc}", file=sys.stderr)
+        return 2
+
+    executor = _build_executor(paths)
+    report = collect_sidecar_drain_report(
+        paths,
+        executor,
+        namespace=state_paths.namespace,
+        sidecar_bot_owner_id=owner_id,
+        documented_exceptions=exceptions,
+    )
+    stored = write_drain_report(report, output)
+    if args.archive and stored.get("complete") is True:
+        try:
+            stored = archive_drain_report(stored, output)
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"sidecar drain archive failed: {exc}", file=sys.stderr)
+            return 2
+
+    append_audit_event(
+        paths.audit,
+        "drain_report_generated",
+        {
+            "path": str(output),
+            "complete": stored.get("complete") is True,
+            "retired": stored.get("retired") is True,
+            "content_hash": stored.get("content_hash"),
+            "unresolved": stored.get("unresolved"),
+        },
+    )
+    print(
+        f"drain_report={output} complete={str(stored.get('complete') is True).lower()} "
+        f"retired={str(stored.get('retired') is True).lower()}"
+    )
+    return 0 if stored.get("complete") is True else 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "status", "stop"):
+    for name in ("run", "status", "stop", "stop-admission", "drain-report"):
         sp = sub.add_parser(name)
         sp.add_argument("--events")
         sp.add_argument("--state")
@@ -892,7 +1185,11 @@ def main(argv=None) -> int:
         sp.add_argument("--owners")
 
     run = sub.choices["run"]
-    run.add_argument("--duration-hours", default="24")
+    run.add_argument(
+        "--duration-hours",
+        default="0",
+        help="Deprecated and ignored; the sidecar now runs until stopped manually.",
+    )
     run.add_argument("--poll-seconds", default="2")
     run.add_argument("--size-usdt", default=os.getenv("MAX_TRADE_AMOUNT", "30"))
     run.add_argument("--max-active", default=os.getenv("MAX_CONCURRENT_POSITIONS", "3"))
@@ -901,8 +1198,21 @@ def main(argv=None) -> int:
     run.add_argument("--from-end", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--backfill-from-start", action="store_true")
 
+    drain = sub.choices["drain-report"]
+    drain.add_argument("--namespace", choices=("live", "testnet", "paper"))
+    drain.add_argument("--output")
+    drain.add_argument("--exceptions")
+    drain.add_argument("--sidecar-bot-owner-id")
+    drain.add_argument("--archive", action="store_true")
+
     args = parser.parse_args(argv)
-    return {"run": cmd_run, "status": cmd_status, "stop": cmd_stop}[args.cmd](args)
+    return {
+        "run": cmd_run,
+        "status": cmd_status,
+        "stop": cmd_stop,
+        "stop-admission": cmd_stop_admission,
+        "drain-report": cmd_drain_report,
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":

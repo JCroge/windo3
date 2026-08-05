@@ -92,6 +92,8 @@ class PortfolioRiskGuard(BaseAgent):
         return sum(1 for p in self._positions.values() if p.get('track') == 'tactical')
 
     def can_open_tactical(self, symbol: str, plan: dict, market_state: dict):
+        if self._is_tactical_v2(plan):
+            return False, 'tactical_v2_controller_required'
         self._reset_tactical_daily_if_needed()
         now = time.time()
         if now < getattr(self, '_tactical_pause_until', 0):
@@ -109,6 +111,8 @@ class PortfolioRiskGuard(BaseAgent):
         return True, 'ok'
 
     def record_tactical_close(self, symbol: str, pnl: float, close_reason: str, event: dict):
+        if self._is_tactical_v2(event):
+            return False
         self._reset_tactical_daily_if_needed()
         self._tactical_daily_pnl = (
             getattr(self, '_tactical_daily_pnl', 0.0) + float(pnl or 0.0)
@@ -122,13 +126,19 @@ class PortfolioRiskGuard(BaseAgent):
             pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
             self._tactical_pause_until = time.time() + pause_minutes * 60
             self._tactical_pause_reason = 'loss_streak'
+        return True
 
     def record_tactical_execution_failure(self, symbol: str, reason: str, event: dict):
+        if self._is_tactical_v2(event):
+            return False
         pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
         self._tactical_pause_until = time.time() + pause_minutes * 60
         self._tactical_pause_reason = reason or 'tactical_execution_failure'
+        return True
 
     def record_tactical_quality_result(self, symbol: str, success: bool, event: dict = None):
+        if self._is_tactical_v2(event or {}):
+            return False
         window = getattr(self, '_tactical_quality_window_trades', 20)
         self._tactical_quality_results.append(bool(success))
         self._tactical_quality_results = self._tactical_quality_results[-window:]
@@ -138,6 +148,22 @@ class PortfolioRiskGuard(BaseAgent):
                 pause_minutes = getattr(self, '_tactical_loss_streak_pause_minutes', 60)
                 self._tactical_pause_until = time.time() + pause_minutes * 60
                 self._tactical_pause_reason = 'tactical_quality_failure'
+        return True
+
+    @staticmethod
+    def _is_tactical_v2(*sources: dict) -> bool:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            attribution = source.get('attribution') or {}
+            if (
+                source.get('strategy_owner') == 'tactical_v2'
+                or source.get('exit_profile') == 'tactical_v2'
+                or attribution.get('strategy_owner') == 'tactical_v2'
+                or attribution.get('exit_profile') == 'tactical_v2'
+            ):
+                return True
+        return False
 
     async def setup(self):
         self._load_state()
@@ -237,6 +263,9 @@ class PortfolioRiskGuard(BaseAgent):
                         "exit_profile": payload.get('exit_profile')
                                         or result.get('exit_profile')
                                         or (payload.get('attribution') or {}).get('exit_profile', 'trend_runner'),
+                        "strategy_owner": payload.get('strategy_owner')
+                                          or result.get('strategy_owner')
+                                          or (payload.get('attribution') or {}).get('strategy_owner', 'main'),
                         "open_time": time.time(),
                         "highest_price": entry_price,
                         "lowest_price": entry_price,
@@ -244,10 +273,11 @@ class PortfolioRiskGuard(BaseAgent):
                     self.logger.info(f"[风控] 记录持仓: {symbol} {side} lev={result.get('leverage')}x")
             elif action == 'close':
                 pos = self._positions.get(symbol, {})
-                if (payload.get('track') == 'tactical'
+                if (not self._is_tactical_v2(payload, result, pos)
+                        and (payload.get('track') == 'tactical'
                         or result.get('track') == 'tactical'
                         or (payload.get('attribution') or {}).get('track') == 'tactical'
-                        or pos.get('track') == 'tactical'):
+                        or pos.get('track') == 'tactical')):
                     pnl = result.get('realized_pnl_net_usdt')
                     if pnl is None:
                         pnl = result.get('pnl', 0)
@@ -266,10 +296,11 @@ class PortfolioRiskGuard(BaseAgent):
 
         elif status in ('force_closed', 'closed_externally'):
             pos = self._positions.get(symbol, {})
-            if (payload.get('track') == 'tactical'
+            if (not self._is_tactical_v2(payload, result, pos)
+                    and (payload.get('track') == 'tactical'
                     or result.get('track') == 'tactical'
                     or (payload.get('attribution') or {}).get('track') == 'tactical'
-                    or pos.get('track') == 'tactical'):
+                    or pos.get('track') == 'tactical')):
                 pnl = result.get('realized_pnl_net_usdt')
                 if pnl is None:
                     pnl = result.get('pnl', 0)
@@ -289,9 +320,12 @@ class PortfolioRiskGuard(BaseAgent):
                 self._positions[symbol]['amount_usdt'] *= (1 - reduce_pct)
             # F4-001: 减仓已成交但保护单异常 → 发独立 protection_failed risk_alert
             if payload.get('protection_failed'):
-                if (payload.get('track') == 'tactical'
+                if (not self._is_tactical_v2(
+                            payload, result, self._positions.get(symbol, {})
+                        )
+                        and (payload.get('track') == 'tactical'
                         or (payload.get('attribution') or {}).get('track') == 'tactical'
-                        or self._positions.get(symbol, {}).get('track') == 'tactical'):
+                        or self._positions.get(symbol, {}).get('track') == 'tactical')):
                     self.record_tactical_execution_failure(symbol, 'protection_failed', payload)
                 await self.publish('risk_alert', {
                     'type': 'protection_failed',

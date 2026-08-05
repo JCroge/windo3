@@ -33,6 +33,7 @@ _PRIORITY_MAP = {
     # HIGH: 交易决策与执行
     'system_command': PRIORITY_HIGH,
     'trade_decision': PRIORITY_HIGH,
+    'tactical_candidate.v2': PRIORITY_HIGH,
     'execution_result': PRIORITY_HIGH,
     'position_verdict': PRIORITY_HIGH,
     # NORMAL: 分析与审查
@@ -54,7 +55,7 @@ _QSIZE_HARD_LIMIT = 1000  # 超过此值丢 LOW 和 NORMAL
 _DLQ_MAX = 200            # 死信队列最大保留条数
 
 _IMPORTANT_TOPICS = frozenset({
-    'trade_decision', 'execution_result', 'risk_alert',
+    'trade_decision', 'tactical_candidate.v2', 'execution_result', 'risk_alert',
     'daily_hard_stop_triggered', 'data_alert', 'system_command',
 })
 

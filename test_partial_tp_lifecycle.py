@@ -148,6 +148,64 @@ class TestLegacyTakeProfitGate:
         assert result == 'stop_loss'
 
 
+class TestTacticalV2OwnerIsolation:
+    def _position(self):
+        return {
+            'symbol': 'WLD-USDT-SWAP',
+            'side': 'long',
+            'entry_price': 1.0,
+            'amount': 100.0,
+            'amount_usdt': 100.0,
+            'leverage': 5,
+            'stop_loss': 0.95,
+            'original_sl': 0.95,
+            'take_profit': 1.08,
+            'take_profit_levels': [1.08],
+            'tp_filled': 0,
+            'highest_price': 1.0,
+            'lowest_price': 1.0,
+            'strategy_owner': 'tactical_v2',
+            'exit_profile': 'tactical_v2',
+            'track': 'tactical',
+            'intent_id': 'intent-v2',
+        }
+
+    def test_local_exit_evaluation_does_not_mutate_v2(self):
+        from copy import deepcopy
+
+        ex = _make_executor()
+        position = self._position()
+        ex.positions[position['symbol']] = position
+        before = deepcopy(position)
+
+        result = ex._evaluate_local_exit_trigger(position['symbol'], position, 1.09)
+
+        assert result is None
+        assert position == before
+
+    def test_generic_position_mutators_reject_v2_owner(self):
+        ex = _make_executor()
+        position = self._position()
+        ex.positions[position['symbol']] = position
+        ex._normalize_symbol = lambda value: value
+        ex.can_open_new_okx = MagicMock(return_value=True)
+        ex.is_symbol_halted = MagicMock(return_value=False)
+        ex._replace_protective_sl = MagicMock(return_value=True)
+        ex.exchange.create_order = MagicMock(return_value={'id': 'must-not-fire'})
+
+        moved = ex.move_protective_sl(position['symbol'], 0.97, reason='main_trailing')
+        reduced = ex.reduce_position(position['symbol'], 0.5)
+        added = ex.add_to_position(position['symbol'], 'long', 0.3)
+        closed = ex.close_position(position['symbol'])
+
+        assert moved['ok'] is False and moved['reason'] == 'strategy_owner_isolated'
+        assert reduced is None
+        assert added is None
+        assert closed is None
+        ex._replace_protective_sl.assert_not_called()
+        ex.exchange.create_order.assert_not_called()
+
+
 class TestTpFilledOnlyAdvancesAfterReduce:
     """AC-A3: reduce 失败时 tp_filled 不得递增,SL 不得被锁利位前移。"""
 
@@ -778,6 +836,32 @@ class TestAlgoMigration:
         # SL trigger 同步到本地 stop_loss
         assert abs(pos['stop_loss'] - 94.0) < 1e-6
         assert summary['matched_sl'] == 'sl-1'
+
+    def test_tactical_v2_oco_is_never_migrated_to_main_single_sl(self):
+        ex = _make_executor()
+        self._local_long(ex)
+        position = ex.positions['BTC-USDT-SWAP']
+        position['strategy_owner'] = 'tactical_v2'
+        position['intent_id'] = 'intent-v2'
+        ex._list_pending_algos = MagicMock(return_value=[{
+            'algoId': 'v2-oco',
+            'algoClOrdId': 'owned-v2-oco',
+            'instId': 'BTC-USDT-SWAP',
+            'side': 'sell',
+            'posSide': 'net',
+            'tp_trigger': '110',
+            'sl_trigger': '95',
+            'quantity': '1',
+            'ordType': 'oco',
+        }])
+        ex._cancel_algo_by_id = MagicMock(return_value=True)
+        ex._replace_protective_sl = MagicMock(return_value=True)
+
+        summary = ex._migrate_okx_algos_for_symbol('BTC-USDT-SWAP')
+
+        assert summary['tactical_v2_preserved_algos'] == 1
+        ex._cancel_algo_by_id.assert_not_called()
+        ex._replace_protective_sl.assert_not_called()
 
     def test_sl_algo_unresolved_halt_clears_when_migration_finds_sl(
         self, monkeypatch

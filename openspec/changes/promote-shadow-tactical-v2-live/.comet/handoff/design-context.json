@@ -1,0 +1,19 @@
+{
+  "change": "promote-shadow-tactical-v2-live",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "2b7c81edf968e29b07d8c71a4ff25b94ca452e7f2ed74985994899ecf5025a80",
+  "files": [
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/proposal.md", "sha256": "2b1991ccf398570a457310e17d56cbac6d70098b6d8a25991ed83c6ca71e5407" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/design.md", "sha256": "aa1defcefdd79d979dcf0b32897029303e82876c434486906bdefcd405ef28ee" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/tasks.md", "sha256": "5728791a4dd54d828566cc5348dc77913374c4c112d88f77ce06269d593ab7cf" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/specs/entry-drift-policy/spec.md", "sha256": "1c847c1a62fb87b205aee2aa95f654ff23356a45f1aef541849b6cfb347255e3" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/specs/protective-sl-owner-tag/spec.md", "sha256": "7fd85dc42340d4d461d21cc5745f5efbbcf9be49a633fca116051f66941d54dd" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/specs/shadow-tactical-sidecar-exit-monitoring/spec.md", "sha256": "4a9fcae69040448659809ad557e6a133dce21553f17f60d8e5e8e197f3caad19" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/specs/tactical-exit-track/spec.md", "sha256": "a0a5a92089a5d1e8760591def4ee8e9c83321b1487922d0da866503bf76f9477" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/specs/tactical-intent-lifecycle/spec.md", "sha256": "df6631a7fa7ffa4e8d91e4a18dea97422a3e3626988c0368ee7a827fe070fc86" },
+    { "path": "openspec/changes/promote-shadow-tactical-v2-live/specs/tg-status-enhancement/spec.md", "sha256": "cf56ae0306f291eb1a262d9f25c143ace402d8c457e5c8d7e8f21af3f51345df" }
+  ]
+}

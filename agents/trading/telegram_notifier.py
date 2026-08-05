@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import math
 import os
 import time
 import datetime
@@ -11,6 +10,7 @@ import aiohttp
 from agents.base import BaseAgent
 from utils.halt_state import get_halt_state
 from utils.state_paths import get_state_paths
+from utils.tactical_v2.status import format_tactical_v2_status, read_status
 
 
 def _positions_path() -> str:
@@ -823,45 +823,18 @@ class TelegramNotifier(BaseAgent):
         gap = compute_gap(load_trades(), window_days=days, min_trades=10)
         await self._send_message(format_gap(gap))
 
-    def _read_tactical_circuit_state(self):
-        try:
-            with open(_riskguard_path(), "r") as f:
-                state = json.load(f)
-            tactical = state.get("tactical_circuit") if isinstance(state, dict) else None
-            if not isinstance(tactical, dict):
-                return None
-            return tactical
-        except Exception:
-            return None
-
-    def _format_tactical_circuit_line(self, tactical):
-        if tactical is None or not isinstance(tactical, dict):
-            return "Tactical circuit: ?"
-        try:
-            pause_until = float(tactical.get("pause_until") or 0)
-            daily_pnl = float(tactical.get("daily_pnl") or 0.0)
-            loss_streak_value = tactical.get("loss_streak") or 0
-            loss_streak_float = float(loss_streak_value)
-            if not all(math.isfinite(v) for v in (pause_until, daily_pnl, loss_streak_float)):
-                return "Tactical circuit: ?"
-            loss_streak = int(loss_streak_value)
-        except (TypeError, ValueError, OverflowError):
-            return "Tactical circuit: ?"
-
-        now = time.time()
-        reason = tactical.get("pause_reason") or ""
-        if pause_until > now:
-            try:
-                until = time.strftime("%H:%M", time.localtime(pause_until))
-            except (OverflowError, OSError, ValueError):
-                return "Tactical circuit: ?"
-            return (
-                f"Tactical circuit: 是 ({reason or 'paused'}, until {until}, "
-                f"daily_pnl={daily_pnl:+.2f}, loss_streak={loss_streak})"
+    def _format_tactical_v2_section(self, snapshot=None, *, now=None):
+        if snapshot is None:
+            snapshot = read_status(get_state_paths())
+        stale_seconds = int(
+            (getattr(self, 'config', None) or {}).get(
+                'tactical_v2_status_stale_seconds', 90
             )
-        return (
-            f"Tactical circuit: 否 "
-            f"(daily_pnl={daily_pnl:+.2f}, loss_streak={loss_streak})"
+        )
+        return format_tactical_v2_status(
+            snapshot,
+            stale_seconds=stale_seconds,
+            now=time.time() if now is None else now,
         )
 
     async def _cmd_status(self):
@@ -901,7 +874,7 @@ class TelegramNotifier(BaseAgent):
             text += f"全局熔断: 是 ({halt_reason})\n"
         else:
             text += "全局熔断: 否\n"
-        text += f"{self._format_tactical_circuit_line(self._read_tactical_circuit_state())}\n"
+        text += f"{self._format_tactical_v2_section()}\n"
         if reconciliation:
             text += f"{reconciliation}\n"
         text += f"今日交易: {self._daily_summary['trades']}笔\n"

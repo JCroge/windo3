@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "source": {
+    "host": "crypto-server",
+    "window_start": 1784028289.0,
+    "window_end": 1784196215.0,
+    "live_ledger": "data/trade_history.json",
+    "shadow_ledger": "data/rejected_signal_events.jsonl",
+    "cluster_key": [
+      "symbol",
+      "side",
+      "entry_price",
+      "stop_loss",
+      "take_profit[0]"
+    ]
+  },
+  "evidence_limitations": {
+    "tf_15m_structure_token": "legacy ledger did not record this field",
+    "executable_bid_ask": "legacy ledger recorded entry and resolution prices, not bid/ask",
+    "capacity_count": "legacy ledger recorded the reject reason, not the active slot count",
+    "fill_proof": "legacy shadow assumed entry fill without executable quote proof"
+  },
+  "historical_live_closes": [
+    {
+      "timestamp": 1784033177.3095586,
+      "symbol": "WLD-USDT",
+      "side": "short",
+      "entry_price": 0.401,
+      "exit_price": 0.411,
+      "entry_request_id": "20260714-WLD-cf8bfef2",
+      "exit_reason": "tactical_invalidated",
+      "pnl_usdt": -2.6721
+    },
+    {
+      "timestamp": 1784128579.513882,
+      "symbol": "PUMP-USDT",
+      "side": "long",
+      "entry_price": 0.001639,
+      "exit_price": 0.001636,
+      "entry_request_id": "20260715-PUMP-f529d31f",
+      "exit_reason": "tactical_max_hold",
+      "pnl_usdt": -0.0436
+    },
+    {
+      "timestamp": 1784132469.9736075,
+      "symbol": "SOL-USDT",
+      "side": "long",
+      "entry_price": 77.78,
+      "exit_price": 77.42,
+      "entry_request_id": "20260715-SOL-23bc182e",
+      "exit_reason": "tactical_invalidated",
+      "pnl_usdt": -0.5379
+    },
+    {
+      "timestamp": 1784171506.868364,
+      "symbol": "WLD-USDT",
+      "side": "short",
+      "entry_price": 0.4082,
+      "exit_price": 0.4076,
+      "entry_request_id": "20260716-WLD-9d03fa25",
+      "exit_reason": "tactical_max_hold",
+      "pnl_usdt": 0.102
+    },
+    {
+      "timestamp": 1784178919.4927,
+      "symbol": "SPCX-USDT",
+      "side": "short",
+      "entry_price": 136.56,
+      "exit_price": 136.58,
+      "entry_request_id": "20260716-SPCX-f7c7fdaa",
+      "exit_reason": "tactical_invalidated",
+      "pnl_usdt": -0.0673
+    },
+    {
+      "timestamp": 1784185009.8129091,
+      "symbol": "WLD-USDT",
+      "side": null,
+      "entry_price": null,
+      "exit_price": null,
+      "entry_request_id": "20260716-WLD-f6daed3e",
+      "exit_reason": "pnl_resolved",
+      "pnl_usdt": 0.9102
+    },
+    {
+      "timestamp": 1784196214.1123636,
+      "symbol": "WLD-USDT",
+      "side": null,
+      "entry_price": null,
+      "exit_price": null,
+      "entry_request_id": "20260716-WLD-68d4de97",
+      "exit_reason": "pnl_resolved",
+      "pnl_usdt": 0.865
+    }
+  ],
+  "episodes": [
+    {
+      "episode_id": "legacy-cluster-73e586c9",
+      "raw_count": 4,
+      "source_timestamps": {"created_at": 1784101247.3203044, "last_duplicate_at": 1784101935.3857276, "resolved_at": 1784106648.333498},
+      "candidate": {"candidate_id": "legacy-73e586c9", "source_shadow_id": "73e586c9", "namespace": "live", "symbol": "PUMP-USDT", "side": "long", "entry_ref": 0.001629, "stop_loss": 0.001521, "take_profit": 0.001844, "leverage": 5, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi,weak_provenance", "tactical_rr": 0.86, "tactical_ev": 0.0745},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "15m_blocked:15m_neutral_weak_signal(score=45)", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.001629, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.00165, "pnl_pct": 1.289134438305707}
+    },
+    {
+      "episode_id": "legacy-cluster-ccea3c51",
+      "raw_count": 6,
+      "source_timestamps": {"created_at": 1784129313.131714, "last_duplicate_at": 1784130260.056324, "resolved_at": 1784134718.1989863},
+      "candidate": {"candidate_id": "legacy-ccea3c51", "source_shadow_id": "ccea3c51", "namespace": "live", "symbol": "PUMP-USDT", "side": "long", "entry_ref": 0.001629, "stop_loss": 0.001534, "take_profit": 0.001818, "leverage": 5, "tactical_source": "main_quality_failed:weak_volume_oi", "tactical_rr": 0.86, "tactical_ev": 0.0675},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "15m_blocked:15m_neutral_weak_signal(score=45)", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.001629, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.001679, "pnl_pct": 3.0693677102516825}
+    },
+    {
+      "episode_id": "legacy-cluster-db6b2455",
+      "raw_count": 23,
+      "source_timestamps": {"created_at": 1784124727.9402509, "last_duplicate_at": 1784127097.539339, "resolved_at": 1784130134.4423387},
+      "candidate": {"candidate_id": "legacy-db6b2455", "source_shadow_id": "db6b2455", "namespace": "live", "symbol": "PUMP-USDT", "side": "long", "entry_ref": 0.001634, "stop_loss": 0.001538, "take_profit": 0.001825, "leverage": 5, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi", "tactical_rr": 0.86, "tactical_ev": 0.0858},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "tactical_slot_full", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.001634, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.001637, "pnl_pct": 0.18359853121174813}
+    },
+    {
+      "episode_id": "legacy-cluster-6394b085",
+      "raw_count": 4,
+      "source_timestamps": {"created_at": 1784146580.6377032, "last_duplicate_at": 1784147425.1993446, "resolved_at": 1784151986.9342208},
+      "candidate": {"candidate_id": "legacy-6394b085", "source_shadow_id": "6394b085", "namespace": "live", "symbol": "PUMP-USDT", "side": "long", "entry_ref": 0.001657, "stop_loss": 0.001589, "take_profit": 0.001792, "leverage": 5, "tactical_source": "main_quality_failed:weak_volume_oi", "tactical_rr": 0.79, "tactical_ev": -0.0358},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "15m_blocked:15m_neutral_weak_signal(score=30)", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.001657, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.001655, "pnl_pct": -0.12070006035003311}
+    },
+    {
+      "episode_id": "legacy-cluster-fc0bd448",
+      "raw_count": 2,
+      "source_timestamps": {"created_at": 1784169530.6883404, "last_duplicate_at": 1784169607.5836892, "resolved_at": 1784175003.0051703},
+      "candidate": {"candidate_id": "legacy-fc0bd448", "source_shadow_id": "fc0bd448", "namespace": "live", "symbol": "PUMP-USDT", "side": "long", "entry_ref": 0.001663, "stop_loss": 0.001597, "take_profit": 0.001794, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning,weak_volume_oi", "tactical_rr": 0.81, "tactical_ev": -0.0139},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "tactical_slot_full", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.001663, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.00166, "pnl_pct": -0.18039687312086378}
+    },
+    {
+      "episode_id": "legacy-cluster-6b8b63e8",
+      "raw_count": 16,
+      "source_timestamps": {"created_at": 1784163755.119167, "last_duplicate_at": 1784166430.1691313, "resolved_at": 1784169238.8385735},
+      "candidate": {"candidate_id": "legacy-6b8b63e8", "source_shadow_id": "6b8b63e8", "namespace": "live", "symbol": "PUMP-USDT", "side": "long", "entry_ref": 0.001666, "stop_loss": 0.0016, "take_profit": 0.001798, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning,weak_volume_oi", "tactical_rr": 0.82, "tactical_ev": -0.003},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "regime_flat_no_thesis", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.001666, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.001674, "pnl_pct": 0.48019207683073095}
+    },
+    {
+      "episode_id": "legacy-cluster-68bb8bda",
+      "raw_count": 17,
+      "source_timestamps": {"created_at": 1784164278.3635402, "last_duplicate_at": 1784167815.958991, "resolved_at": 1784169688.7298994},
+      "candidate": {"candidate_id": "legacy-68bb8bda", "source_shadow_id": "68bb8bda", "namespace": "live", "symbol": "SPCX-USDT", "side": "short", "entry_ref": 136.44, "stop_loss": 139.36, "take_profit": 130.6, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning,weak_volume_oi", "tactical_rr": 0.82, "tactical_ev": -0.0016},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "15m_blocked:15m_neutral_weak_signal(score=-49)", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 136.44, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 135.82, "pnl_pct": 0.45441219583700126}
+    },
+    {
+      "episode_id": "legacy-cluster-a82fef4a",
+      "raw_count": 18,
+      "source_timestamps": {"created_at": 1784169491.8733933, "last_duplicate_at": 1784171473.7512858, "resolved_at": 1784174951.758742},
+      "candidate": {"candidate_id": "legacy-a82fef4a", "source_shadow_id": "a82fef4a", "namespace": "live", "symbol": "SPCX-USDT", "side": "short", "entry_ref": 136.47, "stop_loss": 139.33, "take_profit": 130.74, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning,weak_volume_oi", "tactical_rr": 0.82, "tactical_ev": -0.0031},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "tactical_slot_full", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 136.47, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 135.88, "pnl_pct": 0.43232944969590636}
+    },
+    {
+      "episode_id": "legacy-cluster-a2e5c976",
+      "raw_count": 11,
+      "source_timestamps": {"created_at": 1784195303.1568446, "last_duplicate_at": 1784196198.6809034, "resolved_at": 1784200707.1251674},
+      "candidate": {"candidate_id": "legacy-a2e5c976", "source_shadow_id": "a2e5c976", "namespace": "live", "symbol": "WLD-USDT", "side": "short", "entry_ref": 0.3999, "stop_loss": 0.4112, "take_profit": 0.3773, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning", "tactical_rr": 0.83, "tactical_ev": 0.013},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "tactical_slot_full", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.3999, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.3973, "pnl_pct": 0.6501625406351704}
+    },
+    {
+      "episode_id": "legacy-cluster-3eb97671",
+      "raw_count": 16,
+      "source_timestamps": {"created_at": 1784193208.1497228, "last_duplicate_at": 1784194441.733766, "resolved_at": 1784198618.0611491},
+      "candidate": {"candidate_id": "legacy-3eb97671", "source_shadow_id": "3eb97671", "namespace": "live", "symbol": "WLD-USDT", "side": "short", "entry_ref": 0.4003, "stop_loss": 0.4116, "take_profit": 0.3777, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning", "tactical_rr": 0.82, "tactical_ev": 0.0024},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "tactical_slot_full", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.4003, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.3979, "pnl_pct": 0.5995503372470681}
+    },
+    {
+      "episode_id": "legacy-cluster-b5956f07",
+      "raw_count": 6,
+      "source_timestamps": {"created_at": 1784028662.827088, "last_duplicate_at": 1784029314.5518618, "resolved_at": 1784034063.1822827},
+      "candidate": {"candidate_id": "legacy-b5956f07", "source_shadow_id": "b5956f07", "namespace": "live", "symbol": "WLD-USDT", "side": "short", "entry_ref": 0.401, "stop_loss": 0.4138, "take_profit": 0.3753, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,weak_volume_oi,weak_provenance", "tactical_rr": 0.83, "tactical_ev": 0.0221},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "tactical_slot_full", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.401, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.4071, "pnl_pct": -1.5211970074812953}
+    },
+    {
+      "episode_id": "legacy-cluster-91a67028",
+      "raw_count": 9,
+      "source_timestamps": {"created_at": 1784166585.323758, "last_duplicate_at": 1784167818.5646698, "resolved_at": 1784171999.1575656},
+      "candidate": {"candidate_id": "legacy-91a67028", "source_shadow_id": "91a67028", "namespace": "live", "symbol": "WLD-USDT", "side": "short", "entry_ref": 0.4063, "stop_loss": 0.4186, "take_profit": 0.3818, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning,weak_volume_oi,weak_provenance", "tactical_rr": 0.84, "tactical_ev": 0.0237},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "tactical_slot_full", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.4063, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.404, "pnl_pct": 0.5660841742554686}
+    },
+    {
+      "episode_id": "legacy-cluster-d1d9f1a6",
+      "raw_count": 4,
+      "source_timestamps": {"created_at": 1784174470.837895, "last_duplicate_at": 1784174907.727904, "resolved_at": 1784179879.8495564},
+      "candidate": {"candidate_id": "legacy-d1d9f1a6", "source_shadow_id": "d1d9f1a6", "namespace": "live", "symbol": "WLD-USDT", "side": "short", "entry_ref": 0.4096, "stop_loss": 0.4219, "take_profit": 0.3851, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning,weak_volume_oi", "tactical_rr": 0.85, "tactical_ev": 0.0481},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "15m_blocked:15m_neutral_weak_signal(score=-63)", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.4096, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.4029, "pnl_pct": 1.6357421874999962}
+    },
+    {
+      "episode_id": "legacy-cluster-88704d30",
+      "raw_count": 7,
+      "source_timestamps": {"created_at": 1784169644.7157724, "last_duplicate_at": 1784172742.0839837, "resolved_at": 1784175045.1767104},
+      "candidate": {"candidate_id": "legacy-88704d30", "source_shadow_id": "88704d30", "namespace": "live", "symbol": "WLD-USDT", "side": "short", "entry_ref": 0.4122, "stop_loss": 0.4249, "take_profit": 0.3866, "leverage": 5, "tactical_source": "main_quality_failed:regime_weak,weak_volume_oi", "tactical_rr": 0.82, "tactical_ev": 0.0081},
+      "structure": {"tf_15m_closed_bar_ts": null, "tf_15m_structure_token": null, "evidence_status": "legacy_not_recorded"},
+      "ticks": [],
+      "tick_evidence_status": "legacy_not_recorded",
+      "capacity": {"observed_reason": "15m_blocked:15m_neutral_weak_signal(score=-33)", "active_count": null},
+      "observed_fill": {"status": "legacy_shadow_assumed", "price": 0.4122, "executable_quote_proven": false},
+      "observed_exit": {"reason": "shadow_tactical_max_hold", "price": 0.4, "pnl_pct": 2.9597282872392014}
+    }
+  ]
+}

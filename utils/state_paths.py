@@ -70,6 +70,10 @@ class StatePaths:
     agent_health: str
     decision_replay_tape: str
     klines_1s: str
+    tactical_v2_events: str
+    tactical_v2_state: str
+    tactical_v2_status: str
+    sidecar_retirement: str
 
     @classmethod
     def for_namespace(cls, namespace: Optional[str] = None) -> 'StatePaths':
@@ -86,6 +90,10 @@ class StatePaths:
             agent_health=f'data/{p}agent_health.json',
             decision_replay_tape=f'data/{p}decision_replay_tape.jsonl',
             klines_1s=f'data/{p}klines_1s.db',
+            tactical_v2_events=f'data/{p}tactical_v2_events.jsonl',
+            tactical_v2_state=f'data/{p}tactical_v2_state.json',
+            tactical_v2_status=f'data/{p}tactical_v2_status.json',
+            sidecar_retirement=f'data/{p}sidecar_retirement.json',
         )
 
     def as_banner_lines(self) -> list:
@@ -100,6 +108,10 @@ class StatePaths:
             f'    live_order_events  → {self.live_order_events}',
             f'    live_position_life → {self.live_position_lifecycle}',
             f'    agent_health       → {self.agent_health}',
+            f'    tactical_v2_events → {self.tactical_v2_events}',
+            f'    tactical_v2_state  → {self.tactical_v2_state}',
+            f'    tactical_v2_status → {self.tactical_v2_status}',
+            f'    sidecar_retirement → {self.sidecar_retirement}',
             f'    BOT_INSTANCE_ID    → {bot_id or "<empty>"}',
         ]
         if self.namespace == "live" and not bot_id:

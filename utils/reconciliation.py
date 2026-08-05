@@ -288,6 +288,7 @@ class Reconciler:
                 'final_close_cause': resolution.get('final_close_cause', ''),
                 'is_strategy_stop': bool(resolution.get('is_strategy_stop', False)),
                 'close_evidence': resolution.get('close_evidence', {}),
+                'tactical_v2_proof': resolution.get('tactical_v2_proof', {}),
                 'resolution_id': make_resolution_id(resolution, correction),
             })
         return results

@@ -63,6 +63,11 @@ class PositionAnalyst(BaseAgent):
         v.setdefault('is_low_rr', attr.get('is_low_rr', False))
         v.setdefault('slot_type', attr.get('slot_type', 'main'))
         v.setdefault('entry_regime', attr.get('entry_regime', 'unknown'))
+        v.setdefault('strategy_owner', attr.get('strategy_owner', 'main'))
+
+    @staticmethod
+    def _is_tactical_v2(pos: dict) -> bool:
+        return isinstance(pos, dict) and pos.get('strategy_owner') == 'tactical_v2'
 
     async def on_message(self, msg: dict):
         if msg['type'] == 'execution_result':
@@ -117,6 +122,15 @@ class PositionAnalyst(BaseAgent):
                         "is_low_rr": attribution.get('is_low_rr', False),
                         "slot_type": attribution.get('slot_type', 'main'),
                         "entry_regime": attribution.get('entry_regime', 'unknown'),
+                        "strategy_owner": (
+                            result.get('strategy_owner')
+                            or payload.get('strategy_owner')
+                            or attribution.get('strategy_owner')
+                            or 'main'
+                        ),
+                        "intent_id": result.get('intent_id') or payload.get('intent_id'),
+                        "episode_id": result.get('episode_id') or payload.get('episode_id'),
+                        "plan_hash": result.get('plan_hash') or payload.get('plan_hash'),
                     }
             elif action == 'close':
                 self._positions.pop(symbol, None)
@@ -180,6 +194,9 @@ class PositionAnalyst(BaseAgent):
         evaluated_any = False
 
         for symbol, pos in list(self._positions.items()):
+            if self._is_tactical_v2(pos):
+                self._pending_reviews.pop(symbol, None)
+                continue
             verdict = self._compute_position_score(symbol, pos)
             if verdict is None:
                 continue
@@ -203,6 +220,8 @@ class PositionAnalyst(BaseAgent):
 
     def _compute_position_score(self, symbol: str, pos: dict) -> dict:
         """7因子持仓评分（防遗憾优化版）"""
+        if self._is_tactical_v2(pos):
+            return None
         # symbol 已统一为 internal 格式（to_internal 处理过），直接查 _tech_cache
         lookup_key = to_internal(symbol)
         tech = self._tech_cache.get(lookup_key)
@@ -521,7 +540,10 @@ class PositionAnalyst(BaseAgent):
 
     async def _handle_critic_verdict(self, payload: dict):
         """收到批判官意见，执行裁决"""
-        symbol = payload.get('symbol')
+        symbol = to_internal(payload.get('symbol') or '')
+        if symbol and self._is_tactical_v2(self._positions.get(symbol, {})):
+            self._pending_reviews.pop(symbol, None)
+            return
         if symbol not in self._pending_reviews:
             return
 
@@ -634,6 +656,10 @@ class PositionAnalyst(BaseAgent):
     async def _execute_final_decision(self, final: dict):
         """将裁决结果转为trade_decision发送给Executor"""
         symbol = final['symbol']
+        normalized = to_internal(symbol)
+        if self._is_tactical_v2(self._positions.get(normalized, {})):
+            self._pending_reviews.pop(normalized, None)
+            return
         action = final['final_action']
 
         if action == 'close':

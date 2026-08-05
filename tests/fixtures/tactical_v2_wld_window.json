@@ -1,0 +1,71 @@
+{
+  "intent": {
+    "intent_id": "wld-short-20260710",
+    "side": "short",
+    "entry_ref": 0.385,
+    "stop_loss": 0.3904,
+    "take_profit": 0.38176,
+    "created_at": 1000.0,
+    "expires_at": 1900.0
+  },
+  "ticks": [
+    {
+      "bid": 0.3844,
+      "ask": 0.3845,
+      "observed_at": 1000.0
+    },
+    {
+      "bid": 0.3816,
+      "ask": 0.3817,
+      "observed_at": 1100.0
+    }
+  ],
+  "expected_terminal": "entry_terminal",
+  "expected_reason": "missed_after_target",
+  "boundary_cases": [
+    {
+      "kind": "immediate",
+      "side": "long",
+      "entry_ref": 1.0,
+      "stop_loss": 0.95,
+      "bid": 1.004,
+      "ask": 1.005,
+      "expected_action": "immediate"
+    },
+    {
+      "kind": "original_entry_wait",
+      "side": "short",
+      "entry_ref": 1.0,
+      "stop_loss": 1.05,
+      "bid": 0.9949999,
+      "ask": 0.996,
+      "expected_action": "pending_limit"
+    },
+    {
+      "kind": "tp_before_entry",
+      "side": "long",
+      "bid": 1.08,
+      "ask": 1.081,
+      "expected_reason": "missed_after_target"
+    },
+    {
+      "kind": "sl_before_entry",
+      "side": "short",
+      "bid": 1.049,
+      "ask": 1.05,
+      "expected_reason": "stopped_before_entry"
+    },
+    {
+      "kind": "expiry",
+      "observed_at": 1900.0,
+      "expected_reason": "expired"
+    },
+    {
+      "kind": "partial_fill",
+      "requested_qty": 10.0,
+      "filled_qty": 4.0,
+      "remaining_qty": 6.0,
+      "expected_command": "cancel_remainder"
+    }
+  ]
+}

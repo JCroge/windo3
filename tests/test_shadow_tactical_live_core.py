@@ -134,6 +134,19 @@ def test_state_store_watermark_and_shadow_status(tmp_path):
     assert loaded["seen_shadow_ids"]["shadow-1"] == "opened"
 
 
+def test_state_store_persists_admission_stop_without_reenable(tmp_path):
+    state_path = tmp_path / "state.json"
+    store = SidecarStateStore(str(state_path))
+
+    stopped = store.disable_admission(source="cutover", now=1000.0)
+    loaded = store.load()
+
+    assert stopped["admission_enabled"] is False
+    assert loaded["admission_enabled"] is False
+    assert loaded["admission_disabled_at"] == 1000.0
+    assert loaded["admission_disabled_by"] == "cutover"
+
+
 def test_iter_new_shadow_events_starts_after_watermark(tmp_path):
     events_path = tmp_path / "events.jsonl"
     first = json.dumps(_event(_tactical_record(id="old"))) + "\n"

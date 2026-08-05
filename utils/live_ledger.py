@@ -11,10 +11,16 @@
 
 import json
 import os
+import threading
 import time
 import uuid
 import datetime
 from typing import Optional, Dict, List, Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production and CI are POSIX
+    fcntl = None
 
 
 PNL_STATUS_FINAL = "final"
@@ -22,6 +28,64 @@ PNL_STATUS_PENDING = "pending"
 PNL_STATUS_ESTIMATED = "estimated"
 PNL_STATUS_MISMATCH = "mismatch"
 PNL_STATUS_PENDING_FX = "pending_fx"
+
+
+_PATH_LOCKS_GUARD = threading.Lock()
+_PATH_LOCKS: Dict[str, "_PathLedgerLock"] = {}
+
+
+class _PathLedgerLock:
+    """Reentrant thread/process lock shared by every ledger on one JSONL path."""
+
+    def __init__(self, events_path: str):
+        self.events_path = os.path.abspath(events_path)
+        self.lock_path = self.events_path + ".lock"
+        self._thread_lock = threading.RLock()
+        self._local = threading.local()
+
+    def __enter__(self):
+        self._thread_lock.acquire()
+        depth = int(getattr(self._local, "depth", 0))
+        try:
+            if depth == 0 and fcntl is not None:
+                os.makedirs(os.path.dirname(self.lock_path) or ".", exist_ok=True)
+                descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                except Exception:
+                    os.close(descriptor)
+                    raise
+                self._local.descriptor = descriptor
+            self._local.depth = depth + 1
+            return self
+        except Exception:
+            self._thread_lock.release()
+            raise
+
+    def __exit__(self, exc_type, exc, traceback):
+        depth = int(getattr(self._local, "depth", 1)) - 1
+        self._local.depth = depth
+        try:
+            if depth == 0 and fcntl is not None:
+                descriptor = getattr(self._local, "descriptor", None)
+                if descriptor is not None:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    finally:
+                        os.close(descriptor)
+                        del self._local.descriptor
+        finally:
+            self._thread_lock.release()
+
+
+def _shared_ledger_lock(events_path: str) -> _PathLedgerLock:
+    key = os.path.abspath(events_path)
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = _PathLedgerLock(key)
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 class LiveLedger:
@@ -38,8 +102,16 @@ class LiveLedger:
         self.events_path = events_path
         self.lifecycle_path = lifecycle_path
         self.logger = logger
+        self._ledger_lock = _shared_ledger_lock(events_path)
         self._lifecycle: Dict[str, dict] = self._load_lifecycle()
         os.makedirs(os.path.dirname(events_path) or '.', exist_ok=True)
+
+    def _event_io_lock(self) -> _PathLedgerLock:
+        lock = getattr(self, "_ledger_lock", None)
+        if lock is None:
+            lock = _shared_ledger_lock(self.events_path)
+            self._ledger_lock = lock
+        return lock
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -220,8 +292,51 @@ class LiveLedger:
                                        sl_algo_clord_id: Optional[str] = None,
                                        tp_algo_id: Optional[str] = None,
                                        tp_algo_clord_id: Optional[str] = None,
+                                       close_order_id: Optional[str] = None,
+                                       close_client_id: Optional[str] = None,
                                        entry_attribution: Optional[dict] = None,
                                        ) -> dict:
+        with self._event_io_lock():
+            return self._record_pending_external_close_unlocked(
+                symbol=symbol,
+                side=side,
+                entry_price=entry_price,
+                amount_usdt=amount_usdt,
+                leverage=leverage,
+                estimated_pnl=estimated_pnl,
+                position_id=position_id,
+                entry_request_id=entry_request_id,
+                opened_at=opened_at,
+                closed_at=closed_at,
+                sl_algo_id=sl_algo_id,
+                sl_algo_clord_id=sl_algo_clord_id,
+                tp_algo_id=tp_algo_id,
+                tp_algo_clord_id=tp_algo_clord_id,
+                close_order_id=close_order_id,
+                close_client_id=close_client_id,
+                entry_attribution=entry_attribution,
+            )
+
+    def _record_pending_external_close_unlocked(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        amount_usdt: float,
+        leverage: int,
+        estimated_pnl: Optional[float] = None,
+        position_id: Optional[str] = None,
+        entry_request_id: Optional[str] = None,
+        opened_at: Optional[float] = None,
+        closed_at: Optional[float] = None,
+        sl_algo_id: Optional[str] = None,
+        sl_algo_clord_id: Optional[str] = None,
+        tp_algo_id: Optional[str] = None,
+        tp_algo_clord_id: Optional[str] = None,
+        close_order_id: Optional[str] = None,
+        close_client_id: Optional[str] = None,
+        entry_attribution: Optional[dict] = None,
+    ) -> dict:
         """PRD §6.2 + §6.4: 外部平仓立即写 pending 事件,等待 Resolver 升级 final。
 
         - 不调 fetch_orders/fetch_order(OKX/CCXT 不可靠),realized_pnl 留空
@@ -236,6 +351,14 @@ class LiveLedger:
         ts = closed_at or time.time()
         match_key = self._build_close_match_key(
             pid=pid, symbol=symbol, side=side, opened_at=opened_at)
+        existing = self._find_pending_event(
+            match_key,
+            symbol,
+            side,
+            str(pid or ""),
+        )
+        if existing and existing.get("close_match_key") == match_key:
+            return {**existing, "status": "existing"}
 
         event = {
             "event_id": str(uuid.uuid4()),
@@ -269,6 +392,8 @@ class LiveLedger:
             "sl_algo_clord_id": sl_algo_clord_id or "",
             "tp_algo_id": tp_algo_id or "",
             "tp_algo_clord_id": tp_algo_clord_id or "",
+            "close_order_id": close_order_id or "",
+            "close_client_id": close_client_id or "",
             "entry_attribution": entry_attribution or {},
             "attempt_count": 0,
             "last_attempt_at": 0,
@@ -281,6 +406,13 @@ class LiveLedger:
         return event
 
     def apply_pnl_resolution(self, resolution: Dict[str, Any]) -> Optional[dict]:
+        with self._event_io_lock():
+            return self._apply_pnl_resolution_unlocked(resolution)
+
+    def _apply_pnl_resolution_unlocked(
+        self,
+        resolution: Dict[str, Any],
+    ) -> Optional[dict]:
         """PRD §6.2 + §6.4 + §6.8 P0-a/P0-b: 把 Resolver 结果落到账本
 
         关键约束(否则违反 §6.8 P0-a/P0-b):
@@ -382,6 +514,7 @@ class LiveLedger:
             "fill_price": resolution.get("avg_exit_price", 0) or None,
             "filled_amount": resolution.get("closed_size_contracts", 0) or None,
             "fee": fee,
+            "fee_usdt": fee,
             "fee_currency": "USDT",
             "amount_usdt": (original or {}).get("amount_usdt", 0),
             "leverage": (original or {}).get("leverage", 1),
@@ -415,6 +548,14 @@ class LiveLedger:
             "bill_ids": resolution.get("bill_ids", []),
             "match_confidence": resolution.get("match_confidence", 0),
             "warnings": resolution.get("warnings", []),
+            "exchange_pnl_usdt": resolution.get("exchange_pnl_usdt"),
+            "fills_pnl_usdt": resolution.get("fills_pnl_usdt"),
+            "close_cause": resolution.get("close_cause", ""),
+            "final_close_cause": resolution.get("final_close_cause", ""),
+            "is_strategy_stop": bool(resolution.get("is_strategy_stop", False)),
+            "close_evidence": resolution.get("close_evidence", {}),
+            "tactical_v2_proof": resolution.get("tactical_v2_proof", {}),
+            "pnl_delivery_required": True,
         }
         self._write_event(correction)
         self._apply_correction_to_lifecycle(correction, status)
@@ -425,6 +566,25 @@ class LiveLedger:
                                             reason: str,
                                             next_retry_at: Optional[float] = None,
                                             ) -> Optional[dict]:
+        with self._event_io_lock():
+            return self._update_pending_resolution_attempt_unlocked(
+                match_key,
+                symbol,
+                side,
+                position_id,
+                reason,
+                next_retry_at,
+            )
+
+    def _update_pending_resolution_attempt_unlocked(
+        self,
+        match_key: str,
+        symbol: str,
+        side: str,
+        position_id: str,
+        reason: str,
+        next_retry_at: Optional[float] = None,
+    ) -> Optional[dict]:
         """PRD §6.4 + AC-A5b: pending 期间只更新原 pending event 的重试 metadata,
         绝不写 supersede correction,find_pending_external_closes 仍能查到。
 
@@ -547,6 +707,90 @@ class LiveLedger:
             pending.append(ev)
         return pending
 
+    def find_final_pnl_corrections(
+        self,
+        *,
+        strategy_owner: Optional[str] = None,
+    ) -> List[dict]:
+        """Return durable final corrections for restart-safe downstream replay."""
+        with self._event_io_lock():
+            corrections = []
+            for event in self._read_events():
+                if event.get("event_type") != "external_close_correction":
+                    continue
+                if event.get("pnl_status") != PNL_STATUS_FINAL:
+                    continue
+                if strategy_owner:
+                    attribution = event.get("entry_attribution") or {}
+                    owner = event.get("strategy_owner") or (
+                        attribution.get("strategy_owner")
+                        if isinstance(attribution, dict)
+                        else ""
+                    )
+                    if owner != strategy_owner:
+                        continue
+                corrections.append(dict(event))
+            return corrections
+
+    def find_unpublished_final_pnl_corrections(
+        self,
+        *,
+        strategy_owner: Optional[str] = None,
+    ) -> List[dict]:
+        """Return final corrections without a durable bus-publication ack."""
+        with self._event_io_lock():
+            events = self._read_events()
+            published_ids = {
+                str(event.get("correction_event_id") or "")
+                for event in events
+                if event.get("event_type") == "pnl_correction_published"
+            }
+            return [
+                event
+                for event in self.find_final_pnl_corrections(
+                    strategy_owner=strategy_owner,
+                )
+                if str(event.get("event_id") or "") not in published_ids
+            ]
+
+    def mark_pnl_correction_published(
+        self,
+        correction_event_id: str,
+        resolution_id: str,
+    ) -> Optional[dict]:
+        """Append an idempotent outbox ack after the final reaches the bus."""
+        correction_event_id = str(correction_event_id or "")
+        resolution_id = str(resolution_id or "")
+        if not correction_event_id or not resolution_id:
+            return None
+        with self._event_io_lock():
+            for event in self._read_events():
+                if (
+                    event.get("event_type") == "pnl_correction_published"
+                    and event.get("correction_event_id") == correction_event_id
+                ):
+                    return {**event, "status": "existing"}
+            event = {
+                "event_id": str(uuid.uuid4()),
+                "ts": time.time(),
+                "event_type": "pnl_correction_published",
+                "correction_event_id": correction_event_id,
+                "resolution_id": resolution_id,
+            }
+            self._write_event(event)
+            return event
+
+    def is_pnl_correction_published(self, correction_event_id: str) -> bool:
+        correction_event_id = str(correction_event_id or "")
+        if not correction_event_id:
+            return False
+        with self._event_io_lock():
+            return any(
+                event.get("event_type") == "pnl_correction_published"
+                and event.get("correction_event_id") == correction_event_id
+                for event in self._read_events()
+            )
+
     def daily_realized_pnl(self, date_str: Optional[str] = None,
                            exclude_paper: bool = True,
                            final_only: bool = True) -> float:
@@ -657,29 +901,31 @@ class LiveLedger:
     # ── Internal: Event I/O ─────────────────────────────────────────────────
 
     def _write_event(self, event: dict) -> None:
-        try:
-            with open(self.events_path, 'a') as f:
-                f.write(json.dumps(event, ensure_ascii=False) + '\n')
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"[Ledger] 写入事件失败: {e}")
+        with self._event_io_lock():
+            try:
+                with open(self.events_path, 'a') as f:
+                    f.write(json.dumps(event, ensure_ascii=False) + '\n')
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"[Ledger] 写入事件失败: {e}")
 
     def _read_events(self) -> List[dict]:
-        events = []
-        if not os.path.exists(self.events_path):
+        with self._event_io_lock():
+            events = []
+            if not os.path.exists(self.events_path):
+                return events
+            try:
+                with open(self.events_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                events.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
+            except Exception:
+                pass
             return events
-        try:
-            with open(self.events_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            events.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
-        except Exception:
-            pass
-        return events
 
     def read_events_since(self, since_ts: float) -> List[dict]:
         """读取指定时间戳之后的所有事件"""

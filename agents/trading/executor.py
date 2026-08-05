@@ -20,15 +20,62 @@ from utils.realized_pnl_resolver import (
     make_resolution_id,
 )
 from utils.symbol import to_internal
+from utils.state_paths import get_state_paths
+from utils.event_journal import get_event_journal
+from utils.tactical_v2.controller import TacticalV2Controller
 
 load_dotenv()
+
+
+_TACTICAL_V2_METADATA_KEYS = (
+    "strategy_owner",
+    "intent_id",
+    "episode_id",
+    "plan_hash",
+    "source_shadow_id",
+    "tactical_source",
+    "position_id",
+    "entry_request_id",
+    "entry_client_id",
+    "close_order_id",
+    "close_client_id",
+    "tp_client_id",
+    "sl_client_id",
+    "tp_algo_id",
+    "sl_algo_id",
+    "tp_algo_ids",
+    "sl_algo_ids",
+    "protection_state",
+    "tactical_close_reason",
+    "close_reason",
+)
+
+
+def _tactical_v2_metadata(*sources) -> dict:
+    """Collect owner metadata without inferring ownership from track names."""
+    metadata = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        attribution = source.get("attribution") or source.get("entry_attribution")
+        if isinstance(attribution, dict):
+            for key in _TACTICAL_V2_METADATA_KEYS:
+                value = attribution.get(key)
+                if value not in (None, "", [], {}):
+                    metadata[key] = value
+        for key in _TACTICAL_V2_METADATA_KEYS:
+            value = source.get(key)
+            if value not in (None, "", [], {}):
+                metadata[key] = value
+    return metadata
 
 
 class MultiExecutor(BaseAgent):
     name = "executor"
     subscriptions = [
         "trade_decision:*", "tech_analysis:*", "risk_alert",
-        "daily_hard_stop_triggered", "system_command",
+        "daily_hard_stop_triggered", "system_command", "tactical_candidate.v2",
+        "price_tick:*", "pnl_resolved", "pnl_mismatch",
     ]
 
     def __init__(self, config: dict = None):
@@ -41,6 +88,8 @@ class MultiExecutor(BaseAgent):
         self._halt_state = get_halt_state()
         self._reconciler = None
         self._pnl_resolver = None
+        self._tactical_v2_controller = None
+        self._tactical_pnl_route_lock = asyncio.Lock()
 
     async def setup(self):
         exchange_id = self.config.get('exchange', 'okx')
@@ -67,6 +116,28 @@ class MultiExecutor(BaseAgent):
                 self.executor.exchange, self.executor.ledger,
                 logger=self.logger, resolver=self._pnl_resolver,
             )
+        self._tactical_v2_controller = TacticalV2Controller(
+            executor=self.executor,
+            config=self.config,
+            paths=get_state_paths(),
+            logger=self.logger,
+            publish=self.publish,
+        )
+        await self._recover_tactical_v2_startup()
+        try:
+            replayed = get_event_journal().replay_messages(
+                "tactical_candidate.v2",
+                namespace=get_state_paths().namespace,
+                now=time.time(),
+                max_age_seconds=900,
+            )
+            for replay in replayed:
+                await self._tactical_v2_controller.handle_candidate(
+                    replay.get("payload") or {},
+                    replayed=True,
+                )
+        except Exception as e:
+            self.logger.warning(f"[Tactical V2] 候选重放失败: {e}")
         self.logger.info(f"智能执行Agent就绪: {exchange_id}, 默认杠杆{leverage}x")
 
     async def on_message(self, msg: dict):
@@ -149,7 +220,22 @@ class MultiExecutor(BaseAgent):
                     })
             return
 
-        if msg['type'] == 'trade_decision':
+        controller = getattr(self, '_tactical_v2_controller', None)
+        if msg['type'] == 'tactical_candidate.v2':
+            if controller is not None:
+                await controller.handle_candidate(msg.get('payload') or {})
+        elif msg['type'] == 'price_tick':
+            payload = msg.get('payload') or {}
+            symbol = msg.get('symbol') or payload.get('symbol')
+            if symbol and controller is not None:
+                await controller.handle_quote(symbol, payload)
+        elif msg['type'] == 'pnl_resolved':
+            if controller is not None:
+                await controller.handle_pnl_resolution(msg.get('payload') or {})
+        elif msg['type'] == 'pnl_mismatch':
+            if controller is not None:
+                await controller.handle_pnl_mismatch(msg.get('payload') or {})
+        elif msg['type'] == 'trade_decision':
             decision = msg['payload']
             symbol = msg.get('symbol') or decision.get('symbol')
             if symbol:
@@ -157,9 +243,198 @@ class MultiExecutor(BaseAgent):
             await self._execute_decision(decision)
         elif msg['type'] == 'tech_analysis':
             symbol = msg.get('symbol') or msg.get('payload', {}).get('symbol')
-            self._mark_tactical_thesis_from_tech(symbol, msg.get('payload') or {})
+            tech = msg.get('payload') or {}
+            self._mark_tactical_thesis_from_tech(symbol, tech)
+            if symbol and controller is not None:
+                await controller.handle_structure(symbol, tech)
         elif msg['type'] == 'risk_alert':
             await self._handle_risk_alert(msg['payload'])
+
+    async def _route_pnl_event(
+        self,
+        topic: str,
+        payload: dict,
+        *,
+        symbol: str = "",
+    ) -> bool:
+        """Apply V2 risk truth before the same final event reaches other agents."""
+        correction_event_id = str(payload.get("correction_event_id") or "")
+        ledger = getattr(getattr(self, "executor", None), "ledger", None)
+        durable_outbox = (
+            topic == "pnl_resolved"
+            and correction_event_id
+            and ledger is not None
+            and hasattr(ledger, "mark_pnl_correction_published")
+        )
+
+        async def deliver() -> bool:
+            controller = getattr(self, '_tactical_v2_controller', None)
+            if controller is not None:
+                if topic == "pnl_resolved":
+                    await controller.handle_pnl_resolution(payload)
+                elif topic == "pnl_mismatch":
+                    await controller.handle_pnl_mismatch(payload)
+            await self.publish(topic, payload, symbol=symbol)
+            if durable_outbox:
+                await asyncio.to_thread(
+                    ledger.mark_pnl_correction_published,
+                    correction_event_id,
+                    str(payload.get("resolution_id") or ""),
+                )
+            return True
+
+        if not durable_outbox:
+            return await deliver()
+
+        route_lock = getattr(self, "_tactical_pnl_route_lock", None)
+        if route_lock is None:
+            route_lock = asyncio.Lock()
+            self._tactical_pnl_route_lock = route_lock
+        async with route_lock:
+            published_check = getattr(
+                ledger,
+                "is_pnl_correction_published",
+                None,
+            )
+            if callable(published_check):
+                already_published = await asyncio.to_thread(
+                    published_check,
+                    correction_event_id,
+                )
+                if already_published is True:
+                    return False
+            return await deliver()
+
+    async def _recover_tactical_v2_startup(self) -> None:
+        await self._replay_unconsumed_tactical_v2_finals()
+        await self._tactical_v2_controller.recover()
+
+    async def _replay_unconsumed_tactical_v2_finals(self) -> None:
+        """Replay ledger finals missing from the durable V2 governor after a crash."""
+        controller = getattr(self, "_tactical_v2_controller", None)
+        ledger = getattr(getattr(self, "executor", None), "ledger", None)
+        if (
+            controller is None
+            or ledger is None
+            or not hasattr(ledger, "find_unpublished_final_pnl_corrections")
+        ):
+            return
+        try:
+            corrections = await asyncio.to_thread(
+                ledger.find_unpublished_final_pnl_corrections,
+                strategy_owner="tactical_v2",
+            )
+        except Exception as exc:
+            self.logger.warning(
+                f"[Tactical V2] durable final 扫描失败: {exc}"
+            )
+            return
+
+        replayed = 0
+        for correction in corrections:
+            payload = self._pnl_payload_from_correction(correction)
+            resolution_id = make_resolution_id(correction, correction)
+            should_replay = controller.should_replay_durable_pnl_final(payload)
+            durable_resolution = controller.governor.resolution_by_id(
+                resolution_id
+            )
+            if not should_replay:
+                if (
+                    correction.get("pnl_delivery_required") is not True
+                    and durable_resolution is not None
+                    and hasattr(ledger, "mark_pnl_correction_published")
+                ):
+                    try:
+                        await asyncio.to_thread(
+                            ledger.mark_pnl_correction_published,
+                            str(correction.get("event_id") or ""),
+                            resolution_id,
+                        )
+                    except Exception as exc:
+                        self.logger.warning(
+                            f"[Tactical V2] legacy final ack 迁移失败 "
+                            f"event_id={correction.get('event_id', '')}: {exc}"
+                        )
+                continue
+            try:
+                await self._route_pnl_event(
+                    "pnl_resolved",
+                    payload,
+                    symbol=str(correction.get("symbol") or ""),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"[Tactical V2] final correction 重放失败 "
+                    f"event_id={correction.get('event_id', '')}: {exc}"
+                )
+                continue
+            replayed += 1
+        if replayed:
+            self.logger.warning(
+                f"[Tactical V2] 启动重放 {replayed} 条未消费 final correction"
+            )
+
+    @staticmethod
+    def _pnl_payload_from_correction(correction: dict) -> dict:
+        attribution = dict(correction.get("entry_attribution") or {})
+        payload = {
+            "schema_version": 1,
+            "symbol": correction.get("symbol", ""),
+            "request_id": correction.get("entry_request_id", ""),
+            "correlation_id": correction.get("entry_request_id", ""),
+            "position_id": correction.get("position_id", ""),
+            "entry_request_id": correction.get("entry_request_id", ""),
+            "side": correction.get("side", ""),
+            "direction": correction.get("side", ""),
+            "pnl_status": PNL_STATUS_FINAL,
+            "pnl_is_final": True,
+            "pnl_source": correction.get("pnl_source", correction.get("source", "")),
+            "realized_pnl_net_usdt": correction.get("realized_pnl_net_usdt"),
+            "pnl": correction.get("realized_pnl_net_usdt"),
+            "estimated_pnl": correction.get("estimated_pnl"),
+            "exchange_pnl_usdt": correction.get("exchange_pnl_usdt"),
+            "fills_pnl_usdt": correction.get("fills_pnl_usdt"),
+            "gross_close_pnl_usdt": correction.get("gross_close_pnl_usdt", 0),
+            "fee_usdt": correction.get("fee_usdt", correction.get("fee", 0)),
+            "funding_usdt": correction.get("funding_usdt", 0),
+            "order_ids": list(correction.get("order_ids") or ()),
+            "bill_ids": list(correction.get("bill_ids") or ()),
+            "match_confidence": correction.get("match_confidence", 0),
+            "warnings": list(correction.get("warnings") or ()),
+            "sl_algo_id": correction.get("sl_algo_id", ""),
+            "sl_algo_clord_id": correction.get("sl_algo_clord_id", ""),
+            "tp_algo_id": correction.get("tp_algo_id", ""),
+            "tp_algo_clord_id": correction.get("tp_algo_clord_id", ""),
+            "attribution": attribution,
+            "supersedes_event_id": correction.get("supersedes_event_id", ""),
+            "correction_event_id": correction.get("event_id", ""),
+            "close_cause": correction.get("close_cause", ""),
+            "final_close_cause": correction.get("final_close_cause", ""),
+            "is_strategy_stop": bool(correction.get("is_strategy_stop", False)),
+            "close_evidence": correction.get("close_evidence", {}),
+            "tactical_v2_proof": correction.get("tactical_v2_proof", {}),
+            "pnl_delivery_required": bool(
+                correction.get("pnl_delivery_required", False)
+            ),
+            "resolution_id": make_resolution_id(correction, correction),
+            "timestamp": correction.get("ts", time.time()),
+        }
+        metadata = _tactical_v2_metadata(correction)
+        if metadata.get("strategy_owner") == "tactical_v2":
+            payload.update(metadata)
+            payload["attribution"].update({
+                key: value
+                for key, value in metadata.items()
+                if key in {
+                    "strategy_owner",
+                    "intent_id",
+                    "episode_id",
+                    "plan_hash",
+                    "source_shadow_id",
+                    "tactical_source",
+                }
+            })
+        return payload
 
     def _position_for_symbol(self, symbol: str):
         positions = getattr(getattr(self, 'executor', None), 'positions', {}) or {}
@@ -174,7 +449,11 @@ class MultiExecutor(BaseAgent):
 
     def _mark_tactical_thesis_from_tech(self, symbol: str, tech: dict):
         position = self._position_for_symbol(symbol)
-        if not position or position.get('track') != 'tactical':
+        if (
+            not position
+            or position.get('track') != 'tactical'
+            or position.get('strategy_owner') == 'tactical_v2'
+        ):
             return
 
         side = position.get('side')
@@ -227,6 +506,17 @@ class MultiExecutor(BaseAgent):
         # normalize symbol 确保与持仓key一致
         norm_symbol = self.executor._normalize_symbol(symbol)
 
+        controller = getattr(self, '_tactical_v2_controller', None)
+        if (action in ('open_long', 'open_short')
+                and controller is not None
+                and controller.blocks_main_symbol(norm_symbol)):
+            await self.publish("execution_result", self._build_execution_result(
+                status="rejected", action=action, symbol=symbol,
+                source="executor_reject", reason="tactical_pending_symbol",
+                request_id=request_id,
+            ), symbol=symbol)
+            return
+
         # 只对新增风险动作（open/add）执行回撤风控检查；close/reduce 不拦截
         if action in ('open_long', 'open_short'):
             balance = self._get_balance()
@@ -253,6 +543,22 @@ class MultiExecutor(BaseAgent):
             await self.publish("execution_result", self._build_execution_result(
                 status="error", action=action, symbol=symbol,
                 source="executor_reject", reason=str(e), request_id=request_id,
+            ), symbol=symbol)
+            return
+
+        if (
+            position is not None
+            and position.get('strategy_owner') == 'tactical_v2'
+        ):
+            self.logger.warning(
+                f"[OwnerIsolation] {symbol} Tactical V2 拒绝 Main trade_decision {action}"
+            )
+            await self.publish("execution_result", self._build_execution_result(
+                status="rejected", action=action, symbol=symbol,
+                source="executor_reject", reason="strategy_owner_isolated",
+                request_id=request_id,
+                strategy_owner="tactical_v2",
+                intent_id=position.get("intent_id"),
             ), symbol=symbol)
             return
 
@@ -592,6 +898,9 @@ class MultiExecutor(BaseAgent):
             if position is None:
                 self.logger.debug(f"[风控] {norm_sym} emergency_close 时持仓已不存在（主路径已平），忽略")
                 return
+            if position.get('strategy_owner') == 'tactical_v2':
+                await self._close_tactical_v2_for_safety(norm_sym, reason)
+                return
             self.logger.critical(f"[风控兜底平仓] {norm_sym} 因 {reason}")
             pos = self.executor.positions.get(norm_sym)
             entry_req_id = (pos or {}).get('request_id', '')
@@ -614,6 +923,10 @@ class MultiExecutor(BaseAgent):
                 return
             norm_sym = self.executor._normalize_symbol(symbol) if symbol else None
             if norm_sym and self.executor.get_position(norm_sym):
+                position = self.executor.get_position(norm_sym)
+                if position.get('strategy_owner') == 'tactical_v2':
+                    await self._close_tactical_v2_for_safety(norm_sym, "flash_move")
+                    return
                 self.logger.warning(f"[风控平仓] {norm_sym} 因闪崩警报")
                 pos = self.executor.positions.get(norm_sym)
                 entry_req_id = (pos or {}).get('request_id', '')
@@ -635,6 +948,10 @@ class MultiExecutor(BaseAgent):
             symbol = alert.get('symbol')
             norm_sym = self.executor._normalize_symbol(symbol) if symbol else None
             if norm_sym and self.executor.get_position(norm_sym):
+                position = self.executor.get_position(norm_sym)
+                if position.get('strategy_owner') == 'tactical_v2':
+                    await self._close_tactical_v2_for_safety(norm_sym, alert_type)
+                    return
                 self.logger.warning(f"[风控] {alert_type}: 平仓 {norm_sym}")
                 pos = self.executor.positions.get(norm_sym)
                 entry_req_id = (pos or {}).get('request_id', '')
@@ -651,6 +968,11 @@ class MultiExecutor(BaseAgent):
 
         elif alert_type in ('portfolio_exposure', 'correlation_risk'):
             positions = self.executor.get_all_positions()
+            positions = {
+                symbol: position
+                for symbol, position in positions.items()
+                if position.get('strategy_owner') != 'tactical_v2'
+            }
             if not positions:
                 return
             largest_sym = max(positions, key=lambda s: positions[s].get('amount_usdt', 0))
@@ -697,6 +1019,15 @@ class MultiExecutor(BaseAgent):
             symbol = alert.get('symbol')
             self.logger.info(f"[风控] 持仓超时告警: {symbol} (仅日志，不自动执行)")
 
+    async def _close_tactical_v2_for_safety(self, symbol: str, source: str):
+        controller = getattr(self, '_tactical_v2_controller', None)
+        if controller is None:
+            self.logger.critical(
+                f"[OwnerIsolation] {symbol} Tactical V2 safety close 缺 controller"
+            )
+            return None
+        return await controller.close_for_safety(symbol, source=source)
+
     async def _close_all_positions(self, reason: str):
         """全部平仓 — 并发执行，失败收集后告警
 
@@ -714,6 +1045,9 @@ class MultiExecutor(BaseAgent):
 
         async def close_one(symbol: str, pos: dict):
             try:
+                if pos.get('strategy_owner') == 'tactical_v2':
+                    result = await self._close_tactical_v2_for_safety(symbol, reason)
+                    return (bool(result), symbol, None if result else "v2 safety close unavailable")
                 entry_req_id = pos.get('request_id', '')
                 # FR-003: close_position() 内部撤保护单,Agent 不再直接 cancel
                 result = await asyncio.to_thread(self.executor.close_position, symbol)
@@ -814,6 +1148,21 @@ class MultiExecutor(BaseAgent):
                     payload[key] = val
                     payload.setdefault('attribution', {})[key] = val
         payload.update(extra)
+        metadata = _tactical_v2_metadata(payload.get('result'), payload)
+        if metadata.get("strategy_owner") == "tactical_v2":
+            payload.update(metadata)
+            payload.setdefault('attribution', {}).update({
+                key: value
+                for key, value in metadata.items()
+                if key in {
+                    "strategy_owner",
+                    "intent_id",
+                    "episode_id",
+                    "plan_hash",
+                    "source_shadow_id",
+                    "tactical_source",
+                }
+            })
         return payload
 
     @staticmethod
@@ -1021,6 +1370,10 @@ class MultiExecutor(BaseAgent):
         await asyncio.sleep(5)
         self._sync_counter += 1
 
+        controller = getattr(self, '_tactical_v2_controller', None)
+        if controller is not None:
+            await controller.tick()
+
         if self._sync_counter % 6 == 0:
             await asyncio.to_thread(self.executor.sync_positions)
             await self._notify_synced_positions()
@@ -1033,6 +1386,7 @@ class MultiExecutor(BaseAgent):
 
     async def _run_reconciliation(self):
         """定时 PnL 对账 + pending 自动升级 (PRD §6.1)"""
+        await self._replay_unconsumed_tactical_v2_finals()
         # Step 1: 升级 pending external_close
         try:
             summaries = await asyncio.to_thread(self._reconciler.auto_resolve_pending)
@@ -1040,9 +1394,14 @@ class MultiExecutor(BaseAgent):
             self.logger.warning(f"[Reconciler] auto_resolve_pending 异常: {e}")
             summaries = []
         for s in summaries:
-            topic = "pnl_resolved" if s.get("pnl_status") == PNL_STATUS_FINAL \
-                else "pnl_mismatch"
-            await self.publish(topic, {
+            pnl_status = s.get("pnl_status")
+            if pnl_status == PNL_STATUS_FINAL:
+                topic = "pnl_resolved"
+            elif pnl_status == PNL_STATUS_MISMATCH:
+                topic = "pnl_mismatch"
+            else:
+                continue
+            payload = {
                 "schema_version": 1,
                 "symbol": s.get("symbol", ""),
                 "request_id": s.get("entry_request_id", ""),
@@ -1076,9 +1435,18 @@ class MultiExecutor(BaseAgent):
                 "final_close_cause": s.get("final_close_cause", ""),
                 "is_strategy_stop": bool(s.get("is_strategy_stop", False)),
                 "close_evidence": s.get("close_evidence", {}),
+                "tactical_v2_proof": s.get("tactical_v2_proof", {}),
                 "resolution_id": s.get("resolution_id", ""),
                 "timestamp": time.time(),
-            }, symbol=s.get("symbol", ""))
+            }
+            metadata = _tactical_v2_metadata(s.get("entry_attribution"), s)
+            if metadata.get("strategy_owner") == "tactical_v2":
+                payload.update(metadata)
+            await self._route_pnl_event(
+                topic,
+                payload,
+                symbol=s.get("symbol", ""),
+            )
         # Step 2: 全局账单 vs 本地账本 advisory 对账
         try:
             report = await asyncio.to_thread(self._reconciler.run_and_report)
@@ -1134,8 +1502,26 @@ class MultiExecutor(BaseAgent):
         for symbol in removed:
             pos_data = data_map.get(symbol, {})
             estimated_pnl = self._estimate_close_pnl(pos_data)
-            entry_req_id = pos_data.get('request_id', '')
+            entry_req_id = (
+                pos_data.get('entry_request_id')
+                or pos_data.get('request_id', '')
+            )
             position_id = pos_data.get('position_id', '')
+            metadata = _tactical_v2_metadata(pos_data)
+            entry_attribution = dict(pos_data.get('attribution') or {})
+            if metadata.get("strategy_owner") == "tactical_v2":
+                entry_attribution.update({
+                    key: value
+                    for key, value in metadata.items()
+                    if key in {
+                        "strategy_owner",
+                        "intent_id",
+                        "episode_id",
+                        "plan_hash",
+                        "source_shadow_id",
+                        "tactical_source",
+                    }
+                })
 
             # Step 1: 立即写 pending 账本(不再调 fetch_orders 兜底)
             ledger = getattr(self.executor, 'ledger', None)
@@ -1156,7 +1542,9 @@ class MultiExecutor(BaseAgent):
                         sl_algo_clord_id=pos_data.get('sl_algo_clord_id', ''),
                         tp_algo_id=pos_data.get('tp_order_id', '') or pos_data.get('tp_algo_id', ''),
                         tp_algo_clord_id=pos_data.get('tp_algo_clord_id', ''),
-                        entry_attribution=pos_data.get('attribution', {}),
+                        close_order_id=pos_data.get('close_order_id', ''),
+                        close_client_id=pos_data.get('close_client_id', ''),
+                        entry_attribution=entry_attribution,
                     )
                 except Exception as e:
                     self.logger.warning(f"[Ledger] pending external_close 写入失败: {e}")
@@ -1180,6 +1568,9 @@ class MultiExecutor(BaseAgent):
                 "pnl_pending_reason": "awaiting_exchange_resolution",
                 "pending_event_id": (pending_event or {}).get("event_id", ""),
             }
+            if metadata.get("strategy_owner") == "tactical_v2":
+                result.update(metadata)
+                result["attribution"] = entry_attribution
             payload = self._build_execution_result(
                 status="closed_externally", action="close", symbol=symbol,
                 source="external_close", reason="external_pending",
@@ -1254,7 +1645,7 @@ class MultiExecutor(BaseAgent):
         close_cause = resolution.get("close_cause", "external_unknown")
         is_strategy_stop = bool(resolution.get("is_strategy_stop",
                                                 close_cause == "exchange_sl"))
-        await self.publish(topic, {
+        payload = {
             "schema_version": 1,
             "symbol": symbol,
             "request_id": entry_req_id,
@@ -1296,9 +1687,26 @@ class MultiExecutor(BaseAgent):
             "correction_event_id": (correction or {}).get("event_id", ""),
             "final_close_cause": resolution.get("final_close_cause", close_cause),
             "close_evidence": resolution.get("close_evidence", {}),
+            "tactical_v2_proof": resolution.get("tactical_v2_proof", {}),
             "resolution_id": make_resolution_id(resolution, correction),
             "timestamp": time.time(),
-        }, symbol=symbol)
+        }
+        metadata = _tactical_v2_metadata(snapshot, resolution)
+        if metadata.get("strategy_owner") == "tactical_v2":
+            payload.update(metadata)
+            payload.setdefault("attribution", {}).update({
+                key: value
+                for key, value in metadata.items()
+                if key in {
+                    "strategy_owner",
+                    "intent_id",
+                    "episode_id",
+                    "plan_hash",
+                    "source_shadow_id",
+                    "tactical_source",
+                }
+            })
+        await self._route_pnl_event(topic, payload, symbol=symbol)
         if resolution.get("pnl_status") == PNL_STATUS_FINAL:
             net = resolution.get("realized_pnl_net_usdt", 0) or 0
             self.logger.info(
@@ -1353,6 +1761,8 @@ class MultiExecutor(BaseAgent):
         for symbol in list(positions.keys()):
             # RQ-04: 早期持仓复核（前30分钟内）
             pos = positions[symbol]
+            if pos.get('strategy_owner') == 'tactical_v2':
+                continue
             early_review_enabled = self.config.get('early_review_enabled', True)
             if early_review_enabled:
                 open_time = pos.get('open_time', 0)
@@ -1415,6 +1825,9 @@ class MultiExecutor(BaseAgent):
         减仓结果经 _classify_reduce_outcome 分流，actual reduce_pct 写入 payload，
         protection_failed=True 时下游可见。partial_tp 默认 action='close'（与原逻辑一致）。
         """
+        pos = self.executor.positions.get(symbol)
+        if pos and pos.get('strategy_owner') == 'tactical_v2':
+            return
         pct = 0.5 if trigger in ('partial_tp_1', 'tactical_tp1') else 0.25
         tp_advance = 1 if trigger in ('partial_tp_1', 'tactical_tp1') else 2
         self.logger.info(f"[Trailing] {symbol} {trigger}，减仓{int(pct*100)}%")
@@ -1461,6 +1874,8 @@ class MultiExecutor(BaseAgent):
 
         返回 True 表示已执行平仓动作，False 表示无动作。
         """
+        if pos.get('strategy_owner') == 'tactical_v2':
+            return False
         if not hasattr(self, '_early_review_times'):
             self._early_review_times = {}
         review_key = f"_er_{symbol}"

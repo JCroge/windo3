@@ -9,6 +9,8 @@ import time
 import uuid
 import math
 import asyncio
+import hashlib
+import json
 import ccxt
 from agents.base import BaseAgent
 from utils.symbol import to_internal
@@ -188,6 +190,9 @@ class MultiJudge(BaseAgent):
         self._low_rr_max_position_pct = config.get('low_rr_max_position_pct', 0.5) if config else 0.5
         self._tactical_track_enabled = config.get('tactical_track_enabled', False) if config else False
         self._tactical_shadow_only = config.get('tactical_shadow_only', True) if config else True
+        self._tactical_v2_mode = str(
+            config.get('tactical_v2_mode', 'off') if config else 'off'
+        ).strip().lower()
         self._main_quality_gate_enabled = config.get('main_quality_gate_enabled', True) if config else True
         self._main_quality_min_provenance = config.get('main_quality_min_provenance', 0.20) if config else 0.20
         self._main_quality_block_llm_reversal = config.get('main_quality_block_llm_reversal', True) if config else True
@@ -1582,6 +1587,20 @@ class MultiJudge(BaseAgent):
                             ):
                                 if key in record_plan:
                                     track_attr[key] = record_plan.get(key)
+                            if (getattr(self, '_tactical_v2_mode', 'off') != 'off'
+                                    and record_plan.get('tactical_shadow_only')):
+                                await self._route_tactical_v2_candidate(
+                                    symbol,
+                                    final_action,
+                                    record_plan,
+                                    tech,
+                                    track_decision,
+                                    score=score,
+                                    confidence=final_conf,
+                                    attribution=track_attr,
+                                    created_at=time.time(),
+                                )
+                                return
                             self._record_rejected_plan(
                                 symbol, final_action, record_plan, score, final_conf,
                                 track_decision['reason'], track_attr,
@@ -3340,6 +3359,181 @@ class MultiJudge(BaseAgent):
         profiled['tactical_shadow_only'] = True
         return profiled
 
+    async def _route_tactical_v2_candidate(
+        self,
+        symbol: str,
+        action: str,
+        plan: dict,
+        tech: dict,
+        track_decision: dict,
+        *,
+        score: float,
+        confidence: float,
+        attribution: dict,
+        created_at: float,
+    ) -> dict | None:
+        """Publish one immutable V2 candidate while keeping Main on hold."""
+        profiled = dict(plan or {})
+        timing = dict((tech or {}).get('entry_timing') or {})
+        side = 'long' if action == 'open_long' else 'short'
+        entry = float(profiled.get('entry_ref') or 0)
+        stop = float(profiled.get('stop_loss') or 0)
+        take_profits = profiled.get('take_profit') or []
+        take_profit = float(
+            take_profits[0] if isinstance(take_profits, (list, tuple)) else take_profits
+        )
+        leverage = min(5, max(1, int(profiled.get('leverage') or 1)))
+        margin_usdt = 100.0
+        notional = margin_usdt * leverage
+        valid_geometry = (
+            entry > 0
+            and ((side == 'long' and stop < entry < take_profit)
+                 or (side == 'short' and take_profit < entry < stop))
+        )
+
+        cost_pass = False
+        rr_pass = False
+        ev_pass = False
+        tactical_rr = 0.0
+        tactical_ev = float('-inf')
+        coverage = 0.0
+        total_cost = 0.0
+        if valid_geometry:
+            from utils.cost_model import get_default_cost_model
+
+            funding_rate = float(
+                ((tech or {}).get('money_flow') or {}).get(
+                    'funding_rate', profiled.get('funding_rate', 0)
+                ) or 0
+            )
+            costs = get_default_cost_model().round_trip_cost(
+                notional=notional,
+                funding_rate=funding_rate,
+                hold_hours=1.5,
+                side=side,
+            )
+            total_cost = float(costs['total_cost'])
+            gross_profit = notional * abs(take_profit - entry) / entry
+            gross_loss = notional * abs(stop - entry) / entry
+            net_profit = gross_profit - total_cost
+            net_loss = gross_loss + total_cost
+            tactical_rr = net_profit / net_loss if net_loss > 0 else 0.0
+            coverage = gross_profit / total_cost if total_cost > 0 else float('inf')
+            tactical_ev_usdt = 0.55 * net_profit - 0.45 * net_loss
+            tactical_ev = tactical_ev_usdt / margin_usdt
+            cost_pass = (
+                net_profit > 0
+                and coverage >= getattr(self, '_tactical_cost_coverage_min', 4.0)
+            )
+            rr_pass = tactical_rr >= getattr(self, '_tactical_min_rr_for_track', 0.75)
+            ev_pass = tactical_ev > getattr(self, '_tactical_min_ev_for_track', -0.04)
+
+        gate_failures = []
+        if not cost_pass:
+            gate_failures.append('cost_gate')
+        if not rr_pass:
+            gate_failures.append('min_rr')
+        if not ev_pass:
+            gate_failures.append('min_ev')
+        track_pass = valid_geometry and not gate_failures
+
+        profiled.update({
+            'tactical_effective_rr': round(tactical_rr, 4),
+            'tactical_expected_value': round(tactical_ev, 6) if math.isfinite(tactical_ev) else None,
+            'tactical_cost_gate': 'pass' if cost_pass else 'fail',
+            'tactical_rr_gate': 'pass' if rr_pass else 'fail',
+            'tactical_ev_gate': 'pass' if ev_pass else 'fail',
+            'tactical_track_gate': 'pass' if track_pass else 'fail',
+            'tactical_gate_failed': ','.join(gate_failures),
+            'tactical_cost_coverage': round(coverage, 4) if math.isfinite(coverage) else None,
+            'tactical_round_trip_cost_usdt': round(total_cost, 6),
+            'tactical_v2_margin_usdt': margin_usdt,
+            'tactical_v2_leverage': leverage,
+        })
+        route_attr = dict(attribution or {})
+        route_attr.update({
+            'track': 'tactical',
+            'exit_profile': 'tactical_v2',
+            'tactical_rr': profiled['tactical_effective_rr'],
+            'tactical_ev': profiled['tactical_expected_value'],
+            'tactical_cost_gate': profiled['tactical_cost_gate'],
+            'tactical_rr_gate': profiled['tactical_rr_gate'],
+            'tactical_ev_gate': profiled['tactical_ev_gate'],
+            'tactical_track_gate': profiled['tactical_track_gate'],
+            'tactical_gate_failed': profiled['tactical_gate_failed'],
+        })
+        source_shadow_id = self._record_rejected_plan(
+            symbol,
+            action,
+            profiled,
+            score,
+            confidence,
+            track_decision.get('reason', 'tactical_v2_shadow'),
+            route_attr,
+        )
+
+        candidate = None
+        if track_pass:
+            namespace = get_state_paths().namespace
+            identity = {
+                'namespace': namespace,
+                'symbol': to_internal(symbol),
+                'side': side,
+                'entry_ref': entry,
+                'stop_loss': stop,
+                'take_profit': take_profit,
+                'tf_15m_closed_bar_ts': timing.get('tf_15m_closed_bar_ts'),
+                'tf_15m_structure_token': timing.get('tf_15m_structure_token'),
+            }
+            candidate_id = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(',', ':')).encode('utf-8')
+            ).hexdigest()[:32]
+            candidate = {
+                'candidate_id': candidate_id,
+                'namespace': namespace,
+                'symbol': to_internal(symbol),
+                'side': side,
+                'entry_ref': entry,
+                'stop_loss': stop,
+                'take_profit': take_profit,
+                'leverage': leverage,
+                'margin_usdt': margin_usdt,
+                'source_shadow_id': source_shadow_id or f'shadow-{candidate_id[:12]}',
+                'tactical_source': profiled.get(
+                    'tactical_source', track_decision.get('reason', 'tactical_v2')
+                ),
+                'tactical_rr': profiled['tactical_effective_rr'],
+                'tactical_ev': profiled['tactical_expected_value'],
+                'tactical_cost_gate': profiled['tactical_cost_gate'],
+                'created_at': float(created_at),
+                'tf_15m_available': bool(timing.get('tf_15m_available', False)),
+                'tf_15m_bias': timing.get('tf_15m_bias', 'unavailable'),
+                'tf_15m_closed_bar_ts': timing.get('tf_15m_closed_bar_ts'),
+                'tf_15m_structure_token': timing.get('tf_15m_structure_token'),
+                'tf_15m_block_long': bool(timing.get('tf_15m_block_long', False)),
+                'tf_15m_block_short': bool(timing.get('tf_15m_block_short', False)),
+            }
+            await self.publish('tactical_candidate.v2', candidate, symbol=symbol)
+
+        hold_reason = (
+            'tactical_v2_candidate_published'
+            if candidate is not None
+            else 'tactical_v2_full_tp1_economics_rejected'
+        )
+        await self.publish('trade_decision', {
+            'symbol': symbol,
+            'timestamp': float(created_at),
+            'action': 'hold',
+            'confidence': 0,
+            'plan': None,
+            'size_pct': 0,
+            'reasoning': hold_reason,
+            'key_factors': ['track_classifier:tactical_v2'],
+            'risk_warnings': [track_decision.get('reason', hold_reason)],
+            'attribution': route_attr,
+        }, symbol=symbol)
+        return candidate
+
     @staticmethod
     def _is_live_tactical_plan(plan: dict) -> bool:
         plan = plan or {}
@@ -3875,7 +4069,7 @@ class MultiJudge(BaseAgent):
             "position_in_24h_range": _ectx.get("position_in_24h_range"),
             "prev_daily_return_pct": _ectx.get("prev_daily_return_pct"),
         } if _tech else {}
-        self._counterfactual_ledger.record_rejection(
+        record_id = self._counterfactual_ledger.record_rejection(
             symbol, side, plan, regime, score, confidence, reason,
             attribution=attr, tech_context=tech_context
         )
@@ -3896,6 +4090,7 @@ class MultiJudge(BaseAgent):
             self._decision_tape.record_decision(_reject_bundle)
             # 前向影子决策记录器(observability-only)：reject 是 lever1 翻转高发处; fire-and-forget fail-safe。
             self._schedule_shadow(_reject_bundle, {"action": "hold", "attribution": attr})
+        return record_id
 
     def _rejection_attribution(self, action: str, plan: dict, blocked_by: str,
                                dispatch_path: str = '', tech: dict = None) -> dict:

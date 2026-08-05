@@ -90,6 +90,7 @@ class CounterfactualLedger:
                 f"entry={entry_price:.4f} sl={record['stop_loss']:.4f} "
                 f"reason={reject_reason}"
             )
+        return record_id
 
     def invalidate(self, symbol: str, reason: str = "signal_reversed"):
         """Invalidate active shadows for a symbol (e.g., reverse signal received)."""

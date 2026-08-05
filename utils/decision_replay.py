@@ -116,6 +116,7 @@ _EPOCH_FALLBACK = {
     "tactical_weakened_no_progress_min_minutes": 30, # 防御性 no-op：executor tactical exit 参数，不改 Judge gate
     "tactical_weakened_no_progress_max_minutes": 45, # 防御性 no-op：executor tactical exit 参数，不改 Judge gate
     "tactical_daily_loss_limit_usdt": -10.0,         # 防御性 no-op：仅 tactical slot circuit 生效
+    "tactical_v2_mode": "off",                       # 真翻转：旧纪元无 V2 candidate 发布，replay 必须保持关闭
 }
 
 # 晚加但不影响 Judge gate 决策的键。守卫测试（CF-T2）消费此集合：snapshot-缺键
@@ -129,6 +130,16 @@ _GATE_IRRELEVANT = {
     "tactical_success_window_trades",    # 上 live 样本门槛/观测指标，不进 Judge replay gate
     "tactical_success_min_win_rate",     # 上 live 样本门槛/观测指标，不进 Judge replay gate
     "tactical_success_min_profit_factor",# 上 live 样本门槛/观测指标，不进 Judge replay gate
+    "tactical_v2_margin_usdt",          # V2 controller 固定保证金，不改 Main trade_decision
+    "tactical_v2_max_concurrent",       # V2 controller 独立 slot 上限，不改 Main trade_decision
+    "tactical_v2_max_leverage",         # V2 controller 杠杆上限，不改 Main trade_decision
+    "tactical_v2_entry_max_worse_r",    # V2 entry adapter 漂移门槛，不改 Judge candidate 决策
+    "tactical_v2_entry_ttl_seconds",    # V2 pending entry TTL，不改 Judge candidate 决策
+    "tactical_v2_max_hold_minutes",     # V2 controller exit 参数，不改 Judge candidate 决策
+    "tactical_v2_rolling_loss_limit_usdt", # V2 governor 后验 admission circuit，不改 Judge gate
+    "tactical_v2_loss_streak_count",    # V2 governor 后验 admission circuit，不改 Judge gate
+    "tactical_v2_loss_streak_pause_minutes", # V2 governor 后验 pause 参数，不改 Judge gate
+    "tactical_v2_status_stale_seconds", # Telegram status freshness，不进 Judge 决策
 }
 
 
@@ -254,6 +265,7 @@ def _install_config_flags(judge, config):
     judge._low_rr_max_position_pct = g("low_rr_max_position_pct", 0.5)
 
     # ── Tactical exit track ──
+    judge._tactical_v2_mode = g("tactical_v2_mode", "off")
     judge._tactical_track_enabled = g("tactical_track_enabled", False)
     judge._tactical_shadow_only = g("tactical_shadow_only", True)
     judge._main_quality_gate_enabled = g("main_quality_gate_enabled", True)

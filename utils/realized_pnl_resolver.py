@@ -236,6 +236,10 @@ class RealizedPnlResolver:
         resolution["tp_algo_id"] = position_snapshot.get("tp_algo_id", "") or ""
         resolution["tp_algo_clord_id"] = position_snapshot.get(
             "tp_algo_clord_id", "") or ""
+        resolution["close_order_id"] = position_snapshot.get(
+            "close_order_id", "") or ""
+        resolution["close_client_id"] = position_snapshot.get(
+            "close_client_id", "") or ""
 
         # 估算 PnL 兜底(始终先填,即使最后升级为 final 也保留 estimate 用于审计)
         estimated = self._estimate_local(position_snapshot)
@@ -263,6 +267,61 @@ class RealizedPnlResolver:
             resolution["pnl_source"] = "estimated_local"
             resolution["pnl_pending_reason"] = "no_close_fills_in_window"
             return resolution
+
+        entry_fee_usdt = 0.0
+        entry_order_ids: List[str] = []
+        if self._is_tactical_v2(position_snapshot):
+            owned_close_fills = self._filter_tactical_close_fills(
+                close_fills,
+                position_snapshot,
+            )
+            close_ownership = "deterministic_close_command"
+            if not owned_close_fills:
+                owned_close_fills = self._filter_isolated_tactical_close_fills(
+                    close_fills,
+                    position_snapshot,
+                )
+                close_ownership = "isolated_position_single_close_order"
+                if not owned_close_fills:
+                    resolution["pnl_pending_reason"] = "no_owned_close_fills_in_window"
+                    return resolution
+            close_fills = owned_close_fills
+            entry_fills = [
+                fill for fill in fills
+                if str(fill.get("clOrdId") or "") == str(entry_request_id)
+            ]
+            if not entry_fills:
+                resolution["pnl_pending_reason"] = "exact_entry_fills_missing"
+                return resolution
+            entry_agg = self._aggregate_fills(entry_fills)
+            close_qty = self._aggregate_fills(close_fills)["total_size"]
+            if not self._quantities_match(entry_agg["total_size"], close_qty):
+                resolution["pnl_pending_reason"] = "entry_close_quantity_mismatch"
+                return resolution
+            if entry_agg["fee_currency_pending_fx"]:
+                resolution["pnl_status"] = PNL_STATUS_PENDING_FX
+                resolution["pnl_source"] = "okx_fills_history"
+                resolution["pnl_pending_reason"] = "entry_fee_currency_pending_fx"
+                resolution["warnings"].append(
+                    f"entry_fee_currency_non_usdt:{entry_agg['non_usdt_fee_ccys']}"
+                )
+                return resolution
+            entry_fee_usdt = float(entry_agg["fee_usdt"])
+            entry_order_ids = list(entry_agg["order_ids"])
+            resolution["entry_fee_usdt"] = round(entry_fee_usdt, 4)
+            resolution["entry_order_ids"] = list(entry_order_ids)
+            resolution["tactical_v2_proof"] = {
+                "complete": True,
+                "entry_request_id": str(entry_request_id),
+                "entry_order_ids": list(entry_agg["order_ids"]),
+                "close_order_ids": list(
+                    self._aggregate_fills(close_fills)["order_ids"]
+                ),
+                "entry_qty": float(entry_agg["total_size"]),
+                "close_qty": float(close_qty),
+                "entry_fee_usdt": round(entry_fee_usdt, 4),
+                "close_ownership": close_ownership,
+            }
 
         # 3. 多候选检测——同一时间窗口同 side 出现多个 ordId 集且 fillTime 重叠时 ambiguous
         ambiguous = self._detect_ambiguous(close_fills, side, opened_at, closed_at)
@@ -294,9 +353,10 @@ class RealizedPnlResolver:
             resolution["closed_size_contracts"] = agg["total_size"]
             return resolution
 
-        net_from_fills = agg["gross_pnl"] + agg["fee_usdt"]
+        total_fee_usdt = agg["fee_usdt"] + entry_fee_usdt
+        net_from_fills = agg["gross_pnl"] + total_fee_usdt
         resolution["gross_close_pnl_usdt"] = round(agg["gross_pnl"], 4)
-        resolution["fee_usdt"] = round(agg["fee_usdt"], 4)
+        resolution["fee_usdt"] = round(total_fee_usdt, 4)
         resolution["order_ids"] = agg["order_ids"]
         resolution["avg_exit_price"] = agg["avg_exit_price"]
         resolution["closed_size_contracts"] = agg["total_size"]
@@ -312,7 +372,11 @@ class RealizedPnlResolver:
             resolution["warnings"].append("bills_query_failed_fills_only")
             return resolution
 
-        bills_summary = self._aggregate_bills(bills, agg["order_ids"], symbol)
+        bills_summary = self._aggregate_bills(
+            bills,
+            [*entry_order_ids, *agg["order_ids"]],
+            symbol,
+        )
         resolution["bill_ids"] = bills_summary["bill_ids"]
         resolution["funding_usdt"] = round(bills_summary["funding_usdt"], 4)
 
@@ -525,14 +589,139 @@ class RealizedPnlResolver:
             "fee_currency_pending_fx": fee_currency_pending_fx,
         }
 
+    @staticmethod
+    def _is_tactical_v2(position_snapshot: Dict[str, Any]) -> bool:
+        attribution = position_snapshot.get("attribution")
+        attributed_owner = (
+            attribution.get("strategy_owner")
+            if isinstance(attribution, dict)
+            else ""
+        )
+        return str(
+            position_snapshot.get("strategy_owner") or attributed_owner or ""
+        ) == "tactical_v2"
+
+    @staticmethod
+    def _quantities_match(entry_qty: Any, close_qty: Any) -> bool:
+        try:
+            entry_value = float(entry_qty)
+            close_value = float(close_qty)
+        except (TypeError, ValueError):
+            return False
+        tolerance = max(abs(entry_value), abs(close_value), 1.0) * 1e-9
+        return (
+            entry_value > 0
+            and close_value > 0
+            and abs(entry_value - close_value) <= tolerance
+        )
+
+    @staticmethod
+    def _filter_tactical_close_fills(
+        close_fills: List[dict],
+        position_snapshot: Dict[str, Any],
+    ) -> List[dict]:
+        expected_ids = {
+            str(position_snapshot.get(key) or "")
+            for key in (
+                "tp_algo_clord_id",
+                "sl_algo_clord_id",
+                "tp_client_id",
+                "sl_client_id",
+                "close_client_id",
+            )
+            if position_snapshot.get(key)
+        }
+        expected_algos = {
+            str(value)
+            for key in ("tp_algo_ids", "sl_algo_ids")
+            for value in position_snapshot.get(key) or ()
+            if value
+        }
+        for key in ("tp_algo_id", "sl_algo_id"):
+            value = position_snapshot.get(key)
+            if value:
+                expected_algos.add(str(value))
+        expected_order_ids = {
+            str(value)
+            for key in ("close_order_ids",)
+            for value in position_snapshot.get(key) or ()
+            if value
+        }
+        close_order_id = position_snapshot.get("close_order_id")
+        if close_order_id:
+            expected_order_ids.add(str(close_order_id))
+        return [
+            fill
+            for fill in close_fills
+            if str(fill.get("clOrdId") or fill.get("algoClOrdId") or "")
+            in expected_ids
+            or str(fill.get("algoId") or "") in expected_algos
+            or str(fill.get("ordId") or "") in expected_order_ids
+        ]
+
+    @staticmethod
+    def _filter_isolated_tactical_close_fills(
+        close_fills: List[dict],
+        position_snapshot: Dict[str, Any],
+    ) -> List[dict]:
+        attribution = position_snapshot.get("attribution")
+        attributed_intent = (
+            attribution.get("intent_id")
+            if isinstance(attribution, dict)
+            else ""
+        )
+        intent_id = str(
+            position_snapshot.get("intent_id") or attributed_intent or ""
+        )
+        entry_request_id = str(position_snapshot.get("entry_request_id") or "")
+        entry_client_id = str(
+            position_snapshot.get("entry_client_id") or entry_request_id
+        )
+        has_protection_identity = bool(
+            (
+                position_snapshot.get("tp_client_id")
+                or position_snapshot.get("tp_algo_clord_id")
+            )
+            and (
+                position_snapshot.get("sl_client_id")
+                or position_snapshot.get("sl_algo_clord_id")
+            )
+        ) or bool(
+            (position_snapshot.get("tp_algo_ids") or position_snapshot.get("tp_algo_id"))
+            and (position_snapshot.get("sl_algo_ids") or position_snapshot.get("sl_algo_id"))
+        )
+        order_ids = {
+            str(fill.get("ordId") or "")
+            for fill in close_fills
+            if fill.get("ordId")
+        }
+        all_anonymous = all(
+            not (
+                fill.get("clOrdId")
+                or fill.get("algoClOrdId")
+                or fill.get("algoId")
+            )
+            for fill in close_fills
+        )
+        if not (
+            intent_id
+            and position_snapshot.get("position_id") == f"tv2:{intent_id}"
+            and entry_request_id
+            and entry_client_id == entry_request_id
+            and has_protection_identity
+            and all_anonymous
+            and len(order_ids) == 1
+        ):
+            return []
+        return list(close_fills)
+
     def _aggregate_bills(self, bills: List[dict], close_order_ids: List[str],
                           symbol: str) -> Dict[str, Any]:
         """汇总 bills:
-        - subType ∈ {5}: realized PnL (close)
-        - subType ∈ {6}: fee
+        - subType ∈ {1,2,3,4,5,6,171,174}: matched trade PnL/fee
         - subType ∈ {7}: funding fee
         - 其他不计
-        净 PnL = sum(pnl + fee)。funding 单独返回(归属本 lifecycle)。
+        交易账单仅按精确 entry/close ordId 纳入，funding 单独归属 lifecycle。
         """
         bills_net_pnl = 0.0
         funding = 0.0
@@ -541,6 +730,9 @@ class RealizedPnlResolver:
         order_id_set = set(close_order_ids)
 
         for b in bills:
+            bill_symbol = str(b.get("instId") or "")
+            if bill_symbol and bill_symbol != symbol:
+                continue
             sub_type = str(b.get("subType", ""))
             try:
                 pnl = float(b.get("pnl", 0) or 0)
@@ -552,18 +744,17 @@ class RealizedPnlResolver:
                 fee = 0.0
             ord_id = b.get("ordId", "")
             bill_id = b.get("billId", "")
-            if bill_id:
-                bill_ids.append(bill_id)
-            if sub_type in ("174", "5"):  # 174 = realized close pnl(仓位变动产生的 PnL)
+            if sub_type in {"1", "2", "3", "4", "5", "6", "171", "174"}:
+                if not ord_id or ord_id not in order_id_set:
+                    continue
                 bills_net_pnl += pnl + fee
-                if ord_id and ord_id in order_id_set:
-                    matched_any = True
+                matched_any = True
+                if bill_id:
+                    bill_ids.append(bill_id)
             elif sub_type in ("173", "7"):  # 173 = funding fee
                 funding += pnl + fee
-            elif sub_type in ("171", "6"):  # 171 = trading fee(独立账单时)
-                bills_net_pnl += fee
-                if ord_id and ord_id in order_id_set:
-                    matched_any = True
+                if bill_id:
+                    bill_ids.append(bill_id)
         return {
             "bills_net_pnl": bills_net_pnl,
             "funding_usdt": funding,

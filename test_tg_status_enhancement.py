@@ -361,14 +361,45 @@ class TestStatusEnhancement:
 
 
 class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
-    def _write_status_files(self, tmp_path, halt_state, riskguard_state, health=None):
+    @staticmethod
+    def _tactical_v2_status(**overrides):
+        status = {
+            "schema_version": 2,
+            "engine_version": "tactical_v2",
+            "updated_at": time.time(),
+            "namespace": "testnet",
+            "mode": "shadow",
+            "requested_mode": "shadow",
+            "cutover": {"allowed": True, "reason": "cutover_not_required"},
+            "margin_usdt": 100.0,
+            "max_concurrent": 3,
+            "slots": {"active": 0, "pending": 0, "free": 3},
+            "symbols": {"active": [], "pending": []},
+            "rolling_pnl_24h_usdt": 0.0,
+            "rolling_loss_limit_usdt": -15.0,
+            "loss_streak": 0,
+            "loss_streak_limit": 3,
+            "timed_pause_until": 0.0,
+            "integrity_halt": None,
+            "episode_outcomes": {},
+            "protection": {"state": "verified", "unverified_count": 0},
+            "reconciliation": {"state": "verified", "unknown_count": 0},
+            "parity": {"mismatch_count": 0},
+        }
+        status.update(overrides)
+        return status
+
+    def _write_status_files(self, tmp_path, halt_state, tactical_status, health=None):
         os.makedirs(tmp_path / "data", exist_ok=True)
         with open(tmp_path / "data/testnet_positions.json", "w") as f:
             json.dump({}, f)
         with open(tmp_path / "data/testnet_halt_state.json", "w") as f:
             json.dump(halt_state, f)
         with open(tmp_path / "data/testnet_riskguard_state.json", "w") as f:
-            json.dump(riskguard_state, f)
+            json.dump({}, f)
+        if tactical_status is not None:
+            with open(tmp_path / "data/testnet_tactical_v2_status.json", "w") as f:
+                json.dump(tactical_status, f)
         with open(tmp_path / "data/testnet_agent_health.json", "w") as f:
             json.dump(health or {
                 "agents_registered": 17,
@@ -394,14 +425,10 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
                 "reconciliation_pending": False,
                 "reconciliation_result": None,
             },
-            {
-                "tactical_circuit": {
-                    "daily_pnl": -2.6721,
-                    "loss_streak": 1,
-                    "pause_until": 0,
-                    "pause_reason": "",
-                }
-            },
+            self._tactical_v2_status(
+                rolling_pnl_24h_usdt=-2.6721,
+                loss_streak=1,
+            ),
             health={"halted_symbols": {"WLD-USDT-SWAP": {"reason": "sl_algo_unresolved"}}},
         )
         n = self._make_notifier()
@@ -418,7 +445,7 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
         assert "全局熔断: 是" in text
         assert "okx_sl_algo_unresolved:WLD-USDT-SWAP" in text
         assert "Per-symbol halt: 1" in text
-        assert "Tactical circuit: 否" in text
+        assert "Circuit: circuit clear" in text
 
     @pytest.mark.asyncio
     async def test_tactical_paused_global_clear(self, tmp_path, monkeypatch):
@@ -431,14 +458,11 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
         self._write_status_files(
             tmp_path,
             {"halted": False, "reason": ""},
-            {
-                "tactical_circuit": {
-                    "daily_pnl": -12.0,
-                    "loss_streak": 3,
-                    "pause_until": time.time() + 3600,
-                    "pause_reason": "loss_streak",
-                }
-            },
+            self._tactical_v2_status(
+                rolling_pnl_24h_usdt=-12.0,
+                loss_streak=0,
+                timed_pause_until=time.time() + 3600,
+            ),
         )
         n = self._make_notifier()
         sent = []
@@ -452,8 +476,8 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
 
         text = "\n".join(sent)
         assert "全局熔断: 否" in text
-        assert "Tactical circuit: 是" in text
-        assert "loss_streak" in text
+        assert "new admission PAUSED" in text
+        assert "loss streak" in text
 
     @pytest.mark.asyncio
     async def test_missing_tactical_circuit_reports_unknown(self, tmp_path, monkeypatch):
@@ -466,7 +490,7 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
         self._write_status_files(
             tmp_path,
             {"halted": False, "reason": ""},
-            {},
+            None,
         )
         n = self._make_notifier()
         sent = []
@@ -479,7 +503,7 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
         await n._cmd_status()
 
         text = "\n".join(sent)
-        assert "Tactical circuit: ?" in text
+        assert "Tactical V2: STALE" in text
 
     @pytest.mark.asyncio
     async def test_malformed_tactical_circuit_reports_unknown(self, tmp_path, monkeypatch):
@@ -492,14 +516,11 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
         self._write_status_files(
             tmp_path,
             {"halted": False, "reason": ""},
-            {
-                "tactical_circuit": {
-                    "daily_pnl": -12.0,
-                    "loss_streak": 3,
-                    "pause_until": "not-a-number",
-                    "pause_reason": "loss_streak",
-                }
-            },
+            self._tactical_v2_status(
+                rolling_pnl_24h_usdt=-12.0,
+                loss_streak=0,
+                timed_pause_until="not-a-number",
+            ),
         )
         n = self._make_notifier()
         sent = []
@@ -515,7 +536,7 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
             pytest.fail(f"/status should not crash on malformed tactical state: {exc!r}")
 
         text = "\n".join(sent)
-        assert "Tactical circuit: ?" in text
+        assert "circuit unknown" in text
 
     async def _assert_tactical_state_reports_unknown(self, tmp_path, monkeypatch, tactical_state):
         monkeypatch.setenv("STATE_NAMESPACE", "testnet")
@@ -527,7 +548,7 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
         self._write_status_files(
             tmp_path,
             {"halted": False, "reason": ""},
-            {"tactical_circuit": tactical_state},
+            self._tactical_v2_status(**tactical_state),
         )
         n = self._make_notifier()
         sent = []
@@ -543,7 +564,7 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
             pytest.fail(f"/status should not crash on invalid tactical state: {exc!r}")
 
         text = "\n".join(sent)
-        assert "Tactical circuit: ?" in text
+        assert "circuit unknown" in text
         return text
 
     @pytest.mark.asyncio
@@ -552,10 +573,9 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
             tmp_path,
             monkeypatch,
             {
-                "daily_pnl": -12.0,
-                "loss_streak": 3,
-                "pause_until": float("inf"),
-                "pause_reason": "loss_streak",
+                "rolling_pnl_24h_usdt": -12.0,
+                "loss_streak": 0,
+                "timed_pause_until": float("inf"),
             },
         )
 
@@ -565,10 +585,9 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
             tmp_path,
             monkeypatch,
             {
-                "daily_pnl": -12.0,
-                "loss_streak": 3,
-                "pause_until": 1e100,
-                "pause_reason": "loss_streak",
+                "rolling_pnl_24h_usdt": -12.0,
+                "loss_streak": 0,
+                "timed_pause_until": 1e100,
             },
         )
 
@@ -578,10 +597,9 @@ class TestTelegramStatusHaltMatrix(TestStatusEnhancement):
             tmp_path,
             monkeypatch,
             {
-                "daily_pnl": float("nan"),
-                "loss_streak": 3,
-                "pause_until": 0,
-                "pause_reason": "",
+                "rolling_pnl_24h_usdt": float("nan"),
+                "loss_streak": 0,
+                "timed_pause_until": 0,
             },
         )
         assert "nan" not in text.lower()

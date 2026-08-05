@@ -164,3 +164,95 @@ def test_portfolio_risk_guard_persists_tactical_circuit_state(tmp_path, monkeypa
     state = json.loads(Path(get_state_paths().riskguard_state).read_text())
     assert state["tactical_circuit"]["daily_pnl"] == pytest.approx(-2.5)
     assert state["tactical_circuit"]["loss_streak"] == 1
+
+
+@pytest.mark.asyncio
+async def test_portfolio_risk_guard_does_not_feed_v2_close_to_legacy_circuit(
+    tmp_path, monkeypatch
+):
+    _prepare_state_dir(tmp_path, monkeypatch)
+    from agents.trading.portfolio_risk_guard import PortfolioRiskGuard
+
+    guard = PortfolioRiskGuard({})
+    guard.logger = _quiet_logger()
+    guard._positions["WLD-USDT"] = {
+        "symbol": "WLD-USDT",
+        "track": "tactical",
+        "exit_profile": "tactical_v2",
+        "strategy_owner": "tactical_v2",
+    }
+
+    await guard._handle_execution_result({
+        "status": "executed",
+        "action": "close",
+        "track": "tactical",
+        "exit_profile": "tactical_v2",
+        "strategy_owner": "tactical_v2",
+        "result": {
+            "symbol": "WLD-USDT-SWAP",
+            "track": "tactical",
+            "exit_profile": "tactical_v2",
+            "strategy_owner": "tactical_v2",
+            "realized_pnl_net_usdt": -8.0,
+        },
+    })
+
+    assert guard._tactical_daily_pnl == 0.0
+    assert guard._tactical_loss_streak == 0
+    assert guard._tactical_pause_until == 0
+
+
+@pytest.mark.asyncio
+async def test_portfolio_risk_guard_keeps_v1_close_authority_during_drain(
+    tmp_path, monkeypatch
+):
+    _prepare_state_dir(tmp_path, monkeypatch)
+    from agents.trading.portfolio_risk_guard import PortfolioRiskGuard
+
+    guard = PortfolioRiskGuard({})
+    guard.logger = _quiet_logger()
+    guard._positions["WLD-USDT"] = {
+        "symbol": "WLD-USDT",
+        "track": "tactical",
+        "exit_profile": "tactical_v1",
+    }
+
+    await guard._handle_execution_result({
+        "status": "executed",
+        "action": "close",
+        "track": "tactical",
+        "exit_profile": "tactical_v1",
+        "result": {
+            "symbol": "WLD-USDT-SWAP",
+            "track": "tactical",
+            "exit_profile": "tactical_v1",
+            "realized_pnl_net_usdt": -2.0,
+        },
+    })
+
+    assert guard._tactical_daily_pnl == -2.0
+    assert guard._tactical_loss_streak == 1
+
+
+def test_portfolio_risk_guard_refuses_to_be_v2_admission_authority(
+    tmp_path, monkeypatch
+):
+    _prepare_state_dir(tmp_path, monkeypatch)
+    from agents.trading.portfolio_risk_guard import PortfolioRiskGuard
+
+    guard = PortfolioRiskGuard({})
+    guard.logger = _quiet_logger()
+    guard._tactical_daily_pnl = -999
+
+    allowed, reason = guard.can_open_tactical(
+        "WLD-USDT",
+        {
+            "track": "tactical",
+            "exit_profile": "tactical_v2",
+            "strategy_owner": "tactical_v2",
+        },
+        {"volatility": "high"},
+    )
+
+    assert allowed is False
+    assert reason == "tactical_v2_controller_required"

@@ -9,6 +9,57 @@ from agents.base import BaseAgent
 from utils.symbol import to_internal
 
 
+_TACTICAL_CLOSE_METADATA_KEYS = (
+    'strategy_owner',
+    'intent_id',
+    'episode_id',
+    'plan_hash',
+    'source_shadow_id',
+    'tactical_source',
+    'position_id',
+    'entry_request_id',
+    'entry_client_id',
+    'tp_client_id',
+    'sl_client_id',
+    'tp_algo_id',
+    'sl_algo_id',
+    'tp_algo_ids',
+    'sl_algo_ids',
+    'protection_state',
+    'close_reason',
+)
+
+
+def _tactical_close_metadata(*sources) -> dict:
+    metadata = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        attribution = source.get('attribution') or source.get('entry_attribution')
+        if isinstance(attribution, dict):
+            for key in _TACTICAL_CLOSE_METADATA_KEYS:
+                value = attribution.get(key)
+                if value not in (None, '', [], {}):
+                    metadata[key] = value
+        for key in _TACTICAL_CLOSE_METADATA_KEYS:
+            value = source.get(key)
+            if value not in (None, '', [], {}):
+                metadata[key] = value
+        metadata.setdefault(
+            'close_reason',
+            source.get('final_close_cause')
+            or source.get('close_cause')
+            or source.get('tactical_close_reason'),
+        )
+    if metadata.get('strategy_owner') != 'tactical_v2':
+        return {}
+    if not metadata.get('tp_algo_ids') and metadata.get('tp_algo_id'):
+        metadata['tp_algo_ids'] = [metadata['tp_algo_id']]
+    if not metadata.get('sl_algo_ids') and metadata.get('sl_algo_id'):
+        metadata['sl_algo_ids'] = [metadata['sl_algo_id']]
+    return {key: value for key, value in metadata.items() if value not in (None, '')}
+
+
 def _payload_pnl_is_final(payload: dict, result: dict) -> bool:
     """PRD §6.2: 仅 pnl_is_final=True 才允许进入 trade_history。
     无字段(老 payload)默认按 final 兼容,但 closed_externally 必须显式 final。
@@ -204,6 +255,8 @@ class ReviewerAgent(BaseAgent):
                 trade_record['tactical_source'] = attribution.get('tactical_source', '')
                 trade_record['tactical_close_reason'] = attribution.get('tactical_close_reason', '')
 
+            trade_record.update(_tactical_close_metadata(result, payload))
+
             self.trade_history.append(trade_record)
             self._save_trade_history()
 
@@ -279,6 +332,7 @@ class ReviewerAgent(BaseAgent):
                     payload.get('tactical_close_reason')
                     or attr.get('tactical_close_reason', target.get('tactical_close_reason', ''))
                 )
+            target.update(_tactical_close_metadata(payload))
             target['updated_at'] = time.time()
             self._save_trade_history()
             self.logger.info(
@@ -310,6 +364,7 @@ class ReviewerAgent(BaseAgent):
         trade_record['tactical_close_reason'] = (
             payload.get('tactical_close_reason') or attr.get('tactical_close_reason', '')
         )
+        trade_record.update(_tactical_close_metadata(payload))
         self.trade_history.append(trade_record)
         self._save_trade_history()
         self.logger.info(

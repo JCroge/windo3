@@ -4,8 +4,11 @@ import json
 import math
 import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Optional
+
+import fcntl
 
 from utils.atomic_io import atomic_write_json
 from utils.symbol import to_internal, to_okx_inst
@@ -38,6 +41,16 @@ class SidecarStateStore:
     def __init__(self, path: str):
         self.path = path
 
+    @contextmanager
+    def locked(self):
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        with open(f"{self.path}.lock", "a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
     def load(self) -> dict:
         if not os.path.exists(self.path):
             return {
@@ -45,6 +58,9 @@ class SidecarStateStore:
                 "stop_at": None,
                 "last_offset": 0,
                 "seen_shadow_ids": {},
+                "admission_enabled": True,
+                "admission_disabled_at": None,
+                "admission_disabled_by": None,
             }
         with open(self.path, "r") as fh:
             data = json.load(fh)
@@ -52,11 +68,29 @@ class SidecarStateStore:
         data.setdefault("stop_at", None)
         data.setdefault("last_offset", 0)
         data.setdefault("seen_shadow_ids", {})
+        data.setdefault("admission_enabled", True)
+        data.setdefault("admission_disabled_at", None)
+        data.setdefault("admission_disabled_by", None)
         return data
 
     def save(self, state: dict) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         atomic_write_json(self.path, state)
+
+    def disable_admission(
+        self,
+        *,
+        source: str,
+        now: Optional[float] = None,
+    ) -> dict:
+        with self.locked():
+            state = self.load()
+            disabled_at = time.time() if now is None else float(now)
+            state["admission_enabled"] = False
+            state["admission_disabled_at"] = disabled_at
+            state["admission_disabled_by"] = str(source or "operator")
+            self.save(state)
+            return state
 
 
 def append_audit_event(path: str, event_type: str, payload: dict) -> dict:

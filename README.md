@@ -4,6 +4,7 @@
 
 ## 系统状态
 
+- 2026-07-28 开发分支正在收口 **Tactical V2**：把合格 Shadow Tactical 计划冻结为 `tactical_intent.v2`，使用固定 `100U`、3 个独立 active-or-pending 槽、最多 5x、`0.10R` 追价上限、900 秒原价限价、全仓 TP1/SL、90 分钟 max-hold、滚动 24h `-15U` 新开暂停和 3 连亏 60 分钟暂停。默认 `TACTICAL_V2_MODE=off`；必须先经过 cloud shadow-only、sidecar drain archive 和 live cohort gate，不能直接打开 live。
 - 2026-07-15 完整基线：`1543 passed, 4 deselected, 1 warning`。对应归档 change：`openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/`。
 - 2026-07-23 代码阶段：`main@9f5d297`，已补 Shadow Tactical live sidecar 的 exchange-flat reconcile、100U 独立放大、ghost-position safety、同标的堆叠阻断和 entry drift 保护；sidecar 聚焦验证 `142 passed`，阶段总览见 [docs/project-stage-summary.md](docs/project-stage-summary.md)。
 - 当前能力：**Tactical Exit Track** 已归档到 `openspec/changes/archive/2026-07-10-add-tactical-exit-track/`。它把弱/混合环境候选从 Main Trend Runner 中拆出，使用独立 `track=tactical` / `exit_profile=tactical_v1`、独立 R:R/EV、TP1 落袋、thesis-health、最大持仓时间和 Tactical 风控桶。
@@ -33,6 +34,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 - 风控闭环：动态杠杆 + 动态 R:R floor + EV 门 + RSI 极端值保护 + Daily Hard Stop + 组合级 RiskGuard
 - 持仓管理：PositionAnalyst 7 因子 + BehavioralCritic 偏差检测 + 裁决引擎
 - 出口轨道：Main Trend Runner 与 Tactical Exit Track 分离；Tactical 支持 shadow-only 复盘和 live 灰度，shadow-only 复盘看 CounterfactualLedger 的 `rejected_signal_*`
+- Tactical V2：Main 进程内持久化 intent/episode/entry/protection/exit/PnL 状态，shadow/live 共用状态机；V2 持仓使用 `strategy_owner=tactical_v2`，不接受 Main partial TP、trailing、thesis invalidation 或 Position Analyst 改仓
 - PaperExecutor 影子账户与 live 信号并行（不下真单，独立 topic 隔离）
 - Telegram 远程命令：`/status` `/positions` `/halt` `/resume` `/force_resume` `/reconcile` `/halts` `/resume_symbol` `/pnl` `/pnl_id` `/stop` `/restart` `/log` `/paper_gap` `/health`
 - LLM 不可用时自动降级为规则引擎；事件 journal + LLM audit 可观测
@@ -52,6 +54,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 | 多头位置保护·体制感知 | `LONG_LIVE_REGIME_AWARE_RANGE_ENABLED` / `LONG_LIVE_MAX_RANGE_POS_CHOPPY` / `LONG_LIVE_DAILY_GAIN_RANGE_POS_CHOPPY` | choppy/mixed/bearish 收紧 range_pos 阈值转回调入场，bullish 保 0.82；总开关可回退（2026-06-21，生产起步 0.70/目标 0.55） |
 | EV 分桶 | `EV_BUCKET_MIN_TRADES` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT` | 稀疏 bucket 不抬 p_win（2026-05-26） |
 | Tactical 出口轨道 | `TACTICAL_TRACK_ENABLED` / `TACTICAL_SHADOW_ONLY` / `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` / `TACTICAL_TP1_R` / `TACTICAL_MAX_HOLD_MINUTES` | 代码默认 disabled + shadow-only；live 灰度需 track=true 且 shadow_only=false，先过 cost gate，再按 Tactical R:R≥0.75 且 EV>-0.04 筛“会真开”样本，TP1 默认 1.00R |
+| Tactical V2 执行 | `TACTICAL_V2_MODE` / `TACTICAL_V2_MARGIN_USDT` / `TACTICAL_V2_MAX_CONCURRENT` / `TACTICAL_V2_ROLLING_LOSS_LIMIT_USDT` | 默认 `off`；首轮固定 `100U x 3`、滚动 24h `-15U`，`live` 还要求已归档且 hash/namespace/owner 均匹配的 sidecar drain proof |
 
 完整列表与默认值见 `utils/config_loader.py` 的 `DEFAULTS` 与 `HARD_LIMITS`。
 
@@ -60,6 +63,8 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 ```bash
 python3 -m pytest -q                       # 默认回归（pytest.ini 默认排除 network）
 python3 -m pytest -q test_tactical_*.py tests/test_tactical_wld_replay.py  # Tactical 专项
+python3 -m pytest -q tests/test_tactical_v2_*.py                         # Tactical V2 专项
+python3 scripts/replay_tactical_v2.py --fixture tests/fixtures/tactical_v2_reproduced_window.json
 python3 -m pytest -q -m network            # 真实 OKX/Telegram 冒烟
 python3 verify_okx_testnet_semantics.py    # OKX mock 验收 10 case
 python3 verify_okx_testnet_real.py         # OKX 真实 testnet T0-T15 验收（需 .env.testnet）

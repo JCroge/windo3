@@ -156,3 +156,76 @@ def test_detail_shows_both_message_and_tick_stalled():
     assert "1 message-loop + 1 tick stalled" in s
     assert "judge message-loop 空闲 70s" in s
     assert "reviewer tick 卡死 200s" in s
+
+
+def test_status_uses_v2_snapshot_not_legacy_riskguard(tmp_path, monkeypatch):
+    from utils.atomic_io import atomic_write_json
+
+    status_path = tmp_path / "tactical_v2_status.json"
+    atomic_write_json(str(status_path), {
+        "schema_version": 2,
+        "engine_version": "tactical_v2",
+        "updated_at": 1000.0,
+        "namespace": "live",
+        "mode": "live",
+        "requested_mode": "live",
+        "cutover": {"allowed": True, "reason": "sidecar_retirement_verified"},
+        "margin_usdt": 100.0,
+        "max_concurrent": 3,
+        "slots": {"active": 0, "pending": 0, "free": 3},
+        "symbols": {"active": [], "pending": []},
+        "rolling_pnl_24h_usdt": 0.0,
+        "rolling_loss_limit_usdt": -15.0,
+        "loss_streak": 0,
+        "loss_streak_limit": 3,
+        "timed_pause_until": 0.0,
+        "integrity_halt": None,
+        "episode_outcomes": {},
+        "protection": {"state": "verified", "unverified_count": 0},
+        "reconciliation": {"state": "verified", "unknown_count": 0},
+        "parity": {"mismatch_count": 0},
+    })
+    monkeypatch.setattr(
+        "agents.trading.telegram_notifier.get_state_paths",
+        lambda: type("P", (), {"tactical_v2_status": str(status_path)})(),
+    )
+    monkeypatch.setattr("agents.trading.telegram_notifier.time.time", lambda: 1001.0)
+    notifier = TelegramNotifier.__new__(TelegramNotifier)
+    notifier.config = {"tactical_v2_status_stale_seconds": 90}
+
+    text = notifier._format_tactical_v2_section()
+
+    assert "Tactical V2 LIVE" in text
+    assert "circuit clear" in text.lower()
+
+
+def test_status_keeps_global_and_tactical_halts_semantically_distinct():
+    notifier = TelegramNotifier.__new__(TelegramNotifier)
+    fresh = {
+        "schema_version": 2,
+        "engine_version": "tactical_v2",
+        "updated_at": 1000.0,
+        "namespace": "live",
+        "mode": "live",
+        "requested_mode": "live",
+        "cutover": {"allowed": True, "reason": "sidecar_retirement_verified"},
+        "margin_usdt": 100.0,
+        "max_concurrent": 3,
+        "slots": {"active": 0, "pending": 0, "free": 3},
+        "symbols": {"active": [], "pending": []},
+        "rolling_pnl_24h_usdt": 0.0,
+        "rolling_loss_limit_usdt": -15.0,
+        "loss_streak": 0,
+        "loss_streak_limit": 3,
+        "timed_pause_until": 0.0,
+        "integrity_halt": None,
+        "episode_outcomes": {},
+        "protection": {"state": "verified", "unverified_count": 0},
+        "reconciliation": {"state": "verified", "unknown_count": 0},
+        "parity": {"mismatch_count": 0},
+    }
+
+    text = notifier._format_tactical_v2_section(snapshot=fresh, now=1001.0)
+
+    assert "circuit clear" in text.lower()
+    assert "全局熔断" not in text

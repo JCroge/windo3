@@ -13,7 +13,7 @@ from typing import Optional
 
 JOURNAL_DIR = "data/journal"
 CRITICAL_TOPICS = frozenset({
-    'trade_decision', 'execution_result',
+    'trade_decision', 'tactical_candidate.v2', 'execution_result',
     'daily_hard_stop_triggered', 'system_command', 'risk_alert',
 })
 
@@ -71,6 +71,35 @@ class EventJournal:
             except Exception:
                 continue
         return results
+
+    def replay_messages(self, topic: str, *, namespace: str, now: float,
+                        max_age_seconds: float, limit: int = 1000) -> list:
+        """Return replay envelopes that remain valid in the target namespace."""
+        expected_namespace = str(namespace or "").strip().lower()
+        if not expected_namespace:
+            return []
+
+        replayed = []
+        for entry in self.replay(filter_key="topic", filter_value=topic, limit=limit):
+            payload = entry.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            payload_namespace = str(payload.get("namespace") or "").strip().lower()
+            if payload_namespace != expected_namespace:
+                continue
+            try:
+                age = float(now) - float(payload.get("created_at"))
+            except (TypeError, ValueError):
+                continue
+            if age < 0 or age > float(max_age_seconds):
+                continue
+            replayed.append({
+                "msg_id": entry.get("msg_id", ""),
+                "type": entry.get("topic", topic),
+                "timestamp": entry.get("timestamp", 0),
+                "payload": payload,
+            })
+        return replayed
 
     def _write_line(self, line: str):
         today = time.strftime("%Y%m%d", time.gmtime())

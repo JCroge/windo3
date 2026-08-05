@@ -14,6 +14,8 @@ def _bare_reviewer():
     r.logger = mock.MagicMock()
     r.trade_history = []
     r._save_trade_history = mock.MagicMock()
+    r._processed_resolution_ids = set()
+    r._processed_resolution_max = 1024
     return r
 
 
@@ -60,3 +62,34 @@ def test_settle_pending_or_out_of_window_unsettled():
     # 窗外
     pnl2, _ = settle_fill_from_lifecycle("X-USDT", "long", 9999.0, lc_pending, set(), tol=300)
     assert pnl2 is None
+
+
+async def test_pnl_resolution_preserves_tactical_v2_close_metadata():
+    reviewer = _bare_reviewer()
+    payload = {
+        "symbol": "WLD-USDT-SWAP",
+        "pnl_status": "final",
+        "resolution_id": "r1",
+        "realized_pnl_net_usdt": 2.5,
+        "position_id": "tv2-position-1",
+        "entry_request_id": "entry-client-1",
+        "strategy_owner": "tactical_v2",
+        "intent_id": "intent-1",
+        "episode_id": "episode-1",
+        "plan_hash": "plan-1",
+        "close_reason": "exchange_tp",
+        "tp_algo_ids": ["tp-1"],
+        "sl_algo_ids": ["sl-1"],
+        "attribution": {"strategy_owner": "tactical_v2"},
+    }
+
+    await reviewer._apply_pnl_resolution({"timestamp": 1000.0, "payload": payload})
+
+    record = reviewer.trade_history[0]
+    assert record["strategy_owner"] == "tactical_v2"
+    assert record["intent_id"] == "intent-1"
+    assert record["episode_id"] == "episode-1"
+    assert record["plan_hash"] == "plan-1"
+    assert record["close_reason"] == "exchange_tp"
+    assert record["tp_algo_ids"] == ["tp-1"]
+    assert record["sl_algo_ids"] == ["sl-1"]

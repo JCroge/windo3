@@ -16,6 +16,7 @@ docs/exchange_realized_pnl_ledger_acceptance.md:
 import os
 import json
 import tempfile
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -95,6 +96,480 @@ def test_resolver_final_via_fills(mock_exchange):
     assert abs(res["realized_pnl_net_usdt"] - (-1.73)) < 1e-3
     assert res["order_ids"] == ["close_1"]
     assert "okx_fills_history" in res["pnl_source"]
+
+
+def test_tactical_v2_final_includes_exact_entry_fill_fee(mock_exchange):
+    mock_exchange.private_get_trade_fills_history.return_value = {
+        "data": [
+            {
+                "ordId": "entry-1",
+                "clOrdId": "tv2-entry-1",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "0",
+                "fee": "-0.25",
+                "feeCcy": "USDT",
+                "fillPx": "0.60",
+                "fillSz": "500",
+                "fillTime": "1000000",
+                "side": "buy",
+            },
+            {
+                "ordId": "close-1",
+                "algoClOrdId": "tv2-tp-1",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "8.00",
+                "fee": "-0.15",
+                "feeCcy": "USDT",
+                "fillPx": "0.616",
+                "fillSz": "500",
+                "fillTime": "1045000",
+                "side": "sell",
+            },
+        ]
+    }
+    mock_exchange.private_get_account_bills.return_value = {"data": []}
+    resolver = RealizedPnlResolver(mock_exchange)
+
+    result = resolver.resolve_external_close(
+        {
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": "tv2:intent-1",
+            "entry_request_id": "tv2-entry-1",
+            "opened_at": 1000.0,
+            "entry_price": 0.60,
+            "amount_usdt": 100.0,
+            "leverage": 5,
+            "strategy_owner": "tactical_v2",
+            "tp_algo_clord_id": "tv2-tp-1",
+            "sl_algo_clord_id": "tv2-sl-1",
+            "attribution": {"strategy_owner": "tactical_v2"},
+        },
+        close_window={"closed_at": 1045.0},
+    )
+
+    assert result["pnl_status"] == R_FINAL
+    assert result["gross_close_pnl_usdt"] == 8.0
+    assert result["entry_fee_usdt"] == -0.25
+    assert result["fee_usdt"] == -0.40
+    assert result["realized_pnl_net_usdt"] == 7.60
+    assert result["tactical_v2_proof"] == {
+        "complete": True,
+        "entry_request_id": "tv2-entry-1",
+        "entry_order_ids": ["entry-1"],
+        "close_order_ids": ["close-1"],
+        "entry_qty": 500.0,
+        "close_qty": 500.0,
+        "entry_fee_usdt": -0.25,
+        "close_ownership": "deterministic_close_command",
+    }
+
+
+def test_tactical_v2_bills_match_entry_fee_and_close_pnl(mock_exchange):
+    mock_exchange.private_get_trade_fills_history.return_value = {
+        "data": [
+            {
+                "ordId": "entry-1",
+                "clOrdId": "tv2-entry-1",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "0",
+                "fee": "-0.25",
+                "feeCcy": "USDT",
+                "fillPx": "0.60",
+                "fillSz": "500",
+                "fillTime": "1000000",
+                "side": "buy",
+            },
+            {
+                "ordId": "close-1",
+                "algoClOrdId": "tv2-tp-1",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "8.00",
+                "fee": "-0.15",
+                "feeCcy": "USDT",
+                "fillPx": "0.616",
+                "fillSz": "500",
+                "fillTime": "1045000",
+                "side": "sell",
+            },
+        ]
+    }
+    mock_exchange.private_get_account_bills.return_value = {
+        "data": [
+            {
+                "billId": "entry-fee-bill",
+                "ordId": "entry-1",
+                "subType": "171",
+                "instId": "ADA-USDT-SWAP",
+                "pnl": "0",
+                "fee": "-0.25",
+            },
+            {
+                "billId": "close-pnl-bill",
+                "ordId": "close-1",
+                "subType": "174",
+                "instId": "ADA-USDT-SWAP",
+                "pnl": "8.00",
+                "fee": "-0.15",
+            },
+        ]
+    }
+    resolver = RealizedPnlResolver(mock_exchange)
+
+    result = resolver.resolve_external_close(
+        {
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": "tv2:intent-1",
+            "entry_request_id": "tv2-entry-1",
+            "opened_at": 1000.0,
+            "entry_price": 0.60,
+            "amount_usdt": 100.0,
+            "leverage": 5,
+            "strategy_owner": "tactical_v2",
+            "tp_algo_clord_id": "tv2-tp-1",
+            "sl_algo_clord_id": "tv2-sl-1",
+            "attribution": {"strategy_owner": "tactical_v2"},
+        },
+        close_window={"closed_at": 1045.0},
+    )
+
+    assert result["pnl_status"] == R_FINAL
+    assert result["realized_pnl_net_usdt"] == 7.60
+    assert result["match_confidence"] == 0.98
+    assert result["bill_ids"] == ["entry-fee-bill", "close-pnl-bill"]
+
+
+def test_tactical_v2_replays_real_ada_anonymous_close_and_bills(mock_exchange):
+    mock_exchange.private_get_trade_fills_history.return_value = {
+        "data": [
+            {
+                "ordId": "3800889182842347520",
+                "clOrdId": "calivemain01v2eb3a0d238a10482fc4",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "0",
+                "fee": "-0.2499075",
+                "feeCcy": "USDT",
+                "fillPx": "0.1915",
+                "fillSz": "26.1",
+                "fillTime": "1785777724787",
+                "side": "buy",
+            },
+            {
+                "ordId": "3801150039962771456",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "8.091",
+                "fee": "-0.253953",
+                "feeCcy": "USDT",
+                "fillPx": "0.1946",
+                "fillSz": "26.1",
+                "fillTime": "1785785498936",
+                "side": "sell",
+            },
+        ]
+    }
+    mock_exchange.private_get_account_bills.return_value = {
+        "data": [
+            {
+                "billId": "3801150040029880320",
+                "ordId": "3801150039962771456",
+                "instId": "ADA-USDT-SWAP",
+                "subType": "2",
+                "pnl": "8.091",
+                "fee": "-0.253953",
+            },
+            {
+                "billId": "3800889182909456385",
+                "ordId": "3800889182842347520",
+                "instId": "ADA-USDT-SWAP",
+                "subType": "1",
+                "pnl": "0",
+                "fee": "-0.2499075",
+            },
+        ]
+    }
+    resolver = RealizedPnlResolver(mock_exchange)
+    intent_id = "081dfe419ec1c5709be6c38e81fbc319"
+
+    result = resolver.resolve_external_close(
+        {
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": f"tv2:{intent_id}",
+            "intent_id": intent_id,
+            "entry_request_id": "calivemain01v2eb3a0d238a10482fc4",
+            "entry_client_id": "calivemain01v2eb3a0d238a10482fc4",
+            "opened_at": 1785777724.0,
+            "entry_price": 0.1915,
+            "amount_usdt": 100.0,
+            "leverage": 5,
+            "strategy_owner": "tactical_v2",
+            "tp_client_id": "calivemain01v2tbb5773854495444f4",
+            "sl_client_id": "calivemain01v2s589ac7b353cbf0e8b",
+            "attribution": {
+                "strategy_owner": "tactical_v2",
+                "intent_id": intent_id,
+            },
+        },
+        close_window={"closed_at": 1785785498.936},
+    )
+
+    assert result["pnl_status"] == R_FINAL
+    assert result["realized_pnl_net_usdt"] == 7.5871
+    assert result["match_confidence"] == 0.98
+    assert result["bill_ids"] == [
+        "3801150040029880320",
+        "3800889182909456385",
+    ]
+
+
+@pytest.mark.parametrize(
+    "entry_size,pending_reason",
+    [
+        (None, "exact_entry_fills_missing"),
+        (400.0, "entry_close_quantity_mismatch"),
+    ],
+)
+def test_tactical_v2_final_requires_exact_entry_fill_and_quantity(
+    mock_exchange,
+    entry_size,
+    pending_reason,
+):
+    rows = []
+    if entry_size is not None:
+        rows.append({
+            "ordId": "entry-1",
+            "clOrdId": "tv2-entry-1",
+            "instId": "ADA-USDT-SWAP",
+            "fillPnl": "0",
+            "fee": "-0.25",
+            "feeCcy": "USDT",
+            "fillPx": "0.60",
+            "fillSz": str(entry_size),
+            "fillTime": "1000000",
+            "side": "buy",
+        })
+    rows.append({
+        "ordId": "close-1",
+        "algoClOrdId": "tv2-tp-1",
+        "instId": "ADA-USDT-SWAP",
+        "fillPnl": "8.00",
+        "fee": "-0.15",
+        "feeCcy": "USDT",
+        "fillPx": "0.616",
+        "fillSz": "500",
+        "fillTime": "1045000",
+        "side": "sell",
+    })
+    mock_exchange.private_get_trade_fills_history.return_value = {"data": rows}
+    mock_exchange.private_get_account_bills.return_value = {"data": []}
+    resolver = RealizedPnlResolver(mock_exchange)
+
+    result = resolver.resolve_external_close(
+        {
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": "tv2:intent-1",
+            "entry_request_id": "tv2-entry-1",
+            "opened_at": 1000.0,
+            "entry_price": 0.60,
+            "amount_usdt": 100.0,
+            "leverage": 5,
+            "strategy_owner": "tactical_v2",
+            "tp_algo_clord_id": "tv2-tp-1",
+            "sl_algo_clord_id": "tv2-sl-1",
+            "attribution": {"strategy_owner": "tactical_v2"},
+        },
+        close_window={"closed_at": 1045.0},
+    )
+
+    assert result["pnl_status"] == R_PENDING
+    assert result["pnl_pending_reason"] == pending_reason
+    assert result["realized_pnl_net_usdt"] is None
+
+
+def test_tactical_v2_ignores_unowned_close_fill_in_same_window(mock_exchange):
+    mock_exchange.private_get_trade_fills_history.return_value = {
+        "data": [
+            {
+                "ordId": "entry-1",
+                "clOrdId": "tv2-entry-1",
+                "fillPnl": "0",
+                "fee": "-0.25",
+                "feeCcy": "USDT",
+                "fillPx": "0.60",
+                "fillSz": "500",
+                "fillTime": "1000000",
+                "side": "buy",
+            },
+            {
+                "ordId": "foreign-close",
+                "clOrdId": "manual-close",
+                "fillPnl": "8.00",
+                "fee": "-0.15",
+                "feeCcy": "USDT",
+                "fillPx": "0.616",
+                "fillSz": "500",
+                "fillTime": "1045000",
+                "side": "sell",
+            },
+        ]
+    }
+    mock_exchange.private_get_account_bills.return_value = {"data": []}
+    resolver = RealizedPnlResolver(mock_exchange)
+
+    result = resolver.resolve_external_close(
+        {
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": "tv2:intent-1",
+            "entry_request_id": "tv2-entry-1",
+            "opened_at": 1000.0,
+            "strategy_owner": "tactical_v2",
+            "tp_algo_clord_id": "tv2-tp-1",
+            "sl_algo_clord_id": "tv2-sl-1",
+            "close_client_id": "tv2-close-1",
+        },
+        close_window={"closed_at": 1045.0},
+    )
+
+    assert result["pnl_status"] == R_PENDING
+    assert result["pnl_pending_reason"] == "no_owned_close_fills_in_window"
+
+
+@pytest.mark.parametrize(
+    ("tp_identity_key", "sl_identity_key"),
+    [
+        ("tp_client_id", "sl_client_id"),
+        ("tp_algo_clord_id", "sl_algo_clord_id"),
+    ],
+)
+def test_tactical_v2_accepts_single_anonymous_close_for_isolated_position(
+    mock_exchange,
+    tp_identity_key,
+    sl_identity_key,
+):
+    mock_exchange.private_get_trade_fills_history.return_value = {
+        "data": [
+            {
+                "ordId": "entry-1",
+                "clOrdId": "tv2-entry-1",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "0",
+                "fee": "-0.25",
+                "feeCcy": "USDT",
+                "fillPx": "0.60",
+                "fillSz": "500",
+                "fillTime": "1000000",
+                "side": "buy",
+            },
+            {
+                "ordId": "close-1",
+                "instId": "ADA-USDT-SWAP",
+                "fillPnl": "8.00",
+                "fee": "-0.15",
+                "feeCcy": "USDT",
+                "fillPx": "0.616",
+                "fillSz": "500",
+                "fillTime": "1045000",
+                "side": "sell",
+            },
+        ]
+    }
+    mock_exchange.private_get_account_bills.return_value = {"data": []}
+    resolver = RealizedPnlResolver(mock_exchange)
+
+    result = resolver.resolve_external_close(
+        {
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": "tv2:intent-1",
+            "intent_id": "intent-1",
+            "entry_request_id": "tv2-entry-1",
+            "entry_client_id": "tv2-entry-1",
+            "opened_at": 1000.0,
+            "entry_price": 0.60,
+            "amount_usdt": 100.0,
+            "leverage": 5,
+            "strategy_owner": "tactical_v2",
+            tp_identity_key: "tv2-tp-1",
+            sl_identity_key: "tv2-sl-1",
+            "attribution": {
+                "strategy_owner": "tactical_v2",
+                "intent_id": "intent-1",
+            },
+        },
+        close_window={"closed_at": 1045.0},
+    )
+
+    assert result["pnl_status"] == R_FINAL
+    assert result["realized_pnl_net_usdt"] == 7.60
+    assert result["tactical_v2_proof"]["close_ownership"] == (
+        "isolated_position_single_close_order"
+    )
+
+
+def test_tactical_v2_rejects_multiple_anonymous_close_orders(mock_exchange):
+    mock_exchange.private_get_trade_fills_history.return_value = {
+        "data": [
+            {
+                "ordId": "entry-1",
+                "clOrdId": "tv2-entry-1",
+                "fillPnl": "0",
+                "fee": "-0.25",
+                "feeCcy": "USDT",
+                "fillPx": "0.60",
+                "fillSz": "500",
+                "fillTime": "1000000",
+                "side": "buy",
+            },
+            {
+                "ordId": "close-a",
+                "fillPnl": "3.00",
+                "fee": "-0.06",
+                "feeCcy": "USDT",
+                "fillPx": "0.615",
+                "fillSz": "200",
+                "fillTime": "1045000",
+                "side": "sell",
+            },
+            {
+                "ordId": "close-b",
+                "fillPnl": "5.00",
+                "fee": "-0.09",
+                "feeCcy": "USDT",
+                "fillPx": "0.617",
+                "fillSz": "300",
+                "fillTime": "1045001",
+                "side": "sell",
+            },
+        ]
+    }
+    mock_exchange.private_get_account_bills.return_value = {"data": []}
+    resolver = RealizedPnlResolver(mock_exchange)
+
+    result = resolver.resolve_external_close(
+        {
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": "tv2:intent-1",
+            "intent_id": "intent-1",
+            "entry_request_id": "tv2-entry-1",
+            "entry_client_id": "tv2-entry-1",
+            "opened_at": 1000.0,
+            "strategy_owner": "tactical_v2",
+            "tp_client_id": "tv2-tp-1",
+            "sl_client_id": "tv2-sl-1",
+            "attribution": {
+                "strategy_owner": "tactical_v2",
+                "intent_id": "intent-1",
+            },
+        },
+        close_window={"closed_at": 1045.0},
+    )
+
+    assert result["pnl_status"] == R_PENDING
+    assert result["pnl_pending_reason"] == "no_owned_close_fills_in_window"
 
 
 # ── AC-A3 ──────────────────────────────────────────────────────────────────
@@ -216,6 +691,208 @@ def test_apply_pnl_resolution_upsert_idempotent(ledger):
     lc = ledger.get_lifecycle("JTO-USDT-SWAP", "long")
     if lc is not None:
         assert abs(lc.get("total_realized_pnl", 0) - (-1.73)) < 1e-6
+
+
+def test_record_pending_external_close_is_idempotent_by_position(ledger):
+    first = ledger.record_pending_external_close(
+        symbol="ADA-USDT-SWAP",
+        side="long",
+        entry_price=0.60,
+        amount_usdt=100,
+        leverage=5,
+        estimated_pnl=1.0,
+        position_id="tv2:intent-1",
+        entry_request_id="tv2-entry-1",
+        opened_at=1000.0,
+        closed_at=1045.0,
+    )
+
+    duplicate = ledger.record_pending_external_close(
+        symbol="ADA-USDT-SWAP",
+        side="long",
+        entry_price=0.60,
+        amount_usdt=100,
+        leverage=5,
+        estimated_pnl=1.1,
+        position_id="tv2:intent-1",
+        entry_request_id="tv2-entry-1",
+        opened_at=1000.0,
+        closed_at=1075.0,
+    )
+
+    assert duplicate["event_id"] == first["event_id"]
+    assert duplicate["status"] == "existing"
+    events = [
+        event for event in ledger._read_events()
+        if event.get("event_type") == "external_close"
+        and event.get("position_id") == "tv2:intent-1"
+    ]
+    assert len(events) == 1
+
+
+def test_pending_retry_update_cannot_overwrite_concurrent_final(
+    ledger,
+    monkeypatch,
+):
+    pending = ledger.record_pending_external_close(
+        symbol="ADA-USDT-SWAP",
+        side="long",
+        entry_price=0.60,
+        amount_usdt=100,
+        leverage=5,
+        estimated_pnl=1.0,
+        position_id="tv2:intent-ledger-race",
+        entry_request_id="tv2-entry-ledger-race",
+        opened_at=1000.0,
+        closed_at=1045.0,
+    )
+    replace_entered = threading.Event()
+    release_replace = threading.Event()
+    original_replace = os.replace
+
+    def blocking_replace(source, destination):
+        if (
+            threading.current_thread().name == "pending-updater"
+            and source == ledger.events_path + ".tmp"
+            and destination == ledger.events_path
+        ):
+            replace_entered.set()
+            assert release_replace.wait(timeout=2.0)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", blocking_replace)
+    update_result = {}
+    final_result = {}
+
+    def update_pending():
+        update_result["event"] = ledger.update_pending_resolution_attempt(
+            pending["close_match_key"],
+            "ADA-USDT-SWAP",
+            "long",
+            "tv2:intent-ledger-race",
+            "fills_not_visible",
+        )
+
+    def apply_final():
+        final_result["event"] = ledger.apply_pnl_resolution({
+            "pnl_status": R_FINAL,
+            "symbol": "ADA-USDT-SWAP",
+            "side": "long",
+            "position_id": "tv2:intent-ledger-race",
+            "entry_request_id": "tv2-entry-ledger-race",
+            "opened_at": 1000.0,
+            "realized_pnl_net_usdt": 1.25,
+            "gross_close_pnl_usdt": 1.50,
+            "fee_usdt": -0.25,
+            "funding_usdt": 0.0,
+            "pnl_source": "okx_fills_history",
+            "order_ids": ["close-ledger-race"],
+            "bill_ids": [],
+            "match_confidence": 1.0,
+            "warnings": [],
+        })
+
+    updater = threading.Thread(target=update_pending, name="pending-updater")
+    finalizer = threading.Thread(target=apply_final, name="finalizer")
+    updater.start()
+    assert replace_entered.wait(timeout=2.0)
+    finalizer.start()
+    time.sleep(0.05)
+    release_replace.set()
+    updater.join(timeout=2.0)
+    finalizer.join(timeout=2.0)
+
+    assert not updater.is_alive()
+    assert not finalizer.is_alive()
+    assert update_result["event"]["attempt_count"] == 1
+    assert final_result["event"]["pnl_status"] == PNL_STATUS_FINAL
+    events = ledger._read_events()
+    finals = [
+        event for event in events
+        if event.get("event_type") == "external_close_correction"
+        and event.get("position_id") == "tv2:intent-ledger-race"
+    ]
+    assert len(finals) == 1
+    assert finals[0]["supersedes_event_id"] == pending["event_id"]
+    assert ledger.find_pending_external_closes() == []
+
+
+def test_pending_retry_update_cannot_overwrite_concurrent_event_append(
+    ledger,
+    monkeypatch,
+):
+    other_ledger = LiveLedger(
+        exchange=ledger.exchange,
+        events_path=ledger.events_path,
+        lifecycle_path=ledger.lifecycle_path,
+    )
+    pending = ledger.record_pending_external_close(
+        symbol="ADA-USDT-SWAP",
+        side="long",
+        entry_price=0.60,
+        amount_usdt=100,
+        leverage=5,
+        position_id="tv2:intent-append-race",
+        entry_request_id="tv2-entry-append-race",
+        opened_at=1000.0,
+        closed_at=1045.0,
+    )
+    replace_entered = threading.Event()
+    release_replace = threading.Event()
+    original_replace = os.replace
+
+    def blocking_replace(source, destination):
+        if (
+            threading.current_thread().name == "pending-updater"
+            and source == ledger.events_path + ".tmp"
+            and destination == ledger.events_path
+        ):
+            replace_entered.set()
+            assert release_replace.wait(timeout=2.0)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", blocking_replace)
+
+    updater = threading.Thread(
+        target=lambda: ledger.update_pending_resolution_attempt(
+            pending["close_match_key"],
+            "ADA-USDT-SWAP",
+            "long",
+            "tv2:intent-append-race",
+            "fills_not_visible",
+        ),
+        name="pending-updater",
+    )
+    appender = threading.Thread(
+        target=lambda: other_ledger.record_entry_drift_decision(
+            symbol="WLD-USDT-SWAP",
+            side="long",
+            gate="price_chase",
+            band="accepted",
+            drift_pct=0.01,
+            decision="accept",
+            reason=None,
+            rr_actual=2.0,
+            rr_floor_used=1.5,
+            request_id="append-race-event",
+        ),
+        name="event-appender",
+    )
+    updater.start()
+    assert replace_entered.wait(timeout=2.0)
+    appender.start()
+    time.sleep(0.05)
+    release_replace.set()
+    updater.join(timeout=2.0)
+    appender.join(timeout=2.0)
+
+    assert not updater.is_alive()
+    assert not appender.is_alive()
+    drift_events = [
+        event for event in ledger._read_events()
+        if event.get("request_id") == "append-race-event"
+    ]
+    assert len(drift_events) == 1
 
 
 # ── AC-A7 ──────────────────────────────────────────────────────────────────
@@ -599,7 +1276,12 @@ def test_apply_pnl_resolution_correction_carries_algo_and_attribution(ledger):
         entry_request_id="req-att", opened_at=1779922000,
         sl_algo_id="algo_sl_1", sl_algo_clord_id="clord_sl_1",
         tp_algo_id="algo_tp_1", tp_algo_clord_id="clord_tp_1",
-        entry_attribution={"slot_type": "main", "archetype_key": "long_breakout"},
+        entry_attribution={
+            "strategy_owner": "tactical_v2",
+            "intent_id": "intent-att",
+            "slot_type": "main",
+            "archetype_key": "long_breakout",
+        },
     )
     resolution = {
         "pnl_status": R_FINAL, "symbol": "JTO-USDT-SWAP", "side": "long",
@@ -611,7 +1293,24 @@ def test_apply_pnl_resolution_correction_carries_algo_and_attribution(ledger):
         "bill_ids": [], "match_confidence": 0.9, "warnings": [],
         "sl_algo_id": "algo_sl_1", "sl_algo_clord_id": "clord_sl_1",
         "tp_algo_id": "algo_tp_1", "tp_algo_clord_id": "clord_tp_1",
-        "entry_attribution": {"slot_type": "main", "archetype_key": "long_breakout"},
+        "entry_attribution": {
+            "strategy_owner": "tactical_v2",
+            "intent_id": "intent-att",
+            "slot_type": "main",
+            "archetype_key": "long_breakout",
+        },
+        "tactical_v2_proof": {
+            "complete": True,
+            "entry_order_ids": ["entry_1"],
+            "close_order_ids": ["close_1"],
+            "entry_qty": 10.0,
+            "close_qty": 10.0,
+            "entry_fee_usdt": -0.1,
+        },
+        "close_cause": "exchange_tp",
+        "final_close_cause": "exchange_tp",
+        "is_strategy_stop": False,
+        "close_evidence": {"match_rule": "tp_algo_clord_id_exact"},
     }
     correction = ledger.apply_pnl_resolution(resolution)
     assert correction is not None
@@ -621,3 +1320,28 @@ def test_apply_pnl_resolution_correction_carries_algo_and_attribution(ledger):
     assert correction.get("tp_algo_clord_id") == "clord_tp_1"
     assert correction.get("entry_attribution", {}).get("archetype_key") == \
         "long_breakout"
+    assert correction.get("tactical_v2_proof", {}).get("complete") is True
+    assert correction.get("pnl_delivery_required") is True
+    assert correction.get("close_cause") == "exchange_tp"
+    assert correction.get("close_evidence", {}).get("match_rule") == \
+        "tp_algo_clord_id_exact"
+    durable = ledger.find_final_pnl_corrections(strategy_owner="tactical_v2")
+    assert [event["event_id"] for event in durable] == [correction["event_id"]]
+    unpublished = ledger.find_unpublished_final_pnl_corrections(
+        strategy_owner="tactical_v2"
+    )
+    assert [event["event_id"] for event in unpublished] == [correction["event_id"]]
+
+    ack = ledger.mark_pnl_correction_published(
+        correction["event_id"],
+        f"corr:{correction['event_id']}",
+    )
+    assert ack is not None
+    assert ledger.find_unpublished_final_pnl_corrections(
+        strategy_owner="tactical_v2"
+    ) == []
+    duplicate_ack = ledger.mark_pnl_correction_published(
+        correction["event_id"],
+        f"corr:{correction['event_id']}",
+    )
+    assert duplicate_ack.get("status") == "existing"

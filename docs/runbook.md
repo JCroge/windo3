@@ -70,15 +70,18 @@ Sidecar 只用于镜像 strict eligible Tactical shadow 记录，写 `data/shado
 ```bash
 python3 scripts/shadow_tactical_live_sidecar.py status
 python3 scripts/shadow_tactical_live_sidecar.py run --duration-hours 24 --size-usdt 100 --max-active 3
+python3 scripts/shadow_tactical_live_sidecar.py stop-admission
+python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live
+python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live --archive
 python3 scripts/shadow_tactical_live_sidecar.py stop
 ```
 
-续跑前先确认 `status` 里 active 合理，并检查 `data/shadow_tactical_live_events.jsonl` 没有 `monitor_ghost_exposure` 或 `monitor_ambiguous_net_mode_stack`。
+`--duration-hours` 已废弃，不会让 resident monitor 自动退出。`stop-admission` 与 runner 的单条候选处理共用 `<state>.lock`：命令会等待已进入交易所 I/O 的当前 admission attempt 完成，再持久化 `admission_enabled=false`；命令成功返回后，runner 每条 event 都会重读该状态，不得再开新仓或把 `false` 覆盖回 `true`。之后 monitor 仍继续管理并退出 owner-bound 旧仓。只有 `drain-report` 显示 `complete=true` 时才允许加 `--archive`；unknown exchange state、pending entry、open owner、保护单歧义或未说明的 pending PnL 都必须保持 incomplete。续跑前先确认 `status` 里 active 合理，并检查 `data/shadow_tactical_live_events.jsonl` 没有 `monitor_ghost_exposure` 或 `monitor_ambiguous_net_mode_stack`。
 
 **Telegram远程命令**（需配置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID）：
 | 命令 | 功能 |
 |------|------|
-| `/status` | 运行时长、持仓数、今日PnL、全局熔断、per-symbol halt、Tactical circuit、agent/bus 健康总括 |
+| `/status` | 运行时长、持仓数、今日PnL、全局熔断、per-symbol halt、Tactical V2 mode/100U x 3/槽位/滚动PnL/circuit/protection/parity、agent/bus 健康总括 |
 | `/positions` | 每个持仓的方向/杠杆/入场价/SL/TP |
 | `/halt` | 手动熔断（停止新交易，保留持仓） |
 | `/resume` | 对账通过后解除熔断 |
@@ -139,6 +142,10 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | `data/riskguard_state.json` | PortfolioRiskGuard | 持仓追踪/价格缓存/熔断状态/Tactical circuit | 缺失时空起；`tactical_circuit` 保存 Tactical 日亏、连亏暂停和 pause_until |
 | `data/halt_state.json` | HaltState | 全局熔断状态 | 缺失/损坏 fail-closed；`halted=false` 时残留 `reason` 只能当 stale metadata，不代表 active halt |
 | `data/agent_health.json` | Orchestrator | agent/bus/per-symbol halt 快照 | `/status` / `/health` 读取；`halted_symbols` 最多有 30s 延迟 |
+| `data/tactical_v2_events.jsonl` | TacticalV2Controller | intent/episode/entry/protection/exit/parity 的 append-only 权威事件 | live namespace 无前缀；testnet/paper 自动加 namespace 前缀 |
+| `data/tactical_v2_state.json` | TacticalV2Controller | crash recovery 原子快照 | 必须与 event sequence 一致；未知或损坏状态 fail-closed |
+| `data/tactical_v2_status.json` | TacticalV2Controller | TG 只读运维快照 | 默认 90 秒过期；缺失、畸形、NaN/Inf 都不得显示 healthy |
+| `data/sidecar_retirement.json` | Sidecar drain/cutover | sidecar admission stop、owner/exchange/protection/PnL drain 证明 | `complete=true` 且 archived/hash/namespace/owner 验证通过才允许 V2 live |
 | `data/judge_state.json` | MultiJudge | deferred_entry/sl_timestamps/cooldown | 缺失时空起，启动时清理过期条目 |
 | `data/live_order_events.jsonl` | LiveLedger | 订单事件流（open/reduce/close） | append-only |
 | `data/live_position_lifecycle.json` | LiveLedger | 持仓生命周期聚合 | 原子写入 |
@@ -242,6 +249,19 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | TACTICAL_SUCCESS_WINDOW_TRADES | Tactical 成功标准窗口交易数 | 30 | 否 |
 | TACTICAL_SUCCESS_MIN_WIN_RATE | Tactical 灰度扩容所需最低胜率 | 0.55 | 否 |
 | TACTICAL_SUCCESS_MIN_PROFIT_FACTOR | Tactical 灰度扩容所需最低 profit factor | 1.2 | 否 |
+| TACTICAL_V2_MODE | V2 模式：`off` / `shadow` / `live`；live 仍受 sidecar retirement gate 约束 | off | 否 |
+| TACTICAL_V2_MARGIN_USDT | V2 单仓固定保证金；首轮安全约束锁定为 100U | 100 | 否 |
+| TACTICAL_V2_MAX_CONCURRENT | V2 active+pending 独立槽位数；首轮固定 3 | 3 | 否 |
+| TACTICAL_V2_MAX_LEVERAGE | V2 最大杠杆 | 5 | 否 |
+| TACTICAL_V2_ENTRY_MAX_WORSE_R | executable ask/bid 相对 frozen entry 允许的最差追价 | 0.10 | 否 |
+| TACTICAL_V2_ENTRY_TTL_SECONDS | frozen entry 限价单最长等待；到期终态且不回填 | 900 | 否 |
+| TACTICAL_V2_MAX_HOLD_MINUTES | V2 全仓 max-hold | 90 | 否 |
+| TACTICAL_V2_ROLLING_LOSS_LIMIT_USDT | V2 滚动 24h final PnL 新开暂停阈值 | -15 | 否 |
+| TACTICAL_V2_LOSS_STREAK_COUNT | V2 连续 final loss 暂停阈值；触发后消费并重置 streak | 3 | 否 |
+| TACTICAL_V2_LOSS_STREAK_PAUSE_MINUTES | V2 连亏新开暂停时间 | 60 | 否 |
+| TACTICAL_V2_STATUS_STALE_SECONDS | `/status` 允许的 V2 快照最大年龄 | 90 | 否 |
+| BOT_INSTANCE_ID | Main/V2 交易所 owner tag；实盘必须非空且与 sidecar 不同 | main01 | 是 |
+| SIDECAR_BOT_INSTANCE_ID | Sidecar 专用 owner tag；sidecar 启动后会强制用此值覆盖进程内的 `BOT_INSTANCE_ID` | stlive | 是 |
 | SHADOW_DECISION_LOGGER_ENABLED | **影子记录器开关**（2026-06-17 `trend-entry-shadow-decision-logger`，observability-only 不碰 live）：每信号旁路跑 both-levers 影子决策写 `data/shadow_decision_log.jsonl`（real vs shadow=lever1 增量）。**默认开**；设 `false` 关闭影子记录 | true | 否 |
 | POSITION_RESYNC_CONFIRM_TICKS | **仓位同步补录双确认 tick 数**（2026-06-20 `fix-phantom-position-resync`）：`sync_positions` 对本地缺失、交易所新出现的持仓须连续此数个 sync tick 确认才补录，防交易所平仓后上报延迟产生幽灵持仓（实证 OKX 滞后 76s 击穿原 60s `_close_cooldown`）。范围 [1,10]，调大更保守（真仓补录延迟更多 sync tick） | 2 | 否 |
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
@@ -316,6 +336,50 @@ TACTICAL_SHADOW_ONLY=true
 - `tactical_track_gate=fail` 且 `tactical_gate_failed=min_rr_or_ev` 表示成本门已过但未达到当前 RR/EV 样本筛选阈值；它可以继续保留 Tactical exit profile 做 shadow 结算，但不能按“会真开 Tactical”统计。
 - Tactical 日亏、连亏暂停和并发槽位独立于 Main；系统级执行/保护单失败仍应触发全局 fail-closed。
 - `/status` 会分开显示 `全局熔断`、`Per-symbol halt`、`Tactical circuit`。TG 里看到“熔断”时先确认是哪一行，不能把全局保护单 halt 误判为 Tactical 连亏暂停。
+
+### Tactical V2
+
+V2 不会重新启用旧的 `TACTICAL_SHADOW_ONLY=false` live 分支。Judge 在 Shadow Tactical 分类点生成固定计划，V2 再按 `100U`、最多 5x 的 full-TP1 净成本口径复核 cost coverage、RR 和 EV；合格计划冻结为 `tactical_intent.v2`，后续 Main 不得重算 entry/SL/TP。相同 symbol/side/15m structure epoch 只允许一次 attempt，capacity skip、account reject、miss、cancel 或 close 都会消费该 episode，释放槽位也不回填旧信号。
+
+入口使用 executable price：long 看 ask、short 看 bid。现价最差偏离不超过 `0.10R` 才允许立即单；否则只挂 frozen entry 一次，最多 900 秒，无 market fallback。挂单期间如果 executable exit price 已到 TP、先到 SL、15m 结构反向或 TTL 到期，必须取消并终结，不能在已经错过的价位追入。partial fill 只保护已成交数量并取消余单，不追满 100U。
+
+成交后由 V2 独占 full-position TP1、SL 和 90 分钟 max-hold。`strategy_owner=tactical_v2` 持仓不得进入 Main partial TP、break-even、trailing、thesis invalidation、weakened/no-progress、Position Analyst close/reduce/add；全局 drawdown、flash move、保护完整性和人工 emergency 仍可通过 owner-bound safety path 全平，并记录 `risk_forced:<source>`。
+
+V2 风控只暂停新开：滚动 24h final PnL `<= -15U`，或 3 次连续 final loss 触发 60 分钟暂停。pending/estimated/duplicate PnL 不计，correction 按同一 position 的最终值修正。execution/protection/ownership 无法证明时进入不自动过期的 integrity halt；已有持仓仍继续管理。禁止通过改状态文件、删除 event ledger、`/force_resume` 或重启来绕过 V2 integrity/cutover gate。
+
+`entry_reconciliation_unknown` 和 `entry_cancel_unproven` 会由 Main 每 30 秒重做一次精确 `clOrdId` 证明；这是证据驱动的自愈，不是计时自动解除。任一 owner/order/position/quantity/TP/SL 不完整都必须继续 halt，且复查绝不得重提 entry。`entry_cancel_unproven` 必须保留原 cancel reason，后续仍见 open order 时继续撤单，不能退回普通 `pending_entry`。final PnL 先落 durable outbox 再发 bus，未 ack 会在重启后重发；governor/Reviewer/Judge 按 `resolution_id` 去重，但在“TG 已收到、outbox ack 尚未落盘”的崩溃窗口仍可能重复一次 TG 通知。
+
+**部署与切换顺序**：
+
+```bash
+# 1. 首先只跑 V2 shadow；sidecar 暂时保持原 admission，便于同窗对照
+TACTICAL_TRACK_ENABLED=true
+TACTICAL_SHADOW_ONLY=true
+TACTICAL_V2_MODE=shadow
+BOT_INSTANCE_ID=main01
+SIDECAR_BOT_INSTANCE_ID=stlive
+
+# 2. 至少采集 24h executable bid/ask 生命周期和 parity 证据
+python3 scripts/replay_tactical_v2.py \
+  --fixture tests/fixtures/tactical_v2_reproduced_window.json
+
+# 3. 停止 sidecar 新开，但保持 resident monitor 管理旧 owner exposure
+python3 scripts/shadow_tactical_live_sidecar.py stop-admission
+python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live
+
+# 4. 只有 report complete=true 才归档；归档失败不得开启 live
+python3 scripts/shadow_tactical_live_sidecar.py \
+  drain-report --namespace live --archive
+
+# 5. retirement proof 验证通过后才请求 live
+TACTICAL_V2_MODE=live
+```
+
+shadow 观察至少记录开始/结束时间、重启次数、intent/episode 数、filled/non-filled、stale/invalid quote、parity category、snapshot freshness 和 integrity event。历史旧账本没有 bid/ask 或 15m token 的窗口只能标为不可执行回放，禁止补造价格。首轮少于 30 个 final episode 时只报告样本不足，不能据此扩仓或用旧 143 条重复 row 当作 143 笔交易。
+
+**回滚**：把 `TACTICAL_V2_MODE` 改为 `off` 或 `shadow` 会阻止新 V2 admission，并只取消 ownership 可证明的 pending V2 entry；已经 protected 的 V2 仓必须继续管理直到 exchange-flat 和 final PnL。回滚绝不能把 sidecar `admission_enabled` 自动改回 true，也不能让 V2 接管 legacy sidecar owner row。
+
+`/status` 的 `Tactical V2` 段只读 `data/tactical_v2_status.json`。`STALE` 表示快照缺失、超过 90 秒或 schema/数值不可信，不等于 circuit clear；`new admission PAUSED` 只阻止新仓；`integrity HALT` 必须对账后以完整 proof 清除。`Cutover: BLOCKED`、protection degraded/unknown 或未分类 parity mismatch 都不允许 live cutover。
 
 快速查看当前仍在跟踪或已结算的 Tactical shadow 记录：
 
@@ -594,24 +658,24 @@ python3 -m pytest -q test_protective_sl_owner.py test_judge_close_cause.py
 
 ---
 
-### 问题：TG 显示熔断，但 Tactical circuit 未暂停（2026-07-15 修复）
+### 问题：TG 显示熔断，但 Tactical V2 未暂停
 
-**症状**：`/status` 显示全局熔断或旧的 `okx_sl_algo_unresolved:<symbol>` 原因，容易误判为 Tactical 连亏暂停；或某个保护单 halt 已无仓位风险但仍影响开新仓。
+**症状**：`/status` 显示全局熔断或旧的 `okx_sl_algo_unresolved:<symbol>` 原因，容易误判为 Tactical V2 连亏暂停；或 V2 段显示 `STALE`，却被误读为 circuit clear。
 
 **状态**：2026-07-15 `protective-sl-halt-recovery` 已修复：
 - OKX attached SL 首次回查不到 `algoId` 时，Executor 先做有界验证；验证找到 SL 就标 `protection_state=protected`，不写终态保护单 halt。
 - allowlist 保护单原因（`okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl`）只在对应仓位已关闭或已恢复保护，且没有其它 unresolved protection halt 时自动清除。若还有另一个 unresolved symbol，全局 halt 保持 active 并 repoint 到那个 symbol。
 - manual halt、daily hard stop、reconciliation mismatch、未知原因不走自愈，仍需 `/resume` 或 `/force_resume`。
-- `/status` 分开显示全局 halt、per-symbol halt、Tactical circuit；`halt_state.halted=false` 且 `can_open_new=true` 时，残留 `reason` 是 stale metadata，不代表 active block。
+- `/status` 分开显示全局 halt、per-symbol halt 和 Tactical V2 circuit；V2 只读 `tactical_v2_status.json`，不回退到 V1 `riskguard_state.tactical_circuit`。`STALE`/unknown 不是 healthy，也不能作为开 live 的依据。
 
 **复检**：
 ```bash
 python3 - <<'PY'
 import json
 from pathlib import Path
-for p in ["data/halt_state.json", "data/riskguard_state.json", "data/agent_health.json"]:
+for p in ["data/halt_state.json", "data/tactical_v2_status.json", "data/agent_health.json"]:
     data = json.loads(Path(p).read_text()) if Path(p).exists() else {}
-    print(p, {k: data.get(k) for k in ("halted", "reason", "can_open_new", "reconciliation_pending", "tactical_circuit", "halted_symbols")})
+    print(p, {k: data.get(k) for k in ("halted", "reason", "mode", "updated_at", "timed_pause_until", "integrity_halt", "halted_symbols")})
 PY
 python3 -m pytest -q test_halt_resume_ownership.py tests/test_phantom_position_resync.py test_tg_status_enhancement.py
 ```

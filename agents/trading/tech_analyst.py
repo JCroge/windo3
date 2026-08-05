@@ -4,6 +4,8 @@
 趋势结构、关键价位、动量、资金流向、微观结构、散户情绪、风险评估、规则信号、LLM综合研判
 """
 
+import hashlib
+import json
 import time
 import pandas as pd
 from agents.base import BaseAgent
@@ -264,6 +266,8 @@ class MultiTechAnalyst(BaseAgent):
     def _analyze_entry_timing_15m(self, klines_15m: list, data_quality: dict = None) -> dict:
         unavailable = {
             "tf_15m_available": False,
+            "tf_15m_closed_bar_ts": None,
+            "tf_15m_structure_token": None,
             "tf_15m_bias": "unavailable",
             "tf_15m_ma_alignment": "unavailable",
             "tf_15m_rsi": None,
@@ -356,6 +360,10 @@ class MultiTechAnalyst(BaseAgent):
         )
         confirm_long = (bias == "bullish" and not block_long)
         confirm_short = (bias == "bearish" and not block_short)
+        closed_bar_ts = df.iloc[-2]['open_time']
+        if hasattr(closed_bar_ts, "item"):
+            closed_bar_ts = closed_bar_ts.item()
+        structure_token = MultiTechAnalyst._confirmed_15m_structure_token(df)
 
         reason_parts = []
         if block_long:
@@ -367,6 +375,8 @@ class MultiTechAnalyst(BaseAgent):
 
         return {
             "tf_15m_available": True,
+            "tf_15m_closed_bar_ts": closed_bar_ts,
+            "tf_15m_structure_token": structure_token,
             "tf_15m_bias": bias,
             "tf_15m_ma_alignment": ma_alignment,
             "tf_15m_rsi": round(rsi_val, 1),
@@ -378,6 +388,64 @@ class MultiTechAnalyst(BaseAgent):
             "tf_15m_block_short": block_short,
             "tf_15m_reason": "; ".join(reason_parts),
         }
+
+    @staticmethod
+    def _confirmed_15m_structure_token(df: pd.DataFrame):
+        """Return the latest closed-candle pivot break identity, if any."""
+        closed = df.iloc[:-1].copy().reset_index(drop=True)
+        if len(closed) < 5:
+            return None
+        for column in ("high", "low", "close"):
+            closed[column] = closed[column].astype(float)
+
+        breaks = []
+        for pivot_index in range(1, len(closed) - 1):
+            pivot_high = float(closed.iloc[pivot_index]["high"])
+            pivot_low = float(closed.iloc[pivot_index]["low"])
+            is_swing_high = (
+                pivot_high > float(closed.iloc[pivot_index - 1]["high"])
+                and pivot_high > float(closed.iloc[pivot_index + 1]["high"])
+            )
+            is_swing_low = (
+                pivot_low < float(closed.iloc[pivot_index - 1]["low"])
+                and pivot_low < float(closed.iloc[pivot_index + 1]["low"])
+            )
+
+            if is_swing_high:
+                for break_index in range(pivot_index + 1, len(closed)):
+                    if float(closed.iloc[break_index]["close"]) > pivot_high:
+                        breaks.append(
+                            (break_index, pivot_index, "break_up", pivot_high)
+                        )
+                        break
+            if is_swing_low:
+                for break_index in range(pivot_index + 1, len(closed)):
+                    if float(closed.iloc[break_index]["close"]) < pivot_low:
+                        breaks.append(
+                            (break_index, pivot_index, "break_down", pivot_low)
+                        )
+                        break
+
+        if not breaks:
+            return None
+        break_index, pivot_index, direction, pivot_price = max(
+            breaks,
+            key=lambda item: (item[0], item[1]),
+        )
+
+        def scalar(value):
+            return value.item() if hasattr(value, "item") else value
+
+        identity = {
+            "direction": direction,
+            "pivot_ts": scalar(closed.iloc[pivot_index]["open_time"]),
+            "pivot_price": format(pivot_price, ".15g"),
+            "break_ts": scalar(closed.iloc[break_index]["open_time"]),
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:20]
+        return f"{direction}:{digest}"
 
     # ═══ 2. 关键价位 ═══
 
