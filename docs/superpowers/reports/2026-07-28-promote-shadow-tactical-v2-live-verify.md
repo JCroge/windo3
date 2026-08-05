@@ -8,7 +8,7 @@ Verify mode: full
 
 ## Current Result
 
-BUILD COMPLETE / FINAL COMET VERIFY PENDING. The invalid first shadow window remains excluded. The repaired deployment completed a fresh 32-hour 24-minute shadow gate, the sidecar drain is archived and admission remains disabled, and Tactical V2 is live at fixed `100U x 3`. The first live cohort and both entry-reconciliation incidents have now been reconciled through final exchange evidence; the self-heal hardening is deployed and under observation.
+IMPLEMENTATION COMMITTED / FINAL COMET VERIFY PENDING. Commit `d67ca6a` contains the complete Tactical V2 implementation and the explicitly preserved resident Sidecar changes. The invalid first shadow window remains excluded. The repaired deployment completed a fresh 32-hour 24-minute shadow gate, the sidecar drain is archived and admission remains disabled, and Tactical V2 is live at fixed `100U x 3`. The first live cohort and both entry-reconciliation incidents have now been reconciled through final exchange evidence; the self-heal hardening is deployed and under observation.
 
 ## Local Checks
 

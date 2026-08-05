@@ -760,7 +760,7 @@ git diff --check
 
 Expected: all commands PASS.
 
-- [ ] **Step 7: Review the complete dirty worktree and create the single final commit**
+- [x] **Step 7: Review the complete dirty worktree and create the single final commit**
 
 Confirm every changed file belongs to this Comet change or the explicitly preserved resident sidecar work. Review scripts/shadow_tactical_live_sidecar.py and tests/test_shadow_tactical_live_cli.py against their passing tests. Then stage the complete verified change and commit:
 
@@ -769,6 +769,6 @@ git add .env.example README.md docs agents executor.py run_agents.py scripts tes
 git commit -m "feat: promote shadow tactical v2 live"
 ```
 
-- [ ] **Step 8: Record final commit and prepare Comet verification**
+- [x] **Step 8: Record final commit and prepare Comet verification**
 
 Write the commit id, cloud evidence, drain archive hash, live cohort evidence, full test count, and strict OpenSpec result into the verification report. Leave branch handling and archive transitions to comet-verify and comet-archive.
