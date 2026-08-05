@@ -8,7 +8,7 @@ Verify mode: full
 
 ## Current Result
 
-FULL TECHNICAL VERIFICATION PASS / BRANCH HANDLING PENDING. Commit `d67ca6a` contains the complete Tactical V2 implementation and the explicitly preserved resident Sidecar changes. The invalid first shadow window remains excluded. The repaired deployment completed a fresh 32-hour 24-minute shadow gate, the sidecar drain is archived and admission remains disabled, and Tactical V2 is live at fixed `100U x 3`. The first live cohort and both entry-reconciliation incidents have now been reconciled through final exchange evidence; the self-heal hardening is deployed and under observation.
+MERGED TO MAIN / COMET ARCHIVE PENDING. Commit `d67ca6a` contains the complete Tactical V2 implementation and the explicitly preserved resident Sidecar changes. Local `main` was fast-forwarded from `2e2d187` through verification commit `9539d56`, and the merged feature branch was deleted after a fresh repository regression. The invalid first shadow window remains excluded. The repaired deployment completed a fresh 32-hour 24-minute shadow gate, the sidecar drain is archived and admission remains disabled, and Tactical V2 is live at fixed `100U x 3`. The first live cohort and both entry-reconciliation incidents have now been reconciled through final exchange evidence; the self-heal hardening is deployed and under observation.
 
 ## Local Checks
 
@@ -21,6 +21,7 @@ FULL TECHNICAL VERIFICATION PASS / BRANCH HANDLING PENDING. Commit `d67ca6a` con
 | Cross-process JSONL serialization | PASS | Two independent Python processes contended on the same `.lock`; the waiter wrote only after the holder released `flock` |
 | Historical replay | PASS | 143 raw rows -> 14 episodes; all 14 evidence gaps classified |
 | Repository regression | PASS | `pytest -q` -> `1869 passed, 4 deselected, 576 warnings in 247.51s` |
+| Merged `main` regression | PASS | After local fast-forward merge, `pytest -q` -> `1869 passed, 4 deselected, 576 warnings in 297.67s` |
 | Diff whitespace | PASS | `git diff --check` |
 | OpenSpec strict validation | PASS | `openspec validate promote-shadow-tactical-v2-live --strict` |
 
