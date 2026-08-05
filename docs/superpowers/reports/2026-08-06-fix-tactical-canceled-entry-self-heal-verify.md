@@ -8,10 +8,12 @@ Verify mode: full
 
 ## Current Result
 
-VERIFICATION PASS / LOCAL MERGE SELECTED. The implementation, focused tests,
-full regression, strict OpenSpec validation, and cloud recovery evidence pass.
-The user selected a local merge into `main`; the merged-main regression and
-Comet archive remain to be completed.
+MERGED TO MAIN / COMET ARCHIVED. Local `main` fast-forwarded from `2b3f76c`
+through verification commit `a978f22`, and the merged feature branch was
+deleted. The implementation, focused tests, full regression, strict OpenSpec
+validation, cloud recovery evidence, and the merged-main Comet verify guard all
+pass. The change is archived as
+`2026-08-06-fix-tactical-canceled-entry-self-heal`.
 
 ## Root Cause And Fix
 
@@ -35,7 +37,9 @@ continues to fail closed.
 | Hotfix regression | PASS | Three focused tests passed; latest rerun: `3 passed, 9 deselected in 1.10s` |
 | Tactical focused suite | PASS | `58 passed` |
 | Repository regression | PASS | `1872 passed, 4 deselected` |
+| Merged `main` regression | PASS | Comet verify guard executed configured `pytest -q` and reported `Build passes` |
 | OpenSpec strict validation | PASS | `openspec validate fix-tactical-canceled-entry-self-heal --strict` |
+| Post-archive main spec | PASS | All 6 accumulated requirements remain; `openspec validate tactical-intent-lifecycle --strict` passes |
 | Build and hygiene | PASS | `compileall`, `git diff --check`, and credential sentinel scan passed |
 | Scope | PASS | Runtime behavior changes only `executor.py`; tests and change artifacts match the proposal and tasks |
 

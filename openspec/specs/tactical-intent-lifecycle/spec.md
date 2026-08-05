@@ -83,7 +83,7 @@ Tactical V2 SHALL count both active positions and pending entry orders against t
 - **AND** it SHALL NOT be retried after that exposure closes
 
 ### Requirement: Tactical order submission SHALL recover idempotently across restart
-The system SHALL persist `submitting` before exchange I/O and derive a deterministic entry client-order id from the intent id. On restart, any non-terminal `submitting`, `filled`, or `closing` state SHALL be reconciled against exchange orders, positions, and owner-tagged protection before another action is submitted. The system MUST NOT blindly retry an unknown submission.
+The system SHALL persist `submitting` before exchange I/O and derive a deterministic entry client-order id from the intent id. On restart, any non-terminal `submitting`, `filled`, or `closing` state SHALL be reconciled against exchange orders, positions, and owner-tagged protection before another action is submitted. An exchange order in a terminal state MUST have zero cancelable remainder even when its original size exceeds its filled size. The system MUST NOT blindly retry an unknown submission or repeat cancellation without exact terminal proof.
 
 #### Scenario: Crash after exchange accepted entry does not duplicate order
 - **WHEN** the exchange accepts an entry but the process stops before persisting the response
@@ -109,6 +109,16 @@ The system SHALL persist `submitting` before exchange I/O and derive a determini
 - **WHEN** a pre-fill terminal condition starts cancellation but the cancel result cannot be proven
 - **THEN** the system SHALL persist the original cancel reason while the intent remains integrity halted
 - **AND** a later open-order observation SHALL retry cancellation rather than restore the intent to normal pending entry
+
+#### Scenario: Already-terminal entry is not canceled again
+- **WHEN** exact deterministic lookup returns an entry in `canceled`, `cancelled`, `closed`, `filled`, `rejected`, or `expired` state
+- **THEN** the system SHALL treat its cancelable remainder as zero while preserving its confirmed filled quantity
+- **AND** it SHALL NOT submit another cancel request for that terminal order
+
+#### Scenario: Cancel not-found race requires exact terminal proof
+- **WHEN** an entry is open during the pre-cancel lookup but the cancel request reports that the order is already filled, canceled, or absent
+- **THEN** the system SHALL re-query the deterministic client-order id
+- **AND** it SHALL accept cancellation as proven only if the exact order is terminal with zero remainder; otherwise Tactical admission SHALL remain halted for reconciliation
 
 ### Requirement: Shadow and live SHALL share lifecycle semantics
 The Shadow Tactical adapter and live adapter SHALL consume the same intent, episode, entry, and exit state transitions. Shadow SHALL count a fill only after executable-price touch and SHALL use the same full TP1, full SL, and 90-minute max-hold outcomes. Adapter differences SHALL be limited to exchange I/O and explicitly attributed fill/protection variance.
