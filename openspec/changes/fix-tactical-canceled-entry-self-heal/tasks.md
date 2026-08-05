@@ -8,4 +8,4 @@
 
 ## 3. 验证与部署
 
-- [ ] 3.1 运行完整回归与严格 OpenSpec 校验，提交 hotfix；备份并同步云端，保持 Sidecar 不动、仅重启 Main，验证 PUMP 幽灵状态和 integrity halt 自动清除且错误循环停止。
+- [x] 3.1 运行完整回归与严格 OpenSpec 校验，提交 hotfix；备份并同步云端，保持 Sidecar 不动、仅重启 Main，验证 PUMP 幽灵状态和 integrity halt 自动清除且错误循环停止。
