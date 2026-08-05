@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/promote-shadow-tactical-v2-live/.comet/handoff/design-context.json
 handoff_hash: 2b7c81edf968e29b07d8c71a4ff25b94ca452e7f2ed74985994899ecf5025a80
+build_command: /usr/local/anaconda3/bin/python -m compileall -q agents executor.py scripts utils
+verify_command: pytest -q
