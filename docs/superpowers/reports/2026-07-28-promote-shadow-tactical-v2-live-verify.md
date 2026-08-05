@@ -8,7 +8,7 @@ Verify mode: full
 
 ## Current Result
 
-IMPLEMENTATION COMMITTED / FINAL COMET VERIFY PENDING. Commit `d67ca6a` contains the complete Tactical V2 implementation and the explicitly preserved resident Sidecar changes. The invalid first shadow window remains excluded. The repaired deployment completed a fresh 32-hour 24-minute shadow gate, the sidecar drain is archived and admission remains disabled, and Tactical V2 is live at fixed `100U x 3`. The first live cohort and both entry-reconciliation incidents have now been reconciled through final exchange evidence; the self-heal hardening is deployed and under observation.
+FULL TECHNICAL VERIFICATION PASS / BRANCH HANDLING PENDING. Commit `d67ca6a` contains the complete Tactical V2 implementation and the explicitly preserved resident Sidecar changes. The invalid first shadow window remains excluded. The repaired deployment completed a fresh 32-hour 24-minute shadow gate, the sidecar drain is archived and admission remains disabled, and Tactical V2 is live at fixed `100U x 3`. The first live cohort and both entry-reconciliation incidents have now been reconciled through final exchange evidence; the self-heal hardening is deployed and under observation.
 
 ## Local Checks
 
@@ -158,3 +158,13 @@ The controller now persists an entry-visibility deadline, serializes submit vers
 Cloud deployment replaced only the six runtime files whose hashes differed. The rollback backup is `backups/pre_v2_entry_self_heal_followup_20260805T085543Z`. Only Main restarted: PID `2564205`, log `logs/launcher_20260805T085721Z_v2_entry_self_heal_followup.log`; Sidecar PID `1773370` remained resident with `admission_enabled=false` and zero active positions. At `2026-08-05T09:05:41Z`, V2 was fresh and `LIVE`, fixed `100U x 3`, `0 active / 0 pending / 3 free`, no integrity halt, and verified protection/reconciliation. The new launcher contained zero error, traceback, or critical lines. All three durable Tactical correction outbox records were acknowledged, pending external closes were zero, and governor finals remained five unique resolutions with no duplicates.
 
 Residual delivery contract: a process crash after the bus/TG receives a final but before the durable outbox acknowledgement remains at-least-once and can repeat one TG final notification after restart. Governor, Reviewer, and Judge are protected by `resolution_id`; cross-restart exactly-once Telegram consumer delivery is not part of this change.
+
+## Final OpenSpec Verification
+
+| Dimension | Result | Evidence |
+| --- | --- | --- |
+| Completeness | PASS | 50/50 tasks complete; 26/26 requirements and 80/80 scenarios mapped to implementation, tests, replay, or cloud rollout evidence |
+| Correctness | PASS | `1869 passed, 4 deselected`; focused concurrency matrix `276 passed`; replay safety gate true with all 14 evidence gaps classified |
+| Coherence | PASS | OpenSpec design, Superpowers design, delta specs, runbook, and deployed lifecycle agree on frozen intent, `100U x 3`, non-chasing entry, owner isolation, proof-only halt recovery, final outbox, and Sidecar retirement |
+
+No CRITICAL, WARNING, or unresolved spec-drift findings remain. The documented at-least-once Telegram notification crash window is an accepted non-goal, not a hidden exactly-once claim. `openspec validate promote-shadow-tactical-v2-live --strict`, `compileall`, `git diff --check`, credential sentinel scan, and the cross-process ledger lock probe pass.
