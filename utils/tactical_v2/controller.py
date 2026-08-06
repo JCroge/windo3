@@ -1424,13 +1424,50 @@ class TacticalV2Controller:
         if state != "integrity_required":
             return False
         record = self._intents.get(intent_id) or {}
-        if record.get("integrity_reason") not in _ENTRY_RECHECK_INTEGRITY_REASONS:
+        if (
+            record.get("integrity_reason") not in _ENTRY_RECHECK_INTEGRITY_REASONS
+            and not self._is_legacy_protection_failure_record(
+                intent_id,
+                record,
+            )
+        ):
             return False
         try:
             due = float(record.get("next_entry_recheck_at") or 0)
         except (TypeError, ValueError):
             due = 0.0
         return evaluated_at >= due
+
+    def _is_protection_failure_record(
+        self,
+        intent_id: str,
+        record: Mapping[str, Any],
+    ) -> bool:
+        if (
+            record.get("state") != "integrity_required"
+            or record.get("lane") != "live"
+        ):
+            return False
+        if record.get("integrity_reason") == "tactical_protection_incomplete":
+            return True
+        halt = self.governor.integrity_halt or {}
+        evidence = halt.get("evidence") or {}
+        return (
+            halt.get("reason") == "tactical_protection_incomplete"
+            and evidence.get("intent_id") == intent_id
+            and float(record.get("filled_qty") or 0) > 0
+        )
+
+    def _is_legacy_protection_failure_record(
+        self,
+        intent_id: str,
+        record: Mapping[str, Any],
+    ) -> bool:
+        return (
+            self._is_protection_failure_record(intent_id, record)
+            and record.get("integrity_reason")
+            != "tactical_protection_incomplete"
+        )
 
     async def _recheck_entry_integrity_halt(
         self,
@@ -1472,7 +1509,7 @@ class TacticalV2Controller:
         record = self._intents.get(intent_id)
         if (
             record is not None
-            and record.get("integrity_reason") == "tactical_protection_incomplete"
+            and self._is_protection_failure_record(intent_id, record)
         ):
             await self._recover_protection_failure_halt(
                 intent_id,
@@ -1707,8 +1744,10 @@ class TacticalV2Controller:
             if (
                 record is None
                 or record.get("state") != "integrity_required"
-                or record.get("integrity_reason")
-                != "tactical_protection_incomplete"
+                or not self._is_protection_failure_record(
+                    intent_id,
+                    record,
+                )
             ):
                 return
             self._queue_protection_flat_pnl_recovery(

@@ -741,6 +741,9 @@ async def test_protection_failure_reconciles_safe_close_and_releases_slot(tmp_pa
     assert controller.snapshot(now=1001.0)["integrity_halt"]["reason"] == (
         "tactical_protection_incomplete"
     )
+    # Legacy cloud records stored the raw proof reason instead of the
+    # canonical recovery reason; the governor halt is the migration signal.
+    controller._intents[accepted.intent_id]["integrity_reason"] = "price_mismatch"
 
     executor.exchange_position = None
     await controller.tick(now=1032.0)
