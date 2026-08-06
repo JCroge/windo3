@@ -1,14 +1,15 @@
 # To-Do List
 
-更新日期：2026-07-23
-2026-07-15 完整基线：`1543 passed, 4 deselected, 1 warning`（`protective-sl-halt-recovery` 归档）。2026-07-23 HEAD：`main@9f5d297`；sidecar ghost-position safety 聚焦验证 `142 passed` + OpenSpec strict PASS。
+更新日期：2026-08-06
+Tactical V2 代码基线：`884ba60`；最新全量回归 `1878 passed, 4 deselected`。
 
 > **基线与逐 change 历史以 `CLAUDE.md` 顶部「当前事实」段为权威单一来源**，完整逐基线里程碑见 `docs/handoff.md`。本文件不再内联复制 change changelog（曾累积漂移至 1338，已于 2026-06-26 收口），只维护**当前阻断项、Go/No-Go、后续 P2 优化**。
 
-**当前关键运营状态（2026-07-23）**：
-- 云服 Tactical 已进入小额 live 灰度：`TACTICAL_TRACK_ENABLED=true`、`TACTICAL_SHADOW_ONLY=false`、`TACTICAL_TP1_R=1.00`、`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`。live Tactical 收益按 LiveLedger / Reviewer final PnL 统计；`rejected_signal_*` 只用于被拒/影子候选复盘。
-- Shadow Tactical live sidecar 已上线为独立进程能力：尾随 `data/rejected_signal_events.jsonl`，只消费 strict eligible Tactical shadow 记录，写 sidecar 专属 state/owners/ledger；2026-07-22 支持 100U sidecar-only 放大，2026-07-23 增加 ghost-position safety、同标的堆叠阻断和 entry drift 保护。
-- 2026-07-23 09:40 UTC 云服核对：本地/云服代码对齐 `main@9f5d297`；OKX 非零仓位为空，Main 和 sidecar 本地仓位均为 0；sidecar 历史累计 `opened=21`、`rejected=151`，重启后因 strict eligible filter 未新增 opened/rejected。
+**当前关键运营状态（2026-08-06）**：
+- 云服 Tactical V2 为 `LIVE 100U x 3`：`0 active / 0 pending / 3 free`、`integrity_halt=null`、protection/reconciliation `verified`，rolling PnL `-0.9593U`、loss streak `1`；Main `data/positions.json` 为空。
+- Shadow Tactical live sidecar 保留 resident monitor，但 `admission_enabled=false`、active=0；历史累计 `opened=69/rejected=1505`。禁止擅自恢复 sidecar admission。
+- 2026-08-05/06 已完成精确 `clOrdId` 入口回查、取消终态自愈、保护 halt 自愈/旧 halt 迁移，以及重启后 durable final-PnL replay。所有 recovery 必须有交易所、owner、订单、仓位、数量和保护证明。
+- Main PID `2663623`、Sidecar PID `1773370` 仅是 2026-08-06 快照；两者为常驻进程，没有已部署的应用级 cron/systemd/pm2 supervisor。
 - 核心认知：**edge 在趋势单本身，非入场门**；入场门旋钮已近调参极限，方向质量改善须等趋势行情 + 攒够后门开仓样本才能实盘验证。
 - 后续可选（非阻塞）：Tactical/sidecar 继续攒 final PnL 分桶样本；sidecar 续跑前先确认无 ghost exposure、无 ambiguous net-mode stack、无未解决保护单；`cf-neutral-momentum-rescue-ab` 和 `cf-choppy-neutral-tp1-floor-ab` 继续等样本门槛。
 
@@ -33,16 +34,20 @@
 - `openspec/changes/archive/2026-07-20-fix-sidecar-exchange-flat-reconcile/`
 - `openspec/changes/archive/2026-07-22-scale-sidecar-100u-only/`
 - `openspec/changes/archive/2026-07-23-fix-sidecar-ghost-position-safety/`
+- `openspec/changes/archive/2026-08-05-promote-shadow-tactical-v2-live/`
+- `openspec/changes/archive/2026-08-06-fix-tactical-canceled-entry-self-heal/`
 - `docs/superpowers/reports/2026-07-14-protective-sl-halt-recovery-verify.md`
 - `docs/superpowers/reports/2026-07-22-fix-sidecar-ghost-position-safety-verify.md`
+- `docs/superpowers/reports/2026-07-28-promote-shadow-tactical-v2-live-verify.md`
+- `docs/superpowers/reports/2026-08-06-fix-tactical-canceled-entry-self-heal-verify.md`
 - `docs/generated_reports/系统性审计报告_20260528_第四次.md`
 
 ## 当前 Go/No-Go
 
 - 本地开发：GO。
 - Paper/mock：GO。
-- 小额 live 灰度：GO（保持现有 cap，运维可接管）。
-- live 扩容：CONDITIONAL GO（解除 NO-GO 前置已完成；扩容前需运维 SOP 把 `BOT_INSTANCE_ID` 写入 systemd / pm2 启动配置，并完成真实 TG 命令链与 drift gate 运维验收）。**2026-06-16 诊断新增考量**：真实账本 52 笔虽正期望（赔率 1.79、净 +47U），但样本小（单一 ~3 周窗口）且自主机械 vs 人工裁量 edge 未能从现有数据分离（见 P2「自主 edge 归因」条）；脱离人工是系统理想态，扩容前宜先证明自主机械 edge，而非放大一个尚含较大人工成分的成绩。
+- Tactical V2 首轮 live：GO（固定 `100U x 3`，继续观察）。
+- live 扩容：BLOCKED UNTIL REVIEW（当前不扩大保证金、槽位或恢复 sidecar admission；如需长期无人值守，先另起 supervisor 设计和验收）。
 
 ## 第五次审计阻断（处理中）
 
@@ -58,7 +63,7 @@
 | DONE 2026-06-11 | P2 | P2-06 paper risk_alert 借用 live 共享 topic，隔离仅靠白名单未命中（脆性，latent） | `_handle_risk_alert` 顶部 `source=='paper_executor'` 结构性守卫 | `test_risk_alert_source_guard.py`（paper 不触发 live close / live 不受影响） |
 | DONE 2026-06-11 | P2 | P2-16 DLQ 增长/重要 topic 死信仅静默计数，无主动告警 | `orchestrator._maybe_alert_dlq_growth`：`_write_agent_health` 返回 dlq_size，`_health_loop` 增长时 publish `telegram_alert{bus_dlq_growth}`（30s cadence 限流） | `test_dlq_growth_alert.py`（增长发/不增长不发） |
 | DONE 2026-06-11 | P2 | P2-17 config_loader 失败兜底直读 env 风险限额，跳过 HARD_LIMITS clamp（fail-open） | `config_loader.clamp_to_hard_limits`（clamp 不 raise）+ executor 兜底复用 | `test_config_clamp_fallback.py`（超界 clamp / None 保持 / 界内不动） |
-| DONE 2026-06-11 | P2 | P2-20 event_journal 只 flush 不 fsync，断电丢最近关键事件 | `event_journal._write_line` write+flush 后加 `os.fsync(fileno())` | `test_event_journal_fsync.py` |
+| DONE 2026-06-11 | P2 | P2-20 event_journal 只 flush 不 fsync，断电丢关键事件 | `event_journal._write_line` write+flush 后加 `os.fsync(fileno())` | `test_event_journal_fsync.py` |
 | DONE 2026-06-11 | P2 | P2-21 halt_state._save 异常兜底非原子裸写最关键 halt 文件 | 删非原子裸写，改 logger 记录（损坏时 _load 仍 fail-closed） | `test_halt_state_atomic_save.py` |
 | DONE 2026-06-11 | 工具 | comet-archive delta→master 同步 `cp` 盲覆盖丢需求 | 改为应用 delta（ADDED 追加/MODIFIED 替换/REMOVED 删除）；重建被覆盖的 4 个 master spec（entry-drift-policy/tg-symbol-halt-control/risk-alert-routing/tg-status-enhancement） | 两份 comet skill（.claude/.cursor）已修；合成 fixture 4 例验证 |
 
@@ -117,7 +122,7 @@
 | DONE 2026-06-11 | 文档瘦身 | `CLAUDE.md` 40→18KB（当前事实段去逐基线 changelog，六红线章节保留）、`docs/architecture.md` 62→43KB（MVP 路线压成里程碑表）、`docs/handoff.md` 47→15KB（温和压缩 + 补全 2026-05-27 后里程碑，成为唯一历史家） | 规则文档只剩当前事实+硬约束；旧测试数仅在里程碑表「彼时基线」列出现；当前基线单点声明于 CLAUDE/to-do-list |
 | OPEN | 策略层深度优化提案（先观察） | 详见 `docs/strategy_optimization_proposal_20260602.md` 5 项发现（Exit Strategy 系统止损 20% 胜率 / ma_aligned 直接开仓 -9.14U / R:R poor bucket 全亏 / Regime choppy 主导 / BTC 14 分钟连续开 16 单）；2026-06-03 决定先归档观察，等 paper realistic 数据累计后回看 | paper realistic 数据足够后再决策实施或归档 |
 | DONE 2026-07-10 | Tactical Exit Track（退出右尾机械化的一部分） | 新增 `track=tactical` / `exit_profile=tactical_v1` 独立轨道：Judge `_classify_track` 先分 Main/Tactical/shadow/reject，`_apply_tactical_profile` 用独立 stop/TP1/R:R/EV/cost gate 改写 plan；2026-07-11 修正 shadow-only 路径，经 `_apply_tactical_shadow_profile` 仍生成 true Tactical counterfactual plan；Executor 本地处理 `tactical_tp1`、`tactical_invalidated`、`tactical_weakened_no_progress`、`tactical_max_hold`；Reviewer/Counterfactual 保留 track/profile/close reason 分桶。默认 `TACTICAL_TRACK_ENABLED=false` + `TACTICAL_SHADOW_ONLY=true`。 | Tactical suite 21 passed；邻近回归 118 passed / 3 warnings；2026-07-11 Tactical/counterfactual 专项 32 passed；归档 `openspec/changes/archive/2026-07-10-add-tactical-exit-track/` |
-| OPEN | 自主 edge 归因 + Tactical 证据闭环 | 2026-06-16 真实账本诊断的核心问题仍在：自主机械 edge 与人工裁量 edge 不能从旧数据干净分离。Tactical 已把一部分“落袋/时限/弱化退出”机械化，但默认仍 shadow-only，尚未证明能在 Main idle 或弱环境中带来净增量。下一步：① 建归因报表分离自主/人工 edge；② 用 `rejected_signal_*` true Tactical counterfactual 分桶达到样本门槛后再小额 live；③ 扩容前证明自主机械 edge，而非放大含人工成分的成绩。 | 证据要求：按 `track/exit_profile/slot_type/tactical_close_reason` 分桶；shadow-only 证据必须来自 `data/rejected_signal_events.jsonl` / `data/rejected_signal_lifecycle.json`，不是 PaperExecutor；Tactical 成功窗口至少满足配置里的 win rate / profit factor 门槛；策略改动须 event_backtest 或同构回放验证 |
+| OPEN | 自主 edge 归因 + Tactical 证据闭环 | V2 已有首轮 live cohort，但样本仍不足以判断策略 edge；继续按 final PnL、`track/exit_profile/slot_type/tactical_close_reason` 分桶，禁止据此扩大容量或恢复 sidecar。 | 证据必须来自 V2 durable final PnL / exchange proof；shadow-only 记录仍仅作 counterfactual，策略改动须 event_backtest 或同构回放验证 |
 | 进行中 #1 | 反事实策略实验室（shadow-replay 回测器，重新定位为"指明整个策略调整方向"的分层工具，不止 R:R 地板） | **路线图 #1 `counterfactual-replay-foundation`（2026-06-13，L1 + 原料地基，comet full 流程）已实现**：决策磁带埋点（Judge accept/reject 全量输入 bundle → `decision_replay_tape.jsonl`，锁未来忠实回放原料）+ 被拒单可信净 PnL（`utils/counterfactual_pnl.py`，CostModel 成本 + K 线 SL/TP + SL-first 偏差带 + funding 近似）+ 1s tick 采集（`klines_1s.db`，~10s 粒度受取价周期约束）+ 诚实性 gate（`utils/cf_honesty_gate.py`，Wilson+bootstrap+三档，`n<30` 拒答）。observability-only write-only，红线守卫 `tests/test_cf_red_line_guard.py`。背景：现有 `event_backtest`（RobustStrategy MA 信号）与线上 LLM-Judge 不符、样本太薄（+5.47 全来自 1 笔 ADA）→ 结论无效。 | **后续路线图**：~~#2 L2 确定性全带回放 + golden master~~（**2026-06-13 已完成 `deterministic-replay-golden-master`**：决策磁带扩存 ~14 状态白名单快照 + `utils/decision_replay.py` 回放 harness 用真实 MultiJudge.__new__ + 还原真实 RegimeManager + mock 3 外部 await 跑真实 `_make_decision` + golden 三层比对 + 端到端 `cf_replay_driver.py` 补 L1 的 I1；observability-only，红线守卫扩展。真实数据终验 N≥50 待埋点累积=follow-up）；#3 L3 分两步：**L3a 逐决策扰动（2026-06-14 已完成 `perturbation-replay-per-decision`：同一 record baseline vs perturbed config 跑两次 L2 replay_decision 量化 gate 翻转 + baseline 复现自检 + 分桶报表 + 诚实 gate；逐决策独立不含级联、只对非 LLM 旋钮确定；observability-only）** + **L3b 序列组合态重演（2026-06-14 已完成 `sequential-portfolio-perturbation`：`CounterfactualPortfolio` 模拟 slot/equity/EV/独立 cooldown/daily-stop + L1 估算 PnL 反馈；时间序 driver 喂 CF 状态给真实 _make_decision；baseline-vs-perturbed delta + baseline 序列保真自检信任锚 + divergence/误差观测；两臂同估算 delta 抵消偏差；完全隔离 observability-only）** —— **L3 收官**；**#4 L4 旋钮扫描 + 方向推荐（2026-06-14 已完成 `perturbation-knob-sweep`：`utils/knob_sweep.py` sweep_knob 单旋钮 grid 扫 L3b + recommend_direction 门控+排名+多重比较守卫（连贯趋势/孤峰拒答）+ confidence 三因子透明；证据不足拒答不杜撰；绝不自动改线上 config 人审；observability-only）** —— **反事实策略实验室 L1-L4 全部收官**。整个实验室已建成：拿真实磁带喂真实 Judge、扰动任意非 LLM 旋钮、量化整策略 delta、自动诚实方向推荐。后续可选：多旋钮联合扫描、LLM 旋钮、真实磁带数据累积后跑实战推荐。样本足够（≥数百笔）+ L2-L4 就绪前**维持 choppy 地板 1.50 不动**。**L1 已知边界（最终代码审查命名，留 #2 处理）**：(a) 端到端 driver 缺失——`build_cf_report` / `resolve_counterfactual` / honesty gate 各自单测齐全但无 glue 从真实 `rejected_signal_events.jsonl` + klines 生成 report rows，即"旧数据立刻见数"需 #2 补回放 driver；(b) tick `klines_1s.db` retention 配置（`tick_capture_retention_days`）已加但 `OneSecBarStore` 尚未接 prune，1s 库当前无界增长；(c) `replay_report.py` 并存两套样本充分性阈值（旧 Phase 2 `<5` vs 诚实 gate `n<30`），需注明 CF 以诚实 gate 为准；(d) 决策磁带 prune 已节流（默认每 500 写一次，避免热路径 O(n²)）。design `docs/superpowers/specs/2026-06-13-counterfactual-replay-foundation-design.md`，plan `docs/superpowers/plans/2026-06-13-counterfactual-replay-foundation.md`。**2026-06-16 兑现实验室 → 三连修使端到端首次可信（已归档入 main）**：(1) `fix-cf-lab-ev-coldstart-deadlock`——L3b CF EV-gate 因 win-rate 语义错配冷启动死锁（CF rolling 胜率窗口镜像 Reviewer 20 窗口 + 暖启动播种 + gate-level fidelity）；(2) `fix-cf-lab-replay-config-parity`——replay 用空 config 致 phase2 flag 默认 False vs live True（replay 改用生产 config 基线 `production_base_config`，决策磁带录 `config_snapshot` schema v3）；(3) `fix-cf-lab-symbol-state-injection`——`_inject_cf_state` 把 `_symbol_state` 清空致信号强度路径饿死（还原录制 `_symbol_state`）。驱动 `cf_direction_recommendation.py` baseline_fidelity 1.0(虚假)→0.34→0.798→**0.944（untrustworthy=False）**。**首个可信结论**：放宽 rr_floor_default/min_confidence 的 PnL delta≈0 → 非高价值杠杆。**2026-06-17 诊断「CF opens 恒 2」→ 证伪"组合层 slot/EV 瓶颈"假设（承接 `trend-entry-rr-fidelity` 留的 follow-up「② 组合 slot/EV 瓶颈诊断」，systematic-debugging，临时 observability 驱动跑完即删）**：仪表化 `cf_portfolio.apply_decision` 开仓边界跑 1422 条 v2+tech 磁带，三臂（baseline/-50、宽开 rr_floor=1.0+min_conf=30/-50、宽开/-300 live）逐字节相同 = **Judge accepts=21 → opened=2，`slot_full=0`／`day_halted=0`／`none_symbol=0`，组合三门从不触发**（daily-stop −50 vs live config.yaml −300 单变量 A/B 0 次熔断）。真因：(1) 入场旋钮造不出新 accept——rr_floor→1.0+min_conf→30 翻转 **94% gate-label（1337/1422）但 accept 恒 21**（74% 磁带卡 `rr_below_floor`=1060/1424，放宽只级联到 quality_gate/ev_gate，over-determination 在 accept 边界的最干净证明）；(2) 21 个 accept **全落单一 symbol ADA-USDT**（磁带 100% reject/15 symbol/0 录制 accept，ADA 21 个是 baseline 保真残差=回放开了 live 拒的 ev_gate/rr_below_floor 临界单），经同-symbol 去重 + ~1h 估算持仓塌缩成 2 episode。**结论**：① "组合 slot/EV 瓶颈"是错误归因，该层全程旁观；② 迄今最强独立坐实"choppy 地板 1.50 维持"（74% 卡 rr_below_floor，压到 1.0 仍 0 新开仓）；③ CF 回放实验室喂 reject-only 磁带结构性产 ≈0 真开仓，**不能用来验 rr-fidelity 两杠杆**（lever2 抬 effective_rr≠降阈值；lever1 干净趋势人群虽在磁带但放宽地板只级联），故 lever2 改用 `rejected_signal_events` 前向影子流验证是对的。**后续可选**：多旋钮联合扫描、LLM 旋钮、`_inject_cf_state` A-full 精确级联（last_open_time）。 |
 | DONE 2026-06-17 | CF 驱动组合参数对齐 live（`cf-lab-driver-portfolio-param-parity`，comet full 流程归档入 main） | 上面诊断发现 `cf_direction_recommendation.py` / `cf_rr_fidelity_ab.py` 调 `build_delta_report`/`sweep_knob`/`sweep_grid` 时不传组合参数 → 用默认 `daily_pnl_hard_stop=-50`/`initial_equity=1000`，而 live config.yaml 是 `-300`/`EFFECTIVE_BALANCE_CAP=300`。修法=两驱动加本地 `_live_portfolio_kwargs()` 从 `config_loader.load_config()` 派生 live 值（−300/300/slot 3/consec 3）`**` 展开传入；`sweep_knob`/`sweep_grid`/`build_delta_report` 已接受并透传，**零库改动、零生产路径改动**。从 tweak 升级 full（用户选择）：Design Doc `docs/superpowers/specs/2026-06-17-cf-lab-driver-portfolio-param-parity-design.md` + Plan + verify 报告 | helper 实测返回 live `-300/300/3/3`；全量 pytest **1285 绿**（无新测）；红线守卫不变；observability-only 无须 event_backtest |
 

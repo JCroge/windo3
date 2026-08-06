@@ -1,7 +1,7 @@
 # 项目阶段总览
 
-更新日期：2026-07-23  
-代码基线：`main@9f5d297`
+更新日期：2026-08-06
+Tactical V2 代码基线：`884ba60`
 
 本文回答三个问题：
 
@@ -13,7 +13,7 @@
 
 项目已经从最初的套利验证，演进成一套 OKX USDT 永续趋势交易系统：主链路是 `run_agents.py` 多 Agent 自动交易，辅链路包括 Tactical Exit Track、Shadow Tactical live sidecar、Paper 双轨、反事实实验室和一组运维/风控/账本工具。
 
-当前工程能力已经比较完整，关键风险不在“能不能跑”，而在“自主策略 edge 是否足够稳定”。因此当前阶段是：小额 live 灰度 + Tactical/sidecar 样本累计 + 严格风控保护，live 扩容仍按条件放行。
+当前工程能力已经比较完整，关键风险不在“能不能跑”，而在“自主策略 edge 是否足够稳定”。Tactical V2 已完成 shadow gate、sidecar drain 和首轮 live cohort，当前阶段是固定 `100U x 3` 的受控 live 观察，不扩大容量。
 
 ## 规模口径
 
@@ -28,20 +28,20 @@
 | Sidecar 入口 | 1 | `python3 scripts/shadow_tactical_live_sidecar.py ...` |
 | 旧归档域 | 1 | CEX 套利相关代码，仅作历史参考 |
 
-2026-07-15 完整回归基线是 `1543 passed, 4 deselected, 1 warning`。2026-07-23 sidecar ghost-position safety 变更做的是聚焦验证：`142 passed` + OpenSpec strict PASS。
+最新本地全量回归为 `1878 passed, 4 deselected`。Tactical V2 live promotion、入口精确回查/自愈和重启后 PnL replay 的专项与云服验收记录见 `docs/superpowers/reports/2026-07-28-promote-shadow-tactical-v2-live-verify.md` 与 `docs/superpowers/reports/2026-08-06-fix-tactical-canceled-entry-self-heal-verify.md`。
 
 ## 当前阶段
 
 | 维度 | 状态 |
 |---|---|
 | 工程链路 | 主链路、风控、执行、账本、Paper、TG 运维、健康观测都已可运行 |
-| 实盘状态 | 小额 live 灰度 GO；扩容 CONDITIONAL GO |
+| 实盘状态 | Tactical V2 首轮 `LIVE 100U x 3`；不扩大容量 |
 | 策略状态 | 趋势单是主要 edge 假设；choppy/mixed/neutral 无方向单已被多轮诊断证明质量差 |
-| Tactical | Main 与 Tactical 出口已分轨；live 是否启用以 `.env` 和启动 banner 为准 |
-| Sidecar | 已有独立 Shadow Tactical live sidecar，能从 shadow ledger 直接镜像 eligible Tactical 记录 |
+| Tactical | V2 已接管合格 Tactical 执行；旧 V1 live 分支不作为当前开仓路径 |
+| Sidecar | resident monitor 保留历史 owner 与审计能力，当前 `admission_enabled=false` |
 | 最大红线 | 观测/反事实产物 write-only，不允许进入 live gate/rank/veto/halt/daily-stop |
 
-2026-07-23 09:40 UTC 云服核对过的运行快照：本地与云服代码对齐到 `main@9f5d297`；Main 与 sidecar 都以 `nohup` 方式运行，不是 systemd；OKX 当时无非零仓位；Main 和 sidecar 本地持仓均为 0。Sidecar 历史累计 `opened=21`、`rejected=151`，重启后未再新增 opened/rejected，因为它只消费严格 eligible 的 shadow 记录：`track=tactical`、`exit_profile=tactical_v1`、`tactical_track_gate=pass`。
+2026-08-06 云服快照：Main PID `2663623`，Sidecar PID `1773370`；V2 `LIVE 100U x 3`，`0 active / 0 pending / 3 free`，`integrity_halt=null`，protection/reconciliation 均 `verified`，rolling PnL `-0.9593U`、loss streak `1`；`data/positions.json` 为空。Sidecar `admission_enabled=false`，当前 active=0，历史累计 `opened=69/rejected=1505`。两者均为常驻进程，不是 systemd/pm2；没有部署应用级 supervisor。
 
 ## 15 个一级功能域
 
@@ -92,16 +92,25 @@ Judge._classify_track
   -> shadow_tp / shadow_sl / shadow_tactical_max_hold / shadow_expired
 ```
 
-Shadow Tactical live sidecar：
+历史 Sidecar owner/drain 路径（当前 admission 关闭）：
 
 ```text
 data/rejected_signal_events.jsonl
   -> scripts/shadow_tactical_live_sidecar.py
-  -> strict eligible filter
-  -> ContractExecutor.open_sidecar_plan()
+  -> strict eligible filter（仅 legacy owner/drain）
   -> sidecar-owned state/ledger/owners files
   -> monitor_sidecar_owned_exposure()
   -> reduce_position / close_position when ownership is proven
+
+Tactical V2 live：
+
+```text
+eligible Tactical candidate
+  -> tactical_intent.v2 / episode dedup
+  -> executable ask/bid + frozen-entry policy
+  -> V2-owned protection / exit / final-PnL outbox
+  -> governor / Reviewer / Judge
+```
 ```
 
 Sidecar 当前严格 eligible filter 是：
@@ -220,5 +229,5 @@ Sidecar：
 1. 继续观察 Main 的 `tech_analyst` backlog，避免队列长期高位拖慢决策。
 2. 继续累计 Tactical/sidecar 样本，按 final PnL 和 `track/exit_profile/tactical_close_reason` 分桶判断，而不是按单次 shadow 样本下结论。
 3. Sidecar 如果要续跑，先确认 owners 里无 ghost exposure、ambiguous net-mode stack 和未解决保护单。
-4. live 扩容前补齐 supervisor/systemd 或等价守护，并把 `BOT_INSTANCE_ID` 写入启动配置。
+4. 如需长期无人值守，再单独设计并验收 supervisor；当前云服没有应用级 cron/systemd/pm2 守护，不要把 `nohup` 误记为自动拉起。
 5. 策略改善重点应回到上游方向质量、体制识别和趋势行情筛选；单纯放宽 R:R、confidence 或入场门已经多次被反事实实验室证明不是高价值杠杆。

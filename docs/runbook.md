@@ -3,7 +3,7 @@
 ## 快速启动
 
 ### 环境要求
-- Python 3.9+
+- Python 3.10+
 - pip3
 
 ### 安装步骤
@@ -65,7 +65,7 @@ kill -SIGINT $(pgrep -f run_agents.py)
 
 **Shadow Tactical live sidecar（独立进程，高风险实验入口）**：
 
-Sidecar 只用于镜像 strict eligible Tactical shadow 记录，写 `data/shadow_tactical_live_*` 专属状态，不应修改 Main `.env` 或重启 Main。OKX `net_mode` 下同标的堆叠会被阻断；ghost exposure 会 fail-closed 并要求人工处理。
+Sidecar 只用于镜像 strict eligible Tactical shadow 记录，写 `data/shadow_tactical_live_*` 专属状态，不应修改 Main `.env` 或重启 Main。**当前线上 admission 已关闭，仅保留 resident monitor 管理历史 owner；不得直接执行 `run` 恢复新开仓。** OKX `net_mode` 下同标的堆叠会被阻断；ghost exposure 会 fail-closed 并要求人工处理。
 
 ```bash
 python3 scripts/shadow_tactical_live_sidecar.py status
@@ -95,7 +95,7 @@ python3 scripts/shadow_tactical_live_sidecar.py stop
 | `/health` | 查看 agent loop、queue、LLM、data 四维健康明细 |
 | `/stop` | 优雅退出 |
 | `/restart` | 优雅退出后自动重启 |
-| `/log` | 最近10条关键日志 |
+| `/log` | 最新10条关键日志 |
 
 **强制停止**：
 ```bash
@@ -267,7 +267,7 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | TELEGRAM_BOT_TOKEN | Telegram Bot Token | - | 否（通知） |
 | TELEGRAM_CHAT_ID | Telegram Chat ID | - | 否（通知） |
 
-**云服 Tactical 运行快照（2026-07-15）**：`TACTICAL_TRACK_ENABLED=true`、`TACTICAL_SHADOW_ONLY=false`、`TACTICAL_TP1_R=1.00`、`TACTICAL_MIN_RR_FOR_TRACK=0.75`、`TACTICAL_MIN_EV_FOR_TRACK=-0.04`。这是生产灰度配置，不改变代码默认值；重启或回滚前必须重新核对 `.env` 与启动 banner。
+**云服运行快照（2026-08-06）**：Tactical V2 为 `LIVE 100U x 3`，`0 active / 0 pending / 3 free`，`integrity_halt=null`，protection/reconciliation 均 `verified`，rolling PnL `-0.9593U`、loss streak `1`。Sidecar 仍 resident 但 `admission_enabled=false`、active=0；不要把旧 V1 `TACTICAL_TRACK_ENABLED` / `TACTICAL_SHADOW_ONLY` 默认值当作 V2 线上状态。重启或回滚前必须重新核对 `.env`、启动 banner 和 `data/tactical_v2_status.json`。
 
 ## R:R Floor 策略
 
@@ -347,12 +347,12 @@ V2 不会重新启用旧的 `TACTICAL_SHADOW_ONLY=false` live 分支。Judge 在
 
 V2 风控只暂停新开：滚动 24h final PnL `<= -15U`，或 3 次连续 final loss 触发 60 分钟暂停。pending/estimated/duplicate PnL 不计，correction 按同一 position 的最终值修正。execution/protection/ownership 无法证明时进入不自动过期的 integrity halt；已有持仓仍继续管理。禁止通过改状态文件、删除 event ledger、`/force_resume` 或重启来绕过 V2 integrity/cutover gate。
 
-`entry_reconciliation_unknown` 和 `entry_cancel_unproven` 会由 Main 每 30 秒重做一次精确 `clOrdId` 证明；这是证据驱动的自愈，不是计时自动解除。任一 owner/order/position/quantity/TP/SL 不完整都必须继续 halt，且复查绝不得重提 entry。`entry_cancel_unproven` 必须保留原 cancel reason，后续仍见 open order 时继续撤单，不能退回普通 `pending_entry`。final PnL 先落 durable outbox 再发 bus，未 ack 会在重启后重发；governor/Reviewer/Judge 按 `resolution_id` 去重，但在“TG 已收到、outbox ack 尚未落盘”的崩溃窗口仍可能重复一次 TG 通知。
+`entry_reconciliation_unknown` 和 `entry_cancel_unproven` 会由 Main 每 30 秒重做一次精确 `clOrdId` 证明；这是证据驱动的自愈，不是计时自动解除。任一 owner/order/position/quantity/TP/SL 不完整都必须继续 halt，且复查绝不得重提 entry。`entry_cancel_unproven` 必须保留原 cancel reason，后续仍见 open order 时继续撤单，不能退回普通 `pending_entry`；已被交易所终态取消且 `remaining_qty=0` 的订单必须收敛为 terminal `expired`。final PnL 先落 durable outbox 再发 bus，未 ack 会在重启后重发；无 `pnl_delivery_required` 的历史 correction 也必须先让 intent 收敛到 `closed_final`，再写 migration ack。governor/Reviewer/Judge 按 `resolution_id` 去重，但在“TG 已收到、outbox ack 尚未落盘”的崩溃窗口仍可能重复一次 TG 通知。
 
-**部署与切换顺序**：
+**历史部署与切换顺序（已完成）**：
 
 ```bash
-# 1. 首先只跑 V2 shadow；sidecar 暂时保持原 admission，便于同窗对照
+# 1. 历史步骤：先跑 V2 shadow；sidecar 暂时保持 admission，便于同窗对照
 TACTICAL_TRACK_ENABLED=true
 TACTICAL_SHADOW_ONLY=true
 TACTICAL_V2_MODE=shadow
@@ -371,7 +371,7 @@ python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live
 python3 scripts/shadow_tactical_live_sidecar.py \
   drain-report --namespace live --archive
 
-# 5. retirement proof 验证通过后才请求 live
+# 5. retirement proof 验证通过后切换 live（当前线上已完成）
 TACTICAL_V2_MODE=live
 ```
 

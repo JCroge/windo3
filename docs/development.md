@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-07-23，系统主入口仍是多 Agent 交易系统：
+截至 2026-08-06，系统主入口仍是多 Agent 交易系统：
 
 ```bash
 python3 run_agents.py
@@ -12,7 +12,7 @@ python3 run_agents.py
 
 `live_trading.py` 已标记为 deprecated，只保留给单策略调试参考。生产、paper、testnet、实盘验收都应走 `run_agents.py`。
 
-当前工程链路已具备 paper/mock、小额 live 灰度和 Shadow Tactical live sidecar 观察基础；OKX posMode 执行兼容、R:R Floor Policy、Long Entry Position Guard、分批止盈生命周期、审计整改、TG Graceful Ops、Entry Drift Hybrid Policy、Pullback Entry Paper Parity、Short Main Path Risk Guard Parity、Tactical Exit Track、保护单 halt recovery 与 sidecar ghost-position safety 均已落地。2026-07-15 完整回归验证为 `1543 passed / 4 deselected / 1 warning`；2026-07-23 sidecar 聚焦验证为 `142 passed`。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 T0/T1/T6 PASS。live 扩容为 CONDITIONAL GO，扩容前需完成 `BOT_INSTANCE_ID` 启动配置、真实 TG 命令链与 drift gate 运维验收。收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。当前功能域总览见 `docs/project-stage-summary.md`。
+当前工程链路已具备 paper/mock、Tactical V2 固定 `100U x 3` live 观察和 Sidecar resident monitor；OKX posMode 执行兼容、R:R Floor Policy、Long Entry Position Guard、分批止盈生命周期、审计整改、TG Graceful Ops、Entry Drift Hybrid Policy、Pullback Entry Paper Parity、Short Main Path Risk Guard Parity、Tactical Exit Track、保护单 halt recovery、V2 精确入口回查/自愈和 durable PnL replay 均已落地。最新全量回归为 `1878 passed / 4 deselected`。OKX 真实 testnet 语义验收：long_short_mode 子账户跑 T0-T15 13 PASS / 3 SKIP，net_mode 切换后单独跑 T0/T2/T3 3 PASS；第四次审计 owner-tag 补验 T0/T1/T6 PASS。当前不扩大 V2 容量、不恢复 Sidecar admission；收益目标仍未证明，真实事件回测需要持续验证，任何策略或风控改动都不能只用 mock 单测证明有效。当前功能域总览见 `docs/project-stage-summary.md`。
 
 **热更新语义**：Telegram `/restart` 现在会让 `run_agents.py` 在优雅停机后执行 `os.execv(...)`，重新拉起 Python 解释器并重新 import 已修改的模块。`execv` 后 PID 可能不变，这是正常现象；判断是否换上新代码，应看启动日志和新行为。若变更的是 Python/venv/系统级依赖，仍建议 `kill -TERM $(pgrep -f run_agents.py)` 后 `nohup python3 run_agents.py &`。
 

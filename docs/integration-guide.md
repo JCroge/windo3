@@ -4,7 +4,7 @@
 
 本文档面向需要集成或扩展交易系统的开发者。
 
-**系统状态（2026-07-23）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate、Tactical Exit Track、protection halt recovery 和 Shadow Tactical live sidecar owner isolation 均有单点收口函数或明确边界。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义；消费状态时必须区分全局 halt、per-symbol halt、Tactical circuit 和 sidecar 专属 `shadow_tactical_live_*` 状态。生产入口不再接旧 `live_trading.py`。
+**系统状态（2026-08-06）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`；Tactical V2 当前为云服 live 执行 owner，固定 `100U x 3`，Sidecar 仅 resident monitoring 且 admission 关闭。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate、protection halt recovery、精确入口回查和 durable final-PnL replay 均有单点收口函数或明确边界。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义；消费状态时必须区分全局 halt、per-symbol halt、Tactical V2 status 和 sidecar 专属 `shadow_tactical_live_*` 状态。生产入口不再接旧 `live_trading.py`。
 
 ## 核心模块接口
 
@@ -289,7 +289,8 @@ class MyAgent(BaseAgent):
 **状态消费约定**：
 - 全局 halt：读 `data/halt_state.json` 的 `halted` / `can_open_new` / `reason`。
 - Per-symbol halt：读 `data/agent_health.json.halted_symbols` 或 `/halts`。
-- Tactical circuit：读 `data/riskguard_state.json.tactical_circuit.pause_until` / `pause_reason`。
+- Tactical V2：读 `data/tactical_v2_status.json` 的 `mode`、`admission_paused`、`integrity_halt`、`rolling_pnl`、`protection` 和 `reconciliation` 字段。
+- 旧 Tactical circuit：仅作 V1 兼容观测，不可用于判断 V2 是否暂停或恢复。
 - 保护单自愈只覆盖 `okx_sl_algo_unresolved:<symbol>` 与 `migrate_missing_sl`；其它 halt 原因仍需 `/resume` 或 `/force_resume`。
 
 CounterfactualLedger 事件类型：

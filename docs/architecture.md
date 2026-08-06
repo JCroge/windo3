@@ -4,7 +4,7 @@
 
 加密货币趋势交易系统，基于技术分析和合约交易，支持多AI Agent协作决策。
 
-**当前状态（2026-07-23）**：主入口为 `run_agents.py`，当前趋势交易架构以 Main Trend Runner + Tactical Exit Track 分轨运行；代码默认仍是 `TACTICAL_TRACK_ENABLED=false` / `TACTICAL_SHADOW_ONLY=true`，云服实际状态必须看 `.env` 与启动 banner。Executor 已支持 OKX attached SL 有界验证与保护单 halt 自愈；Shadow Tactical live sidecar 已作为独立进程能力归档，负责直接镜像 strict eligible Tactical shadow 记录，并具备 owner isolation、exchange-flat reconcile、ghost-position fail-closed、同标的堆叠阻断和 entry drift 保护。当前功能域总览见 `docs/project-stage-summary.md`，硬约束以 `CLAUDE.md` 为准，逐基线里程碑见 `docs/handoff.md`，当前待办见 `docs/to-do-list.md`。下方"重要变更"是历史时间线，不代表当前待办状态。
+**当前状态（2026-08-06）**：主入口为 `run_agents.py`。Tactical V2 已在云服 `LIVE`，固定 `100U x 3`，使用独立 intent/episode/entry/protection/exit/PnL 状态机；Sidecar 仅保留 resident monitor，`admission_enabled=false`。入口精确 `clOrdId` 回查、保护 halt 自愈、旧 halt 迁移和重启后 durable final-PnL replay 已落地。云服当前值以 `.env`、启动 banner 和 `data/tactical_v2_status.json` 为准；下方“重要变更”是历史时间线，不代表当前待办状态。
 
 **重要变更**：
 - 2026-05-06：原套利策略经全面验证不可行（0次机会），转向趋势交易+合约策略
@@ -222,7 +222,7 @@ PositionAnalyst 裁决引擎（纯规则矩阵）
 
 ### Tactical Exit Track
 
-Tactical 是 Main Trend Runner 之外的短线出口轨道，目标是把弱/混合环境但方向仍有效的机会从 Main 的趋势奔跑假设中拆出，单独定价、单独退出、单独复盘。代码默认配置为 `TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`；生产是否真开由 `.env` / 启动 banner 决定，2026-07-15 云服为 Tactical live 灰度。
+Tactical 是 Main Trend Runner 之外的短线出口轨道。旧 V1 轨道仍保留兼容字段和历史复盘能力，但当前云服的合格 Tactical 执行由 V2 controller 接管；代码默认配置仍为 `TACTICAL_TRACK_ENABLED=false`、`TACTICAL_SHADOW_ONLY=true`，线上状态必须看 V2 banner/status。
 
 **数据流**：
 ```text
@@ -246,6 +246,26 @@ TechAnalyst tech_analysis
 - 门控顺序是 `tactical_cost_gate` 在前，`TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` 的 `tactical_track_gate` 在后。成本门失败只能进入 `shadow_only` 或拒绝，不能借 Main ladder TP2/TP3 的 effective R:R 过门；成本门通过但阈值门失败保留 `exit_profile=tactical_v1` 做 max-hold counterfactual，但不算 true-open Tactical 样本。
 - Executor 本地生命周期处理 `tactical_tp1`、`tactical_invalidated`、`tactical_weakened_no_progress`、`tactical_max_hold`；交易所侧仍只托管保护性 SL，TP owner 仍在本地。
 - Tactical 日亏、连亏暂停、并发槽位独立于 Main；保护单/执行完整性失败仍按系统级 fail-closed 处理。`/status` 将全局 halt、per-symbol halt、Tactical circuit 拆成三行，避免把保护单 halt 误判为 Tactical 亏损暂停。
+
+### Tactical V2 Live Controller
+
+当前云服的 Tactical live owner 是 V2 controller，不是旧 V1 live 分支，也不是 Sidecar。Judge 产生合格候选后，controller 将计划冻结为 `tactical_intent.v2`，按固定 `100U` 保证金和 3 个 active-or-pending 槽运行。
+
+```text
+eligible Tactical candidate
+  -> intent/episode dedup
+  -> executable ask/bid check
+  -> immediate fill <= 0.10R
+     or one frozen-entry limit <= 900s
+  -> exact entry/protection reconciliation
+  -> V2-owned full TP1 + SL + 90m max-hold
+  -> final PnL durable outbox
+  -> governor / Reviewer / Judge (resolution_id dedup)
+```
+
+V2 不追已经越过 TP 的价格，不用 market fallback 补追；partial fill 只保护已成交数量。`strategy_owner=tactical_v2` 持仓不进入 Main 的 partial TP、trailing、thesis invalidation 或 Position Analyst close/reduce/add。滚动 24h final PnL `<= -15U` 或 3 次连续 final loss 只暂停新开，完整性证据不足则进入不自动过期的 integrity halt。
+
+入口回查和恢复是证据驱动的：每 30 秒重做精确 `clOrdId` 证明；交易所已终态取消且 `remaining_qty=0` 的 entry 收敛为 terminal `expired`；final PnL 先持久化再发布，重启后重放未 ack 记录。任何 owner/order/position/quantity/protection 不完整都必须保持 fail-closed，不能通过删状态或重启绕过。
 
 ### Protection Halt Recovery
 

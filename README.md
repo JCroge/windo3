@@ -4,14 +4,13 @@
 
 ## 系统状态
 
-- 2026-07-28 开发分支正在收口 **Tactical V2**：把合格 Shadow Tactical 计划冻结为 `tactical_intent.v2`，使用固定 `100U`、3 个独立 active-or-pending 槽、最多 5x、`0.10R` 追价上限、900 秒原价限价、全仓 TP1/SL、90 分钟 max-hold、滚动 24h `-15U` 新开暂停和 3 连亏 60 分钟暂停。默认 `TACTICAL_V2_MODE=off`；必须先经过 cloud shadow-only、sidecar drain archive 和 live cohort gate，不能直接打开 live。
-- 2026-07-15 完整基线：`1543 passed, 4 deselected, 1 warning`。对应归档 change：`openspec/changes/archive/2026-07-15-protective-sl-halt-recovery/`。
-- 2026-07-23 代码阶段：`main@9f5d297`，已补 Shadow Tactical live sidecar 的 exchange-flat reconcile、100U 独立放大、ghost-position safety、同标的堆叠阻断和 entry drift 保护；sidecar 聚焦验证 `142 passed`，阶段总览见 [docs/project-stage-summary.md](docs/project-stage-summary.md)。
-- 当前能力：**Tactical Exit Track** 已归档到 `openspec/changes/archive/2026-07-10-add-tactical-exit-track/`。它把弱/混合环境候选从 Main Trend Runner 中拆出，使用独立 `track=tactical` / `exit_profile=tactical_v1`、独立 R:R/EV、TP1 落袋、thesis-health、最大持仓时间和 Tactical 风控桶。
-- 代码默认上线状态仍是 `TACTICAL_TRACK_ENABLED=false` 且 `TACTICAL_SHADOW_ONLY=true`；2026-07-15 云服核对为 Tactical live 灰度（track=true、shadow_only=false、RR=0.75、EV=-0.04）。实际运行状态以 `.env` 与启动 banner 为准。
-- 保护单 halt recovery 已落地：OKX attached SL 先做有界验证；`okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl` 这类保护单 halt 只在风险已消失且无其它 unresolved symbol 时自动清除，manual/daily/reconcile halt 仍保持 fail-closed。
-- live 结构：OKX 实盘 paper+live 双轨、逻辑账户拆分、`trade_decision.v2` / `execution_result.v2` 消息契约、TG 运维命令、Entry Drift、Pullback Paper Parity、Short Main Path Risk Guard、Realized PnL Ledger 和反事实实验室均保留。
-- OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode T0/T1/T4/T5/T6/T8/T9/T10/T11/T12/T13/T14/T15 13 PASS（T2/T3 SKIP、T7 SKIP mock_only），net_mode 单独 T0/T2/T3 3 PASS；2026-05-29 owner-tag 补验 T0/T1/T6 PASS。
+- **当前线上执行路径（2026-08-06）**：Tactical V2 已在云服 `LIVE`，固定 `100U x 3`；当前快照为 `0 active / 0 pending / 3 free`、无 integrity halt、protection/reconciliation `verified`。Sidecar 保留 resident monitor，但 `admission_enabled=false`，不再新开仓。
+- V2 固定约束：最多 5x、`0.10R` 追价上限、900 秒 frozen-entry 限价、全仓 TP1/SL、90 分钟 max-hold、滚动 24h `-15U` 新开暂停、3 连亏 60 分钟暂停。代码默认仍为 `TACTICAL_V2_MODE=off`；云服实际模式以 `.env` 与启动 banner 为准。
+- 2026-08-05/06 已完成 V2 入口精确回查、保护单 halt 自愈、旧保护 halt 迁移和重启后 durable final-PnL replay；当前线上修复后的状态不依赖手工清空账本或重启绕过熔断。
+- 主入口仍是 `python3 run_agents.py`。云服当前由常驻进程运行，**没有已部署的应用级 cron/systemd/pm2 supervisor**；需要代码生效时使用 `/restart` 或按 [docs/runbook.md](docs/runbook.md) 的受控重启流程。
+- **Tactical Exit Track** 与旧 Shadow Tactical sidecar 的详细历史、验收和回滚证据分别见 [docs/handoff.md](docs/handoff.md) 与 `docs/superpowers/reports/`；不要把历史灰度快照当作当前线上状态。
+- 保护单 halt 仍保持 fail-closed：只允许在风险已消失且证据完整时自动清除 `okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl`；manual/daily/reconcile/未知原因必须人工处理。
+- OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 13 PASS、net_mode 3 PASS；owner-tag 补验 T0/T1/T6 PASS。
 
 具体阈值与开关以启动 banner 为准（启动后看 `logs/launcher_*.log` 第一段），不要从 README 硬抄数字。
 
@@ -54,7 +53,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 | 多头位置保护·体制感知 | `LONG_LIVE_REGIME_AWARE_RANGE_ENABLED` / `LONG_LIVE_MAX_RANGE_POS_CHOPPY` / `LONG_LIVE_DAILY_GAIN_RANGE_POS_CHOPPY` | choppy/mixed/bearish 收紧 range_pos 阈值转回调入场，bullish 保 0.82；总开关可回退（2026-06-21，生产起步 0.70/目标 0.55） |
 | EV 分桶 | `EV_BUCKET_MIN_TRADES` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT` | 稀疏 bucket 不抬 p_win（2026-05-26） |
 | Tactical 出口轨道 | `TACTICAL_TRACK_ENABLED` / `TACTICAL_SHADOW_ONLY` / `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` / `TACTICAL_TP1_R` / `TACTICAL_MAX_HOLD_MINUTES` | 代码默认 disabled + shadow-only；live 灰度需 track=true 且 shadow_only=false，先过 cost gate，再按 Tactical R:R≥0.75 且 EV>-0.04 筛“会真开”样本，TP1 默认 1.00R |
-| Tactical V2 执行 | `TACTICAL_V2_MODE` / `TACTICAL_V2_MARGIN_USDT` / `TACTICAL_V2_MAX_CONCURRENT` / `TACTICAL_V2_ROLLING_LOSS_LIMIT_USDT` | 默认 `off`；首轮固定 `100U x 3`、滚动 24h `-15U`，`live` 还要求已归档且 hash/namespace/owner 均匹配的 sidecar drain proof |
+| Tactical V2 执行 | `TACTICAL_V2_MODE` / `TACTICAL_V2_MARGIN_USDT` / `TACTICAL_V2_MAX_CONCURRENT` / `TACTICAL_V2_ROLLING_LOSS_LIMIT_USDT` | 代码默认 `off`；当前云服为 `live`，固定 `100U x 3`、滚动 24h `-15U`，并要求 sidecar drain proof |
 
 完整列表与默认值见 `utils/config_loader.py` 的 `DEFAULTS` 与 `HARD_LIMITS`。
 
