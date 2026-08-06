@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 
@@ -15,6 +15,9 @@ class ProtectionProof:
     protected_qty: float
     tp_algo_ids: tuple[str, ...]
     sl_algo_ids: tuple[str, ...]
+    safe_close_order_id: str = ""
+    safe_close_client_id: str = ""
+    cleanup_errors: tuple[dict, ...] = ()
 
 
 class LiveExchangeAdapter:
@@ -111,8 +114,17 @@ class LiveExchangeAdapter:
                     (),
                     (),
                 )
-                await self._fail_closed(intent, filled_qty, proof)
-                return proof
+                cleanup = await self._fail_closed(intent, filled_qty, proof)
+                return replace(
+                    proof,
+                    safe_close_order_id=str(
+                        (cleanup.get("safe_close") or {}).get("order_id") or ""
+                    ),
+                    safe_close_client_id=str(
+                        (cleanup.get("safe_close") or {}).get("client_order_id") or ""
+                    ),
+                    cleanup_errors=tuple(cleanup.get("cleanup_errors") or ()),
+                )
             cancel_fill = cancel.get("filled_qty")
             if cancel_fill is not None:
                 effective_filled_qty = max(effective_filled_qty, float(cancel_fill))
@@ -131,7 +143,17 @@ class LiveExchangeAdapter:
             sl_algo_ids=tuple(str(value) for value in raw.get("sl_algo_ids") or ()),
         )
         if not proof.complete:
-            await self._fail_closed(intent, effective_filled_qty, proof)
+            cleanup = await self._fail_closed(intent, effective_filled_qty, proof)
+            proof = replace(
+                proof,
+                safe_close_order_id=str(
+                    (cleanup.get("safe_close") or {}).get("order_id") or ""
+                ),
+                safe_close_client_id=str(
+                    (cleanup.get("safe_close") or {}).get("client_order_id") or ""
+                ),
+                cleanup_errors=tuple(cleanup.get("cleanup_errors") or ()),
+            )
         return proof
 
     async def _fail_closed(
@@ -139,7 +161,7 @@ class LiveExchangeAdapter:
         intent: Any,
         filled_qty: float,
         proof: ProtectionProof,
-    ) -> None:
+    ) -> dict:
         evidence = {
             "intent_id": intent.intent_id,
             "episode_id": intent.episode_id,
@@ -156,13 +178,14 @@ class LiveExchangeAdapter:
                 evidence=evidence,
             )
         cleanup_errors = []
+        safe_close = {}
         try:
             await asyncio.to_thread(self.executor.cancel_tactical_protection, intent)
         except Exception as exc:
             cleanup_errors.append({"operation": "cancel_protection", "error": str(exc)})
         ownership = self.executor.make_tactical_clord_id(intent.intent_id, "entry")
         try:
-            await asyncio.to_thread(
+            safe_close = await asyncio.to_thread(
                 self.executor.close_tactical_position,
                 intent,
                 filled_qty=filled_qty,
@@ -176,3 +199,7 @@ class LiveExchangeAdapter:
                 "protection_cleanup_failed",
                 {**evidence, "cleanup_errors": cleanup_errors},
             )
+        return {
+            "safe_close": dict(safe_close or {}),
+            "cleanup_errors": list(cleanup_errors),
+        }

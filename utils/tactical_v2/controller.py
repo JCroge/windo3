@@ -59,11 +59,13 @@ _ENTRY_RECHECK_INTEGRITY_REASONS = frozenset({
     "entry_cancel_unproven",
     "entry_fill_flat_awaiting_final_pnl",
     "entry_recovery_position_mismatch",
+    "tactical_protection_incomplete",
 })
 
 _ENTRY_RECOVERY_HALT_REASONS = frozenset({
     "entry_reconciliation_unknown",
     "entry_cancel_unproven",
+    "tactical_protection_incomplete",
 })
 
 
@@ -595,6 +597,7 @@ class TacticalV2Controller:
     async def recover(self, *, now: Optional[float] = None) -> None:
         """Reconcile every durable live command state without blind retries."""
         evaluated_at = float(self.now_fn()) if now is None else float(now)
+        self._requeue_durable_pnl_recoveries()
         self._recover_durable_entry_flat_final_halt()
         async with self._lock:
             protected_ids = [
@@ -605,6 +608,17 @@ class TacticalV2Controller:
         for intent_id in protected_ids:
             await self._recover_protected(intent_id, evaluated_at)
         await self.tick(now=evaluated_at)
+
+    def _requeue_durable_pnl_recoveries(self) -> None:
+        for record in self._intents.values():
+            if record.get("lane") != "live" or not record.get(
+                "pnl_recovery_queued"
+            ):
+                continue
+            snapshot = record.get("pnl_recovery_snapshot")
+            intent = record.get("intent")
+            if isinstance(snapshot, Mapping) and isinstance(intent, TacticalIntent):
+                self._emit_pnl_recovery_snapshot(intent, snapshot)
 
     async def _rollback_live_intent(
         self,
@@ -1455,6 +1469,17 @@ class TacticalV2Controller:
         intent: TacticalIntent,
         evaluated_at: float,
     ) -> None:
+        record = self._intents.get(intent_id)
+        if (
+            record is not None
+            and record.get("integrity_reason") == "tactical_protection_incomplete"
+        ):
+            await self._recover_protection_failure_halt(
+                intent_id,
+                intent,
+                evaluated_at,
+            )
+            return
         query = await self.live.query_entry(intent)
         query_state = str(query.get("query_state") or "query_error")
         observation = query.get("observation")
@@ -1607,6 +1632,104 @@ class TacticalV2Controller:
             self.governor.clear_integrity_halt(
                 f"entry-auto-reconcile:{intent_id}:{int(evaluated_at)}",
                 proof,
+            )
+            self._refresh_status(force=True, now=evaluated_at)
+
+    async def _recover_protection_failure_halt(
+        self,
+        intent_id: str,
+        intent: TacticalIntent,
+        evaluated_at: float,
+    ) -> None:
+        """Converge a fail-closed protection failure after the safe close settles."""
+        try:
+            exchange_position = await self.live.query_position(intent)
+        except Exception as exc:
+            async with self._lock:
+                record = self._intents.get(intent_id)
+                if record is not None:
+                    self._persist_record_state(
+                        record,
+                        "integrity_required",
+                        evaluated_at,
+                        integrity_reason="tactical_protection_incomplete",
+                        entry_query_state="protection_position_query_error",
+                        entry_query_errors=[{
+                            "source": "query_position",
+                            "error": str(exc),
+                        }],
+                        next_entry_recheck_at=(
+                            evaluated_at + ENTRY_HALT_RECHECK_SECONDS
+                        ),
+                    )
+            return
+
+        if exchange_position is not None:
+            async with self._lock:
+                record = self._intents.get(intent_id)
+                if record is not None:
+                    self._persist_record_state(
+                        record,
+                        "integrity_required",
+                        evaluated_at,
+                        integrity_reason="tactical_protection_incomplete",
+                        entry_query_state="protection_safe_close_pending",
+                        next_entry_recheck_at=(
+                            evaluated_at + ENTRY_HALT_RECHECK_SECONDS
+                        ),
+                    )
+            return
+
+        try:
+            cleanup = await self.live.cancel_protection(intent)
+        except Exception as exc:
+            async with self._lock:
+                record = self._intents.get(intent_id)
+                if record is not None:
+                    self._persist_record_state(
+                        record,
+                        "integrity_required",
+                        evaluated_at,
+                        integrity_reason="tactical_protection_incomplete",
+                        entry_query_state="protection_cleanup_error",
+                        entry_query_errors=[{
+                            "source": "cancel_protection",
+                            "error": str(exc),
+                        }],
+                        next_entry_recheck_at=(
+                            evaluated_at + ENTRY_HALT_RECHECK_SECONDS
+                        ),
+                    )
+            return
+
+        async with self._lock:
+            record = self._intents.get(intent_id)
+            if (
+                record is None
+                or record.get("state") != "integrity_required"
+                or record.get("integrity_reason")
+                != "tactical_protection_incomplete"
+            ):
+                return
+            self._queue_protection_flat_pnl_recovery(
+                record,
+                evaluated_at,
+            )
+            self._consume_episode(
+                intent.episode_id,
+                "risk_forced:protection_integrity",
+            )
+            self._persist_record_state(
+                record,
+                "exchange_closed_pending_pnl",
+                evaluated_at,
+                close_reason="risk_forced:protection_integrity",
+                close_order_id=record.get("safe_close_order_id"),
+                close_client_id=record.get("safe_close_client_id"),
+                protection_cleanup_proven=True,
+                recovery_kind="protection_failure",
+                entry_query_state="protection_safe_close_confirmed_flat",
+                next_entry_recheck_at=None,
             )
             self._refresh_status(force=True, now=evaluated_at)
 
@@ -1915,7 +2038,14 @@ class TacticalV2Controller:
                         record,
                         "integrity_required",
                         evaluated_at,
-                        integrity_reason=proof.reason,
+                        integrity_reason="tactical_protection_incomplete",
+                        protection_failure_reason=proof.reason,
+                        safe_close_order_id=proof.safe_close_order_id,
+                        safe_close_client_id=proof.safe_close_client_id,
+                        protection_cleanup_errors=list(proof.cleanup_errors),
+                        next_entry_recheck_at=(
+                            evaluated_at + ENTRY_HALT_RECHECK_SECONDS
+                        ),
                     )
             return
 
@@ -2239,21 +2369,68 @@ class TacticalV2Controller:
         observation: Mapping[str, Any],
         evaluated_at: float,
     ) -> None:
+        self._queue_flat_pnl_recovery(
+            record,
+            evaluated_at,
+            entry_price=(
+                observation.get("average_price")
+                or record.get("entry_price")
+                or record["intent"].entry_ref
+            ),
+            filled_qty=observation.get("filled_qty"),
+            close_reason="entry_recovery_exchange_closed",
+        )
+
+    def _queue_protection_flat_pnl_recovery(
+        self,
+        record: Dict[str, Any],
+        evaluated_at: float,
+    ) -> None:
+        self._queue_flat_pnl_recovery(
+            record,
+            evaluated_at,
+            entry_price=(
+                record.get("entry_price")
+                or record["intent"].entry_ref
+            ),
+            filled_qty=record.get("filled_qty"),
+            close_reason="risk_forced:protection_integrity",
+            close_order_id=record.get("safe_close_order_id"),
+            close_client_id=record.get("safe_close_client_id"),
+        )
+
+    def _queue_flat_pnl_recovery(
+        self,
+        record: Dict[str, Any],
+        evaluated_at: float,
+        *,
+        entry_price: Any,
+        filled_qty: Any,
+        close_reason: str,
+        close_order_id: Optional[str] = None,
+        close_client_id: Optional[str] = None,
+    ) -> None:
         intent = record["intent"]
-        if intent.intent_id in self._entry_pnl_recovery_queued:
+        if record.get("pnl_recovery_queued"):
+            snapshot = record.get("pnl_recovery_snapshot")
+            if isinstance(snapshot, Mapping):
+                self._emit_pnl_recovery_snapshot(intent, snapshot)
             return
         symbol = self.executor._normalize_symbol(intent.symbol)
         entry_request_id = self.executor.make_tactical_clord_id(
             intent.intent_id,
             "entry",
         )
+        close_client_id = (
+            close_client_id
+            or record.get("close_client_id")
+            or self.executor.make_tactical_clord_id(intent.intent_id, "close")
+        )
         recovery = {
             "symbol": symbol,
             "side": intent.side,
-            "entry_price": float(
-                observation.get("average_price") or intent.entry_ref
-            ),
-            "amount": float(observation.get("filled_qty") or 0),
+            "entry_price": float(entry_price or intent.entry_ref),
+            "amount": float(filled_qty or 0),
             "amount_usdt": float(intent.margin_usdt),
             "leverage": int(intent.leverage),
             "opened_at": float(
@@ -2278,10 +2455,7 @@ class TacticalV2Controller:
                 intent.intent_id,
                 "sl",
             ),
-            "close_client_id": self.executor.make_tactical_clord_id(
-                intent.intent_id,
-                "close",
-            ),
+            "close_client_id": close_client_id,
             "tp_algo_clord_id": self.executor.make_tactical_clord_id(
                 intent.intent_id,
                 "tp",
@@ -2290,8 +2464,9 @@ class TacticalV2Controller:
                 intent.intent_id,
                 "sl",
             ),
-            "tactical_close_reason": "entry_recovery_exchange_closed",
-            "close_reason": "entry_recovery_exchange_closed",
+            "close_order_id": close_order_id or record.get("close_order_id", ""),
+            "tactical_close_reason": close_reason,
+            "close_reason": close_reason,
             "attribution": {
                 "strategy_owner": "tactical_v2",
                 "intent_id": intent.intent_id,
@@ -2302,12 +2477,28 @@ class TacticalV2Controller:
                 "tactical_source": intent.tactical_source,
             },
         }
+        self._persist_record_state(
+            record,
+            record.get("state", "integrity_required"),
+            evaluated_at,
+            pnl_recovery_queued=True,
+            pnl_recovery_snapshot=recovery,
+        )
+        self._emit_pnl_recovery_snapshot(intent, recovery)
+
+    def _emit_pnl_recovery_snapshot(
+        self,
+        intent: TacticalIntent,
+        recovery: Mapping[str, Any],
+    ) -> None:
+        if intent.intent_id in self._entry_pnl_recovery_queued:
+            return
         if not hasattr(self.executor, "_removed_positions_data"):
             self.executor._removed_positions_data = []
         if not hasattr(self.executor, "_last_removed_symbols"):
             self.executor._last_removed_symbols = []
-        self.executor._removed_positions_data.append(recovery)
-        self.executor._last_removed_symbols.append(symbol)
+        self.executor._removed_positions_data.append(dict(recovery))
+        self.executor._last_removed_symbols.append(str(recovery["symbol"]))
         self._entry_pnl_recovery_queued.add(intent.intent_id)
 
     def _is_entry_flat_recovery_record(
@@ -2318,9 +2509,23 @@ class TacticalV2Controller:
         intent = record.get("intent") if record is not None else None
         return (
             record is not None
-            and record.get("state") == "integrity_required"
-            and record.get("integrity_reason")
-            == "entry_fill_flat_awaiting_final_pnl"
+            and (
+                (
+                    record.get("state") in {
+                        "integrity_required",
+                        "closed_final",
+                    }
+                    and record.get("integrity_reason")
+                    == "entry_fill_flat_awaiting_final_pnl"
+                )
+                or (
+                    record.get("recovery_kind") == "protection_failure"
+                    and record.get("state") in {
+                        "exchange_closed_pending_pnl",
+                        "closed_final",
+                    }
+                )
+            )
             and isinstance(intent, TacticalIntent)
             and intent.intent_id == intent_id
         )
@@ -2384,7 +2589,12 @@ class TacticalV2Controller:
                 "ownership": True,
                 "orders": True,
                 "positions": True,
-                "protection": True,
+                "protection": (
+                    current_halt.get("reason")
+                    != "tactical_protection_incomplete"
+                    or normalized.get("tactical_v2_proof", {}).get("complete")
+                    is True
+                ),
                 "intent_id": intent_id,
                 "position_id": normalized.get("position_id"),
                 "entry_request_id": normalized.get("entry_request_id"),
@@ -2404,8 +2614,7 @@ class TacticalV2Controller:
         if (
             record is None
             or record.get("state") != "closed_final"
-            or record.get("integrity_reason")
-            != "entry_fill_flat_awaiting_final_pnl"
+            or not self._is_entry_flat_recovery_record(intent_id, record)
         ):
             return False
         resolution_id = str(record.get("resolution_id") or "")

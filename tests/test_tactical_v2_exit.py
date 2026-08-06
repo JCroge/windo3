@@ -702,6 +702,190 @@ async def test_filled_entry_that_is_already_flat_stays_halted_without_final_pnl(
 
 
 @pytest.mark.asyncio
+async def test_protection_failure_reconciles_safe_close_and_releases_slot(tmp_path):
+    executor = LiveExecutorStub()
+    controller = _controller(tmp_path, executor)
+    accepted = await controller.handle_candidate(_candidate(), now=1000.0)
+    await controller.handle_quote(
+        "WLD-USDT",
+        {"bid": 0.999, "ask": 1.001, "timestamp": 1000.0},
+        now=1000.0,
+    )
+    executor.query_result = {
+        "query_state": "found",
+        "observation": {
+            "order_id": "entry-1",
+            "client_order_id": executor.make_tactical_clord_id(
+                accepted.intent_id, "entry"
+            ),
+            "status": "filled",
+            "filled_qty": 500.0,
+            "remaining_qty": 0.0,
+            "average_price": 1.001,
+        },
+        "successful_sources": ["private_get_trade_order"],
+        "errors": [],
+    }
+    executor.verify_tactical_protection = lambda intent, filled_qty: {
+        "complete": False,
+        "reason": "price_mismatch",
+        "representation": "incomplete",
+        "protected_qty": 0.0,
+        "tp_algo_ids": [],
+        "sl_algo_ids": [],
+    }
+    await controller.tick(now=1001.0)
+    assert controller.snapshot(now=1001.0)["intents"][0]["state"] == (
+        "integrity_required"
+    )
+    assert controller.snapshot(now=1001.0)["integrity_halt"]["reason"] == (
+        "tactical_protection_incomplete"
+    )
+
+    executor.exchange_position = None
+    await controller.tick(now=1032.0)
+
+    snapshot = controller.snapshot(now=1032.0)
+    assert snapshot["intents"][0]["state"] == "exchange_closed_pending_pnl"
+    assert snapshot["active_slots"] == 0
+    assert snapshot["integrity_halt"]["reason"] == (
+        "tactical_protection_incomplete"
+    )
+    assert executor._last_removed_symbols == ["WLD-USDT-SWAP"]
+    recovery = executor._removed_positions_data[0]
+    assert recovery["strategy_owner"] == "tactical_v2"
+    assert recovery["position_id"] == f"tv2:{accepted.intent_id}"
+
+
+@pytest.mark.asyncio
+async def test_protection_failure_final_pnl_clears_halt_idempotently(tmp_path):
+    executor = LiveExecutorStub()
+    controller = _controller(tmp_path, executor)
+    accepted = await controller.handle_candidate(_candidate(), now=1000.0)
+    await controller.handle_quote(
+        "WLD-USDT",
+        {"bid": 0.999, "ask": 1.001, "timestamp": 1000.0},
+        now=1000.0,
+    )
+    executor.query_result = {
+        "query_state": "found",
+        "observation": {
+            "order_id": "entry-1",
+            "client_order_id": executor.make_tactical_clord_id(
+                accepted.intent_id, "entry"
+            ),
+            "status": "filled",
+            "filled_qty": 500.0,
+            "remaining_qty": 0.0,
+            "average_price": 1.001,
+        },
+        "successful_sources": ["private_get_trade_order"],
+        "errors": [],
+    }
+    executor.verify_tactical_protection = lambda intent, filled_qty: {
+        "complete": False,
+        "reason": "price_mismatch",
+        "representation": "incomplete",
+        "protected_qty": 0.0,
+        "tp_algo_ids": [],
+        "sl_algo_ids": [],
+    }
+    await controller.tick(now=1001.0)
+    executor.exchange_position = None
+    await controller.tick(now=1032.0)
+    record = controller._intents[accepted.intent_id]
+
+    payload = {
+        "resolution_id": "corr-protection-1",
+        "strategy_owner": "tactical_v2",
+        "intent_id": accepted.intent_id,
+        "episode_id": accepted.episode_id,
+        "plan_hash": record["intent"].plan_hash,
+        "position_id": f"tv2:{accepted.intent_id}",
+        "entry_request_id": executor.make_tactical_clord_id(
+            accepted.intent_id, "entry"
+        ),
+        "pnl_status": "final",
+        "realized_pnl_net_usdt": -0.95,
+        "timestamp": 1033.0,
+        "close_cause": "external_unknown",
+        "tactical_v2_proof": {
+            "complete": True,
+            "entry_request_id": executor.make_tactical_clord_id(
+                accepted.intent_id, "entry"
+            ),
+            "entry_order_ids": ["entry-1"],
+            "close_order_ids": ["close-1"],
+            "entry_qty": 500.0,
+            "close_qty": 500.0,
+            "entry_fee_usdt": 0.10,
+        },
+    }
+
+    await controller.handle_pnl_resolution(payload)
+    snapshot = controller.snapshot(now=1033.0)
+    assert snapshot["intents"][0]["state"] == "closed_final"
+    assert snapshot["active_slots"] == 0
+    assert snapshot["integrity_halt"] is None
+
+    await controller.handle_pnl_resolution(payload)
+    rows = _event_rows(tmp_path)
+    assert [
+        row for row in rows if row["event_type"] == "governor_final_applied"
+    ].__len__() == 1
+
+
+@pytest.mark.asyncio
+async def test_protection_recovery_snapshot_requeues_after_restart(tmp_path):
+    executor = LiveExecutorStub()
+    controller = _controller(tmp_path, executor)
+    accepted = await controller.handle_candidate(_candidate(), now=1000.0)
+    await controller.handle_quote(
+        "WLD-USDT",
+        {"bid": 0.999, "ask": 1.001, "timestamp": 1000.0},
+        now=1000.0,
+    )
+    executor.query_result = {
+        "query_state": "found",
+        "observation": {
+            "order_id": "entry-1",
+            "client_order_id": executor.make_tactical_clord_id(
+                accepted.intent_id, "entry"
+            ),
+            "status": "filled",
+            "filled_qty": 500.0,
+            "remaining_qty": 0.0,
+            "average_price": 1.001,
+        },
+        "successful_sources": ["private_get_trade_order"],
+        "errors": [],
+    }
+    executor.verify_tactical_protection = lambda intent, filled_qty: {
+        "complete": False,
+        "reason": "price_mismatch",
+        "representation": "incomplete",
+        "protected_qty": 0.0,
+        "tp_algo_ids": [],
+        "sl_algo_ids": [],
+    }
+    await controller.tick(now=1001.0)
+    executor.exchange_position = None
+    await controller.tick(now=1032.0)
+    assert controller._intents[accepted.intent_id]["pnl_recovery_queued"] is True
+
+    restarted_executor = LiveExecutorStub()
+    restarted_executor.exchange_position = None
+    restarted = _controller(tmp_path, restarted_executor, now=1033.0)
+    await restarted.recover(now=1033.0)
+
+    assert restarted_executor._last_removed_symbols == ["WLD-USDT-SWAP"]
+    assert len(restarted_executor._removed_positions_data) == 1
+    assert restarted_executor._removed_positions_data[0]["position_id"] == (
+        f"tv2:{accepted.intent_id}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_entry_visibility_deadline_does_not_overwrite_newer_halt(tmp_path):
     executor = LiveExecutorStub()
     controller = _controller(tmp_path, executor)
