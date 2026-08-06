@@ -130,6 +130,86 @@ async def test_startup_replays_unpublished_final_for_queued_integrity_recovery(
 
 
 @pytest.mark.asyncio
+async def test_startup_replays_legacy_final_until_intent_reaches_closed_final(
+    tmp_path,
+):
+    from agents.trading.executor import MultiExecutor
+
+    controller = _controller(tmp_path)
+    accepted = await controller.handle_candidate({
+        "candidate_id": "candidate-legacy-final",
+        "namespace": "testnet",
+        "symbol": "WLD-USDT",
+        "side": "long",
+        "entry_ref": 1.0,
+        "stop_loss": 0.95,
+        "take_profit": 1.08,
+        "leverage": 5,
+        "source_shadow_id": "shadow-legacy-final",
+        "tactical_source": "main_quality_failed",
+        "created_at": 1000.0,
+        "tf_15m_available": True,
+        "tf_15m_bias": "bullish",
+        "tf_15m_closed_bar_ts": 900.0,
+        "tf_15m_structure_token": "break_up:wld",
+        "tf_15m_block_long": False,
+    }, now=1000.0)
+    record = controller._intents[accepted.intent_id]
+    record.update({
+        "lane": "live",
+        "state": "integrity_required",
+        "integrity_reason": "tactical_protection_incomplete",
+        "pnl_recovery_queued": True,
+    })
+    correction = {
+        "event_id": "legacy-correction-1",
+        "symbol": "WLD-USDT-SWAP",
+        "entry_request_id": "entry-client-legacy",
+        "position_id": f"tv2:{accepted.intent_id}",
+        "side": "long",
+        "realized_pnl_net_usdt": -1.25,
+        "pnl_source": "okx_fills_history",
+        "entry_attribution": {
+            "strategy_owner": "tactical_v2",
+            "intent_id": accepted.intent_id,
+            "episode_id": accepted.episode_id,
+            "plan_hash": record["intent"].plan_hash,
+        },
+    }
+
+    payload = MultiExecutor._pnl_payload_from_correction(correction)
+    applied = controller.governor.apply_final(
+        controller._normalize_pnl_resolution(payload)
+    )
+    assert applied.accepted is True
+
+    published = []
+
+    class LedgerStub:
+        def find_unpublished_final_pnl_corrections(self, *, strategy_owner):
+            assert strategy_owner == "tactical_v2"
+            return [correction]
+
+        def mark_pnl_correction_published(
+            self,
+            correction_event_id,
+            resolution_id,
+        ):
+            published.append((correction_event_id, resolution_id))
+
+    agent = MultiExecutor.__new__(MultiExecutor)
+    agent._tactical_v2_controller = controller
+    agent.executor = SimpleNamespace(ledger=LedgerStub())
+    agent.logger = MagicMock()
+    agent._route_pnl_event = AsyncMock()
+
+    await agent._replay_unconsumed_tactical_v2_finals()
+
+    agent._route_pnl_event.assert_awaited_once()
+    assert published == []
+
+
+@pytest.mark.asyncio
 async def test_non_v2_final_is_not_imported(tmp_path):
     controller = _controller(tmp_path)
 
