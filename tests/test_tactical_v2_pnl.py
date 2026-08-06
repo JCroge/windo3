@@ -67,6 +67,68 @@ async def test_controller_routes_bus_final_and_correction_exactly_once(tmp_path)
     assert event_types.count("governor_final_applied") == 2
 
 
+def test_durable_final_replays_for_queued_integrity_recovery(tmp_path):
+    controller = _controller(tmp_path)
+    controller._intents["intent-1"] = {
+        "state": "integrity_required",
+        "integrity_reason": "tactical_protection_incomplete",
+        "pnl_recovery_queued": True,
+    }
+
+    payload = {
+        **_final_payload("queued-final", -1.25),
+        "pnl_delivery_required": True,
+    }
+
+    assert controller.should_replay_durable_pnl_final(payload) is True
+
+
+@pytest.mark.asyncio
+async def test_startup_replays_unpublished_final_for_queued_integrity_recovery(
+    tmp_path,
+):
+    from agents.trading.executor import MultiExecutor
+
+    controller = _controller(tmp_path)
+    controller._intents["intent-1"] = {
+        "state": "integrity_required",
+        "integrity_reason": "tactical_protection_incomplete",
+        "pnl_recovery_queued": True,
+    }
+    correction = {
+        "event_id": "correction-1",
+        "symbol": "WLD-USDT-SWAP",
+        "entry_request_id": "entry-client-1",
+        "position_id": "tv2-position-1",
+        "side": "long",
+        "realized_pnl_net_usdt": -1.25,
+        "pnl_source": "okx_fills_history",
+        "entry_attribution": {
+            "strategy_owner": "tactical_v2",
+            "intent_id": "intent-1",
+            "episode_id": "episode-1",
+            "plan_hash": "plan-1",
+        },
+        "pnl_delivery_required": True,
+    }
+
+    class LedgerStub:
+        def find_unpublished_final_pnl_corrections(self, *, strategy_owner):
+            assert strategy_owner == "tactical_v2"
+            return [correction]
+
+    agent = MultiExecutor.__new__(MultiExecutor)
+    agent._tactical_v2_controller = controller
+    agent.executor = SimpleNamespace(ledger=LedgerStub())
+    agent.logger = MagicMock()
+    agent._route_pnl_event = AsyncMock()
+
+    await agent._replay_unconsumed_tactical_v2_finals()
+
+    agent._route_pnl_event.assert_awaited_once()
+    assert agent._route_pnl_event.await_args.args[0] == "pnl_resolved"
+
+
 @pytest.mark.asyncio
 async def test_non_v2_final_is_not_imported(tmp_path):
     controller = _controller(tmp_path)

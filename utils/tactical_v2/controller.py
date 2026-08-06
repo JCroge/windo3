@@ -508,6 +508,12 @@ class TacticalV2Controller:
             and record.get("resolution_id") == payload.get("resolution_id")
         ):
             return True
+        if (
+            record.get("state") == "integrity_required"
+            and record.get("pnl_recovery_queued") is True
+            and payload.get("pnl_delivery_required") is True
+        ):
+            return True
         return (
             record.get("state") == "integrity_required"
             and record.get("integrity_reason")
