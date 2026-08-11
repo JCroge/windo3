@@ -29,6 +29,70 @@ def test_store_replays_events_after_snapshot(tmp_path):
     assert state["integrity_failure"] is None
 
 
+def test_candidate_handled_does_not_pollute_rebuilt_intent_state(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    store = TacticalStore(_paths(tmp_path))
+    created = {
+        "intent_id": "intent-1",
+        "episode_id": "episode-1",
+        "intent": {"candidate_id": "candidate-1"},
+        "state": "ready_for_quote",
+        "lane": "shadow",
+    }
+    store.append("intent_created", created, emitted_at=1)
+    store.append(
+        "candidate_handled",
+        {
+            "candidate_id": "candidate-1",
+            "source_shadow_id": "shadow-1",
+            "message_id": "message-1",
+            "symbol": "WLD-USDT",
+            "side": "long",
+            "accepted": True,
+            "reason": "accepted",
+            "episode_id": "episode-1",
+            "intent_id": "intent-1",
+            "evaluated_at": 2.0,
+            "replayed": False,
+            "payload_hash": "a" * 64,
+        },
+        emitted_at=2,
+    )
+
+    state = store.rebuild()
+
+    assert state["intents"]["intent-1"] == created
+
+
+def test_candidate_handled_without_prior_intent_does_not_synthesize_intent(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    store = TacticalStore(_paths(tmp_path))
+    store.append(
+        "candidate_handled",
+        {
+            "candidate_id": "candidate-unknown",
+            "source_shadow_id": "shadow-unknown",
+            "message_id": "message-unknown",
+            "symbol": "WLD-USDT",
+            "side": "long",
+            "accepted": True,
+            "reason": "accepted",
+            "episode_id": "episode-unknown",
+            "intent_id": "intent-unknown",
+            "evaluated_at": 1.0,
+            "replayed": False,
+            "payload_hash": "b" * 64,
+        },
+        emitted_at=1,
+    )
+
+    state = store.rebuild()
+
+    assert state["intents"] == {}
+
+
 def test_store_rebuild_keeps_newest_epoch_after_historical_terminal(tmp_path):
     from utils.tactical_v2.store import TacticalStore
 

@@ -251,6 +251,9 @@ class TacticalStore:
     def _apply_event(state: Dict[str, Any], event: Mapping[str, Any]) -> None:
         event_type = event["event_type"]
         data = copy.deepcopy(event["data"])
+        if event_type == "candidate_handled":
+            state["last_seq"] = event["seq"]
+            return
         intent_id = data.get("intent_id")
         if event_type == "intent_created" and intent_id:
             state["intents"][intent_id] = data

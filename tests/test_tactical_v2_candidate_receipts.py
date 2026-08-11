@@ -105,6 +105,48 @@ def _payload_hash(payload):
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _append_intent_created(store, raw, *, episode_id):
+    from utils.tactical_v2.models import TacticalCandidate, TacticalIntent
+
+    candidate = TacticalCandidate.from_raw(raw)
+    intent = TacticalIntent.from_candidate(candidate, episode_id)
+    store.append(
+        "intent_created",
+        {
+            "intent_id": intent.intent_id,
+            "episode_id": intent.episode_id,
+            "intent": asdict(intent),
+            "state": "ready_for_quote",
+            "lane": "shadow",
+            "shadow_state": None,
+            "terminal_reason": None,
+            "replayed": False,
+            "updated_at": 1000.0,
+        },
+        emitted_at=1000.0,
+    )
+    return intent
+
+
+def _candidate_receipt(raw, intent, *, message_id, **overrides):
+    receipt = {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": message_id,
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": True,
+        "reason": "accepted",
+        "episode_id": intent.episode_id,
+        "intent_id": intent.intent_id,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+    receipt.update(overrides)
+    return receipt
+
+
 @pytest.mark.asyncio
 async def test_accepted_candidate_receipt_has_canonical_schema_hash_and_ordering(tmp_path):
     controller = _controller(tmp_path)
@@ -203,6 +245,33 @@ async def test_invalid_payload_fields_cannot_break_receipt_append(tmp_path):
     assert receipt["message_id"] is None
     assert receipt["symbol"] == ""
     assert receipt["side"] == ""
+    assert len(receipt["payload_hash"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_recursive_invalid_payload_persists_invalid_candidate_receipt(tmp_path):
+    controller = _controller(tmp_path)
+    recursive_mapping = {}
+    recursive_mapping["self"] = recursive_mapping
+    recursive_list = []
+    recursive_list.append(recursive_list)
+    raw = {
+        "namespace": "testnet",
+        "candidate_id": "recursive-invalid",
+        "recursive_mapping": recursive_mapping,
+        "recursive_list": recursive_list,
+    }
+
+    result = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id="msg-recursive-invalid",
+    )
+
+    receipt = _receipts(tmp_path)[0]["data"]
+    assert result.reason == "invalid_candidate"
+    assert receipt["reason"] == "invalid_candidate"
+    assert receipt["message_id"] == "msg-recursive-invalid"
     assert len(receipt["payload_hash"]) == 64
 
 
@@ -316,6 +385,42 @@ async def test_restart_replay_is_idempotent_by_message_or_payload_identity(
     assert _events(tmp_path) == original_events
     assert len(_receipts(tmp_path)) == 1
     assert len(restarted.snapshot(now=1001.0)["intents"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_message_id_payload_conflict_fails_closed_and_halts(tmp_path):
+    controller = _controller(tmp_path)
+    original = _candidate()
+    changed = {**original, "entry_ref": 1.01}
+    accepted = await controller.handle_candidate(
+        original,
+        now=1000.0,
+        message_id="msg-conflict",
+    )
+
+    conflicted = await controller.handle_candidate(
+        changed,
+        now=1001.0,
+        message_id="msg-conflict",
+    )
+
+    events = _events(tmp_path)
+    assert accepted.accepted is True
+    assert conflicted.accepted is False
+    assert conflicted.reason == "message_identity_conflict"
+    assert conflicted.intent_id is None
+    assert conflicted.episode_id is None
+    assert len(_receipts(tmp_path)) == 1
+    assert len([row for row in events if row["event_type"] == "intent_created"]) == 1
+    halt = controller.snapshot(now=1001.0)["integrity_halt"]
+    assert halt["reason"] == "message_identity_conflict"
+    assert halt["evidence"] == {
+        "message_id": "msg-conflict",
+        "stored_payload_hash": _payload_hash(original),
+        "incoming_payload_hash": _payload_hash(changed),
+    }
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["integrity_halt"] == halt
 
 
 @pytest.mark.asyncio
@@ -462,6 +567,60 @@ async def test_legacy_intent_without_receipt_remains_unknown_and_is_not_synthesi
 
 
 @pytest.mark.asyncio
+async def test_normal_redelivery_after_receipt_append_failure_remains_unknown(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    raw = _candidate(candidate_id="receipt-append-failure")
+    original_append = controller.store.append
+
+    def fail_receipt_append(event_type, data, **kwargs):
+        if event_type == "candidate_handled":
+            raise OSError("injected candidate receipt append failure")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(controller.store, "append", fail_receipt_append)
+    with pytest.raises(OSError, match="injected candidate receipt append failure"):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id="msg-receipt-append-failure",
+        )
+    monkeypatch.setattr(controller.store, "append", original_append)
+    events_after_failure = _events(tmp_path)
+    created = next(
+        row for row in events_after_failure if row["event_type"] == "intent_created"
+    )
+
+    same_process = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-receipt-append-failure",
+    )
+    assert same_process.reason == "unknown_handling_evidence"
+    assert same_process.intent_id == created["data"]["intent_id"]
+    assert same_process.episode_id == created["data"]["episode_id"]
+    assert _events(tmp_path) == events_after_failure
+
+    restarted = _controller(tmp_path)
+    after_restart = await restarted.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-receipt-append-failure",
+    )
+
+    assert after_restart == same_process
+    assert _events(tmp_path) == events_after_failure
+    assert len(_receipts(tmp_path)) == 0
+    assert len(restarted.snapshot(now=1002.0)["intents"]) == 1
+    assert restarted.snapshot(now=1002.0)["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_receipt_hit_still_returns_original_rejection_without_new_event(tmp_path):
     raw = {**_candidate(), "side": "invalid"}
     first_controller = _controller(tmp_path)
@@ -483,6 +642,145 @@ async def test_receipt_hit_still_returns_original_rejection_without_new_event(tm
     assert replayed == first
     assert replayed.reason == "invalid_candidate"
     assert _events(tmp_path) == original_events
+
+
+@pytest.mark.asyncio
+async def test_restored_receipt_with_string_accepted_is_not_authoritative(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="malformed-bool")
+    store = TacticalStore(_paths(tmp_path))
+    intent = _append_intent_created(store, raw, episode_id="episode-malformed-bool")
+    store.append(
+        "candidate_handled",
+        _candidate_receipt(
+            raw,
+            intent,
+            message_id="msg-malformed-bool",
+            accepted="false",
+        ),
+        emitted_at=1000.0,
+    )
+
+    controller = _controller(tmp_path)
+    replayed = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-malformed-bool",
+        replayed=True,
+    )
+    snapshot = controller.snapshot(now=1001.0)
+
+    assert replayed.reason == "unknown_handling_evidence"
+    assert replayed.intent_id == intent.intent_id
+    assert snapshot["intents"][0]["handling_evidence"] == "unknown_handling_evidence"
+    assert snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    assert snapshot["integrity_halt"]["reason"] == "candidate_receipt_invalid"
+    assert snapshot["integrity_halt"]["evidence"]["message_id"] == (
+        "msg-malformed-bool"
+    )
+
+
+@pytest.mark.parametrize(
+    ("receipt_overrides", "expected_error"),
+    [
+        ({"payload_hash": "not-a-sha256"}, "payload_hash_type"),
+        ({"intent_id": "arbitrary-intent"}, "accepted_intent_missing"),
+    ],
+)
+def test_restored_receipt_with_bad_hash_or_arbitrary_intent_is_quarantined(
+    tmp_path,
+    receipt_overrides,
+    expected_error,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id=f"malformed-{expected_error}")
+    store = TacticalStore(_paths(tmp_path))
+    intent = _append_intent_created(store, raw, episode_id=f"episode-{expected_error}")
+    store.append(
+        "candidate_handled",
+        _candidate_receipt(
+            raw,
+            intent,
+            message_id=f"msg-{expected_error}",
+            **receipt_overrides,
+        ),
+        emitted_at=1000.0,
+    )
+
+    snapshot = _controller(tmp_path).snapshot(now=1001.0)
+
+    assert snapshot["intents"][0]["handling_evidence"] == "unknown_handling_evidence"
+    assert snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    assert snapshot["integrity_halt"]["reason"] == "candidate_receipt_invalid"
+    assert snapshot["integrity_halt"]["evidence"]["validation_error"] == expected_error
+
+
+def test_conflicting_duplicate_message_receipts_are_both_quarantined(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    store = TacticalStore(_paths(tmp_path))
+    first_raw = _candidate(candidate_id="duplicate-message-first")
+    first_intent = _append_intent_created(
+        store,
+        first_raw,
+        episode_id="episode-duplicate-message-first",
+    )
+    store.append(
+        "candidate_handled",
+        _candidate_receipt(
+            first_raw,
+            first_intent,
+            message_id="msg-duplicate-conflict",
+        ),
+        emitted_at=1000.0,
+    )
+    second_raw = _candidate(
+        symbol="ETH-USDT",
+        candidate_id="duplicate-message-second",
+    )
+    second_intent = _append_intent_created(
+        store,
+        second_raw,
+        episode_id="episode-duplicate-message-second",
+    )
+    store.append(
+        "candidate_handled",
+        _candidate_receipt(
+            second_raw,
+            second_intent,
+            message_id="msg-duplicate-conflict",
+        ),
+        emitted_at=1001.0,
+    )
+
+    snapshot = _controller(tmp_path).snapshot(now=1002.0)
+
+    assert snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 2,
+    }
+    assert {
+        row["intent_id"]: row["handling_evidence"] for row in snapshot["intents"]
+    } == {
+        first_intent.intent_id: "unknown_handling_evidence",
+        second_intent.intent_id: "unknown_handling_evidence",
+    }
+    halt = snapshot["integrity_halt"]
+    assert halt["reason"] == "candidate_receipt_message_conflict"
+    assert halt["evidence"] == {
+        "message_id": "msg-duplicate-conflict",
+        "stored_payload_hash": _payload_hash(first_raw),
+        "conflicting_payload_hash": _payload_hash(second_raw),
+    }
+    assert len(_receipts(tmp_path)) == 2
 
 
 def _assert_live_governor_rejection_without_intent(tmp_path, result, reason, intent_count):
