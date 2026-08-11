@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "source_evidence": {
+    "description": "Read-only Tactical Candidate V2 journal evidence. Each source_evidence_payload_hash is source evidence, not a canonical local receipt hash.",
+    "topic": "tactical_candidate.v2",
+    "window_start_epoch": 1786183980,
+    "window_end_epoch": 1786443180,
+    "raw_candidate_count": 22
+  },
+  "initial_episode_state": {
+    "namespace": "live",
+    "symbol": "PUMP-USDT",
+    "side": "long",
+    "epoch_seq": 14,
+    "episode_id": "53642e33465ffe749cbb7da042f486c2bd4d68a350dcef68a42f8cad6bbd11dd",
+    "attempted": true,
+    "terminal": true,
+    "terminal_reason": "loss_streak_pause",
+    "current_bias": "bullish",
+    "neutral_seen": false,
+    "last_block": false,
+    "reset_pending": null,
+    "last_closed_bar_ts": 1786072500000.0,
+    "max_observed_closed_bar_ts": 1786072500000.0,
+    "last_structure_token": "break_up:a09b50a62afef967206a"
+  },
+  "candidates": [
+    {
+      "msg_id": "b8e52f28-7e68-4834-8819-f9860ad75a93",
+      "source_evidence_payload_hash": "e0f2281a7717",
+      "journal_timestamp": 1786207871.526581,
+      "candidate": {"candidate_id": "92ae52b2a067b12a6c00f1ef80cbfa0b", "created_at": 1786207871.4423995, "entry_ref": 0.05795, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "d1e7880d", "stop_loss": 0.056078, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": 0.001152, "tactical_rr": 0.83, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_provenance", "take_profit": 0.059822, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786205700000.0, "tf_15m_structure_token": "break_up:cf394b9e2d42a63fb06f"}
+    },
+    {
+      "msg_id": "997f865f-27cc-4de5-b85c-652e010ccafe",
+      "source_evidence_payload_hash": "f1beec6efcf1",
+      "journal_timestamp": 1786208115.255563,
+      "candidate": {"candidate_id": "92ae52b2a067b12a6c00f1ef80cbfa0b", "created_at": 1786208115.1681926, "entry_ref": 0.05795, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "e75637c6", "stop_loss": 0.056078, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": 0.001152, "tactical_rr": 0.83, "tactical_source": "main_quality_failed:weak_provenance", "take_profit": 0.059822, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786205700000.0, "tf_15m_structure_token": "break_up:cf394b9e2d42a63fb06f"}
+    },
+    {
+      "msg_id": "6217dbd0-a250-4011-8cf2-ccd7bac5cc3b",
+      "source_evidence_payload_hash": "3a0de78789cf",
+      "journal_timestamp": 1786208257.2764769,
+      "candidate": {"candidate_id": "92ae52b2a067b12a6c00f1ef80cbfa0b", "created_at": 1786208257.185415, "entry_ref": 0.05795, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "15cf7200", "stop_loss": 0.056078, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": 0.001152, "tactical_rr": 0.83, "tactical_source": "main_quality_failed:weak_provenance", "take_profit": 0.059822, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786205700000.0, "tf_15m_structure_token": "break_up:cf394b9e2d42a63fb06f"}
+    },
+    {
+      "msg_id": "6ca87c30-8008-4a5b-8582-e184cd3ceb25",
+      "source_evidence_payload_hash": "d9db09d56c4c",
+      "journal_timestamp": 1786208427.7081587,
+      "candidate": {"candidate_id": "92ae52b2a067b12a6c00f1ef80cbfa0b", "created_at": 1786208427.623425, "entry_ref": 0.05795, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "fc579a9b", "stop_loss": 0.056078, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": 0.001152, "tactical_rr": 0.83, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_provenance", "take_profit": 0.059822, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786205700000.0, "tf_15m_structure_token": "break_up:cf394b9e2d42a63fb06f"}
+    },
+    {
+      "msg_id": "a21eb9f1-f4b7-4ba5-9ffb-50868ec3e87c",
+      "source_evidence_payload_hash": "4b0add3b6efe",
+      "journal_timestamp": 1786213502.188948,
+      "candidate": {"candidate_id": "5e19050a9f8272e6e25b928137f2ac4a", "created_at": 1786213502.0974922, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "f978fd43", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786211100000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "8a4a1497-9649-4e23-8d7d-5e2eeebf4bef",
+      "source_evidence_payload_hash": "8d1502040f00",
+      "journal_timestamp": 1786213570.0639012,
+      "candidate": {"candidate_id": "5e19050a9f8272e6e25b928137f2ac4a", "created_at": 1786213569.972234, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "d8dc7fca", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786211100000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "21e5381c-33ac-4ca8-8d77-056f7de59c3a",
+      "source_evidence_payload_hash": "5f7ca11d4485",
+      "journal_timestamp": 1786213862.6568937,
+      "candidate": {"candidate_id": "315544c18fa12cabce7a283d25f0f1cc", "created_at": 1786213862.5653772, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "2a3aae8c", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:weak_volume_oi", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212000000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "76a93e43-41db-44a5-92e5-cfa4a9365be9",
+      "source_evidence_payload_hash": "ecb06d6b7ae0",
+      "journal_timestamp": 1786213921.9143744,
+      "candidate": {"candidate_id": "315544c18fa12cabce7a283d25f0f1cc", "created_at": 1786213921.8183591, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "f8a09aaa", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:weak_volume_oi", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212000000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "481f8471-aad2-4c26-ba83-cf256efe4615",
+      "source_evidence_payload_hash": "1c2983da430e",
+      "journal_timestamp": 1786214101.7041132,
+      "candidate": {"candidate_id": "315544c18fa12cabce7a283d25f0f1cc", "created_at": 1786214101.6111367, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "dfb3ab09", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212000000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "50ce55f7-bcc0-4ed4-8fa5-bc5169b5e066",
+      "source_evidence_payload_hash": "857ad0512e8c",
+      "journal_timestamp": 1786214242.4655113,
+      "candidate": {"candidate_id": "315544c18fa12cabce7a283d25f0f1cc", "created_at": 1786214242.4018862, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "bf64ccac", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212000000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "9acd456d-4e59-456e-bab9-8e106a1b85b9",
+      "source_evidence_payload_hash": "415998e81eff",
+      "journal_timestamp": 1786214373.8145509,
+      "candidate": {"candidate_id": "315544c18fa12cabce7a283d25f0f1cc", "created_at": 1786214373.7230089, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "80a92cd8", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212000000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "1b885058-7f10-48ad-9042-423db729dba1",
+      "source_evidence_payload_hash": "92a136cb30e2",
+      "journal_timestamp": 1786214448.4054143,
+      "candidate": {"candidate_id": "315544c18fa12cabce7a283d25f0f1cc", "created_at": 1786214448.325198, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "1054371e", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212000000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "8c1cb159-0773-42b4-b476-95615beb00f7",
+      "source_evidence_payload_hash": "c4712ea77187",
+      "journal_timestamp": 1786214518.9189847,
+      "candidate": {"candidate_id": "315544c18fa12cabce7a283d25f0f1cc", "created_at": 1786214518.8266098, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "a86ae45a", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212000000.0, "tf_15m_structure_token": "break_down:1d1b1b8cacfa92839a4a"}
+    },
+    {
+      "msg_id": "e0996232-1a4b-4e84-9903-627a77b58a73",
+      "source_evidence_payload_hash": "08b7b05c6048",
+      "journal_timestamp": 1786214581.9142067,
+      "candidate": {"candidate_id": "677197cc02691c503966cd09830d6164", "created_at": 1786214581.847543, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "3bce3dd2", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212900000.0, "tf_15m_structure_token": "break_up:ad751a1e34e6f290fc4e"}
+    },
+    {
+      "msg_id": "312e91ea-2c08-497f-bb7a-f9f3f7692355",
+      "source_evidence_payload_hash": "e498c34ff9a9",
+      "journal_timestamp": 1786214645.9236138,
+      "candidate": {"candidate_id": "677197cc02691c503966cd09830d6164", "created_at": 1786214645.8446405, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "b1863929", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212900000.0, "tf_15m_structure_token": "break_up:ad751a1e34e6f290fc4e"}
+    },
+    {
+      "msg_id": "75cf0fe7-ce63-46be-af77-ce8522e3112d",
+      "source_evidence_payload_hash": "698b723b9e8e",
+      "journal_timestamp": 1786214730.4916043,
+      "candidate": {"candidate_id": "677197cc02691c503966cd09830d6164", "created_at": 1786214730.4249191, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "62bb7dda", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212900000.0, "tf_15m_structure_token": "break_up:ad751a1e34e6f290fc4e"}
+    },
+    {
+      "msg_id": "781b2e95-3961-4f00-bfc1-5e55a4513edf",
+      "source_evidence_payload_hash": "56c3158c0050",
+      "journal_timestamp": 1786214798.47172,
+      "candidate": {"candidate_id": "677197cc02691c503966cd09830d6164", "created_at": 1786214798.3795643, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "ad899485", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212900000.0, "tf_15m_structure_token": "break_up:ad751a1e34e6f290fc4e"}
+    },
+    {
+      "msg_id": "ec3255a2-20a8-4b74-9903-3c682ac42e68",
+      "source_evidence_payload_hash": "bb1356709a71",
+      "journal_timestamp": 1786215004.4840972,
+      "candidate": {"candidate_id": "677197cc02691c503966cd09830d6164", "created_at": 1786215004.42038, "entry_ref": 0.05716, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "ae3aa4b1", "stop_loss": 0.055762, "symbol": "BICO-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002771, "tactical_rr": 0.7815, "tactical_source": "main_quality_failed:trend_exhaustion_warning,weak_volume_oi,weak_provenance", "take_profit": 0.058558, "tf_15m_available": true, "tf_15m_bias": "bullish", "tf_15m_block_long": false, "tf_15m_block_short": true, "tf_15m_closed_bar_ts": 1786212900000.0, "tf_15m_structure_token": "break_up:ad751a1e34e6f290fc4e"}
+    },
+    {
+      "msg_id": "cb292580-22ca-4c08-bc4c-68107ebb6dbf",
+      "source_evidence_payload_hash": "a4db65634048",
+      "journal_timestamp": 1786335438.1555603,
+      "candidate": {"candidate_id": "7ef72c05d3297688f04a00879ed2bbd5", "created_at": 1786335438.0933352, "entry_ref": 0.00273, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "d8e48042", "stop_loss": 0.002662, "symbol": "PUMP-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002585, "tactical_rr": 0.7845, "tactical_source": "main_quality_failed:regime_weak,weak_volume_oi", "take_profit": 0.002798, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786334400000.0, "tf_15m_structure_token": "break_down:8f60b15e1f6c469e3407"}
+    },
+    {
+      "msg_id": "c7e5a753-6924-4538-bf8a-6a33dd7e5524",
+      "source_evidence_payload_hash": "9fa2556efac9",
+      "journal_timestamp": 1786336020.9947336,
+      "candidate": {"candidate_id": "7ef72c05d3297688f04a00879ed2bbd5", "created_at": 1786336020.9017894, "entry_ref": 0.00273, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "ba2a1cd4", "stop_loss": 0.002662, "symbol": "PUMP-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002565, "tactical_rr": 0.7848, "tactical_source": "main_quality_failed:regime_weak,weak_volume_oi,weak_provenance", "take_profit": 0.002798, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786334400000.0, "tf_15m_structure_token": "break_down:8f60b15e1f6c469e3407"}
+    },
+    {
+      "msg_id": "8d6bf75e-b8d9-4e62-ae24-ad1362640bcb",
+      "source_evidence_payload_hash": "80534592ec6d",
+      "journal_timestamp": 1786336612.8607306,
+      "candidate": {"candidate_id": "438d069dfe63a83cced089717ad5c7fa", "created_at": 1786336612.769322, "entry_ref": 0.00273, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "72524a13", "stop_loss": 0.002662, "symbol": "PUMP-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002546, "tactical_rr": 0.785, "tactical_source": "main_quality_failed:regime_weak,trend_exhaustion_warning,weak_volume_oi,weak_provenance", "take_profit": 0.002798, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786335300000.0, "tf_15m_structure_token": "break_down:8f60b15e1f6c469e3407"}
+    },
+    {
+      "msg_id": "b01f5ca5-2523-40a7-869e-c7fffc101523",
+      "source_evidence_payload_hash": "054c4cf96d78",
+      "journal_timestamp": 1786336910.3718028,
+      "candidate": {"candidate_id": "438d069dfe63a83cced089717ad5c7fa", "created_at": 1786336910.2770524, "entry_ref": 0.00273, "leverage": 5, "margin_usdt": 100.0, "namespace": "live", "side": "long", "source_shadow_id": "90de5091", "stop_loss": 0.002662, "symbol": "PUMP-USDT", "tactical_cost_gate": "pass", "tactical_ev": -0.002546, "tactical_rr": 0.785, "tactical_source": "main_quality_failed:regime_weak,weak_volume_oi,weak_provenance", "take_profit": 0.002798, "tf_15m_available": true, "tf_15m_bias": "neutral", "tf_15m_block_long": false, "tf_15m_block_short": false, "tf_15m_closed_bar_ts": 1786335300000.0, "tf_15m_structure_token": "break_down:8f60b15e1f6c469e3407"}
+    }
+  ]
+}
