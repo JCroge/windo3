@@ -154,6 +154,8 @@ class EpisodeRegistry:
     ) -> None:
         if not structure.get("tf_15m_available", False):
             return
+        if self._is_stale_bar(state, structure):
+            return
 
         original_state = copy.deepcopy(state)
         next_state = self._normalize_state(state)
@@ -197,6 +199,8 @@ class EpisodeRegistry:
         structure: Mapping[str, Any],
     ) -> Optional[str]:
         if not structure.get("tf_15m_available", False):
+            return None
+        if self._is_stale_bar(state, structure):
             return None
         if self._is_blocked(side, structure):
             return None
@@ -288,6 +292,7 @@ class EpisodeRegistry:
             self._states[key] = copy.deepcopy(stored_state)
 
     def _restore(self) -> None:
+        max_observed_by_episode: Dict[str, float] = {}
         for event in self.store.read_events():
             data = event.get("data", {})
             key = data.get("registry_key")
@@ -297,6 +302,24 @@ class EpisodeRegistry:
                 episode_id = str(restored.get("episode_id") or "")
                 if not episode_id:
                     continue
+                evidence = data.get("evidence")
+                evidence_bar = self._normalize_closed_bar(
+                    evidence.get("closed_bar_ts")
+                    if isinstance(evidence, Mapping)
+                    else None
+                )
+                observed_bars = (
+                    restored.get("max_observed_closed_bar_ts"),
+                    max_observed_by_episode.get(episode_id),
+                    evidence_bar,
+                )
+                max_observed = max(
+                    (bar for bar in observed_bars if bar is not None),
+                    default=None,
+                )
+                restored["max_observed_closed_bar_ts"] = max_observed
+                if max_observed is not None:
+                    max_observed_by_episode[episode_id] = max_observed
                 self._episode_states[episode_id] = restored
                 self._episode_keys[episode_id] = str(key)
                 current = self._states.get(str(key))
@@ -352,9 +375,22 @@ class EpisodeRegistry:
             return None
         try:
             parsed = float(value)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return None
         return parsed if math.isfinite(parsed) else None
+
+    @staticmethod
+    def _is_stale_bar(
+        state: Mapping[str, Any],
+        structure: Mapping[str, Any],
+    ) -> bool:
+        closed_bar = structure.get("tf_15m_closed_bar_ts")
+        max_observed = state.get("max_observed_closed_bar_ts")
+        return (
+            closed_bar is not None
+            and max_observed is not None
+            and closed_bar < max_observed
+        )
 
     @classmethod
     def _structure_evidence(

@@ -271,6 +271,94 @@ def test_observed_newer_bar_rejects_stale_terminal_candidate(tmp_path):
     assert repeated.reason == "duplicate_episode"
 
 
+def test_stale_aligned_candidate_with_changed_token_is_duplicate(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+    registry.observe(
+        "WLD-USDT",
+        "long",
+        {
+            **_structure(bias="bullish", token="break-up-1"),
+            "tf_15m_closed_bar_ts": 930.0,
+        },
+    )
+
+    repeated = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="bullish", token="break-up-2"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
+@pytest.mark.parametrize("marker", ["opposing_block", "neutral_seen"])
+def test_stale_aligned_candidate_does_not_consume_legacy_marker(tmp_path, marker):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+    if marker == "opposing_block":
+        observed = _structure(
+            bias="bearish",
+            token="break-down-1",
+            block_long=True,
+        )
+    else:
+        observed = _structure(bias="neutral", token="break-up-1")
+    registry.observe(
+        "WLD-USDT",
+        "long",
+        {**observed, "tf_15m_closed_bar_ts": 930.0},
+    )
+
+    repeated = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="bullish", token="break-up-1"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
+def test_stale_observation_does_not_contaminate_later_decisions(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    current = {
+        **_structure(bias="bullish", token="break-up-1"),
+        "tf_15m_closed_bar_ts": 930.0,
+    }
+    registry.observe("WLD-USDT", "long", current)
+    events_before_stale = registry.store.read_events()
+
+    registry.observe(
+        "WLD-USDT",
+        "long",
+        {
+            **_structure(
+                bias="neutral",
+                token="break-down-1",
+                block_long=True,
+            ),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert registry.store.read_events() == events_before_stale
+    repeated = registry.assign(_candidate(), current)
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
 def test_observed_same_fresh_bar_can_renew_terminal_episode(tmp_path):
     registry = _registry(tmp_path)
     first = registry.assign(_candidate(), _structure(token="break-up-1"))
@@ -310,6 +398,82 @@ def test_terminal_neutral_fresh_renewal_survives_registry_restart(tmp_path):
     assert renewed.reason == "new_confirmed_structure"
     assert renewed.episode_id != first.episode_id
     assert renewed.epoch_seq == first.epoch_seq + 1
+
+
+def test_legacy_restore_carries_max_observed_bar_across_events(tmp_path):
+    from utils.tactical_v2.episodes import EpisodeRegistry
+    from utils.tactical_v2.store import TacticalStore
+
+    paths = _paths(tmp_path)
+    store = TacticalStore(paths)
+    key = "WLD-USDT|long"
+    episode_id = "legacy-episode-1"
+    state = {
+        "namespace": "testnet",
+        "symbol": "WLD-USDT",
+        "side": "long",
+        "epoch_seq": 1,
+        "episode_id": episode_id,
+        "attempted": True,
+        "terminal": False,
+        "terminal_reason": None,
+        "current_bias": "bullish",
+        "neutral_seen": False,
+        "last_block": False,
+        "reset_pending": None,
+        "last_structure_token": "break-up-1",
+        "last_closed_bar_ts": 900.0,
+    }
+
+    def append_legacy(event_type, registry_state, evidence, emitted_at):
+        store.append(
+            event_type,
+            {
+                "registry_key": key,
+                "registry_state": registry_state,
+                "episode_id": episode_id,
+                "evidence": evidence,
+            },
+            emitted_at=emitted_at,
+        )
+
+    append_legacy("episode_assigned", state, {}, 1.0)
+    append_legacy(
+        "episode_observed",
+        dict(state),
+        {
+            "reason": "observation",
+            "closed_bar_ts": "930.0",
+            "structure_token": "break-up-1",
+        },
+        2.0,
+    )
+    terminal_state = {
+        **state,
+        "terminal": True,
+        "terminal_reason": "expired",
+    }
+    append_legacy(
+        "episode_terminal",
+        terminal_state,
+        {"reason": "expired"},
+        3.0,
+    )
+
+    restarted = EpisodeRegistry(TacticalStore(paths), namespace="testnet")
+    restored = restarted._states[key]
+    repeated = restarted.assign(
+        _candidate(),
+        {
+            **_structure(bias="neutral", token="break-up-1"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert restored["max_observed_closed_bar_ts"] == 930.0
+    assert repeated.episode_id == episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
 
 
 def test_terminal_neutral_candidate_with_same_evidence_is_duplicate(tmp_path):
@@ -372,6 +536,24 @@ def test_non_finite_closed_bar_is_stored_as_missing(tmp_path):
         {
             **_structure(),
             "tf_15m_closed_bar_ts": float("nan"),
+        },
+    )
+
+    event = registry.store.read_events()[0]
+    state = event["data"]["registry_state"]
+    assert assigned.eligible is True
+    assert state["last_closed_bar_ts"] is None
+    assert state["max_observed_closed_bar_ts"] is None
+
+
+def test_overflowing_closed_bar_is_stored_as_missing(tmp_path):
+    registry = _registry(tmp_path)
+
+    assigned = registry.assign(
+        _candidate(),
+        {
+            **_structure(),
+            "tf_15m_closed_bar_ts": 10**10000,
         },
     )
 
