@@ -210,6 +210,20 @@ def _integrity_proof(**overrides):
     return proof
 
 
+def _evidence_event_id(event_type, identity):
+    encoded = json.dumps(
+        {
+            "event_type": event_type,
+            "identity": identity,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 @pytest.mark.asyncio
 async def test_accepted_candidate_receipt_has_canonical_schema_hash_and_ordering(tmp_path):
     controller = _controller(tmp_path)
@@ -1166,6 +1180,323 @@ async def test_payload_integrity_evidence_append_is_retried_or_confirmed(
         "candidate_payload_integrity_rejected",
     ]
     assert _events(tmp_path) == events_after_first
+    assert _receipts(tmp_path) == []
+    assert restarted.snapshot(now=1001.0)["integrity_halt"] is None
+
+
+@pytest.mark.asyncio
+async def test_misbound_message_payload_integrity_evidence_quarantines_all_identities(
+    tmp_path,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    target_message_id = "msg-evidence-confirmation-probe"
+    supplied_message_id = "wrong-message"
+    identity = f"message:{target_message_id}"
+    raw = _candidate(candidate_id="evidence-confirmation-probe")
+    store = TacticalStore(_paths(tmp_path))
+    corrupt_event = store.append(
+        "candidate_payload_integrity_rejected",
+        {
+            "identity": identity,
+            "candidate_id": raw["candidate_id"],
+            "source_shadow_id": raw["source_shadow_id"],
+            "message_id": supplied_message_id,
+            "validation_error": "non_finite_float:$.extra:nan",
+            "recorded_at": 1000.0,
+        },
+        emitted_at=1000.0,
+        event_id=_evidence_event_id(
+            "candidate_payload_integrity_rejected",
+            {"identity": identity},
+        ),
+    )
+
+    controller = _controller(tmp_path)
+    original_events = _events(tmp_path)
+    halt = controller.snapshot(now=1001.0)["integrity_halt"]
+
+    assert halt["reason"] == "candidate_payload_integrity_evidence_invalid"
+    assert halt["incident_id"] == corrupt_event["event_id"]
+
+    results = [
+        await controller.handle_candidate(
+            {**raw, "extra": float("nan")},
+            now=1001.0,
+            message_id=target_message_id,
+        ),
+        await controller.handle_candidate(
+            raw,
+            now=1002.0,
+            message_id=target_message_id,
+        ),
+        await controller.handle_candidate(
+            raw,
+            now=1003.0,
+            message_id=supplied_message_id,
+        ),
+    ]
+
+    assert {result.reason for result in results} == {"unknown_handling_evidence"}
+    assert _events(tmp_path) == original_events
+    assert controller.acknowledge_candidate_receipt_integrity(
+        expected_incident_id=halt["incident_id"],
+        reconciliation_id="ack-misbound-payload-evidence",
+        proof=_integrity_proof(),
+    ) is True
+    events_after_ack = _events(tmp_path)
+
+    after_ack = await controller.handle_candidate(
+        raw,
+        now=1004.0,
+        message_id=target_message_id,
+    )
+    restarted = _controller(tmp_path)
+    after_restart = await restarted.handle_candidate(
+        raw,
+        now=1005.0,
+        message_id=target_message_id,
+    )
+
+    assert after_ack.reason == "unknown_handling_evidence"
+    assert after_restart.reason == "unknown_handling_evidence"
+    assert restarted.snapshot(now=1005.0)["integrity_halt"] is None
+    assert _events(tmp_path) == events_after_ack
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity_kind", ["payload", "candidate"])
+async def test_misbound_payload_integrity_evidence_quarantines_claimed_and_supplied_identity(
+    tmp_path,
+    identity_kind,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    claimed_raw = _candidate(candidate_id=f"claimed-{identity_kind}")
+    supplied_raw = _candidate(candidate_id=f"supplied-{identity_kind}")
+    if identity_kind == "payload":
+        claimed_value = _payload_hash(claimed_raw)
+        supplied_value = _payload_hash(supplied_raw)
+        data = {
+            "identity": f"payload:{claimed_value}",
+            "candidate_id": None,
+            "source_shadow_id": None,
+            "message_id": None,
+            "payload_hash": supplied_value,
+            "validation_error": "seeded_payload_identity_rejection",
+            "recorded_at": 1000.0,
+        }
+        deliveries = [(claimed_raw, None), (supplied_raw, None)]
+    else:
+        claimed_value = claimed_raw["candidate_id"]
+        supplied_value = supplied_raw["candidate_id"]
+        data = {
+            "identity": f"candidate:{claimed_value}",
+            "candidate_id": supplied_value,
+            "source_shadow_id": None,
+            "message_id": None,
+            "validation_error": "seeded_candidate_identity_rejection",
+            "recorded_at": 1000.0,
+        }
+        deliveries = [
+            (claimed_raw, "msg-claimed-candidate-evidence"),
+            (supplied_raw, "msg-supplied-candidate-evidence"),
+        ]
+    identity = data["identity"]
+    store = TacticalStore(_paths(tmp_path))
+    store.append(
+        "candidate_payload_integrity_rejected",
+        data,
+        emitted_at=1000.0,
+        event_id=_evidence_event_id(
+            "candidate_payload_integrity_rejected",
+            {"identity": identity},
+        ),
+    )
+
+    controller = _controller(tmp_path)
+    original_events = _events(tmp_path)
+    results = [
+        await controller.handle_candidate(
+            raw,
+            now=1001.0 + index,
+            message_id=message_id,
+        )
+        for index, (raw, message_id) in enumerate(deliveries)
+    ]
+    restarted = _controller(tmp_path)
+    restarted_results = [
+        await restarted.handle_candidate(
+            raw,
+            now=1003.0 + index,
+            message_id=message_id,
+        )
+        for index, (raw, message_id) in enumerate(deliveries)
+    ]
+
+    assert {result.reason for result in results + restarted_results} == {
+        "unknown_handling_evidence"
+    }
+    assert controller.snapshot(now=1002.0)["integrity_halt"]["reason"] == (
+        "candidate_payload_integrity_evidence_invalid"
+    )
+    assert restarted.snapshot(now=1004.0)["integrity_halt"]["reason"] == (
+        "candidate_payload_integrity_evidence_invalid"
+    )
+    assert _events(tmp_path) == original_events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mismatch_field",
+    [
+        "message_id",
+        "candidate_id",
+        "source_shadow_id",
+        "validation_error",
+        "recorded_at",
+        "payload_hash",
+        "reason",
+    ],
+)
+async def test_append_recovery_requires_complete_canonical_payload_evidence_match(
+    tmp_path,
+    monkeypatch,
+    mismatch_field,
+):
+    raw = {
+        **_candidate(candidate_id=f"complete-evidence-{mismatch_field}"),
+        "extra": float("nan"),
+    }
+    message_id = f"msg-complete-evidence-{mismatch_field}"
+    controller = _controller(tmp_path)
+    original_append = controller.store.append
+    injected = False
+
+    def commit_conflicting_evidence_then_raise(event_type, data, **kwargs):
+        nonlocal injected
+        if event_type == "candidate_payload_integrity_rejected" and not injected:
+            injected = True
+            conflicting = dict(data)
+            replacements = {
+                "message_id": "wrong-message",
+                "candidate_id": "wrong-candidate",
+                "source_shadow_id": "wrong-shadow",
+                "validation_error": "wrong-validation-error",
+                "recorded_at": 999.0,
+                "payload_hash": "f" * 64,
+                "reason": "wrong-reason",
+            }
+            conflicting[mismatch_field] = replacements[mismatch_field]
+            original_append(event_type, conflicting, **kwargs)
+            raise OSError("injected conflicting post-commit evidence")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(
+        controller.store,
+        "append",
+        commit_conflicting_evidence_then_raise,
+    )
+    first = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id=message_id,
+    )
+    events_after_conflict = _events(tmp_path)
+    repeated = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id=message_id,
+    )
+    monkeypatch.setattr(controller.store, "append", original_append)
+    restarted = _controller(tmp_path)
+    after_restart = await restarted.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id=message_id,
+    )
+
+    assert first.reason == "unknown_handling_evidence"
+    assert repeated == first
+    assert after_restart == first
+    assert [event["event_type"] for event in events_after_conflict] == [
+        "candidate_payload_integrity_rejected",
+        "candidate_payload_integrity_evidence_conflicted",
+    ]
+    in_process_halt = controller.snapshot(now=1001.0)["integrity_halt"]
+    restarted_halt = restarted.snapshot(now=1002.0)["integrity_halt"]
+    assert in_process_halt["reason"].startswith("candidate_payload_integrity_")
+    assert restarted_halt == in_process_halt
+    assert _events(tmp_path) == events_after_conflict
+    assert _receipts(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_unpersisted_payload_evidence_conflict_is_retried_before_authority(
+    tmp_path,
+    monkeypatch,
+):
+    raw = {
+        **_candidate(candidate_id="payload-evidence-conflict-retry"),
+        "extra": float("nan"),
+    }
+    valid_raw = _candidate(candidate_id="payload-evidence-conflict-retry")
+    message_id = "msg-payload-evidence-conflict-retry"
+    controller = _controller(tmp_path)
+    original_append = controller.store.append
+    rejected_committed = False
+    conflict_storage_available = False
+
+    def fail_conflict_evidence(event_type, data, **kwargs):
+        nonlocal rejected_committed
+        if event_type == "candidate_payload_integrity_rejected" and not rejected_committed:
+            rejected_committed = True
+            conflicting = {**data, "validation_error": "wrong-validation-error"}
+            original_append(event_type, conflicting, **kwargs)
+            raise OSError("injected conflicting rejected evidence")
+        if (
+            event_type == "candidate_payload_integrity_evidence_conflicted"
+            and not conflict_storage_available
+        ):
+            raise OSError("payload conflict evidence unavailable")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(controller.store, "append", fail_conflict_evidence)
+    with pytest.raises(OSError, match="payload conflict evidence unavailable"):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id=message_id,
+        )
+    with pytest.raises(OSError, match="payload conflict evidence unavailable"):
+        await controller.handle_candidate(
+            valid_raw,
+            now=1001.0,
+            message_id=message_id,
+        )
+
+    conflict_storage_available = True
+    recovered = await controller.handle_candidate(
+        valid_raw,
+        now=1002.0,
+        message_id=message_id,
+    )
+    events_after_recovery = _events(tmp_path)
+    monkeypatch.setattr(controller.store, "append", original_append)
+    restarted = _controller(tmp_path)
+    after_restart = await restarted.handle_candidate(
+        valid_raw,
+        now=1003.0,
+        message_id=message_id,
+    )
+
+    assert recovered.reason == "unknown_handling_evidence"
+    assert after_restart == recovered
+    assert [event["event_type"] for event in events_after_recovery] == [
+        "candidate_payload_integrity_rejected",
+        "candidate_payload_integrity_evidence_conflicted",
+    ]
+    assert _events(tmp_path) == events_after_recovery
     assert _receipts(tmp_path) == []
 
 

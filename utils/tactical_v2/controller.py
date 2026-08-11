@@ -118,6 +118,12 @@ class CandidateHandlingResult:
     episode_id: Optional[str] = None
 
 
+class _DeterministicEvidenceConflict(TacticalStoreIntegrityError):
+    def __init__(self, event: Mapping[str, Any]):
+        super().__init__("deterministic evidence event_id collision")
+        self.event = copy.deepcopy(dict(event))
+
+
 class TacticalV2Controller:
     """Own one persistent Tactical V2 state machine inside MultiExecutor."""
 
@@ -207,6 +213,13 @@ class TacticalV2Controller:
             Dict[str, Any],
         ] = {}
         self._candidate_payload_integrity_message_ids: set[str] = set()
+        self._candidate_payload_integrity_payload_hashes: set[str] = set()
+        self._candidate_payload_integrity_candidate_ids: set[str] = set()
+        self._candidate_payload_integrity_quarantines: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+        self._candidate_payload_integrity_quarantine_identities: set[str] = set()
         self._pending_candidate_payload_integrity_evidence: Dict[
             str,
             Dict[str, Any],
@@ -591,6 +604,21 @@ class TacticalV2Controller:
                 emitted_at=float(evidence["recorded_at"]),
                 identity={"identity": identity},
             )
+        except _DeterministicEvidenceConflict as exc:
+            try:
+                self._persist_candidate_payload_integrity_conflict(
+                    expected_data=evidence,
+                    conflicting_event=exc.event,
+                    detected_at=float(evidence["recorded_at"]),
+                )
+            except Exception:
+                self._pending_candidate_payload_integrity_evidence.setdefault(
+                    identity,
+                    dict(evidence),
+                )
+                raise
+            self._pending_candidate_payload_integrity_evidence.pop(identity, None)
+            return
         except Exception:
             self._pending_candidate_payload_integrity_evidence.setdefault(
                 identity,
@@ -598,32 +626,217 @@ class TacticalV2Controller:
             )
             raise
         self._pending_candidate_payload_integrity_evidence.pop(identity, None)
-        self._apply_candidate_payload_integrity_rejection(event["data"])
+        self._apply_candidate_payload_integrity_rejection(
+            event["data"],
+            event_id=self._optional_text(event.get("event_id")),
+            halted_at=event.get("emitted_at"),
+        )
+
+    def _persist_candidate_payload_integrity_conflict(
+        self,
+        *,
+        expected_data: Mapping[str, Any],
+        conflicting_event: Mapping[str, Any],
+        detected_at: float,
+    ) -> None:
+        conflicting_event_id = self._optional_text(
+            conflicting_event.get("event_id")
+        )
+        if conflicting_event_id is None:
+            raise TacticalStoreIntegrityError(
+                "deterministic evidence conflict has no event_id"
+            )
+        expected = dict(expected_data)
+        expected_data_hash = self._evidence_data_hash(expected)
+        conflict_data = {
+            "conflicting_event_id": conflicting_event_id,
+            "expected_event_type": "candidate_payload_integrity_rejected",
+            "expected_event_id": self._evidence_event_id(
+                "candidate_payload_integrity_rejected",
+                {"identity": str(expected.get("identity") or "")},
+            ),
+            "expected_data": expected,
+            "stored_event_type": conflicting_event.get("event_type"),
+            "stored_emitted_at": conflicting_event.get("emitted_at"),
+            "stored_data": dict(conflicting_event.get("data") or {}),
+            "detected_at": float(detected_at),
+        }
+        conflict_event = self._append_idempotent_evidence(
+            "candidate_payload_integrity_evidence_conflicted",
+            conflict_data,
+            emitted_at=float(detected_at),
+            identity={
+                "conflicting_event_id": conflicting_event_id,
+                "expected_data_hash": expected_data_hash,
+            },
+        )
+        self._apply_candidate_payload_integrity_rejection(
+            conflict_data["stored_data"],
+            event_id=conflicting_event_id,
+            halted_at=conflict_data["stored_emitted_at"],
+        )
+        self._apply_candidate_payload_integrity_conflict(
+            conflict_event["data"],
+            event_id=self._optional_text(conflict_event.get("event_id")),
+            halted_at=conflict_event.get("emitted_at"),
+        )
 
     def _apply_candidate_payload_integrity_rejection(
         self,
         data: Mapping[str, Any],
+        *,
+        event_id: Optional[str] = None,
+        halted_at: Optional[float] = None,
     ) -> None:
-        identity = self._optional_text(data.get("identity"))
-        validation_error = self._optional_text(data.get("validation_error"))
-        if not identity or not validation_error:
+        validation_error = self._candidate_payload_integrity_evidence_error(
+            data,
+            event_id=event_id,
+            emitted_at=halted_at,
+        )
+        if validation_error is not None:
+            self._quarantine_candidate_payload_integrity_evidence(
+                reason="candidate_payload_integrity_evidence_invalid",
+                validation_error=validation_error,
+                data=data,
+                halted_at=halted_at,
+                incident_id=event_id,
+            )
             return
+        identity = str(data["identity"])
         self._candidate_payload_integrity_rejections.setdefault(
             identity,
             dict(data),
         )
+        self._index_candidate_payload_integrity_identity(identity)
+
+    def _apply_candidate_payload_integrity_conflict(
+        self,
+        data: Mapping[str, Any],
+        *,
+        event_id: Optional[str],
+        halted_at: Optional[float],
+    ) -> None:
+        expected_data = data.get("expected_data")
+        stored_data = data.get("stored_data")
+        validation_error = self._candidate_payload_integrity_conflict_error(
+            data,
+            event_id=event_id,
+        )
+        evidence_data = (
+            expected_data if isinstance(expected_data, Mapping) else data
+        )
+        related_data = stored_data if isinstance(stored_data, Mapping) else None
+        self._quarantine_candidate_payload_integrity_evidence(
+            reason=(
+                "candidate_payload_integrity_evidence_invalid"
+                if validation_error is not None
+                else "candidate_payload_integrity_evidence_conflict"
+            ),
+            validation_error=validation_error or "canonical_evidence_mismatch",
+            data=evidence_data,
+            related_data=related_data,
+            halted_at=halted_at,
+            incident_id=event_id,
+        )
+
+    def _quarantine_candidate_payload_integrity_evidence(
+        self,
+        *,
+        reason: str,
+        validation_error: str,
+        data: Mapping[str, Any],
+        halted_at: Optional[float],
+        incident_id: Optional[str],
+        related_data: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        effective_incident_id = incident_id or self._candidate_receipt_incident_fingerprint(
+            reason,
+            {
+                "validation_error": validation_error,
+                "data": dict(data),
+            },
+            float(self.now_fn()) if halted_at is None else float(halted_at),
+        )
+        if effective_incident_id not in self._candidate_payload_integrity_quarantines:
+            self._candidate_payload_integrity_quarantines[effective_incident_id] = {
+                "reason": reason,
+                "validation_error": validation_error,
+                "data": copy.deepcopy(dict(data)),
+                "related_data": (
+                    copy.deepcopy(dict(related_data))
+                    if related_data is not None
+                    else None
+                ),
+            }
+            self._index_quarantined_candidate_payload_integrity_data(data)
+            if related_data is not None:
+                self._index_quarantined_candidate_payload_integrity_data(
+                    related_data
+                )
+        self._activate_candidate_receipt_integrity_halt(
+            reason,
+            evidence={
+                "validation_error": validation_error,
+                "candidate_payload_identity": data.get("identity"),
+                "related_candidate_payload_identity": (
+                    related_data.get("identity")
+                    if related_data is not None
+                    else None
+                ),
+            },
+            halted_at=halted_at,
+            incident_id=effective_incident_id,
+        )
+
+    def _index_quarantined_candidate_payload_integrity_data(
+        self,
+        data: Mapping[str, Any],
+    ) -> None:
+        identity = self._optional_text(data.get("identity"))
+        if identity:
+            self._candidate_payload_integrity_quarantine_identities.add(identity)
+            self._index_candidate_payload_integrity_identity(identity)
         message_id = self._optional_text(data.get("message_id"))
         if message_id:
             self._candidate_payload_integrity_message_ids.add(message_id)
+        payload_hash = self._optional_text(data.get("payload_hash"))
+        if payload_hash:
+            self._candidate_payload_integrity_payload_hashes.add(payload_hash)
+        candidate_id = self._optional_text(data.get("candidate_id"))
+        if candidate_id:
+            self._candidate_payload_integrity_candidate_ids.add(candidate_id)
+
+    def _index_candidate_payload_integrity_identity(self, identity: str) -> None:
+        identity_type, separator, value = identity.partition(":")
+        if not separator or not value:
+            return
+        if identity_type == "message":
+            self._candidate_payload_integrity_message_ids.add(value)
+        elif identity_type == "payload":
+            self._candidate_payload_integrity_payload_hashes.add(value)
+        elif identity_type == "candidate":
+            self._candidate_payload_integrity_candidate_ids.add(value)
 
     def _candidate_payload_identity_is_rejected(
         self,
         context: Mapping[str, Any],
     ) -> bool:
         message_id = self._optional_text(context.get("message_id"))
-        return bool(
-            message_id
-            and message_id in self._candidate_payload_integrity_message_ids
+        payload_hash = self._optional_text(context.get("payload_hash"))
+        candidate_id = self._optional_text(context.get("candidate_id"))
+        if (
+            message_id in self._candidate_payload_integrity_message_ids
+            or payload_hash in self._candidate_payload_integrity_payload_hashes
+            or candidate_id in self._candidate_payload_integrity_candidate_ids
+        ):
+            return True
+        if context.get("payload_identity_error") is None:
+            return False
+        identity = self._untrusted_candidate_payload_identity(context)
+        return (
+            identity in self._candidate_payload_integrity_rejections
+            or identity
+            in self._candidate_payload_integrity_quarantine_identities
         )
 
     @classmethod
@@ -650,6 +863,188 @@ class TacticalV2Controller:
             ensure_ascii=True,
         ).encode("utf-8")
         return f"untrusted:{hashlib.sha256(encoded).hexdigest()}"
+
+    def _candidate_payload_integrity_evidence_error(
+        self,
+        data: Mapping[str, Any],
+        *,
+        event_id: Optional[str],
+        emitted_at: Optional[float] = None,
+    ) -> Optional[str]:
+        identity = data.get("identity")
+        validation_error = data.get("validation_error")
+        recorded_at = data.get("recorded_at")
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or identity != identity.strip()
+        ):
+            return "identity_type"
+        if (
+            not isinstance(validation_error, str)
+            or not validation_error
+            or validation_error != validation_error.strip()
+        ):
+            return "validation_error_type"
+        if (
+            isinstance(recorded_at, bool)
+            or not isinstance(recorded_at, (int, float))
+            or not math.isfinite(float(recorded_at))
+        ):
+            return "recorded_at_type"
+        if emitted_at is not None and (
+            isinstance(emitted_at, bool)
+            or not isinstance(emitted_at, (int, float))
+            or not math.isfinite(float(emitted_at))
+            or float(recorded_at) != float(emitted_at)
+        ):
+            return "recorded_at_emitted_at_mismatch"
+        for field in ("candidate_id", "source_shadow_id", "message_id"):
+            value = data.get(field)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+            ):
+                return f"{field}_type"
+        payload_hash = data.get("payload_hash")
+        if payload_hash is not None and not self._is_candidate_payload_hash(
+            payload_hash
+        ):
+            return "payload_hash_type"
+        reason = data.get("reason")
+        if reason is not None and (
+            not isinstance(reason, str)
+            or not reason
+            or reason != reason.strip()
+        ):
+            return "reason_type"
+        if event_id is not None and event_id != self._evidence_event_id(
+            "candidate_payload_integrity_rejected",
+            {"identity": identity},
+        ):
+            return "event_id_identity_mismatch"
+
+        identity_type, separator, claimed_value = identity.partition(":")
+        if not separator or not claimed_value:
+            return "identity_format"
+        expected_fields = {
+            "identity",
+            "candidate_id",
+            "source_shadow_id",
+            "message_id",
+            "validation_error",
+            "recorded_at",
+        }
+        if identity_type == "payload":
+            expected_fields.add("payload_hash")
+        if set(data) != expected_fields:
+            return "schema_fields"
+        message_id = data.get("message_id")
+        candidate_id = data.get("candidate_id")
+        if identity_type == "message":
+            if message_id != claimed_value:
+                return "message_identity_mismatch"
+            if payload_hash is not None:
+                return "message_payload_identity_conflict"
+            return None
+        if identity_type == "payload":
+            if (
+                not self._is_candidate_payload_hash(claimed_value)
+                or payload_hash != claimed_value
+            ):
+                return "payload_identity_mismatch"
+            if message_id is not None:
+                return "payload_message_identity_conflict"
+            return None
+        if identity_type == "candidate":
+            if candidate_id != claimed_value:
+                return "candidate_identity_mismatch"
+            if message_id is not None or payload_hash is not None:
+                return "candidate_fallback_identity_conflict"
+            return None
+        if identity_type == "untrusted":
+            if message_id is not None or payload_hash is not None:
+                return "untrusted_fallback_identity_conflict"
+            expected_identity = self._untrusted_candidate_payload_identity(
+                {
+                    "candidate_id": candidate_id,
+                    "source_shadow_id": data.get("source_shadow_id"),
+                    "message_id": None,
+                    "payload_identity_error": validation_error,
+                }
+            )
+            return (
+                None
+                if identity == expected_identity
+                else "untrusted_identity_mismatch"
+            )
+        return "identity_kind"
+
+    def _candidate_payload_integrity_conflict_error(
+        self,
+        data: Mapping[str, Any],
+        *,
+        event_id: Optional[str],
+    ) -> Optional[str]:
+        conflicting_event_id = self._optional_text(
+            data.get("conflicting_event_id")
+        )
+        expected_event_id = self._optional_text(data.get("expected_event_id"))
+        expected_data = data.get("expected_data")
+        stored_data = data.get("stored_data")
+        detected_at = data.get("detected_at")
+        stored_emitted_at = data.get("stored_emitted_at")
+        if conflicting_event_id is None or expected_event_id != conflicting_event_id:
+            return "conflicting_event_id"
+        if data.get("expected_event_type") != "candidate_payload_integrity_rejected":
+            return "expected_event_type"
+        if not isinstance(expected_data, Mapping):
+            return "expected_data_type"
+        if not isinstance(stored_data, Mapping):
+            return "stored_data_type"
+        if (
+            isinstance(detected_at, bool)
+            or not isinstance(detected_at, (int, float))
+            or not math.isfinite(float(detected_at))
+        ):
+            return "detected_at_type"
+        if (
+            isinstance(stored_emitted_at, bool)
+            or not isinstance(stored_emitted_at, (int, float))
+            or not math.isfinite(float(stored_emitted_at))
+        ):
+            return "stored_emitted_at_type"
+        expected_identity = self._optional_text(expected_data.get("identity"))
+        if expected_identity is None or expected_event_id != self._evidence_event_id(
+            "candidate_payload_integrity_rejected",
+            {"identity": expected_identity},
+        ):
+            return "expected_identity_binding"
+        expected_error = self._candidate_payload_integrity_evidence_error(
+            expected_data,
+            event_id=expected_event_id,
+        )
+        if expected_error is not None:
+            return f"expected_{expected_error}"
+        expected_data_hash = self._evidence_data_hash(expected_data)
+        if event_id is not None and event_id != self._evidence_event_id(
+            "candidate_payload_integrity_evidence_conflicted",
+            {
+                "conflicting_event_id": conflicting_event_id,
+                "expected_data_hash": expected_data_hash,
+            },
+        ):
+            return "conflict_event_id_identity_mismatch"
+        return None
+
+    @staticmethod
+    def _is_candidate_payload_hash(value: Any) -> bool:
+        return bool(
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value)
+        )
 
     def _remember_candidate_handling_gap(
         self,
@@ -774,7 +1169,8 @@ class TacticalV2Controller:
         committed = self._committed_evidence_event(
             event_id,
             event_type=event_type,
-            identity=identity,
+            expected_data=data,
+            emitted_at=emitted_at,
         )
         if committed is not None:
             return committed
@@ -791,7 +1187,8 @@ class TacticalV2Controller:
                 committed = self._committed_evidence_event(
                     event_id,
                     event_type=event_type,
-                    identity=identity,
+                    expected_data=data,
+                    emitted_at=emitted_at,
                 )
                 if committed is not None:
                     return committed
@@ -804,20 +1201,42 @@ class TacticalV2Controller:
         event_id: str,
         *,
         event_type: str,
-        identity: Mapping[str, Any],
+        expected_data: Mapping[str, Any],
+        emitted_at: float,
     ) -> Optional[Dict[str, Any]]:
         for event in self.store.read_events():
             if event.get("event_id") != event_id:
                 continue
-            data = event.get("data") or {}
-            if event.get("event_type") != event_type or any(
-                data.get(key) != value for key, value in identity.items()
+            event_data = event.get("data")
+            event_emitted_at = event.get("emitted_at")
+            if (
+                event.get("event_type") != event_type
+                or not isinstance(event_data, Mapping)
+                or self._canonical_evidence_data(event_data)
+                != self._canonical_evidence_data(expected_data)
+                or isinstance(event_emitted_at, bool)
+                or not isinstance(event_emitted_at, (int, float))
+                or float(event_emitted_at) != float(emitted_at)
             ):
-                raise TacticalStoreIntegrityError(
-                    "deterministic evidence event_id collision"
-                )
+                raise _DeterministicEvidenceConflict(event)
             return event
         return None
+
+    @staticmethod
+    def _canonical_evidence_data(data: Mapping[str, Any]) -> str:
+        return json.dumps(
+            dict(data),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+
+    @classmethod
+    def _evidence_data_hash(cls, data: Mapping[str, Any]) -> str:
+        return hashlib.sha256(
+            cls._canonical_evidence_data(data).encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def _evidence_event_id(
@@ -2215,6 +2634,17 @@ class TacticalV2Controller:
         unknown_identities.update(
             self._candidate_payload_integrity_rejections
         )
+        unknown_identities.update(
+            self._candidate_payload_integrity_quarantine_identities
+        )
+        if (
+            self._candidate_payload_integrity_quarantines
+            and not self._candidate_payload_integrity_quarantine_identities
+        ):
+            unknown_identities.update(
+                f"candidate_payload_quarantine:{incident_id}"
+                for incident_id in self._candidate_payload_integrity_quarantines
+            )
         unknown_identities.update(
             identity
             for identity, result in self._unknown_replays.items()
@@ -4543,7 +4973,18 @@ class TacticalV2Controller:
                 )
                 continue
             if event_type == "candidate_payload_integrity_rejected":
-                self._apply_candidate_payload_integrity_rejection(data)
+                self._apply_candidate_payload_integrity_rejection(
+                    data,
+                    event_id=self._optional_text(event.get("event_id")),
+                    halted_at=event.get("emitted_at"),
+                )
+                continue
+            if event_type == "candidate_payload_integrity_evidence_conflicted":
+                self._apply_candidate_payload_integrity_conflict(
+                    data,
+                    event_id=self._optional_text(event.get("event_id")),
+                    halted_at=event.get("emitted_at"),
+                )
                 continue
             if event_type == "episode_terminal":
                 registry_state = data.get("registry_state") or {}
