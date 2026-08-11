@@ -85,6 +85,10 @@ _CANDIDATE_RECEIPT_FIELDS = frozenset({
     "payload_hash",
 })
 
+_CANDIDATE_RECEIPT_DECISION_FIELDS = tuple(sorted(
+    _CANDIDATE_RECEIPT_FIELDS - {"message_id", "evaluated_at", "replayed"}
+))
+
 _PRE_ASSIGNMENT_RECEIPT_REASONS = frozenset({
     "invalid_candidate",
     "namespace_mismatch",
@@ -162,10 +166,26 @@ class TacticalV2Controller:
         self._candidate_receipts = []
         self._candidate_receipts_by_message_id: Dict[str, Dict[str, Any]] = {}
         self._candidate_receipts_by_payload_hash: Dict[str, Dict[str, Any]] = {}
+        self._candidate_receipt_message_decisions_by_payload_hash: Dict[
+            str,
+            Dict[tuple[Any, ...], Dict[str, Any]],
+        ] = {}
+        self._candidate_receipt_payload_ambiguities: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
         self._conflicting_candidate_receipt_message_ids = set()
         self._conflicting_candidate_receipt_payload_hashes = set()
         self._quarantined_candidate_receipt_candidates: Dict[str, set] = {}
         self._candidate_receipt_integrity_halt: Optional[Dict[str, Any]] = None
+        self._pending_candidate_receipt_integrity_incidents: list[
+            Dict[str, Any]
+        ] = []
+        self._known_candidate_receipt_integrity_incident_ids: set[str] = set()
+        self._seen_candidate_receipt_integrity_incident_ids: set[str] = set()
+        self._acknowledged_candidate_receipt_integrity_incident_ids: set[
+            str
+        ] = set()
         self._handled_message_identity_conflicts = set()
         self._receipt_intent_ids = set()
         self._candidate_handling_gaps: Dict[str, Dict[str, Any]] = {}
@@ -373,6 +393,7 @@ class TacticalV2Controller:
             raise
         self._remember_candidate_receipt(
             receipt,
+            halted_at=evaluated_at,
             incident_id=self._optional_text(event.get("event_id")),
         )
         self._refresh_status(force=True, now=evaluated_at)
@@ -401,6 +422,22 @@ class TacticalV2Controller:
                 return CandidateHandlingResult(False, "message_identity_conflict")
         else:
             payload_hash = str(context.get("payload_hash") or "")
+            ambiguity = self._candidate_receipt_payload_ambiguities.get(
+                payload_hash
+            )
+            if ambiguity is not None:
+                incident_recorded = self._activate_candidate_receipt_integrity_halt(
+                    ambiguity["reason"],
+                    evidence=ambiguity["evidence"],
+                    halted_at=ambiguity["halted_at"],
+                    incident_id=ambiguity["incident_id"],
+                )
+                if incident_recorded:
+                    self._refresh_status(force=True, now=evaluated_at)
+                return CandidateHandlingResult(
+                    False,
+                    "candidate_receipt_payload_ambiguity",
+                )
             receipt = (
                 None
                 if payload_hash in self._conflicting_candidate_receipt_payload_hashes
@@ -693,6 +730,29 @@ class TacticalV2Controller:
             )
             return
 
+        if message_id and payload_hash:
+            conflicting_decision = self._index_candidate_receipt_message_decision(
+                receipt
+            )
+            if conflicting_decision is not None:
+                self._remember_candidate_receipt_payload_ambiguity(
+                    payload_hash=payload_hash,
+                    evidence={
+                        "payload_hash": payload_hash,
+                        "stored_message_id": self._optional_text(
+                            conflicting_decision.get("message_id")
+                        ),
+                        "conflicting_message_id": message_id,
+                        "stored_decision": self._candidate_receipt_decision_evidence(
+                            conflicting_decision
+                        ),
+                        "conflicting_decision": (
+                            self._candidate_receipt_decision_evidence(receipt)
+                        ),
+                    },
+                    halted_at=halted_at,
+                    incident_id=incident_id,
+                )
         self._candidate_receipts.append(receipt)
         intent_id = self._optional_text(receipt.get("intent_id"))
         if message_id:
@@ -738,24 +798,44 @@ class TacticalV2Controller:
         evidence: Mapping[str, Any],
         halted_at: Optional[float],
         incident_id: Optional[str],
-    ) -> None:
-        if self._candidate_receipt_integrity_halt is None:
-            effective_halted_at = (
-                float(self.now_fn()) if halted_at is None else float(halted_at)
+    ) -> bool:
+        effective_halted_at = (
+            float(self.now_fn()) if halted_at is None else float(halted_at)
+        )
+        effective_incident_id = (
+            incident_id
+            or self._candidate_receipt_incident_fingerprint(
+                reason,
+                evidence,
+                effective_halted_at,
             )
-            self._candidate_receipt_integrity_halt = {
-                "reason": str(reason),
-                "evidence": dict(evidence),
-                "halted_at": effective_halted_at,
-                "incident_id": (
-                    incident_id
-                    or self._candidate_receipt_incident_fingerprint(
-                        reason,
-                        evidence,
-                        effective_halted_at,
-                    )
-                ),
-            }
+        )
+        self._known_candidate_receipt_integrity_incident_ids.add(
+            effective_incident_id
+        )
+        if (
+            effective_incident_id
+            in self._acknowledged_candidate_receipt_integrity_incident_ids
+        ):
+            return False
+        if (
+            effective_incident_id
+            in self._seen_candidate_receipt_integrity_incident_ids
+        ):
+            return False
+        incident = {
+            "reason": str(reason),
+            "evidence": dict(evidence),
+            "halted_at": effective_halted_at,
+            "incident_id": effective_incident_id,
+        }
+        self._seen_candidate_receipt_integrity_incident_ids.add(
+            effective_incident_id
+        )
+        self._pending_candidate_receipt_integrity_incidents.append(incident)
+        if self._candidate_receipt_integrity_halt is None:
+            self._candidate_receipt_integrity_halt = dict(incident)
+        return True
 
     @staticmethod
     def _candidate_receipt_incident_fingerprint(
@@ -774,6 +854,40 @@ class TacticalV2Controller:
             ensure_ascii=True,
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    def _remember_candidate_receipt_payload_ambiguity(
+        self,
+        *,
+        payload_hash: str,
+        evidence: Mapping[str, Any],
+        halted_at: Optional[float],
+        incident_id: Optional[str],
+    ) -> None:
+        if payload_hash in self._candidate_receipt_payload_ambiguities:
+            return
+        effective_halted_at = (
+            float(self.now_fn()) if halted_at is None else float(halted_at)
+        )
+        effective_incident_id = (
+            incident_id
+            or self._candidate_receipt_incident_fingerprint(
+                "candidate_receipt_payload_ambiguity",
+                evidence,
+                effective_halted_at,
+            )
+        )
+        self._known_candidate_receipt_integrity_incident_ids.add(
+            effective_incident_id
+        )
+        self._candidate_receipt_payload_ambiguities.setdefault(
+            payload_hash,
+            {
+                "reason": "candidate_receipt_payload_ambiguity",
+                "evidence": dict(evidence),
+                "halted_at": effective_halted_at,
+                "incident_id": effective_incident_id,
+            },
+        )
 
     def acknowledge_candidate_receipt_integrity(
         self,
@@ -829,7 +943,32 @@ class TacticalV2Controller:
             return
         halt = self._candidate_receipt_integrity_halt
         if halt is not None and halt.get("incident_id") == incident_id:
-            self._candidate_receipt_integrity_halt = None
+            self._acknowledged_candidate_receipt_integrity_incident_ids.add(
+                incident_id
+            )
+            if (
+                self._pending_candidate_receipt_integrity_incidents
+                and self._pending_candidate_receipt_integrity_incidents[0].get(
+                    "incident_id"
+                )
+                == incident_id
+            ):
+                self._pending_candidate_receipt_integrity_incidents.pop(0)
+            self._candidate_receipt_integrity_halt = (
+                dict(self._pending_candidate_receipt_integrity_incidents[0])
+                if self._pending_candidate_receipt_integrity_incidents
+                else None
+            )
+        elif (
+            incident_id in self._known_candidate_receipt_integrity_incident_ids
+            and all(
+                pending.get("incident_id") != incident_id
+                for pending in self._pending_candidate_receipt_integrity_incidents
+            )
+        ):
+            self._acknowledged_candidate_receipt_integrity_incident_ids.add(
+                incident_id
+            )
 
     def _record_message_identity_conflict(
         self,
@@ -867,6 +1006,7 @@ class TacticalV2Controller:
     def _rebuild_candidate_receipt_indexes(self) -> None:
         self._candidate_receipts_by_message_id = {}
         self._candidate_receipts_by_payload_hash = {}
+        self._candidate_receipt_message_decisions_by_payload_hash = {}
         self._receipt_intent_ids = set()
         for receipt in self._candidate_receipts:
             message_id = self._optional_text(receipt.get("message_id"))
@@ -876,8 +1016,47 @@ class TacticalV2Controller:
                 self._candidate_receipts_by_message_id.setdefault(message_id, receipt)
             if payload_hash:
                 self._candidate_receipts_by_payload_hash.setdefault(payload_hash, receipt)
+            if message_id and payload_hash:
+                self._index_candidate_receipt_message_decision(receipt)
             if intent_id:
                 self._receipt_intent_ids.add(intent_id)
+
+    def _index_candidate_receipt_message_decision(
+        self,
+        receipt: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        payload_hash = str(receipt.get("payload_hash") or "")
+        fingerprint = self._candidate_receipt_decision_fingerprint(receipt)
+        decisions = self._candidate_receipt_message_decisions_by_payload_hash.setdefault(
+            payload_hash,
+            {},
+        )
+        conflicting = (
+            next(iter(decisions.values()))
+            if decisions and fingerprint not in decisions
+            else None
+        )
+        decisions.setdefault(fingerprint, dict(receipt))
+        return conflicting
+
+    @staticmethod
+    def _candidate_receipt_decision_fingerprint(
+        receipt: Mapping[str, Any],
+    ) -> tuple[Any, ...]:
+        return tuple(
+            receipt.get(field) for field in _CANDIDATE_RECEIPT_DECISION_FIELDS
+        )
+
+    @staticmethod
+    def _candidate_receipt_decision_evidence(
+        receipt: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "accepted": receipt.get("accepted"),
+            "reason": receipt.get("reason"),
+            "episode_id": receipt.get("episode_id"),
+            "intent_id": receipt.get("intent_id"),
+        }
 
     def _candidate_receipt_validation_error(
         self,

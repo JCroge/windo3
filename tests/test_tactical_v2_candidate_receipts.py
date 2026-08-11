@@ -1561,6 +1561,104 @@ def test_known_candidate_receipt_conflict_after_acknowledgement_rehalts(
     assert len(_receipts(tmp_path)) == 3
 
 
+def test_multiple_receipt_corruptions_require_ordered_acknowledgements(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    store = TacticalStore(_paths(tmp_path))
+    first_raw = _candidate(candidate_id="ordered-corruption-first")
+    second_raw = _candidate(candidate_id="ordered-corruption-second")
+    first_event = store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(
+            first_raw,
+            message_id="msg-ordered-corruption-first",
+        ),
+        emitted_at=1000.0,
+    )
+    second_event = store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(
+            second_raw,
+            message_id="msg-ordered-corruption-second",
+        ),
+        emitted_at=1001.0,
+    )
+    controller = _controller(tmp_path)
+
+    initial = controller.snapshot(now=1002.0)
+    assert initial["integrity_halt"]["incident_id"] == first_event["event_id"]
+    assert initial["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 2,
+    }
+    assert controller.acknowledge_candidate_receipt_integrity(
+        "ordered-corruption-first-ack",
+        _integrity_proof(),
+    ) is False
+    after_first_ack = controller.snapshot(now=1002.0)
+    assert after_first_ack["integrity_halt"]["incident_id"] == (
+        second_event["event_id"]
+    )
+    assert _controller(tmp_path).snapshot(now=1002.0)["integrity_halt"] == (
+        after_first_ack["integrity_halt"]
+    )
+
+    controller.store.append(
+        "candidate_receipt_integrity_acknowledged",
+        {
+            "reconciliation_id": "stale-first-incident-ack",
+            "incident_id": first_event["event_id"],
+            "proof": _integrity_proof(),
+            "acknowledged_at": 1003.0,
+        },
+        emitted_at=1003.0,
+    )
+    after_stale_ack = _controller(tmp_path)
+    assert after_stale_ack.snapshot(now=1003.0)["integrity_halt"] == (
+        after_first_ack["integrity_halt"]
+    )
+    assert after_stale_ack.acknowledge_candidate_receipt_integrity(
+        "ordered-corruption-second-ack",
+        _integrity_proof(),
+    ) is True
+    assert after_stale_ack.snapshot(now=1004.0)["integrity_halt"] is None
+
+    final_restart = _controller(tmp_path)
+    assert final_restart.snapshot(now=1004.0)["integrity_halt"] is None
+    assert final_restart.snapshot(now=1004.0)["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 2,
+    }
+    assert len(_receipts(tmp_path)) == 2
+
+
+def test_duplicate_receipt_corruption_event_identity_is_queued_once(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="duplicate-corruption-event-id")
+    store = TacticalStore(_paths(tmp_path))
+    receipt = _invalid_candidate_receipt(
+        raw,
+        message_id="msg-duplicate-corruption-event-id",
+    )
+    for emitted_at in (1000.0, 1001.0):
+        store.append(
+            "candidate_handled",
+            receipt,
+            emitted_at=emitted_at,
+            event_id="duplicate-corruption-event-id",
+        )
+    controller = _controller(tmp_path)
+
+    assert controller.acknowledge_candidate_receipt_integrity(
+        "duplicate-corruption-event-id-ack",
+        _integrity_proof(),
+    ) is True
+    assert controller.snapshot(now=1002.0)["integrity_halt"] is None
+    assert _controller(tmp_path).snapshot(now=1002.0)["integrity_halt"] is None
+    assert len(_receipts(tmp_path)) == 2
+
+
 def test_candidate_receipt_acknowledgement_does_not_clear_governor_halt(tmp_path):
     from utils.tactical_v2.store import TacticalStore
 
@@ -2110,6 +2208,169 @@ async def test_distinct_message_ids_remain_independently_authoritative(tmp_path)
     }
     assert controller.snapshot(now=1002.0)["integrity_halt"] is None
     assert _events(tmp_path) == original_events
+
+
+@pytest.mark.asyncio
+async def test_payload_fallback_fails_closed_for_ambiguous_message_decisions(
+    tmp_path,
+):
+    raw = _candidate(candidate_id="ambiguous-message-decisions")
+    controller = _controller(tmp_path)
+    accepted = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id="msg-ambiguous-accepted",
+    )
+    duplicate = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-ambiguous-duplicate",
+    )
+    events_before_fallback = _events(tmp_path)
+
+    accepted_replay = await controller.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-ambiguous-accepted",
+        replayed=True,
+    )
+    duplicate_replay = await controller.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-ambiguous-duplicate",
+        replayed=True,
+    )
+    refresh_status = controller._refresh_status
+    controller._refresh_status = MagicMock(wraps=refresh_status)
+    fallback_replays = [
+        await controller.handle_candidate(
+            raw,
+            now=1002.0 + index,
+            message_id=None,
+            replayed=True,
+        )
+        for index in range(3)
+    ]
+
+    assert accepted_replay == accepted
+    assert duplicate_replay == duplicate
+    assert accepted.accepted is True
+    assert duplicate.reason == "duplicate_episode"
+    assert [result.reason for result in fallback_replays] == [
+        "candidate_receipt_payload_ambiguity",
+    ] * 3
+    assert all(result.accepted is False for result in fallback_replays)
+    assert all(result.intent_id is None for result in fallback_replays)
+    assert all(result.episode_id is None for result in fallback_replays)
+    assert controller._refresh_status.call_count == 1
+    assert _events(tmp_path) == events_before_fallback
+    snapshot = controller.snapshot(now=1004.0)
+    assert snapshot["candidate_handling"] == {
+        "receipt_count": 2,
+        "unknown_handling_evidence": 0,
+    }
+    assert snapshot["integrity_halt"]["reason"] == (
+        "candidate_receipt_payload_ambiguity"
+    )
+    assert snapshot["integrity_halt"]["evidence"]["payload_hash"] == (
+        _payload_hash(raw)
+    )
+    assert {
+        snapshot["integrity_halt"]["evidence"]["stored_message_id"],
+        snapshot["integrity_halt"]["evidence"]["conflicting_message_id"],
+    } == {"msg-ambiguous-accepted", "msg-ambiguous-duplicate"}
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["integrity_halt"] == snapshot["integrity_halt"]
+
+    restarted = _controller(tmp_path)
+    restarted_accepted = await restarted.handle_candidate(
+        raw,
+        now=1005.0,
+        message_id="msg-ambiguous-accepted",
+        replayed=True,
+    )
+    restarted_duplicate = await restarted.handle_candidate(
+        raw,
+        now=1005.0,
+        message_id="msg-ambiguous-duplicate",
+        replayed=True,
+    )
+    restarted_fallback = await restarted.handle_candidate(
+        raw,
+        now=1005.0,
+        message_id=None,
+        replayed=True,
+    )
+
+    assert restarted_accepted == accepted
+    assert restarted_duplicate == duplicate
+    assert restarted_fallback == fallback_replays[0]
+    assert restarted.snapshot(now=1005.0)["integrity_halt"] == (
+        snapshot["integrity_halt"]
+    )
+    assert _events(tmp_path) == events_before_fallback
+    assert all(set(event["data"]) == RECEIPT_FIELDS for event in _receipts(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_payload_fallback_remains_authoritative_for_equal_message_decisions(
+    tmp_path,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="equal-message-decisions")
+    store = TacticalStore(_paths(tmp_path))
+    episode_id = _append_episode(store, raw)
+    intent = _append_intent_created(store, raw, episode_id=episode_id)
+    first_receipt = _candidate_receipt(
+        raw,
+        intent,
+        message_id="msg-equal-decision-first",
+    )
+    second_receipt = {
+        **first_receipt,
+        "message_id": "msg-equal-decision-second",
+        "evaluated_at": 1001.0,
+        "replayed": True,
+    }
+    store.append("candidate_handled", first_receipt, emitted_at=1000.0)
+    store.append("candidate_handled", second_receipt, emitted_at=1001.0)
+    original_events = _events(tmp_path)
+
+    controller = _controller(tmp_path)
+    first = await controller.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-equal-decision-first",
+        replayed=True,
+    )
+    second = await controller.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-equal-decision-second",
+        replayed=True,
+    )
+    fallback = await controller.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id=None,
+        replayed=True,
+    )
+
+    assert first.accepted is True
+    assert second == first
+    assert fallback == first
+    assert controller.snapshot(now=1002.0)["integrity_halt"] is None
+    restarted = _controller(tmp_path)
+    assert await restarted.handle_candidate(
+        raw,
+        now=1003.0,
+        message_id=None,
+        replayed=True,
+    ) == first
+    assert restarted.snapshot(now=1003.0)["integrity_halt"] is None
+    assert _events(tmp_path) == original_events
+    assert all(set(event["data"]) == RECEIPT_FIELDS for event in _receipts(tmp_path))
 
 
 def test_conflicting_duplicate_message_receipts_are_both_quarantined(tmp_path):
