@@ -81,7 +81,18 @@ class EpisodeRegistry:
                 )
                 self._states[key] = state
                 self._persist("episode_assigned", key, state)
-                return self._assignment(state, eligible=True, reason=reset_reason)
+                renewal_reason = (
+                    reset_reason
+                    if (
+                        reset_reason == "new_confirmed_structure"
+                        and str(
+                            structure.get("tf_15m_bias") or "unavailable"
+                        ).lower()
+                        == "neutral"
+                    )
+                    else "eligible"
+                )
+                return self._assignment(state, eligible=True, reason=renewal_reason)
 
             reason = "opposing_block" if self._is_blocked(side, structure) else "duplicate_episode"
             return self._assignment(state, eligible=False, reason=reason)

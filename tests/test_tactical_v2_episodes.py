@@ -79,6 +79,7 @@ def test_opposing_block_then_renewal_advances_epoch(tmp_path):
     renewed = registry.assign(_candidate(0.99), _structure(token="break-up-2"))
 
     assert renewed.eligible is True
+    assert renewed.reason == "eligible"
     assert renewed.episode_id != first.episode_id
     assert renewed.epoch_seq == first.epoch_seq + 1
 
@@ -92,6 +93,7 @@ def test_neutral_then_renewed_direction_advances_epoch(tmp_path):
     renewed = registry.assign(_candidate(), _structure(bias="bullish", token="break-up-2"))
 
     assert renewed.eligible is True
+    assert renewed.reason == "eligible"
     assert renewed.episode_id != first.episode_id
 
 
@@ -101,6 +103,65 @@ def test_terminal_neutral_candidate_with_new_closed_bar_advances_epoch(tmp_path)
     registry.mark_terminal(first.episode_id, "expired")
 
     renewed = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="neutral", token="break-up-1"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert renewed.eligible is True
+    assert renewed.reason == "new_confirmed_structure"
+    assert renewed.episode_id != first.episode_id
+    assert renewed.epoch_seq == first.epoch_seq + 1
+
+
+def test_terminal_neutral_candidate_with_changed_token_advances_epoch(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    renewed = registry.assign(
+        _candidate(),
+        _structure(bias="neutral", token="break-up-2"),
+    )
+
+    assert renewed.eligible is True
+    assert renewed.reason == "new_confirmed_structure"
+    assert renewed.episode_id != first.episode_id
+
+
+def test_terminal_neutral_candidate_with_older_bar_and_same_token_is_duplicate(
+    tmp_path,
+):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    repeated = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="neutral", token="break-up-1"),
+            "tf_15m_closed_bar_ts": 899.0,
+        },
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
+def test_terminal_neutral_fresh_renewal_survives_registry_restart(tmp_path):
+    from utils.tactical_v2.episodes import EpisodeRegistry
+    from utils.tactical_v2.store import TacticalStore
+
+    paths = _paths(tmp_path)
+    registry = EpisodeRegistry(TacticalStore(paths), namespace="testnet")
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    restarted = EpisodeRegistry(TacticalStore(paths), namespace="testnet")
+    renewed = restarted.assign(
         _candidate(),
         {
             **_structure(bias="neutral", token="break-up-1"),
@@ -163,6 +224,25 @@ def test_new_structure_token_resets_only_after_terminal(tmp_path):
     assert still_same.eligible is False
     assert reset.episode_id != first.episode_id
     assert reset.eligible is True
+    assert reset.reason == "eligible"
+
+
+def test_bearish_new_structure_token_renewal_keeps_eligible_reason(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(
+        _candidate(side="short"),
+        _structure(bias="bearish", token="break-down-1"),
+    )
+    registry.mark_terminal(first.episode_id, "expired")
+
+    renewed = registry.assign(
+        _candidate(side="short"),
+        _structure(bias="bearish", token="break-down-2"),
+    )
+
+    assert renewed.eligible is True
+    assert renewed.reason == "eligible"
+    assert renewed.episode_id != first.episode_id
 
 
 def test_missing_structure_never_manufactures_reset(tmp_path):
