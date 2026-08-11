@@ -757,6 +757,9 @@ class TacticalV2Controller:
             },
             float(self.now_fn()) if halted_at is None else float(halted_at),
         )
+        self._index_quarantined_candidate_payload_integrity_data(data)
+        if related_data is not None:
+            self._index_quarantined_candidate_payload_integrity_data(related_data)
         if effective_incident_id not in self._candidate_payload_integrity_quarantines:
             self._candidate_payload_integrity_quarantines[effective_incident_id] = {
                 "reason": reason,
@@ -768,11 +771,6 @@ class TacticalV2Controller:
                     else None
                 ),
             }
-            self._index_quarantined_candidate_payload_integrity_data(data)
-            if related_data is not None:
-                self._index_quarantined_candidate_payload_integrity_data(
-                    related_data
-                )
         self._activate_candidate_receipt_integrity_halt(
             reason,
             evidence={

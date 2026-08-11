@@ -1347,6 +1347,155 @@ async def test_misbound_payload_integrity_evidence_quarantines_claimed_and_suppl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("identity_kind", ["message", "payload", "candidate"])
+async def test_duplicate_payload_evidence_incident_merges_every_row_identity(
+    tmp_path,
+    identity_kind,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    claimed_raw = _candidate(candidate_id=f"claimed-duplicate-{identity_kind}")
+    supplied_a_raw = _candidate(candidate_id=f"supplied-a-{identity_kind}")
+    supplied_b_raw = _candidate(candidate_id=f"supplied-b-{identity_kind}")
+    base = {
+        "source_shadow_id": None,
+        "validation_error": f"seeded_duplicate_{identity_kind}_rejection",
+    }
+    if identity_kind == "message":
+        claimed_value = "claimed-message"
+        identity = f"message:{claimed_value}"
+        rows = [
+            {
+                **base,
+                "identity": identity,
+                "candidate_id": supplied_a_raw["candidate_id"],
+                "message_id": "supplied-a",
+            },
+            {
+                **base,
+                "identity": identity,
+                "candidate_id": supplied_b_raw["candidate_id"],
+                "message_id": "supplied-b",
+            },
+        ]
+        deliveries = [
+            (claimed_raw, claimed_value),
+            (supplied_a_raw, "supplied-a"),
+            (supplied_b_raw, "supplied-b"),
+        ]
+    elif identity_kind == "payload":
+        claimed_value = _payload_hash(claimed_raw)
+        identity = f"payload:{claimed_value}"
+        rows = [
+            {
+                **base,
+                "identity": identity,
+                "candidate_id": supplied_a_raw["candidate_id"],
+                "message_id": None,
+                "payload_hash": _payload_hash(supplied_a_raw),
+            },
+            {
+                **base,
+                "identity": identity,
+                "candidate_id": supplied_b_raw["candidate_id"],
+                "message_id": None,
+                "payload_hash": _payload_hash(supplied_b_raw),
+            },
+        ]
+        deliveries = [
+            (claimed_raw, None),
+            (supplied_a_raw, None),
+            (supplied_b_raw, None),
+        ]
+    else:
+        claimed_value = claimed_raw["candidate_id"]
+        identity = f"candidate:{claimed_value}"
+        rows = [
+            {
+                **base,
+                "identity": identity,
+                "candidate_id": supplied_a_raw["candidate_id"],
+                "message_id": None,
+            },
+            {
+                **base,
+                "identity": identity,
+                "candidate_id": supplied_b_raw["candidate_id"],
+                "message_id": None,
+            },
+        ]
+        deliveries = [
+            (claimed_raw, "msg-claimed-candidate"),
+            (supplied_a_raw, "msg-supplied-a-candidate"),
+            (supplied_b_raw, "msg-supplied-b-candidate"),
+        ]
+
+    event_id = _evidence_event_id(
+        "candidate_payload_integrity_rejected",
+        {"identity": identity},
+    )
+    store = TacticalStore(_paths(tmp_path))
+    for index, row in enumerate(rows):
+        store.append(
+            "candidate_payload_integrity_rejected",
+            {**row, "recorded_at": 1000.0 + index},
+            emitted_at=1000.0 + index,
+            event_id=event_id,
+        )
+
+    controller = _controller(tmp_path)
+    original_events = _events(tmp_path)
+    halt = controller.snapshot(now=1002.0)["integrity_halt"]
+    before_ack = [
+        await controller.handle_candidate(
+            raw,
+            now=1002.0 + index,
+            message_id=message_id,
+        )
+        for index, (raw, message_id) in enumerate(deliveries[:2])
+    ]
+
+    assert {result.reason for result in before_ack} == {
+        "unknown_handling_evidence"
+    }
+    assert halt["incident_id"] == event_id
+    assert _events(tmp_path) == original_events
+    assert controller.acknowledge_candidate_receipt_integrity(
+        expected_incident_id=event_id,
+        reconciliation_id=f"ack-duplicate-{identity_kind}-evidence",
+        proof=_integrity_proof(),
+    ) is True
+    events_after_ack = _events(tmp_path)
+    assert controller.snapshot(now=1004.0)["integrity_halt"] is None
+
+    after_ack = [
+        await controller.handle_candidate(
+            raw,
+            now=1004.0 + index,
+            message_id=message_id,
+        )
+        for index, (raw, message_id) in enumerate(deliveries * 2)
+    ]
+    restarted = _controller(tmp_path)
+    after_restart = [
+        await restarted.handle_candidate(
+            raw,
+            now=1010.0 + index,
+            message_id=message_id,
+        )
+        for index, (raw, message_id) in enumerate(deliveries * 2)
+    ]
+
+    assert {result.reason for result in after_ack + after_restart} == {
+        "unknown_handling_evidence"
+    }
+    assert restarted.snapshot(now=1016.0)["integrity_halt"] is None
+    assert restarted.snapshot(now=1016.0)["intents"] == []
+    assert _events(tmp_path) == events_after_ack
+    assert _receipts(tmp_path) == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mismatch_field",
     [
