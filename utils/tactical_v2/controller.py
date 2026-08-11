@@ -156,7 +156,7 @@ class TacticalV2Controller:
 
     async def handle_candidate(
         self,
-        raw: Mapping[str, Any],
+        raw: Any,
         *,
         now: Optional[float] = None,
         message_id: Optional[str] = None,
@@ -193,12 +193,14 @@ class TacticalV2Controller:
                 replayed=replayed,
             )
 
+        if not isinstance(raw, Mapping):
+            return finish(CandidateHandlingResult(False, "invalid_candidate"))
         raw_namespace = self._safe_text(raw.get("namespace")).lower()
         if raw_namespace != self.namespace:
             return finish(CandidateHandlingResult(False, "namespace_mismatch"))
         try:
             candidate = TacticalCandidate.from_raw(raw)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             self._log_warning("invalid Tactical V2 candidate: %s", exc)
             return finish(CandidateHandlingResult(False, "invalid_candidate"))
         if evaluated_at < candidate.created_at:
@@ -464,6 +466,12 @@ class TacticalV2Controller:
         for field in ("candidate_id", "source_shadow_id", "symbol", "side", "reason"):
             if not isinstance(receipt.get(field), str):
                 return f"{field}_type"
+        episode_id = receipt.get("episode_id")
+        if receipt["reason"] == "duplicate_episode" and (
+            episode_id is None
+            or (isinstance(episode_id, str) and not episode_id.strip())
+        ):
+            return "duplicate_episode_episode_id"
         for field in ("message_id", "episode_id", "intent_id"):
             value = receipt.get(field)
             if value is not None and (
@@ -491,7 +499,6 @@ class TacticalV2Controller:
 
         accepted = receipt["accepted"]
         intent_id = receipt.get("intent_id")
-        episode_id = receipt.get("episode_id")
         if not accepted:
             if intent_id is not None:
                 return "rejected_intent_id"
@@ -529,11 +536,12 @@ class TacticalV2Controller:
     @classmethod
     def _candidate_receipt_context(
         cls,
-        raw: Mapping[str, Any],
+        raw: Any,
         *,
         message_id: Optional[str],
     ) -> Dict[str, Any]:
-        symbol = cls._receipt_text(raw.get("symbol"))
+        fields = raw if isinstance(raw, Mapping) else {}
+        symbol = cls._receipt_text(fields.get("symbol"))
         try:
             symbol = to_internal(symbol) if symbol else ""
         except (AttributeError, TypeError, ValueError):
@@ -546,11 +554,11 @@ class TacticalV2Controller:
             allow_nan=False,
         ).encode("utf-8")
         return {
-            "candidate_id": cls._receipt_text(raw.get("candidate_id")),
-            "source_shadow_id": cls._receipt_text(raw.get("source_shadow_id")),
+            "candidate_id": cls._receipt_text(fields.get("candidate_id")),
+            "source_shadow_id": cls._receipt_text(fields.get("source_shadow_id")),
             "message_id": cls._receipt_text(message_id) or None,
             "symbol": symbol,
-            "side": cls._receipt_text(raw.get("side")).lower(),
+            "side": cls._receipt_text(fields.get("side")).lower(),
             "payload_hash": hashlib.sha256(encoded).hexdigest(),
         }
 

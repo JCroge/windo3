@@ -249,6 +249,64 @@ async def test_invalid_payload_fields_cannot_break_receipt_append(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [pytest.param([], id="list"), pytest.param(None, id="null")],
+)
+async def test_non_mapping_payload_persists_invalid_candidate_receipt(tmp_path, raw):
+    controller = _controller(tmp_path)
+
+    result = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id="msg-non-mapping",
+    )
+
+    receipts = _receipts(tmp_path)
+    assert result.reason == "invalid_candidate"
+    assert len(receipts) == 1
+    assert receipts[0]["data"] == {
+        "candidate_id": "",
+        "source_shadow_id": "",
+        "message_id": "msg-non-mapping",
+        "symbol": "",
+        "side": "",
+        "accepted": False,
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+
+
+@pytest.mark.asyncio
+async def test_overflow_candidate_persists_invalid_candidate_receipt(tmp_path):
+    controller = _controller(tmp_path)
+    raw = {**_candidate(candidate_id="overflow-invalid"), "leverage": float("inf")}
+
+    result = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id="msg-overflow-invalid",
+    )
+
+    receipts = _receipts(tmp_path)
+    assert result.reason == "invalid_candidate"
+    assert len(receipts) == 1
+    receipt = receipts[0]["data"]
+    assert set(receipt) == RECEIPT_FIELDS
+    assert receipt["accepted"] is False
+    assert receipt["reason"] == "invalid_candidate"
+    assert receipt["intent_id"] is None
+    assert receipt["payload_hash"] == _payload_hash({
+        **raw,
+        "leverage": {"non_finite_float": "inf"},
+    })
+
+
+@pytest.mark.asyncio
 async def test_recursive_invalid_payload_persists_invalid_candidate_receipt(tmp_path):
     controller = _controller(tmp_path)
     recursive_mapping = {}
@@ -721,6 +779,64 @@ def test_restored_receipt_with_bad_hash_or_arbitrary_intent_is_quarantined(
     }
     assert snapshot["integrity_halt"]["reason"] == "candidate_receipt_invalid"
     assert snapshot["integrity_halt"]["evidence"]["validation_error"] == expected_error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "episode_id",
+    [pytest.param(None, id="missing"), pytest.param("", id="blank")],
+)
+async def test_duplicate_episode_receipt_without_episode_id_is_quarantined(
+    tmp_path,
+    episode_id,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="malformed-duplicate-episode")
+    store = TacticalStore(_paths(tmp_path))
+    store.append(
+        "candidate_handled",
+        {
+            "candidate_id": raw["candidate_id"],
+            "source_shadow_id": raw["source_shadow_id"],
+            "message_id": "msg-malformed-duplicate-episode",
+            "symbol": raw["symbol"],
+            "side": raw["side"],
+            "accepted": False,
+            "reason": "duplicate_episode",
+            "episode_id": episode_id,
+            "intent_id": None,
+            "evaluated_at": 1000.0,
+            "replayed": False,
+            "payload_hash": _payload_hash(raw),
+        },
+        emitted_at=1000.0,
+    )
+
+    controller = _controller(tmp_path)
+    replayed = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-malformed-duplicate-episode",
+        replayed=True,
+    )
+    snapshot = controller.snapshot(now=1001.0)
+
+    assert replayed.reason == "unknown_handling_evidence"
+    assert replayed.intent_id is None
+    assert replayed.episode_id is None
+    assert snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    assert snapshot["integrity_halt"]["reason"] == "candidate_receipt_invalid"
+    assert snapshot["integrity_halt"]["evidence"]["validation_error"] == (
+        "duplicate_episode_episode_id"
+    )
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["candidate_handling"] == snapshot["candidate_handling"]
+    assert status["integrity_halt"] == snapshot["integrity_halt"]
+    assert len(_receipts(tmp_path)) == 1
 
 
 def test_conflicting_duplicate_message_receipts_are_both_quarantined(tmp_path):
