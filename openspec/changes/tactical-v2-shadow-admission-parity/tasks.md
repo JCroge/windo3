@@ -1,9 +1,9 @@
 ## 1. Episode Renewal
 
-- [ ] Add a regression test for terminal `neutral + unblocked + fresh closed bar` renewal.
-- [ ] Add negative tests for neutral without fresh evidence and neutral while blocked.
-- [ ] Implement the minimal EpisodeRegistry renewal rule using monotonic closed-bar or changed structure evidence.
-- [ ] Verify episode replay and restart preserve the new epoch and terminal historical episodes.
+- [x] Add a regression test for terminal `neutral + unblocked + fresh closed bar` renewal.
+- [x] Add negative tests for neutral without fresh evidence and neutral while blocked.
+- [x] Implement the minimal EpisodeRegistry renewal rule using monotonic closed-bar or changed structure evidence.
+- [x] Verify episode replay and restart preserve the new epoch and terminal historical episodes.
 
 ## 2. Candidate Receipts
 
