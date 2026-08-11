@@ -85,6 +85,25 @@ _CANDIDATE_RECEIPT_FIELDS = frozenset({
     "payload_hash",
 })
 
+_PRE_ASSIGNMENT_RECEIPT_REASONS = frozenset({
+    "invalid_candidate",
+    "namespace_mismatch",
+    "candidate_from_future",
+    "candidate_expired",
+    "admission_disabled",
+})
+
+_EPISODE_RECEIPT_REASONS = frozenset({
+    "duplicate_episode",
+    "opposing_block",
+    "capacity_skipped",
+    "integrity_halt",
+    "loss_streak_pause",
+    "rolling_loss_pause",
+    "same_symbol_exposure",
+    "account_reject",
+})
+
 
 @dataclass(frozen=True)
 class CandidateHandlingResult:
@@ -144,7 +163,9 @@ class TacticalV2Controller:
         self._candidate_receipts_by_message_id: Dict[str, Dict[str, Any]] = {}
         self._candidate_receipts_by_payload_hash: Dict[str, Dict[str, Any]] = {}
         self._conflicting_candidate_receipt_message_ids = set()
+        self._conflicting_candidate_receipt_payload_hashes = set()
         self._receipt_intent_ids = set()
+        self._candidate_handling_gaps: Dict[str, Dict[str, Any]] = {}
         self._unknown_replays: Dict[str, CandidateHandlingResult] = {}
         self._episode_outcomes: Dict[str, int] = {}
         self._parity_mismatches = 0
@@ -170,6 +191,26 @@ class TacticalV2Controller:
         )
         if handled is not None:
             return handled
+        gap = self._candidate_handling_gap(receipt_context)
+        if gap is not None:
+            if (
+                receipt_context.get("message_id")
+                and gap.get("payload_hash") != receipt_context.get("payload_hash")
+            ):
+                self.governor.activate_integrity_halt(
+                    "message_identity_conflict",
+                    evidence={
+                        "message_id": receipt_context["message_id"],
+                        "stored_payload_hash": gap.get("payload_hash"),
+                        "incoming_payload_hash": receipt_context.get("payload_hash"),
+                    },
+                )
+                self._refresh_status(force=True, now=evaluated_at)
+                return CandidateHandlingResult(False, "message_identity_conflict")
+            return self._remember_unknown_replay(
+                receipt_context,
+                evaluated_at=evaluated_at,
+            )
         if self._unreceipted_intent_for_candidate(receipt_context) is not None:
             return self._remember_unknown_replay(
                 receipt_context,
@@ -240,7 +281,15 @@ class TacticalV2Controller:
                 if admission.reason == "capacity_full"
                 else admission.reason
             )
-            self._consume_episode(assignment.episode_id, reason)
+            self._consume_episode(
+                assignment.episode_id,
+                reason,
+                candidate_handling_gap={
+                    "candidate_id": candidate.candidate_id,
+                    "message_id": receipt_context["message_id"],
+                    "payload_hash": receipt_context["payload_hash"],
+                },
+            )
             return finish(
                 CandidateHandlingResult(
                     False,
@@ -337,8 +386,11 @@ class TacticalV2Controller:
                 self._refresh_status(force=True, now=evaluated_at)
                 return CandidateHandlingResult(False, "message_identity_conflict")
         else:
-            receipt = self._candidate_receipts_by_payload_hash.get(
-                str(context.get("payload_hash") or "")
+            payload_hash = str(context.get("payload_hash") or "")
+            receipt = (
+                None
+                if payload_hash in self._conflicting_candidate_receipt_payload_hashes
+                else self._candidate_receipts_by_payload_hash.get(payload_hash)
             )
         if receipt is None:
             return None
@@ -361,16 +413,67 @@ class TacticalV2Controller:
             self._refresh_status(force=True, now=evaluated_at)
             return previous
 
-        matched_intent = self._unreceipted_intent_for_candidate(context)
-        result = CandidateHandlingResult(
-            False,
-            "unknown_handling_evidence",
-            intent_id=matched_intent.intent_id if matched_intent is not None else None,
-            episode_id=matched_intent.episode_id if matched_intent is not None else None,
-        )
+        gap = self._candidate_handling_gap(context)
+        if gap is not None:
+            result = CandidateHandlingResult(
+                False,
+                "unknown_handling_evidence",
+                episode_id=str(gap["episode_id"]),
+            )
+        else:
+            matched_intent = self._unreceipted_intent_for_candidate(context)
+            result = CandidateHandlingResult(
+                False,
+                "unknown_handling_evidence",
+                intent_id=(
+                    matched_intent.intent_id if matched_intent is not None else None
+                ),
+                episode_id=(
+                    matched_intent.episode_id if matched_intent is not None else None
+                ),
+            )
         self._unknown_replays[identity] = result
         self._refresh_status(force=True, now=evaluated_at)
         return result
+
+    def _candidate_handling_gap(
+        self,
+        context: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        return self._candidate_handling_gaps.get(
+            self._candidate_handling_identity(context)
+        )
+
+    def _remember_candidate_handling_gap(
+        self,
+        raw: Mapping[str, Any],
+        *,
+        episode_id: str,
+    ) -> None:
+        candidate_id = raw.get("candidate_id")
+        message_id = raw.get("message_id")
+        payload_hash = raw.get("payload_hash")
+        if not isinstance(candidate_id, str):
+            return
+        if message_id is not None and (
+            not isinstance(message_id, str) or not message_id
+        ):
+            return
+        if (
+            not isinstance(payload_hash, str)
+            or len(payload_hash) != 64
+            or any(char not in "0123456789abcdef" for char in payload_hash)
+        ):
+            return
+        gap = {
+            "candidate_id": candidate_id,
+            "message_id": message_id,
+            "payload_hash": payload_hash,
+            "episode_id": str(episode_id),
+        }
+        self._candidate_handling_gaps[
+            self._candidate_handling_identity(gap)
+        ] = gap
 
     def _unreceipted_intent_for_candidate(
         self,
@@ -403,7 +506,13 @@ class TacticalV2Controller:
             )
             return
         message_id = self._optional_text(receipt.get("message_id"))
+        payload_hash = self._optional_text(receipt.get("payload_hash"))
         if message_id in self._conflicting_candidate_receipt_message_ids:
+            return
+        if (
+            not message_id
+            and payload_hash in self._conflicting_candidate_receipt_payload_hashes
+        ):
             return
         existing = (
             self._candidate_receipts_by_message_id.get(message_id)
@@ -428,8 +537,39 @@ class TacticalV2Controller:
             )
             return
 
+        existing_fallback = None
+        if not message_id and payload_hash:
+            existing_fallback = next(
+                (
+                    item
+                    for item in self._candidate_receipts
+                    if self._optional_text(item.get("message_id")) is None
+                    and self._optional_text(item.get("payload_hash")) == payload_hash
+                ),
+                None,
+            )
+        if existing_fallback is not None and existing_fallback != receipt:
+            self._conflicting_candidate_receipt_payload_hashes.add(payload_hash)
+            self._candidate_receipts = [
+                item
+                for item in self._candidate_receipts
+                if not (
+                    self._optional_text(item.get("message_id")) is None
+                    and self._optional_text(item.get("payload_hash")) == payload_hash
+                )
+            ]
+            self._rebuild_candidate_receipt_indexes()
+            self.governor.activate_integrity_halt_if_clear(
+                "candidate_receipt_payload_conflict",
+                evidence={
+                    "payload_hash": payload_hash,
+                    "stored_reason": existing_fallback["reason"],
+                    "conflicting_reason": receipt["reason"],
+                },
+            )
+            return
+
         self._candidate_receipts.append(receipt)
-        payload_hash = self._optional_text(receipt.get("payload_hash"))
         intent_id = self._optional_text(receipt.get("intent_id"))
         if message_id:
             self._candidate_receipts_by_message_id.setdefault(message_id, receipt)
@@ -438,6 +578,10 @@ class TacticalV2Controller:
         if intent_id:
             self._receipt_intent_ids.add(intent_id)
         self._unknown_replays.pop(
+            self._candidate_handling_identity(receipt),
+            None,
+        )
+        self._candidate_handling_gaps.pop(
             self._candidate_handling_identity(receipt),
             None,
         )
@@ -467,11 +611,15 @@ class TacticalV2Controller:
             if not isinstance(receipt.get(field), str):
                 return f"{field}_type"
         episode_id = receipt.get("episode_id")
-        if receipt["reason"] == "duplicate_episode" and (
+        if receipt["reason"] in _EPISODE_RECEIPT_REASONS and (
             episode_id is None
             or (isinstance(episode_id, str) and not episode_id.strip())
         ):
-            return "duplicate_episode_episode_id"
+            return (
+                "duplicate_episode_episode_id"
+                if receipt["reason"] == "duplicate_episode"
+                else "episode_reason_episode_id"
+            )
         for field in ("message_id", "episode_id", "intent_id"):
             value = receipt.get(field)
             if value is not None and (
@@ -502,9 +650,12 @@ class TacticalV2Controller:
         if not accepted:
             if intent_id is not None:
                 return "rejected_intent_id"
-            if receipt["reason"] == "accepted":
-                return "rejected_reason"
-            return None
+            reason = receipt["reason"]
+            if reason in _PRE_ASSIGNMENT_RECEIPT_REASONS:
+                return "pre_assignment_episode_id" if episode_id is not None else None
+            if reason in _EPISODE_RECEIPT_REASONS:
+                return None
+            return "rejected_reason"
         if receipt["reason"] != "accepted":
             return "accepted_reason"
         if intent_id is None or episode_id is None:
@@ -1195,12 +1346,17 @@ class TacticalV2Controller:
         }
         unmatched_unknowns = sum(
             1
-            for result in self._unknown_replays.values()
-            if result.intent_id not in missing_intent_ids
+            for identity, result in self._unknown_replays.items()
+            if identity not in self._candidate_handling_gaps
+            and result.intent_id not in missing_intent_ids
         )
         return {
             "receipt_count": len(self._candidate_receipts),
-            "unknown_handling_evidence": len(missing_intent_ids) + unmatched_unknowns,
+            "unknown_handling_evidence": (
+                len(missing_intent_ids)
+                + len(self._candidate_handling_gaps)
+                + unmatched_unknowns
+            ),
         }
 
     def _advance_shadow_lane(
@@ -3294,10 +3450,30 @@ class TacticalV2Controller:
     def _count_outcome(self, reason: str) -> None:
         self._episode_outcomes[reason] = self._episode_outcomes.get(reason, 0) + 1
 
-    def _consume_episode(self, episode_id: str, reason: str) -> bool:
+    def _consume_episode(
+        self,
+        episode_id: str,
+        reason: str,
+        *,
+        candidate_handling_gap: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
         if self.episodes.terminal_reason(episode_id) is not None:
             return False
-        self.episodes.mark_terminal(episode_id, reason)
+        terminal_evidence = (
+            {"candidate_handling_gap": dict(candidate_handling_gap)}
+            if candidate_handling_gap is not None
+            else None
+        )
+        self.episodes.mark_terminal(
+            episode_id,
+            reason,
+            evidence=terminal_evidence,
+        )
+        if candidate_handling_gap is not None:
+            self._remember_candidate_handling_gap(
+                candidate_handling_gap,
+                episode_id=episode_id,
+            )
         self._count_outcome(reason)
         return True
 
@@ -3375,6 +3551,17 @@ class TacticalV2Controller:
                 reason = str(registry_state.get("terminal_reason") or "")
                 if episode_id and reason:
                     terminal_by_episode[episode_id] = reason
+                    evidence = data.get("evidence") or {}
+                    gap = (
+                        evidence.get("candidate_handling_gap")
+                        if isinstance(evidence, Mapping)
+                        else None
+                    )
+                    if isinstance(gap, Mapping):
+                        self._remember_candidate_handling_gap(
+                            gap,
+                            episode_id=episode_id,
+                        )
                 continue
             if event_type == "intent_created" and isinstance(data.get("intent"), dict):
                 try:

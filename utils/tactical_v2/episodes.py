@@ -118,7 +118,13 @@ class EpisodeRegistry:
                 return
             self._observe_locked(key, state, structure)
 
-    def mark_terminal(self, episode_id: str, reason: str) -> None:
+    def mark_terminal(
+        self,
+        episode_id: str,
+        reason: str,
+        *,
+        evidence: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         if not reason:
             raise ValueError("terminal reason is required")
         with self._lock:
@@ -134,11 +140,13 @@ class EpisodeRegistry:
             terminal_state["terminal"] = True
             terminal_state["terminal_reason"] = str(reason)
             current = self._states.get(key)
+            terminal_evidence = copy.deepcopy(dict(evidence or {}))
+            terminal_evidence["reason"] = str(reason)
             self._persist(
                 "episode_terminal",
                 key,
                 terminal_state,
-                evidence={"reason": reason},
+                evidence=terminal_evidence,
                 make_current=(
                     current is not None
                     and current.get("episode_id") == episode_id
