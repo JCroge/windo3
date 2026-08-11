@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import math
@@ -177,6 +178,9 @@ class TacticalV2Controller:
         self._conflicting_candidate_receipt_message_ids = set()
         self._conflicting_candidate_receipt_payload_hashes = set()
         self._quarantined_candidate_receipt_candidates: Dict[str, set] = {}
+        self._quarantined_candidate_receipt_message_ids: set[str] = set()
+        self._quarantined_candidate_receipt_payload_hashes: set[str] = set()
+        self._quarantined_candidate_receipt_candidate_ids: set[str] = set()
         self._candidate_receipt_integrity_halt: Optional[Dict[str, Any]] = None
         self._pending_candidate_receipt_integrity_incidents: list[
             Dict[str, Any]
@@ -186,10 +190,19 @@ class TacticalV2Controller:
         self._acknowledged_candidate_receipt_integrity_incident_ids: set[
             str
         ] = set()
+        self._candidate_receipt_integrity_reconciliations: Dict[
+            str,
+            set[str],
+        ] = {}
         self._handled_message_identity_conflicts = set()
         self._receipt_intent_ids = set()
         self._candidate_handling_gaps: Dict[str, Dict[str, Any]] = {}
         self._unknown_replays: Dict[str, CandidateHandlingResult] = {}
+        self._candidate_payload_integrity_rejections: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+        self._candidate_payload_integrity_message_ids: set[str] = set()
         self._episode_outcomes: Dict[str, int] = {}
         self._parity_mismatches = 0
         self._last_status_write_at = 0.0
@@ -208,6 +221,18 @@ class TacticalV2Controller:
     ) -> CandidateHandlingResult:
         evaluated_at = float(self.now_fn()) if now is None else float(now)
         receipt_context = self._candidate_receipt_context(raw, message_id=message_id)
+        if self._candidate_payload_identity_is_rejected(receipt_context):
+            return CandidateHandlingResult(False, "unknown_handling_evidence")
+        if self._candidate_receipt_identity_is_quarantined(receipt_context):
+            return self._remember_unknown_replay(
+                receipt_context,
+                evaluated_at=evaluated_at,
+            )
+        if receipt_context.get("payload_identity_error") is not None:
+            return self._reject_untrusted_candidate_payload(
+                receipt_context,
+                evaluated_at=evaluated_at,
+            )
         handled = self._handled_candidate_result(
             receipt_context,
             evaluated_at=evaluated_at,
@@ -241,6 +266,7 @@ class TacticalV2Controller:
             return self._remember_unknown_replay(
                 receipt_context,
                 evaluated_at=evaluated_at,
+                persist_gap=True,
             )
 
         def finish(
@@ -326,12 +352,20 @@ class TacticalV2Controller:
             if self.mode == "live"
             else None
         )
-        record = self._register_intent(
-            intent,
-            lane=lane,
-            replayed=replayed,
-            evaluated_at=evaluated_at,
-        )
+        try:
+            record = self._register_intent(
+                intent,
+                lane=lane,
+                replayed=replayed,
+                evaluated_at=evaluated_at,
+            )
+        except Exception:
+            self._persist_candidate_handling_gap(
+                receipt_context,
+                episode_id=assignment.episode_id,
+                recorded_at=evaluated_at,
+            )
+            raise
         if shadow_rejection:
             self._persist_shadow_projection(
                 record,
@@ -385,9 +419,10 @@ class TacticalV2Controller:
                 emitted_at=evaluated_at,
             )
         except Exception:
-            self._remember_candidate_handling_gap(
+            self._persist_candidate_handling_gap(
                 context,
                 episode_id=result.episode_id,
+                recorded_at=evaluated_at,
             )
             self._refresh_status(force=True, now=evaluated_at)
             raise
@@ -457,6 +492,7 @@ class TacticalV2Controller:
         context: Mapping[str, Any],
         *,
         evaluated_at: float,
+        persist_gap: bool = False,
     ) -> CandidateHandlingResult:
         identity = self._candidate_handling_identity(context)
         previous = self._unknown_replays.get(identity)
@@ -493,6 +529,12 @@ class TacticalV2Controller:
                     matched_intent.episode_id if matched_intent is not None else None
                 ),
             )
+        if persist_gap and gap is None:
+            self._persist_candidate_handling_gap(
+                context,
+                episode_id=result.episode_id,
+                recorded_at=evaluated_at,
+            )
         self._unknown_replays[identity] = result
         self._refresh_status(force=True, now=evaluated_at)
         return result
@@ -504,6 +546,91 @@ class TacticalV2Controller:
         return self._candidate_handling_gaps.get(
             self._candidate_handling_identity(context)
         )
+
+    def _reject_untrusted_candidate_payload(
+        self,
+        context: Mapping[str, Any],
+        *,
+        evaluated_at: float,
+    ) -> CandidateHandlingResult:
+        identity = self._untrusted_candidate_payload_identity(context)
+        if identity in self._candidate_payload_integrity_rejections:
+            return CandidateHandlingResult(False, "unknown_handling_evidence")
+        evidence = {
+            "identity": identity,
+            "candidate_id": self._optional_text(context.get("candidate_id")),
+            "source_shadow_id": self._optional_text(
+                context.get("source_shadow_id")
+            ),
+            "message_id": self._optional_text(context.get("message_id")),
+            "validation_error": str(context.get("payload_identity_error")),
+            "recorded_at": float(evaluated_at),
+        }
+        try:
+            self.store.append(
+                "candidate_payload_integrity_rejected",
+                evidence,
+                emitted_at=evaluated_at,
+            )
+        except Exception as exc:
+            self._log_warning(
+                "candidate payload integrity evidence append failed: %s",
+                exc,
+            )
+        self._apply_candidate_payload_integrity_rejection(evidence)
+        self._refresh_status(force=True, now=evaluated_at)
+        return CandidateHandlingResult(False, "unknown_handling_evidence")
+
+    def _apply_candidate_payload_integrity_rejection(
+        self,
+        data: Mapping[str, Any],
+    ) -> None:
+        identity = self._optional_text(data.get("identity"))
+        validation_error = self._optional_text(data.get("validation_error"))
+        if not identity or not validation_error:
+            return
+        self._candidate_payload_integrity_rejections.setdefault(
+            identity,
+            dict(data),
+        )
+        message_id = self._optional_text(data.get("message_id"))
+        if message_id:
+            self._candidate_payload_integrity_message_ids.add(message_id)
+
+    def _candidate_payload_identity_is_rejected(
+        self,
+        context: Mapping[str, Any],
+    ) -> bool:
+        message_id = self._optional_text(context.get("message_id"))
+        return bool(
+            message_id
+            and message_id in self._candidate_payload_integrity_message_ids
+        )
+
+    @classmethod
+    def _untrusted_candidate_payload_identity(
+        cls,
+        context: Mapping[str, Any],
+    ) -> str:
+        message_id = cls._optional_text(context.get("message_id"))
+        if message_id:
+            return f"message:{message_id}"
+        evidence = {
+            "candidate_id": cls._optional_text(context.get("candidate_id")),
+            "source_shadow_id": cls._optional_text(
+                context.get("source_shadow_id")
+            ),
+            "validation_error": cls._optional_text(
+                context.get("payload_identity_error")
+            ),
+        }
+        encoded = json.dumps(
+            evidence,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        return f"untrusted:{hashlib.sha256(encoded).hexdigest()}"
 
     def _remember_candidate_handling_gap(
         self,
@@ -536,6 +663,33 @@ class TacticalV2Controller:
             self._candidate_handling_identity(gap)
         ] = gap
 
+    def _persist_candidate_handling_gap(
+        self,
+        raw: Mapping[str, Any],
+        *,
+        episode_id: Optional[str],
+        recorded_at: float,
+    ) -> None:
+        identity = self._candidate_handling_identity(raw)
+        if identity in self._candidate_handling_gaps:
+            return
+        gap = {
+            "candidate_id": raw.get("candidate_id"),
+            "message_id": raw.get("message_id"),
+            "payload_hash": raw.get("payload_hash"),
+            "episode_id": self._optional_text(episode_id),
+        }
+        try:
+            self.store.append(
+                "candidate_handling_gap_recorded",
+                gap,
+                emitted_at=recorded_at,
+            )
+        except Exception:
+            self._remember_candidate_handling_gap(gap, episode_id=episode_id)
+            raise
+        self._remember_candidate_handling_gap(gap, episode_id=episode_id)
+
     def _unreceipted_intent_for_candidate(
         self,
         context: Mapping[str, Any],
@@ -559,9 +713,13 @@ class TacticalV2Controller:
         *,
         halted_at: Optional[float] = None,
         incident_id: Optional[str] = None,
+        episode_index: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> None:
         receipt = dict(raw)
-        validation_error = self._candidate_receipt_validation_error(receipt)
+        validation_error = self._candidate_receipt_validation_error(
+            receipt,
+            episode_index=episode_index,
+        )
         if validation_error is not None:
             self._quarantine_candidate_receipt(receipt)
             self._activate_candidate_receipt_integrity_halt(
@@ -784,12 +942,37 @@ class TacticalV2Controller:
     def _quarantine_candidate_receipt(self, receipt: Mapping[str, Any]) -> None:
         identity = self._candidate_handling_identity(receipt)
         candidate_id = self._optional_text(receipt.get("candidate_id"))
+        message_id = self._optional_text(receipt.get("message_id"))
+        payload_hash = self._optional_text(receipt.get("payload_hash"))
         candidates = self._quarantined_candidate_receipt_candidates.setdefault(
             identity,
             set(),
         )
         if candidate_id:
             candidates.add(candidate_id)
+            self._quarantined_candidate_receipt_candidate_ids.add(candidate_id)
+        if message_id:
+            self._quarantined_candidate_receipt_message_ids.add(message_id)
+        if payload_hash:
+            self._quarantined_candidate_receipt_payload_hashes.add(payload_hash)
+
+    def _candidate_receipt_identity_is_quarantined(
+        self,
+        context: Mapping[str, Any],
+    ) -> bool:
+        message_id = self._optional_text(context.get("message_id"))
+        if message_id:
+            return (
+                message_id in self._quarantined_candidate_receipt_message_ids
+                or message_id in self._conflicting_candidate_receipt_message_ids
+            )
+        payload_hash = self._optional_text(context.get("payload_hash"))
+        candidate_id = self._optional_text(context.get("candidate_id"))
+        return (
+            payload_hash in self._quarantined_candidate_receipt_payload_hashes
+            or payload_hash in self._conflicting_candidate_receipt_payload_hashes
+            or candidate_id in self._quarantined_candidate_receipt_candidate_ids
+        )
 
     def _activate_candidate_receipt_integrity_halt(
         self,
@@ -891,25 +1074,35 @@ class TacticalV2Controller:
 
     def acknowledge_candidate_receipt_integrity(
         self,
+        *,
+        expected_incident_id: str,
         reconciliation_id: str,
         proof: Mapping[str, Any],
     ) -> bool:
         if (
-            not isinstance(reconciliation_id, str)
+            not isinstance(expected_incident_id, str)
+            or not expected_incident_id
+            or expected_incident_id != expected_incident_id.strip()
+            or not isinstance(reconciliation_id, str)
             or not reconciliation_id
             or reconciliation_id != reconciliation_id.strip()
             or not is_complete_integrity_proof(proof)
         ):
             return False
-        halt = self._candidate_receipt_integrity_halt
-        if halt is None:
+        if reconciliation_id in self._candidate_receipt_integrity_reconciliations.get(
+            expected_incident_id,
+            set(),
+        ):
             return True
+        halt = self._candidate_receipt_integrity_halt
+        if halt is None or halt.get("incident_id") != expected_incident_id:
+            return False
         acknowledged_at = float(self.now_fn())
         event = self.store.append(
             "candidate_receipt_integrity_acknowledged",
             {
                 "reconciliation_id": reconciliation_id,
-                "incident_id": halt["incident_id"],
+                "incident_id": expected_incident_id,
                 "proof": dict(proof),
                 "acknowledged_at": acknowledged_at,
             },
@@ -919,7 +1112,7 @@ class TacticalV2Controller:
             event.get("data") or {}
         )
         self._refresh_status(force=True, now=acknowledged_at)
-        return self._candidate_receipt_integrity_halt is None
+        return True
 
     def _apply_candidate_receipt_integrity_acknowledgement(
         self,
@@ -946,6 +1139,10 @@ class TacticalV2Controller:
             self._acknowledged_candidate_receipt_integrity_incident_ids.add(
                 incident_id
             )
+            self._candidate_receipt_integrity_reconciliations.setdefault(
+                incident_id,
+                set(),
+            ).add(reconciliation_id)
             if (
                 self._pending_candidate_receipt_integrity_incidents
                 and self._pending_candidate_receipt_integrity_incidents[0].get(
@@ -958,16 +1155,6 @@ class TacticalV2Controller:
                 dict(self._pending_candidate_receipt_integrity_incidents[0])
                 if self._pending_candidate_receipt_integrity_incidents
                 else None
-            )
-        elif (
-            incident_id in self._known_candidate_receipt_integrity_incident_ids
-            and all(
-                pending.get("incident_id") != incident_id
-                for pending in self._pending_candidate_receipt_integrity_incidents
-            )
-        ):
-            self._acknowledged_candidate_receipt_integrity_incident_ids.add(
-                incident_id
             )
 
     def _record_message_identity_conflict(
@@ -1061,6 +1248,8 @@ class TacticalV2Controller:
     def _candidate_receipt_validation_error(
         self,
         receipt: Mapping[str, Any],
+        *,
+        episode_index: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> Optional[str]:
         if set(receipt) != _CANDIDATE_RECEIPT_FIELDS:
             return "schema_fields"
@@ -1113,10 +1302,11 @@ class TacticalV2Controller:
             if reason in _EPISODE_RECEIPT_REASONS:
                 return (
                     None
-                    if self.episodes.matches_episode(
+                    if self._candidate_receipt_episode_matches(
                         episode_id,
                         receipt["symbol"],
                         receipt["side"],
+                        episode_index=episode_index,
                     )
                     else "rejected_episode_mismatch"
                 )
@@ -1140,13 +1330,36 @@ class TacticalV2Controller:
         }
         if any(receipt.get(field) != value for field, value in expected.items()):
             return "accepted_intent_mismatch"
-        if not self.episodes.matches_episode(
+        if not self._candidate_receipt_episode_matches(
             episode_id,
             receipt["symbol"],
             receipt["side"],
+            episode_index=episode_index,
         ):
             return "accepted_episode_mismatch"
         return None
+
+    def _candidate_receipt_episode_matches(
+        self,
+        episode_id: Any,
+        symbol: Any,
+        side: Any,
+        *,
+        episode_index: Optional[Mapping[str, Mapping[str, Any]]],
+    ) -> bool:
+        if episode_index is None:
+            return self.episodes.matches_episode(episode_id, symbol, side)
+        state = episode_index.get(str(episode_id or ""))
+        if not isinstance(state, Mapping):
+            return False
+        try:
+            normalized_symbol = to_internal(symbol)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        return (
+            state.get("symbol") == normalized_symbol
+            and state.get("side") == str(side).strip().lower()
+        )
 
     @staticmethod
     def _candidate_handling_identity(context: Mapping[str, Any]) -> str:
@@ -1168,60 +1381,86 @@ class TacticalV2Controller:
             symbol = to_internal(symbol) if symbol else ""
         except (AttributeError, TypeError, ValueError):
             symbol = ""
-        encoded = json.dumps(
-            cls._json_safe(raw),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        ).encode("utf-8")
+        canonical, payload_identity_error = cls._canonical_json_identity(raw)
+        payload_hash = None
+        if payload_identity_error is None:
+            encoded = json.dumps(
+                canonical,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("utf-8")
+            payload_hash = hashlib.sha256(encoded).hexdigest()
         return {
             "candidate_id": cls._receipt_text(fields.get("candidate_id")),
             "source_shadow_id": cls._receipt_text(fields.get("source_shadow_id")),
             "message_id": cls._receipt_text(message_id) or None,
             "symbol": symbol,
             "side": cls._receipt_text(fields.get("side")).lower(),
-            "payload_hash": hashlib.sha256(encoded).hexdigest(),
+            "payload_hash": payload_hash,
+            "payload_identity_error": payload_identity_error,
         }
 
     @classmethod
-    def _json_safe(cls, value: Any, _active_container_ids: Optional[set] = None) -> Any:
+    def _canonical_json_identity(
+        cls,
+        value: Any,
+        *,
+        path: str = "$",
+        _active_container_ids: Optional[set[int]] = None,
+    ) -> tuple[Any, Optional[str]]:
         if value is None or isinstance(value, (bool, int, str)):
-            return value
+            return value, None
         if isinstance(value, float):
-            return value if math.isfinite(value) else {"non_finite_float": str(value)}
-        if isinstance(value, bytes):
-            return {"bytes_hex": value.hex()}
-        if isinstance(value, (Mapping, list, tuple, set, frozenset)):
-            active = set() if _active_container_ids is None else _active_container_ids
+            if math.isfinite(value):
+                return value, None
+            if math.isnan(value):
+                classification = "nan"
+            else:
+                classification = "positive_inf" if value > 0 else "negative_inf"
+            return None, f"non_finite_float:{path}:{classification}"
+        if isinstance(value, (Mapping, list)):
+            active = (
+                set()
+                if _active_container_ids is None
+                else _active_container_ids
+            )
             container_id = id(value)
             if container_id in active:
-                return {"recursive_reference": True}
+                return None, f"cyclic_reference:{path}"
             active.add(container_id)
             try:
                 if isinstance(value, Mapping):
-                    return {
-                        cls._safe_text(key): cls._json_safe(item, active)
-                        for key, item in value.items()
-                    }
-                if isinstance(value, (list, tuple)):
-                    return [cls._json_safe(item, active) for item in value]
-                items = [cls._json_safe(item, active) for item in value]
-                return sorted(
-                    items,
-                    key=lambda item: json.dumps(
-                        item,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        ensure_ascii=True,
-                    ),
-                )
+                    canonical = {}
+                    for key in value:
+                        if not isinstance(key, str):
+                            return None, f"non_string_key:{path}"
+                    for key in sorted(value):
+                        item, error = cls._canonical_json_identity(
+                            value[key],
+                            path=f"{path}.{key}",
+                            _active_container_ids=active,
+                        )
+                        if error is not None:
+                            return None, error
+                        canonical[key] = item
+                    return canonical, None
+                canonical_items = []
+                for index, value_item in enumerate(value):
+                    item, error = cls._canonical_json_identity(
+                        value_item,
+                        path=f"{path}[{index}]",
+                        _active_container_ids=active,
+                    )
+                    if error is not None:
+                        return None, error
+                    canonical_items.append(item)
+                return canonical_items, None
             finally:
                 active.remove(container_id)
-        return {
-            "type": f"{type(value).__module__}.{type(value).__qualname__}",
-            "value": cls._safe_text(value),
-        }
+        value_type = f"{type(value).__module__}.{type(value).__qualname__}"
+        return None, f"unsupported_type:{path}:{value_type}"
 
     @staticmethod
     def _safe_text(value: Any) -> str:
@@ -1266,7 +1505,6 @@ class TacticalV2Controller:
         }
         if terminal_reason:
             record["terminal_reason"] = terminal_reason
-        self._intents[intent.intent_id] = record
         self.store.append(
             "intent_created",
             {
@@ -1282,6 +1520,7 @@ class TacticalV2Controller:
             },
             emitted_at=evaluated_at,
         )
+        self._intents[intent.intent_id] = record
         return record
 
     async def handle_quote(
@@ -1817,6 +2056,19 @@ class TacticalV2Controller:
         }
         missing_candidate_ids = set(missing_intents.values())
         unknown_identities = set(self._candidate_handling_gaps)
+        unknown_identities = {
+            identity
+            for identity in unknown_identities
+            if not (
+                self._optional_text(
+                    self._candidate_handling_gaps[identity].get("candidate_id")
+                )
+                in missing_candidate_ids
+            )
+        }
+        unknown_identities.update(
+            self._candidate_payload_integrity_rejections
+        )
         unknown_identities.update(
             identity
             for identity, result in self._unknown_replays.items()
@@ -3836,9 +4088,9 @@ class TacticalV2Controller:
     def _effective_integrity_halt(self) -> Optional[Dict[str, Any]]:
         governor_halt = self.governor.integrity_halt
         if governor_halt is not None:
-            return governor_halt
+            return copy.deepcopy(governor_halt)
         if self._candidate_receipt_integrity_halt is not None:
-            return dict(self._candidate_receipt_integrity_halt)
+            return copy.deepcopy(self._candidate_receipt_integrity_halt)
         durable = [
             record
             for record in self._intents.values()
@@ -4021,9 +4273,15 @@ class TacticalV2Controller:
 
     def _restore(self) -> None:
         terminal_by_episode: Dict[str, str] = {}
+        episode_prefix: Dict[str, Dict[str, Any]] = {}
         for event in self.store.read_events():
             data = event.get("data") or {}
             event_type = event.get("event_type")
+            if event_type == "episode_assigned":
+                state = data.get("registry_state")
+                episode_id = self._optional_text(data.get("episode_id"))
+                if episode_id and isinstance(state, Mapping):
+                    episode_prefix[episode_id] = dict(state)
             if event_type == "governor_integrity_halted" and (
                 data.get("reason") == "message_identity_conflict"
             ):
@@ -4037,10 +4295,20 @@ class TacticalV2Controller:
                     data,
                     halted_at=event.get("emitted_at"),
                     incident_id=self._optional_text(event.get("event_id")),
+                    episode_index=episode_prefix,
                 )
                 continue
             if event_type == "candidate_receipt_integrity_acknowledged":
                 self._apply_candidate_receipt_integrity_acknowledgement(data)
+                continue
+            if event_type == "candidate_handling_gap_recorded":
+                self._remember_candidate_handling_gap(
+                    data,
+                    episode_id=self._optional_text(data.get("episode_id")),
+                )
+                continue
+            if event_type == "candidate_payload_integrity_rejected":
+                self._apply_candidate_payload_integrity_rejection(data)
                 continue
             if event_type == "episode_terminal":
                 registry_state = data.get("registry_state") or {}

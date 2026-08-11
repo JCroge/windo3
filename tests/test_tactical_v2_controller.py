@@ -190,7 +190,12 @@ async def test_cross_namespace_and_stale_replay_without_receipts_remain_unknown(
     snapshot = controller.snapshot(now=1000)
     assert snapshot["active_slots"] == 0
     assert snapshot["candidate_handling"]["unknown_handling_evidence"] == 2
-    assert controller.store.read_events() == []
+    assert [
+        event["event_type"] for event in controller.store.read_events()
+    ] == [
+        "candidate_handling_gap_recorded",
+        "candidate_handling_gap_recorded",
+    ]
 
 
 def test_shadow_projection_does_not_block_main_or_consume_live_capacity(tmp_path):
