@@ -81,7 +81,7 @@ class EpisodeRegistry:
                 )
                 self._states[key] = state
                 self._persist("episode_assigned", key, state)
-                return self._assignment(state, eligible=True, reason="eligible")
+                return self._assignment(state, eligible=True, reason=reset_reason)
 
             reason = "opposing_block" if self._is_blocked(side, structure) else "duplicate_episode"
             return self._assignment(state, eligible=False, reason=reason)
@@ -190,6 +190,23 @@ class EpisodeRegistry:
             return None
         if self._is_blocked(side, structure):
             return None
+
+        if state.get("terminal"):
+            token = structure.get("tf_15m_structure_token")
+            closed_bar = structure.get("tf_15m_closed_bar_ts")
+            previous_bar = state.get("last_closed_bar_ts")
+            newer_bar = False
+            if closed_bar is not None and previous_bar is not None:
+                try:
+                    newer_bar = float(closed_bar) > float(previous_bar)
+                except (TypeError, ValueError):
+                    newer_bar = False
+            changed_token = bool(
+                token
+                and token != state.get("last_structure_token")
+            )
+            if newer_bar or changed_token:
+                return "new_confirmed_structure"
 
         bias = str(structure.get("tf_15m_bias") or "unavailable").lower()
         desired_bias = "bullish" if side == "long" else "bearish"

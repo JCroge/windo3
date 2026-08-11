@@ -95,6 +95,62 @@ def test_neutral_then_renewed_direction_advances_epoch(tmp_path):
     assert renewed.episode_id != first.episode_id
 
 
+def test_terminal_neutral_candidate_with_new_closed_bar_advances_epoch(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    renewed = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="neutral", token="break-up-1"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert renewed.eligible is True
+    assert renewed.reason == "new_confirmed_structure"
+    assert renewed.episode_id != first.episode_id
+    assert renewed.epoch_seq == first.epoch_seq + 1
+
+
+def test_terminal_neutral_candidate_with_same_evidence_is_duplicate(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    repeated = registry.assign(
+        _candidate(),
+        _structure(bias="neutral", token="break-up-1"),
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
+def test_terminal_neutral_candidate_with_opposing_block_is_blocked(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    blocked = registry.assign(
+        _candidate(),
+        {
+            **_structure(
+                bias="neutral",
+                token="break-up-1",
+                block_long=True,
+            ),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert blocked.episode_id == first.episode_id
+    assert blocked.eligible is False
+    assert blocked.reason == "opposing_block"
+
+
 def test_new_structure_token_resets_only_after_terminal(tmp_path):
     registry = _registry(tmp_path)
     first = registry.assign(_candidate(), _structure(token="break-up-1"))
