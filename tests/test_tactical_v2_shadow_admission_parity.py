@@ -31,6 +31,28 @@ EXPECTED_SOURCE_SHADOW_IDS = (
     "a86ae45a", "3bce3dd2", "b1863929", "62bb7dda", "ad899485", "ae3aa4b1",
     "d8e48042", "ba2a1cd4", "72524a13", "90de5091",
 )
+EXPECTED_CANDIDATE_FIELDS = frozenset({
+    "candidate_id",
+    "created_at",
+    "entry_ref",
+    "leverage",
+    "namespace",
+    "side",
+    "source_shadow_id",
+    "stop_loss",
+    "symbol",
+    "tactical_cost_gate",
+    "tactical_ev",
+    "tactical_rr",
+    "tactical_source",
+    "take_profit",
+    "tf_15m_available",
+    "tf_15m_bias",
+    "tf_15m_block_long",
+    "tf_15m_block_short",
+    "tf_15m_closed_bar_ts",
+    "tf_15m_structure_token",
+})
 
 
 @pytest.fixture(scope="module")
@@ -109,6 +131,40 @@ def test_accepted_identity_episode_and_entry_decisions_are_shared_reducer_result
     assert all(row["ttl_fresh"] is True for row in report.entry_decision_checks)
     assert all(row["governor_allowed"] is True for row in report.entry_decision_checks)
     assert all(row["governor_reason"] == "admitted" for row in report.entry_decision_checks)
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    journal_times = {
+        row["candidate"]["candidate_id"]: row["journal_timestamp"]
+        for row in fixture["candidates"]
+        if (row["candidate"]["candidate_id"], row["candidate"]["source_shadow_id"])
+        in EXPECTED_ACCEPTED
+    }
+    assert all(
+        row["observed_at"] == row["evaluated_at"] == journal_times[row["candidate_id"]]
+        for row in report.entry_decision_checks
+    )
+
+
+def test_journal_time_beyond_candidate_ttl_fails_admission_expectation():
+    from scripts.replay_tactical_v2_admission import replay_fixture
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    first = fixture["candidates"][0]
+    first["journal_timestamp"] = first["candidate"]["created_at"] + 901.0
+
+    tampered = replay_fixture(fixture)
+    failed_check = next(
+        row for row in tampered.entry_decision_checks
+        if row["candidate_id"] == first["candidate"]["candidate_id"]
+    )
+
+    assert failed_check["evaluated_at"] == first["journal_timestamp"]
+    assert failed_check["observed_at"] == first["journal_timestamp"]
+    assert failed_check["ttl_fresh"] is False
+    assert failed_check["action"] == "terminal"
+    assert failed_check["reason"] == "expired"
+    assert tampered.parity_expected_values_passed is False
+    assert tampered.stability_requirement_passed is True
+    assert tampered.admission_replay_passed is False
 
 
 def test_stability_covers_full_identities_episode_ids_and_every_row_reason(report):
@@ -121,6 +177,33 @@ def test_stability_covers_full_identities_episode_ids_and_every_row_reason(repor
     assert len(report.row_reasons) == 22
     assert sum(row["reason"] == "duplicate_episode" for row in report.row_reasons) == 17
     assert report.stability_fingerprint
+    assert report.stability_requirement_passed is True
+
+
+def test_report_separates_admission_integrity_from_live_rollout_safety(report):
+    payload = report.to_dict()
+
+    assert "safety_checks_passed" not in payload
+    assert "safety_parity_passed" not in payload
+    assert report.parity_expected_values_passed is True
+    assert report.replay_integrity_passed is True
+    assert report.stability_requirement_passed is True
+    assert report.admission_replay_passed is True
+    assert report.exchange_fill is False
+    assert report.historical_executable_quote_available is False
+    assert report.protection_evidence_proven is False
+    assert report.protection_check_status == "not_run_no_fill"
+    assert report.protection_live_rollout_gate_passed is False
+    assert report.live_rollout_ready is False
+    assert report.synthetic_boundary_role == "admission_normalization_only"
+    assert report.synthetic_boundary_market_settlement is False
+
+
+def test_historical_receipt_unknown_is_distinct_from_normalized_replay_unknown(report):
+    assert report.unknown == 0
+    assert report.historical_receipt_context == "predates_durable_receipts"
+    assert report.historical_receipt_evidence == "unknown"
+    assert report.historical_receipt_unknown == 22
 
 
 def test_all_source_evidence_is_preserved_and_artifacts_are_sanitized(report):
@@ -134,6 +217,10 @@ def test_all_source_evidence_is_preserved_and_artifacts_are_sanitized(report):
     assert "source evidence, not a canonical local receipt hash" in (
         fixture["source_evidence"]["description"]
     )
+    assert all(
+        frozenset(row["candidate"]) == EXPECTED_CANDIDATE_FIELDS
+        for row in fixture["candidates"]
+    )
 
     blocked_fragments = (
         "crypto" + "-server",
@@ -146,6 +233,16 @@ def test_all_source_evidence_is_preserved_and_artifacts_are_sanitized(report):
         path.read_text(encoding="utf-8") for path in (FIXTURE, DRIVER, Path(__file__))
     ).lower()
     assert not any(fragment in artifact_text for fragment in blocked_fragments)
+
+
+def test_replay_rejects_candidate_fields_outside_exact_schema():
+    from scripts.replay_tactical_v2_admission import replay_fixture
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    fixture["candidates"][0]["candidate"]["unexpected_field"] = "not allowed"
+
+    with pytest.raises(ValueError, match="candidate fields do not match"):
+        replay_fixture(fixture, iterations=1)
 
 
 def test_replay_is_network_free_and_writes_only_under_temporary_root(tmp_path, monkeypatch):
@@ -170,12 +267,16 @@ def test_replay_is_network_free_and_writes_only_under_temporary_root(tmp_path, m
     isolated_report = replay.replay_fixture(FIXTURE, iterations=2, scratch_root=tmp_path)
 
     assert isolated_report.raw_candidates == 22
+    assert isolated_report.parity_expected_values_passed is True
+    assert isolated_report.replay_integrity_passed is True
+    assert isolated_report.stability_requirement_passed is False
+    assert isolated_report.admission_replay_passed is False
     assert destinations
     assert all(path.is_relative_to(tmp_path.resolve()) for path in destinations)
     assert set(tmp_path.iterdir()) == initial_entries
 
 
-def test_cli_prints_deterministic_json_and_safety_limitations(report):
+def test_cli_prints_deterministic_json_and_evidence_limitations(report):
     result = subprocess.run(
         [sys.executable, str(DRIVER), "--fixture", str(FIXTURE)],
         cwd=ROOT,
@@ -193,3 +294,30 @@ def test_cli_prints_deterministic_json_and_safety_limitations(report):
     assert payload["protection_evidence_proven"] is False
     assert payload["live_rollout_ready"] is False
     assert payload["parity_expected_values_passed"] is True
+    assert payload["replay_integrity_passed"] is True
+    assert payload["stability_requirement_passed"] is True
+    assert payload["admission_replay_passed"] is True
+
+
+def test_cli_rejects_less_than_100_stability_iterations():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(DRIVER),
+            "--fixture",
+            str(FIXTURE),
+            "--iterations",
+            "1",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    payload = json.loads(result.stdout)
+    assert payload["parity_expected_values_passed"] is True
+    assert payload["replay_integrity_passed"] is True
+    assert payload["stability_requirement_passed"] is False
+    assert payload["admission_replay_passed"] is False

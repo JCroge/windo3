@@ -29,6 +29,28 @@ from utils.tactical_v2.store import TacticalStore  # noqa: E402
 
 SYNTHETIC_BOUNDARY_REASON = "synthetic_admission_window_opportunity_boundary"
 STABILITY_FIELDS = ("accepted_identities", "episode_ids", "row_reasons")
+CANDIDATE_ALLOWED_FIELDS = frozenset({
+    "candidate_id",
+    "created_at",
+    "entry_ref",
+    "leverage",
+    "namespace",
+    "side",
+    "source_shadow_id",
+    "stop_loss",
+    "symbol",
+    "tactical_cost_gate",
+    "tactical_ev",
+    "tactical_rr",
+    "tactical_source",
+    "take_profit",
+    "tf_15m_available",
+    "tf_15m_bias",
+    "tf_15m_block_long",
+    "tf_15m_block_short",
+    "tf_15m_closed_bar_ts",
+    "tf_15m_structure_token",
+})
 EXPECTED_ACCEPTED = (
     ("92ae52b2a067b12a6c00f1ef80cbfa0b", "d1e7880d"),
     ("5e19050a9f8272e6e25b928137f2ac4a", "f978fd43"),
@@ -77,14 +99,22 @@ class AdmissionReplayReport:
     entry_decision_checks: tuple[dict[str, Any], ...]
     source_shadow_ids: tuple[str, ...]
     source_evidence_payload_hashes: tuple[str, ...]
+    historical_receipt_context: str
+    historical_receipt_evidence: str
+    historical_receipt_unknown: int
     synthetic_boundary_reason: str
+    synthetic_boundary_role: str
+    synthetic_boundary_market_settlement: bool
     exchange_fill: bool
     historical_executable_quote_available: bool
     protection_evidence_proven: bool
+    protection_check_status: str
+    protection_live_rollout_gate_passed: bool
     live_rollout_ready: bool
     parity_expected_values_passed: bool
-    safety_checks_passed: bool
-    safety_parity_passed: bool
+    replay_integrity_passed: bool
+    stability_requirement_passed: bool
+    admission_replay_passed: bool
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -175,6 +205,8 @@ def _candidate_rows(fixture: Mapping[str, Any]) -> tuple[_CandidateRow, ...]:
         if not isinstance(raw_candidate, Mapping):
             raise ValueError("candidate payload must be an object")
         candidate_data = dict(raw_candidate)
+        if frozenset(candidate_data) != CANDIDATE_ALLOWED_FIELDS:
+            raise ValueError("candidate fields do not match the exact replay schema")
         candidate = TacticalCandidate.from_raw(candidate_data)
         payload_hash = _required_text(
             raw_row.get("source_evidence_payload_hash"),
@@ -260,16 +292,17 @@ def _entry_decision_check(
     candidate: TacticalCandidate,
     episode_id: str,
     governor: TacticalGovernor,
+    evaluated_at: float,
 ) -> dict[str, Any]:
     intent = TacticalIntent.from_candidate(candidate, episode_id=episode_id)
     quote = ExecutableQuote(
         bid=candidate.entry_ref,
         ask=candidate.entry_ref,
-        observed_at=candidate.created_at,
+        observed_at=evaluated_at,
     )
-    entry_decision = classify_entry(intent, quote, now=candidate.created_at)
+    entry_decision = classify_entry(intent, quote, now=evaluated_at)
     governor_decision = governor.can_open(
-        now=candidate.created_at,
+        now=evaluated_at,
         active_count=0,
         pending_count=0,
         same_symbol_state=False,
@@ -285,9 +318,10 @@ def _entry_decision_check(
         "bid": quote.bid,
         "ask": quote.ask,
         "observed_at": quote.observed_at,
+        "evaluated_at": evaluated_at,
         "action": entry_decision.action,
         "reason": entry_decision.reason,
-        "ttl_fresh": candidate.created_at < intent.expires_at,
+        "ttl_fresh": evaluated_at < intent.expires_at,
         "governor_allowed": governor_decision.allowed,
         "governor_reason": governor_decision.reason,
     }
@@ -350,7 +384,13 @@ def _replay_once(
         row_reasons.append(row_reason)
 
         if assignment.eligible:
-            check = _entry_decision_check(candidate, assignment.episode_id, governor)
+            check = _entry_decision_check(
+                candidate,
+                assignment.episode_id,
+                governor,
+                row.journal_timestamp,
+            )
+            entry_checks.append(check)
             admitted = bool(
                 check["action"] == "immediate"
                 and check["reason"] == "within_entry_drift"
@@ -371,7 +411,6 @@ def _replay_once(
                 "epoch_seq": assignment.epoch_seq,
             }
             accepted_identities.append(identity)
-            entry_checks.append(check)
             accepted_episode[lane] = assignment.episode_id
             accepted_reasons[assignment.reason] += 1
             accepted_by_symbol[candidate.symbol] += 1
@@ -426,6 +465,7 @@ def _matches_expected_values(run: Mapping[str, Any]) -> bool:
         and run["unknown"] == 0
         and accepted == EXPECTED_ACCEPTED
         and tuple(run["episode_ids"]) == EXPECTED_EPISODE_IDS
+        and len(checks) == 5
         and all(
             check["action"] == "immediate"
             and check["reason"] == "within_entry_drift"
@@ -467,11 +507,22 @@ def replay_fixture(
     if first_run is None or stable_serialization is None:
         raise RuntimeError("admission replay produced no run")
     parity_passed = _matches_expected_values(first_run)
-    safety_passed = bool(
-        parity_passed
-        and len(first_run["row_reasons"]) == len(rows)
+    replay_integrity_passed = bool(
+        len(first_run["row_reasons"]) == len(rows)
         and len(first_run["source_shadow_ids"]) == len(rows)
         and len(first_run["source_evidence_payload_hashes"]) == len(rows)
+        and first_run["unknown"] == 0
+    )
+    stability_requirement_passed = iterations == 100
+    evidence_limitations_accurate = bool(
+        first_run["raw_candidates"] == 22
+        and len(rows) == 22
+    )
+    admission_replay_passed = bool(
+        parity_passed
+        and replay_integrity_passed
+        and stability_requirement_passed
+        and evidence_limitations_accurate
     )
     return AdmissionReplayReport(
         raw_candidates=first_run["raw_candidates"],
@@ -494,14 +545,22 @@ def replay_fixture(
         source_evidence_payload_hashes=tuple(
             first_run["source_evidence_payload_hashes"]
         ),
+        historical_receipt_context="predates_durable_receipts",
+        historical_receipt_evidence="unknown",
+        historical_receipt_unknown=len(rows),
         synthetic_boundary_reason=SYNTHETIC_BOUNDARY_REASON,
+        synthetic_boundary_role="admission_normalization_only",
+        synthetic_boundary_market_settlement=False,
         exchange_fill=False,
         historical_executable_quote_available=False,
         protection_evidence_proven=False,
+        protection_check_status="not_run_no_fill",
+        protection_live_rollout_gate_passed=False,
         live_rollout_ready=False,
         parity_expected_values_passed=parity_passed,
-        safety_checks_passed=safety_passed,
-        safety_parity_passed=parity_passed and safety_passed,
+        replay_integrity_passed=replay_integrity_passed,
+        stability_requirement_passed=stability_requirement_passed,
+        admission_replay_passed=admission_replay_passed,
     )
 
 
@@ -512,7 +571,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     report = replay_fixture(args.fixture, iterations=args.iterations)
     print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
-    return 0 if report.safety_parity_passed else 1
+    limitations_are_fail_closed = bool(
+        report.exchange_fill is False
+        and report.historical_executable_quote_available is False
+        and report.protection_evidence_proven is False
+        and report.protection_check_status == "not_run_no_fill"
+        and report.protection_live_rollout_gate_passed is False
+        and report.live_rollout_ready is False
+    )
+    return 0 if report.admission_replay_passed and limitations_are_fail_closed else 1
 
 
 if __name__ == "__main__":
