@@ -23,7 +23,7 @@ The same replay also showed that Legacy Shadow rows are repeated price-counterfa
 
 ## Decisions
 
-1. **Fresh evidence gates neutral renewal.** A terminal episode may renew when the candidate is available, the side is not blocked, and either the closed 15m bar advances or the structure token changes. Neutral bias alone is insufficient.
+1. **Fresh evidence gates compatible neutral renewal.** A terminal episode may renew when the candidate is available, the side is not blocked, the bias is aligned or neutral, and either the closed 15m bar advances or the structure token changes. Neutral bias alone is insufficient; opposing or unavailable bias remains ineligible.
 2. **Episode de-duplication remains authoritative.** Repeated candidates on the same episode and structure evidence return a durable duplicate result. The normalized parity unit is the accepted episode, with source Shadow IDs retained for traceability.
 3. **Receipts are append-only V2 events.** The handler records candidate ID, source Shadow ID, message ID when available, symbol, side, accepted flag, reason, episode ID, intent ID, evaluated time, and replay flag. Missing historical receipts remain explicitly unknown.
 4. **Shadow parity stops at the correct boundary.** Admission parity can be proven from candidate and episode data. Fill and PnL parity still requires executable quote and exchange evidence; the implementation must not infer a live fill from a Legacy scalar-price Shadow result.

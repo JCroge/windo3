@@ -45,7 +45,7 @@ AND (
 => new_confirmed_structure
 ```
 
-The comparison is numeric and monotonic for `closed_bar_ts`; missing timestamps do not qualify. A changed structure token can qualify when the token is present and differs from the persisted token. Neutral bias is accepted only through this fresh-evidence branch. A neutral candidate with identical structure evidence remains `duplicate_episode`.
+The comparison is numeric and monotonic for `closed_bar_ts`; missing timestamps do not qualify. A changed structure token can qualify when the token is present and differs from the persisted token. A compatible renewal bias is either aligned with the candidate side or neutral; opposing and unavailable biases remain ineligible. Neutral bias is accepted only through this fresh-evidence branch. A neutral candidate with identical structure evidence remains `duplicate_episode`.
 
 The existing `_observe_locked()` behavior that preserves the last confirmed structure baseline remains intentional: the baseline is needed to compare a later candidate against the terminal episode. Reset evidence is persisted before the new `episode_assigned` event.
 
