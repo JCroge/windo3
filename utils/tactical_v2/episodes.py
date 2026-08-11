@@ -64,6 +64,13 @@ class EpisodeRegistry:
             reset_reason = self._reset_reason(state, side, structure)
             if reset_reason is not None:
                 evidence_state = copy.deepcopy(state)
+                closed_bar = structure.get("tf_15m_closed_bar_ts")
+                max_observed = evidence_state.get("max_observed_closed_bar_ts")
+                if (
+                    closed_bar is not None
+                    and (max_observed is None or closed_bar > max_observed)
+                ):
+                    evidence_state["max_observed_closed_bar_ts"] = closed_bar
                 self._persist(
                     "episode_reset_evidence",
                     key,

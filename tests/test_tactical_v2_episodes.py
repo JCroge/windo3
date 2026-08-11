@@ -698,6 +698,65 @@ def test_failed_renewal_append_retry_matches_restart(tmp_path):
     assert same_process == after_restart
 
 
+def test_failed_renewal_assignment_carries_fresh_bar_before_older_retry(tmp_path):
+    from utils.tactical_v2.episodes import EpisodeRegistry
+    from utils.tactical_v2.store import TacticalStore
+
+    fresh_structure = {
+        **_structure(bias="neutral", token="break-up-1"),
+        "tf_15m_closed_bar_ts": 930.0,
+    }
+    older_structure = {
+        **_structure(bias="neutral", token="break-up-1"),
+        "tf_15m_closed_bar_ts": 915.0,
+    }
+
+    def fail_then_retry(path, *, restart):
+        registry = EpisodeRegistry(TacticalStore(_paths(path)), namespace="testnet")
+        first = registry.assign(_candidate(), _structure(token="break-up-1"))
+        registry.mark_terminal(first.episode_id, "expired")
+        original_append = registry.store.append
+        failed = False
+
+        def fail_once(event_type, data, **kwargs):
+            nonlocal failed
+            state = data.get("registry_state", {})
+            if (
+                not failed
+                and event_type == "episode_assigned"
+                and state.get("epoch_seq") == 2
+            ):
+                failed = True
+                raise OSError("simulated append failure")
+            return original_append(event_type, data, **kwargs)
+
+        registry.store.append = fail_once
+        with pytest.raises(OSError, match="simulated append failure"):
+            registry.assign(_candidate(), fresh_structure)
+        registry.store.append = original_append
+        reset_event = [
+            event
+            for event in registry.store.read_events()
+            if event["event_type"] == "episode_reset_evidence"
+        ][-1]
+        reset_state = reset_event["data"]["registry_state"]
+        assert reset_state["last_closed_bar_ts"] == 900.0
+        assert reset_state["max_observed_closed_bar_ts"] == 930.0
+        if restart:
+            registry = EpisodeRegistry(
+                TacticalStore(_paths(path)),
+                namespace="testnet",
+            )
+        return registry.assign(_candidate(), older_structure)
+
+    same_process = fail_then_retry(tmp_path / "same-process", restart=False)
+    after_restart = fail_then_retry(tmp_path / "restart", restart=True)
+
+    assert same_process.eligible is False
+    assert same_process.reason == "duplicate_episode"
+    assert same_process == after_restart
+
+
 def test_failed_observation_append_leaves_no_phantom_state(tmp_path):
     from utils.tactical_v2.episodes import EpisodeRegistry
     from utils.tactical_v2.store import TacticalStore
