@@ -164,6 +164,8 @@ class TacticalV2Controller:
         self._candidate_receipts_by_payload_hash: Dict[str, Dict[str, Any]] = {}
         self._conflicting_candidate_receipt_message_ids = set()
         self._conflicting_candidate_receipt_payload_hashes = set()
+        self._quarantined_candidate_receipt_candidates: Dict[str, set] = {}
+        self._candidate_receipt_integrity_halt: Optional[Dict[str, Any]] = None
         self._receipt_intent_ids = set()
         self._candidate_handling_gaps: Dict[str, Dict[str, Any]] = {}
         self._unknown_replays: Dict[str, CandidateHandlingResult] = {}
@@ -357,7 +359,15 @@ class TacticalV2Controller:
             "replayed": bool(replayed),
             "payload_hash": context["payload_hash"],
         }
-        self.store.append("candidate_handled", receipt, emitted_at=evaluated_at)
+        try:
+            self.store.append("candidate_handled", receipt, emitted_at=evaluated_at)
+        except Exception:
+            self._remember_candidate_handling_gap(
+                context,
+                episode_id=result.episode_id,
+            )
+            self._refresh_status(force=True, now=evaluated_at)
+            raise
         self._remember_candidate_receipt(receipt)
         self._refresh_status(force=True, now=evaluated_at)
         return result
@@ -414,14 +424,24 @@ class TacticalV2Controller:
             return previous
 
         gap = self._candidate_handling_gap(context)
+        matched_intent = self._unreceipted_intent_for_candidate(context)
         if gap is not None:
             result = CandidateHandlingResult(
                 False,
                 "unknown_handling_evidence",
-                episode_id=str(gap["episode_id"]),
+                intent_id=(
+                    matched_intent.intent_id if matched_intent is not None else None
+                ),
+                episode_id=(
+                    self._optional_text(gap.get("episode_id"))
+                    or (
+                        matched_intent.episode_id
+                        if matched_intent is not None
+                        else None
+                    )
+                ),
             )
         else:
-            matched_intent = self._unreceipted_intent_for_candidate(context)
             result = CandidateHandlingResult(
                 False,
                 "unknown_handling_evidence",
@@ -448,7 +468,7 @@ class TacticalV2Controller:
         self,
         raw: Mapping[str, Any],
         *,
-        episode_id: str,
+        episode_id: Optional[str],
     ) -> None:
         candidate_id = raw.get("candidate_id")
         message_id = raw.get("message_id")
@@ -469,7 +489,7 @@ class TacticalV2Controller:
             "candidate_id": candidate_id,
             "message_id": message_id,
             "payload_hash": payload_hash,
-            "episode_id": str(episode_id),
+            "episode_id": self._optional_text(episode_id),
         }
         self._candidate_handling_gaps[
             self._candidate_handling_identity(gap)
@@ -492,48 +512,65 @@ class TacticalV2Controller:
                 return intent
         return None
 
-    def _remember_candidate_receipt(self, raw: Mapping[str, Any]) -> None:
+    def _remember_candidate_receipt(
+        self,
+        raw: Mapping[str, Any],
+        *,
+        restoring: bool = False,
+        halted_at: Optional[float] = None,
+    ) -> None:
         receipt = dict(raw)
         validation_error = self._candidate_receipt_validation_error(receipt)
         if validation_error is not None:
-            self.governor.activate_integrity_halt_if_clear(
+            self._quarantine_candidate_receipt(receipt)
+            self._activate_candidate_receipt_integrity_halt(
                 "candidate_receipt_invalid",
                 evidence={
                     "validation_error": validation_error,
                     "message_id": self._optional_text(receipt.get("message_id")),
                     "payload_hash": self._optional_text(receipt.get("payload_hash")),
                 },
+                restoring=restoring,
+                halted_at=halted_at,
             )
             return
         message_id = self._optional_text(receipt.get("message_id"))
         payload_hash = self._optional_text(receipt.get("payload_hash"))
         if message_id in self._conflicting_candidate_receipt_message_ids:
+            self._quarantine_candidate_receipt(receipt)
             return
         if (
             not message_id
             and payload_hash in self._conflicting_candidate_receipt_payload_hashes
         ):
+            self._quarantine_candidate_receipt(receipt)
             return
         existing = (
             self._candidate_receipts_by_message_id.get(message_id)
             if message_id
             else None
         )
+        if existing == receipt:
+            return
         if existing is not None and existing != receipt:
             self._conflicting_candidate_receipt_message_ids.add(message_id)
+            self._quarantine_candidate_receipt(existing)
+            self._quarantine_candidate_receipt(receipt)
             self._candidate_receipts = [
                 item
                 for item in self._candidate_receipts
                 if self._optional_text(item.get("message_id")) != message_id
             ]
             self._rebuild_candidate_receipt_indexes()
-            self.governor.activate_integrity_halt_if_clear(
+            self._activate_candidate_receipt_integrity_halt(
                 "candidate_receipt_message_conflict",
                 evidence={
                     "message_id": message_id,
                     "stored_payload_hash": existing["payload_hash"],
                     "conflicting_payload_hash": receipt["payload_hash"],
                 },
+                restoring=restoring,
+                halted_at=halted_at,
             )
             return
 
@@ -548,8 +585,12 @@ class TacticalV2Controller:
                 ),
                 None,
             )
+        if existing_fallback == receipt:
+            return
         if existing_fallback is not None and existing_fallback != receipt:
             self._conflicting_candidate_receipt_payload_hashes.add(payload_hash)
+            self._quarantine_candidate_receipt(existing_fallback)
+            self._quarantine_candidate_receipt(receipt)
             self._candidate_receipts = [
                 item
                 for item in self._candidate_receipts
@@ -559,13 +600,15 @@ class TacticalV2Controller:
                 )
             ]
             self._rebuild_candidate_receipt_indexes()
-            self.governor.activate_integrity_halt_if_clear(
+            self._activate_candidate_receipt_integrity_halt(
                 "candidate_receipt_payload_conflict",
                 evidence={
                     "payload_hash": payload_hash,
                     "stored_reason": existing_fallback["reason"],
                     "conflicting_reason": receipt["reason"],
                 },
+                restoring=restoring,
+                halted_at=halted_at,
             )
             return
 
@@ -585,6 +628,38 @@ class TacticalV2Controller:
             self._candidate_handling_identity(receipt),
             None,
         )
+
+    def _quarantine_candidate_receipt(self, receipt: Mapping[str, Any]) -> None:
+        identity = self._candidate_handling_identity(receipt)
+        candidate_id = self._optional_text(receipt.get("candidate_id"))
+        candidates = self._quarantined_candidate_receipt_candidates.setdefault(
+            identity,
+            set(),
+        )
+        if candidate_id:
+            candidates.add(candidate_id)
+
+    def _activate_candidate_receipt_integrity_halt(
+        self,
+        reason: str,
+        *,
+        evidence: Mapping[str, Any],
+        restoring: bool,
+        halted_at: Optional[float],
+    ) -> None:
+        if self._candidate_receipt_integrity_halt is None:
+            self._candidate_receipt_integrity_halt = {
+                "reason": str(reason),
+                "evidence": dict(evidence),
+                "halted_at": (
+                    float(self.now_fn()) if halted_at is None else float(halted_at)
+                ),
+            }
+        if not restoring:
+            self.governor.activate_integrity_halt_if_clear(
+                reason,
+                evidence=evidence,
+            )
 
     def _rebuild_candidate_receipt_indexes(self) -> None:
         self._candidate_receipts_by_message_id = {}
@@ -654,7 +729,15 @@ class TacticalV2Controller:
             if reason in _PRE_ASSIGNMENT_RECEIPT_REASONS:
                 return "pre_assignment_episode_id" if episode_id is not None else None
             if reason in _EPISODE_RECEIPT_REASONS:
-                return None
+                return (
+                    None
+                    if self.episodes.matches_episode(
+                        episode_id,
+                        receipt["symbol"],
+                        receipt["side"],
+                    )
+                    else "rejected_episode_mismatch"
+                )
             return "rejected_reason"
         if receipt["reason"] != "accepted":
             return "accepted_reason"
@@ -1339,23 +1422,29 @@ class TacticalV2Controller:
         return status
 
     def _candidate_handling_summary(self) -> Dict[str, int]:
-        missing_intent_ids = {
-            record["intent"].intent_id
+        missing_intents = {
+            record["intent"].intent_id: record["intent"].candidate_id
             for record in self._intents.values()
             if record["intent"].intent_id not in self._receipt_intent_ids
         }
-        unmatched_unknowns = sum(
-            1
+        missing_candidate_ids = set(missing_intents.values())
+        unknown_identities = set(self._candidate_handling_gaps)
+        unknown_identities.update(
+            identity
             for identity, result in self._unknown_replays.items()
-            if identity not in self._candidate_handling_gaps
-            and result.intent_id not in missing_intent_ids
+            if result.intent_id not in missing_intents
+        )
+        unknown_identities.update(
+            identity
+            for identity, candidate_ids in (
+                self._quarantined_candidate_receipt_candidates.items()
+            )
+            if not candidate_ids.intersection(missing_candidate_ids)
         )
         return {
             "receipt_count": len(self._candidate_receipts),
             "unknown_handling_evidence": (
-                len(missing_intent_ids)
-                + len(self._candidate_handling_gaps)
-                + unmatched_unknowns
+                len(missing_intents) + len(unknown_identities)
             ),
         }
 
@@ -3347,16 +3436,21 @@ class TacticalV2Controller:
         )
 
     def _has_live_integrity_required(self) -> bool:
-        return self.mode == "live" and any(
-            record.get("lane") == "live"
-            and record.get("state") == "integrity_required"
-            for record in self._intents.values()
+        return self._candidate_receipt_integrity_halt is not None or (
+            self.mode == "live"
+            and any(
+                record.get("lane") == "live"
+                and record.get("state") == "integrity_required"
+                for record in self._intents.values()
+            )
         )
 
     def _effective_integrity_halt(self) -> Optional[Dict[str, Any]]:
         governor_halt = self.governor.integrity_halt
         if governor_halt is not None:
             return governor_halt
+        if self._candidate_receipt_integrity_halt is not None:
+            return dict(self._candidate_receipt_integrity_halt)
         durable = [
             record
             for record in self._intents.values()
@@ -3543,7 +3637,11 @@ class TacticalV2Controller:
             data = event.get("data") or {}
             event_type = event.get("event_type")
             if event_type == "candidate_handled":
-                self._remember_candidate_receipt(data)
+                self._remember_candidate_receipt(
+                    data,
+                    restoring=True,
+                    halted_at=event.get("emitted_at"),
+                )
                 continue
             if event_type == "episode_terminal":
                 registry_state = data.get("registry_state") or {}

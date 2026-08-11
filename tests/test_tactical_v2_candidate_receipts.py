@@ -773,6 +773,100 @@ async def test_governor_rejection_receipt_gap_remains_unknown_after_restart(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "invalid",
+        "future",
+        "expired",
+        "disabled",
+        "duplicate",
+        "opposing",
+    ],
+)
+async def test_all_rejection_receipt_append_failures_remain_unknown(
+    tmp_path,
+    monkeypatch,
+    scenario,
+):
+    mode = "off" if scenario == "disabled" else "shadow"
+    controller = _controller(tmp_path, mode=mode)
+    raw = _candidate(candidate_id=f"receipt-gap-{scenario}")
+    first_episode_id = None
+    handled_at = 1000.0
+    redelivered_at = 1001.0
+    expected_reason = scenario
+
+    if scenario == "invalid":
+        raw["side"] = "invalid"
+        expected_reason = "invalid_candidate"
+    elif scenario == "future":
+        raw["created_at"] = 1001.0
+        expected_reason = "candidate_from_future"
+    elif scenario == "expired":
+        raw["created_at"] = 0.0
+        expected_reason = "candidate_expired"
+    elif scenario == "disabled":
+        expected_reason = "admission_disabled"
+    else:
+        first = await controller.handle_candidate(
+            _candidate(candidate_id=f"receipt-gap-{scenario}-seed"),
+            now=1000.0,
+            message_id=f"msg-receipt-gap-{scenario}-seed",
+        )
+        first_episode_id = first.episode_id
+        if scenario == "opposing":
+            raw["tf_15m_block_long"] = True
+            expected_reason = "opposing_block"
+        else:
+            expected_reason = "duplicate_episode"
+
+    original_append = controller.store.append
+    failed_receipts = []
+
+    def fail_receipt_append(event_type, data, **kwargs):
+        if event_type == "candidate_handled":
+            failed_receipts.append(dict(data))
+            raise OSError(f"injected {scenario} receipt append failure")
+        return original_append(event_type, data, **kwargs)
+
+    message_id = f"msg-receipt-gap-{scenario}"
+    monkeypatch.setattr(controller.store, "append", fail_receipt_append)
+    with pytest.raises(OSError, match=f"injected {scenario} receipt append failure"):
+        await controller.handle_candidate(
+            raw,
+            now=handled_at,
+            message_id=message_id,
+        )
+    monkeypatch.setattr(controller.store, "append", original_append)
+    events_after_failure = _events(tmp_path)
+    receipt_count_after_failure = len(_receipts(tmp_path))
+    assert [receipt["reason"] for receipt in failed_receipts] == [expected_reason]
+
+    same_process = await controller.handle_candidate(
+        raw,
+        now=redelivered_at,
+        message_id=message_id,
+    )
+    restarted = _controller(tmp_path, mode=mode)
+    replayed_after_restart = await restarted.handle_candidate(
+        raw,
+        now=redelivered_at,
+        message_id=message_id,
+        replayed=True,
+    )
+
+    assert same_process.reason == "unknown_handling_evidence"
+    assert replayed_after_restart.reason == "unknown_handling_evidence"
+    assert same_process.intent_id is None
+    assert replayed_after_restart.intent_id is None
+    assert same_process.episode_id == first_episode_id
+    assert replayed_after_restart.episode_id is None
+    assert _events(tmp_path) == events_after_failure
+    assert len(_receipts(tmp_path)) == receipt_count_after_failure
+
+
+@pytest.mark.asyncio
 async def test_receipt_hit_still_returns_original_rejection_without_new_event(tmp_path):
     raw = {**_candidate(), "side": "invalid"}
     first_controller = _controller(tmp_path)
@@ -933,6 +1027,66 @@ async def test_duplicate_episode_receipt_without_episode_id_is_quarantined(
     assert len(_receipts(tmp_path)) == 1
 
 
+@pytest.mark.parametrize("history_kind", ["malformed", "conflicting"])
+def test_receipt_quarantine_restore_is_event_log_read_only(tmp_path, history_kind):
+    from utils.tactical_v2.store import TacticalStore
+
+    store = TacticalStore(_paths(tmp_path))
+    raw = _candidate(candidate_id=f"restore-read-only-{history_kind}")
+    base_receipt = {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": f"msg-restore-read-only-{history_kind}",
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": False,
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+    if history_kind == "malformed":
+        store.append(
+            "candidate_handled",
+            {**base_receipt, "accepted": "false"},
+            emitted_at=1000.0,
+        )
+    else:
+        store.append("candidate_handled", base_receipt, emitted_at=1000.0)
+        store.append(
+            "candidate_handled",
+            {
+                **base_receipt,
+                "candidate_id": "restore-read-only-conflict-other",
+                "payload_hash": _payload_hash({**raw, "candidate_id": "other"}),
+            },
+            emitted_at=1001.0,
+        )
+    original_events = _events(tmp_path)
+
+    first = _controller(tmp_path)
+    after_first_restore = _events(tmp_path)
+    second = _controller(tmp_path)
+
+    assert after_first_restore == original_events
+    assert _events(tmp_path) == original_events
+    assert first.snapshot(now=1002.0)["integrity_halt"]["reason"].startswith(
+        "candidate_receipt_"
+    )
+    assert second.snapshot(now=1002.0)["integrity_halt"] == first.snapshot(
+        now=1002.0
+    )["integrity_halt"]
+    assert first.snapshot(now=1002.0)["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    assert second.snapshot(now=1002.0)["candidate_handling"] == first.snapshot(
+        now=1002.0
+    )["candidate_handling"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reason", "episode_id", "expected_error"),
@@ -1021,6 +1175,159 @@ async def test_restored_rejection_enforces_reason_episode_phase(
     assert len(_receipts(tmp_path)) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_id", ["msg-episode-reference", None])
+@pytest.mark.parametrize("mismatch", ["missing", "symbol", "side"])
+async def test_restored_episode_rejection_must_match_real_episode(
+    tmp_path,
+    message_id,
+    mismatch,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    seed_raw = _candidate(candidate_id=f"episode-reference-seed-{mismatch}")
+    seed = await _controller(tmp_path).handle_candidate(
+        seed_raw,
+        now=1000.0,
+        message_id=f"msg-episode-reference-seed-{mismatch}",
+    )
+    rejected_raw = _candidate(candidate_id=f"episode-reference-{mismatch}")
+    episode_id = seed.episode_id
+    if mismatch == "missing":
+        episode_id = "never-assigned"
+    elif mismatch == "symbol":
+        rejected_raw["symbol"] = "ETH-USDT"
+    else:
+        rejected_raw["side"] = "short"
+
+    TacticalStore(_paths(tmp_path)).append(
+        "candidate_handled",
+        {
+            "candidate_id": rejected_raw["candidate_id"],
+            "source_shadow_id": rejected_raw["source_shadow_id"],
+            "message_id": message_id,
+            "symbol": rejected_raw["symbol"],
+            "side": rejected_raw["side"],
+            "accepted": False,
+            "reason": "duplicate_episode",
+            "episode_id": episode_id,
+            "intent_id": None,
+            "evaluated_at": 1001.0,
+            "replayed": False,
+            "payload_hash": _payload_hash(rejected_raw),
+        },
+        emitted_at=1001.0,
+    )
+    original_events = _events(tmp_path)
+
+    snapshot = _controller(tmp_path).snapshot(now=1002.0)
+
+    assert snapshot["candidate_handling"]["receipt_count"] == 1
+    assert snapshot["integrity_halt"]["reason"] == "candidate_receipt_invalid"
+    assert snapshot["integrity_halt"]["evidence"]["validation_error"] == (
+        "rejected_episode_mismatch"
+    )
+    assert _events(tmp_path) == original_events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_id", ["msg-exact-duplicate", None])
+async def test_exact_duplicate_receipt_rows_dedupe_in_read_model_across_restart(
+    tmp_path,
+    message_id,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="exact-duplicate")
+    receipt = {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": message_id,
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": False,
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+    store = TacticalStore(_paths(tmp_path))
+    store.append("candidate_handled", receipt, emitted_at=1000.0)
+    store.append("candidate_handled", receipt, emitted_at=1001.0)
+    original_events = _events(tmp_path)
+
+    first = _controller(tmp_path)
+    replayed = await first.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id=message_id,
+        replayed=True,
+    )
+    restarted = _controller(tmp_path)
+
+    assert replayed.reason == "invalid_candidate"
+    assert first.snapshot(now=1002.0)["candidate_handling"] == {
+        "receipt_count": 1,
+        "unknown_handling_evidence": 0,
+    }
+    assert restarted.snapshot(now=1002.0)["candidate_handling"] == {
+        "receipt_count": 1,
+        "unknown_handling_evidence": 0,
+    }
+    assert first.snapshot(now=1002.0)["integrity_halt"] is None
+    assert restarted.snapshot(now=1002.0)["integrity_halt"] is None
+    assert _events(tmp_path) == original_events
+    assert len(_receipts(tmp_path)) == 2
+
+
+@pytest.mark.parametrize("message_id", ["msg-rejected-conflict", None])
+def test_conflicting_rejected_receipts_count_one_unknown_across_restart(
+    tmp_path,
+    message_id,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="rejected-conflict")
+    first_receipt = {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": message_id,
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": False,
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+    store = TacticalStore(_paths(tmp_path))
+    store.append("candidate_handled", first_receipt, emitted_at=1000.0)
+    store.append(
+        "candidate_handled",
+        {**first_receipt, "reason": "admission_disabled"},
+        emitted_at=1001.0,
+    )
+    original_events = _events(tmp_path)
+
+    first = _controller(tmp_path)
+    first_snapshot = first.snapshot(now=1002.0)
+    restarted = _controller(tmp_path)
+
+    assert first_snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    assert restarted.snapshot(now=1002.0)["candidate_handling"] == (
+        first_snapshot["candidate_handling"]
+    )
+    assert _events(tmp_path) == original_events
+    assert len(_receipts(tmp_path)) == 2
+
+
 def test_conflicting_duplicate_message_receipts_are_both_quarantined(tmp_path):
     from utils.tactical_v2.store import TacticalStore
 
@@ -1085,14 +1392,27 @@ def test_conflicting_duplicate_message_receipts_are_both_quarantined(tmp_path):
 async def test_conflicting_payload_fallback_receipts_are_quarantined_across_restart(
     tmp_path,
 ):
+    from utils.tactical_v2.episodes import EpisodeRegistry
+    from utils.tactical_v2.models import TacticalCandidate
     from utils.tactical_v2.store import TacticalStore
 
     raw = _candidate(candidate_id="payload-fallback-conflict")
     store = TacticalStore(_paths(tmp_path))
+    assignment = EpisodeRegistry(store, namespace="testnet").assign(
+        TacticalCandidate.from_raw(raw),
+        {
+            "tf_15m_available": True,
+            "tf_15m_bias": "bullish",
+            "tf_15m_closed_bar_ts": 900.0,
+            "tf_15m_structure_token": "payload-fallback-conflict",
+            "tf_15m_block_long": False,
+            "tf_15m_block_short": False,
+        },
+    )
     intent = _append_intent_created(
         store,
         raw,
-        episode_id="episode-payload-fallback-conflict",
+        episode_id=assignment.episode_id,
     )
     accepted = _candidate_receipt(raw, intent, message_id=None)
     rejected = {

@@ -161,6 +161,22 @@ class EpisodeRegistry:
                 return str(reason) if reason else None
         return None
 
+    def matches_episode(self, episode_id: str, symbol: str, side: str) -> bool:
+        try:
+            normalized_symbol = to_internal(symbol)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        normalized_side = str(side).strip().lower()
+        if normalized_side not in {"long", "short"}:
+            return False
+        with self._lock:
+            state = self._episode_states.get(str(episode_id or ""))
+            return bool(
+                state is not None
+                and state.get("symbol") == normalized_symbol
+                and state.get("side") == normalized_side
+            )
+
     def _observe_locked(
         self,
         key: str,
