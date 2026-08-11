@@ -171,7 +171,7 @@ async def test_old_shadow_fill_closes_once_after_registry_advances_epoch(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_cross_namespace_and_stale_replay_candidates_are_ignored(tmp_path):
+async def test_cross_namespace_and_stale_replay_without_receipts_remain_unknown(tmp_path):
     controller, _ = _controller(tmp_path)
 
     cross = await controller.handle_candidate(
@@ -185,9 +185,12 @@ async def test_cross_namespace_and_stale_replay_candidates_are_ignored(tmp_path)
         replayed=True,
     )
 
-    assert cross.reason == "namespace_mismatch"
-    assert stale.reason == "candidate_expired"
-    assert controller.snapshot(now=1000)["active_slots"] == 0
+    assert cross.reason == "unknown_handling_evidence"
+    assert stale.reason == "unknown_handling_evidence"
+    snapshot = controller.snapshot(now=1000)
+    assert snapshot["active_slots"] == 0
+    assert snapshot["candidate_handling"]["unknown_handling_evidence"] == 2
+    assert controller.store.read_events() == []
 
 
 def test_shadow_projection_does_not_block_main_or_consume_live_capacity(tmp_path):

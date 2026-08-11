@@ -139,6 +139,11 @@ async def test_accepted_candidate_receipt_has_canonical_schema_hash_and_ordering
     }
     intent_event = next(row for row in events if row["event_type"] == "intent_created")
     assert intent_event["seq"] < receipt_event["seq"]
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["candidate_handling"] == {
+        "receipt_count": 1,
+        "unknown_handling_evidence": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -165,7 +170,6 @@ async def test_pre_admission_rejections_each_persist_one_receipt(
         raw,
         now=now,
         message_id=f"msg-{reason}",
-        replayed=True,
     )
 
     receipts = _receipts(tmp_path)
@@ -174,7 +178,7 @@ async def test_pre_admission_rejections_each_persist_one_receipt(
     assert receipts[0]["data"]["reason"] == reason
     assert receipts[0]["data"]["accepted"] is False
     assert receipts[0]["data"]["intent_id"] is None
-    assert receipts[0]["data"]["replayed"] is True
+    assert receipts[0]["data"]["replayed"] is False
 
 
 @pytest.mark.asyncio
@@ -315,6 +319,94 @@ async def test_restart_replay_is_idempotent_by_message_or_payload_identity(
 
 
 @pytest.mark.asyncio
+async def test_replay_without_receipt_or_intent_is_unknown_without_side_effects(tmp_path):
+    controller = _controller(tmp_path)
+    original_events = _events(tmp_path)
+
+    result = await controller.handle_candidate(
+        _candidate(),
+        now=1000.0,
+        message_id="msg-unknown",
+        replayed=True,
+    )
+
+    assert result.reason == "unknown_handling_evidence"
+    assert result.intent_id is None
+    assert result.episode_id is None
+    assert _events(tmp_path) == original_events
+    assert controller.snapshot(now=1000.0)["intents"] == []
+    assert controller.snapshot(now=1000.0)["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "mode"),
+    [
+        ({"namespace": "testnet", "candidate_id": "invalid"}, "shadow"),
+        (_candidate(candidate_id="expired", created_at=99.0), "shadow"),
+        (_candidate(candidate_id="disabled"), "off"),
+    ],
+)
+async def test_replay_without_receipt_is_unknown_before_validation_ttl_or_mode(
+    tmp_path,
+    raw,
+    mode,
+):
+    controller = _controller(tmp_path, mode=mode)
+    original_events = _events(tmp_path)
+
+    result = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id=f"msg-{raw['candidate_id']}",
+        replayed=True,
+    )
+
+    assert result.reason == "unknown_handling_evidence"
+    assert result.intent_id is None
+    assert result.episode_id is None
+    assert _events(tmp_path) == original_events
+    assert controller.snapshot(now=1000.0)["candidate_handling"][
+        "unknown_handling_evidence"
+    ] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_id", ["msg-repeat-unknown", None])
+async def test_repeated_unknown_replay_identity_is_counted_once(tmp_path, message_id):
+    controller = _controller(tmp_path)
+    raw = _candidate(candidate_id="repeat-unknown")
+
+    first = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id=message_id,
+        replayed=True,
+    )
+    second = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id=message_id,
+        replayed=True,
+    )
+
+    assert second == first
+    assert _events(tmp_path) == []
+    assert controller.snapshot(now=1001.0)["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_legacy_intent_without_receipt_remains_unknown_and_is_not_synthesized(tmp_path):
     from utils.tactical_v2.episodes import EpisodeRegistry
     from utils.tactical_v2.models import TacticalCandidate, TacticalIntent
@@ -360,6 +452,122 @@ async def test_legacy_intent_without_receipt_remains_unknown_and_is_not_synthesi
     assert replayed.reason == "unknown_handling_evidence"
     assert replayed.intent_id == intent.intent_id
     assert _events(tmp_path) == legacy_events
+    after_replay = controller.snapshot(now=1001.0)
+    assert after_replay["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["candidate_handling"] == after_replay["candidate_handling"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_hit_still_returns_original_rejection_without_new_event(tmp_path):
+    raw = {**_candidate(), "side": "invalid"}
+    first_controller = _controller(tmp_path)
+    first = await first_controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id="msg-invalid-receipt",
+    )
+    original_events = _events(tmp_path)
+
+    restarted = _controller(tmp_path)
+    replayed = await restarted.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-invalid-receipt",
+        replayed=True,
+    )
+
+    assert replayed == first
+    assert replayed.reason == "invalid_candidate"
+    assert _events(tmp_path) == original_events
+
+
+def _assert_live_governor_rejection_without_intent(tmp_path, result, reason, intent_count):
+    events = _events(tmp_path)
+    receipt = _receipts(tmp_path)[-1]["data"]
+    assert result.reason == reason
+    assert result.intent_id is None
+    assert receipt["accepted"] is False
+    assert receipt["reason"] == reason
+    assert receipt["intent_id"] is None
+    assert len([row for row in events if row["event_type"] == "intent_created"]) == intent_count
+    assert any(
+        row["event_type"] == "episode_terminal"
+        and row["data"]["registry_state"]["terminal_reason"] == reason
+        for row in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_same_symbol_rejection_does_not_create_terminal_intent(tmp_path):
+    controller = _controller(tmp_path, mode="live")
+    await controller.handle_candidate(
+        _candidate(candidate_id="live-long"),
+        now=1000.0,
+        message_id="msg-live-long",
+    )
+
+    rejected = await controller.handle_candidate(
+        _candidate(candidate_id="live-short", side="short"),
+        now=1000.0,
+        message_id="msg-live-short",
+    )
+
+    _assert_live_governor_rejection_without_intent(
+        tmp_path,
+        rejected,
+        "same_symbol_exposure",
+        intent_count=1,
+    )
+    assert len(controller.snapshot(now=1000.0)["intents"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_capacity_rejection_does_not_create_terminal_intent(tmp_path):
+    controller = _controller(tmp_path, mode="live")
+    for index, symbol in enumerate(("WLD-USDT", "ETH-USDT", "SOL-USDT")):
+        await controller.handle_candidate(
+            _candidate(symbol=symbol, candidate_id=f"live-{index}"),
+            now=1000.0,
+            message_id=f"msg-live-{index}",
+        )
+
+    rejected = await controller.handle_candidate(
+        _candidate(symbol="XRP-USDT", candidate_id="live-capacity"),
+        now=1000.0,
+        message_id="msg-live-capacity",
+    )
+
+    _assert_live_governor_rejection_without_intent(
+        tmp_path,
+        rejected,
+        "capacity_skipped",
+        intent_count=3,
+    )
+    assert len(controller.snapshot(now=1000.0)["intents"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_live_integrity_rejection_does_not_create_terminal_intent(tmp_path):
+    controller = _controller(tmp_path, mode="live")
+    controller.governor.activate_integrity_halt("test_halt")
+
+    rejected = await controller.handle_candidate(
+        _candidate(candidate_id="live-integrity"),
+        now=1000.0,
+        message_id="msg-live-integrity",
+    )
+
+    _assert_live_governor_rejection_without_intent(
+        tmp_path,
+        rejected,
+        "integrity_halt",
+        intent_count=0,
+    )
+    assert controller.snapshot(now=1000.0)["intents"] == []
 
 
 @pytest.mark.asyncio

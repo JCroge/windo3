@@ -129,6 +129,7 @@ class TacticalV2Controller:
         self._candidate_receipts_by_message_id: Dict[str, Dict[str, Any]] = {}
         self._candidate_receipts_by_payload_hash: Dict[str, Dict[str, Any]] = {}
         self._receipt_intent_ids = set()
+        self._unknown_replays: Dict[str, CandidateHandlingResult] = {}
         self._episode_outcomes: Dict[str, int] = {}
         self._parity_mismatches = 0
         self._last_status_write_at = 0.0
@@ -150,6 +151,11 @@ class TacticalV2Controller:
         handled = self._handled_candidate_result(receipt_context)
         if handled is not None:
             return handled
+        if replayed:
+            return self._remember_unknown_replay(
+                receipt_context,
+                evaluated_at=evaluated_at,
+            )
 
         def finish(
             result: CandidateHandlingResult,
@@ -171,10 +177,6 @@ class TacticalV2Controller:
         except (TypeError, ValueError) as exc:
             self._log_warning("invalid Tactical V2 candidate: %s", exc)
             return finish(CandidateHandlingResult(False, "invalid_candidate"))
-        if replayed:
-            unknown = self._legacy_unknown_result(candidate)
-            if unknown is not None:
-                return unknown
         if evaluated_at < candidate.created_at:
             return finish(
                 CandidateHandlingResult(False, "candidate_from_future"),
@@ -197,11 +199,6 @@ class TacticalV2Controller:
                 candidate,
             )
 
-        shadow_rejection = (
-            self._shadow_admission_reason(candidate.symbol)
-            if self.mode == "live"
-            else None
-        )
         same_symbol = self._symbol_occupied(candidate.symbol)
         admission = self.governor.can_open(
             now=evaluated_at,
@@ -210,7 +207,6 @@ class TacticalV2Controller:
             same_symbol_state=same_symbol,
             integrity_state=self._has_live_integrity_required(),
         )
-        intent = TacticalIntent.from_candidate(candidate, assignment.episode_id)
         lane = self.mode
         if not admission.allowed:
             reason = (
@@ -219,39 +215,21 @@ class TacticalV2Controller:
                 else admission.reason
             )
             self._consume_episode(assignment.episode_id, reason)
-            if lane == "live":
-                record = self._register_intent(
-                    intent,
-                    lane=lane,
-                    replayed=replayed,
-                    evaluated_at=evaluated_at,
-                    state="entry_terminal",
-                    terminal_reason=reason,
-                )
-                self._persist_record_state(
-                    record,
-                    "entry_terminal",
-                    evaluated_at,
-                    terminal_reason=reason,
-                )
-                if shadow_rejection:
-                    self._persist_shadow_projection(
-                        record,
-                        "entry_terminal",
-                        evaluated_at,
-                        terminal_reason=shadow_rejection,
-                    )
-            self._refresh_status(force=True, now=evaluated_at)
             return finish(
                 CandidateHandlingResult(
                     False,
                     reason,
-                    intent_id=intent.intent_id if lane == "live" else None,
                     episode_id=assignment.episode_id,
                 ),
                 candidate,
             )
 
+        intent = TacticalIntent.from_candidate(candidate, assignment.episode_id)
+        shadow_rejection = (
+            self._shadow_admission_reason(candidate.symbol)
+            if self.mode == "live"
+            else None
+        )
         record = self._register_intent(
             intent,
             lane=lane,
@@ -265,7 +243,6 @@ class TacticalV2Controller:
                 evaluated_at,
                 terminal_reason=shadow_rejection,
             )
-        self._refresh_status(force=True, now=evaluated_at)
         return finish(
             CandidateHandlingResult(
                 True,
@@ -307,6 +284,7 @@ class TacticalV2Controller:
         }
         self.store.append("candidate_handled", receipt, emitted_at=evaluated_at)
         self._remember_candidate_receipt(receipt)
+        self._refresh_status(force=True, now=evaluated_at)
         return result
 
     def _handled_candidate_result(
@@ -329,24 +307,39 @@ class TacticalV2Controller:
             episode_id=self._optional_text(receipt.get("episode_id")),
         )
 
-    def _legacy_unknown_result(
+    def _remember_unknown_replay(
         self,
-        candidate: TacticalCandidate,
-    ) -> Optional[CandidateHandlingResult]:
+        context: Mapping[str, Any],
+        *,
+        evaluated_at: float,
+    ) -> CandidateHandlingResult:
+        identity = self._candidate_handling_identity(context)
+        previous = self._unknown_replays.get(identity)
+        if previous is not None:
+            self._refresh_status(force=True, now=evaluated_at)
+            return previous
+
+        candidate_id = str(context.get("candidate_id") or "")
+        matched_intent = None
         for record in self._intents.values():
             intent = record.get("intent")
             if (
                 isinstance(intent, TacticalIntent)
-                and intent.candidate_id == candidate.candidate_id
+                and candidate_id
+                and intent.candidate_id == candidate_id
                 and intent.intent_id not in self._receipt_intent_ids
             ):
-                return CandidateHandlingResult(
-                    False,
-                    "unknown_handling_evidence",
-                    intent_id=intent.intent_id,
-                    episode_id=intent.episode_id,
-                )
-        return None
+                matched_intent = intent
+                break
+        result = CandidateHandlingResult(
+            False,
+            "unknown_handling_evidence",
+            intent_id=matched_intent.intent_id if matched_intent is not None else None,
+            episode_id=matched_intent.episode_id if matched_intent is not None else None,
+        )
+        self._unknown_replays[identity] = result
+        self._refresh_status(force=True, now=evaluated_at)
+        return result
 
     def _remember_candidate_receipt(self, raw: Mapping[str, Any]) -> None:
         receipt = dict(raw)
@@ -360,6 +353,17 @@ class TacticalV2Controller:
             self._candidate_receipts_by_payload_hash.setdefault(payload_hash, receipt)
         if intent_id:
             self._receipt_intent_ids.add(intent_id)
+        self._unknown_replays.pop(
+            self._candidate_handling_identity(receipt),
+            None,
+        )
+
+    @staticmethod
+    def _candidate_handling_identity(context: Mapping[str, Any]) -> str:
+        message_id = str(context.get("message_id") or "")
+        if message_id:
+            return f"message:{message_id}"
+        return f"payload:{str(context.get('payload_hash') or '')}"
 
     @classmethod
     def _candidate_receipt_context(
@@ -962,20 +966,14 @@ class TacticalV2Controller:
             })
         intents.sort(key=lambda row: (row["updated_at"], row["intent_id"]))
         parity = self._parity_summary()
+        candidate_handling = self._candidate_handling_summary()
         return {
             "mode": self.mode,
             "namespace": self.namespace,
             "as_of": evaluated_at,
             "active_slots": self._active_slot_count(),
             "intents": intents,
-            "candidate_handling": {
-                "receipt_count": len(self._candidate_receipts),
-                "unknown_handling_evidence": sum(
-                    1
-                    for record in self._intents.values()
-                    if record["intent"].intent_id not in self._receipt_intent_ids
-                ),
-            },
+            "candidate_handling": candidate_handling,
             "episode_outcomes": dict(self._episode_outcomes),
             "rolling_pnl_usdt": self.governor.rolling_pnl,
             "loss_streak": self.governor.loss_streak,
@@ -987,7 +985,7 @@ class TacticalV2Controller:
     def operational_status(self, *, now: Optional[float] = None) -> dict:
         evaluated_at = float(self.now_fn()) if now is None else float(now)
         snapshot = self.snapshot(now=evaluated_at)
-        return build_status_snapshot(
+        status = build_status_snapshot(
             mode=self.mode,
             requested_mode=self.requested_mode,
             cutover_allowed=self.cutover_decision.allowed,
@@ -1009,6 +1007,24 @@ class TacticalV2Controller:
             parity_mismatches=snapshot["parity"]["mismatch_count"],
             parity_summary=snapshot["parity"],
         )
+        status["candidate_handling"] = dict(snapshot["candidate_handling"])
+        return status
+
+    def _candidate_handling_summary(self) -> Dict[str, int]:
+        missing_intent_ids = {
+            record["intent"].intent_id
+            for record in self._intents.values()
+            if record["intent"].intent_id not in self._receipt_intent_ids
+        }
+        unmatched_unknowns = sum(
+            1
+            for result in self._unknown_replays.values()
+            if result.intent_id not in missing_intent_ids
+        )
+        return {
+            "receipt_count": len(self._candidate_receipts),
+            "unknown_handling_evidence": len(missing_intent_ids) + unmatched_unknowns,
+        }
 
     def _advance_shadow_lane(
         self,

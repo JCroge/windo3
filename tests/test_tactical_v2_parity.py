@@ -407,7 +407,7 @@ async def test_live_rejection_is_attributed_against_shadow_fill(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_same_symbol_account_rejection_keeps_shadow_projection(tmp_path):
+async def test_same_symbol_account_rejection_does_not_create_shadow_projection(tmp_path):
     executor = ParityExecutor()
     executor.positions["WLD-USDT-SWAP"] = {
         "symbol": "WLD-USDT-SWAP",
@@ -420,14 +420,11 @@ async def test_same_symbol_account_rejection_keeps_shadow_projection(tmp_path):
 
     assert rejected.accepted is False
     assert rejected.reason == "same_symbol_exposure"
-    assert rejected.intent_id
+    assert rejected.intent_id is None
     before_quote = controller.snapshot(now=1000.0)
     assert before_quote["active_slots"] == 0
-    assert before_quote["intents"][0]["state"] == "entry_terminal"
-    assert before_quote["intents"][0]["shadow_state"] == "ready_for_quote"
-    assert before_quote["parity"]["categories"] == {
-        "same_symbol_account_exposure": 1
-    }
+    assert before_quote["intents"] == []
+    assert before_quote["parity"]["categories"] == {}
 
     await controller.handle_quote(
         "WLD-USDT",
@@ -435,15 +432,11 @@ async def test_same_symbol_account_rejection_keeps_shadow_projection(tmp_path):
         now=1000.0,
     )
 
-    projected = controller.snapshot(now=1000.0)
-    assert projected["intents"][0]["shadow_state"] == "protected"
-    assert projected["parity"]["categories"] == {
-        "same_symbol_account_exposure": 1
-    }
+    assert controller.snapshot(now=1000.0)["intents"] == []
 
 
 @pytest.mark.asyncio
-async def test_shadow_projection_has_independent_three_slot_cap(tmp_path):
+async def test_live_capacity_rejection_does_not_create_shadow_projection(tmp_path):
     controller = _controller(tmp_path)
     for index, symbol in enumerate(("WLD-USDT", "SOL-USDT", "ETH-USDT")):
         accepted = await controller.handle_candidate(
@@ -464,10 +457,11 @@ async def test_shadow_projection_has_independent_three_slot_cap(tmp_path):
 
     assert fourth.accepted is False
     assert fourth.reason == "capacity_skipped"
-    row = next(
-        item for item in controller.snapshot(now=1000.0)["intents"]
-        if item["intent_id"] == fourth.intent_id
-    )
-    assert row["state"] == "entry_terminal"
-    assert row["shadow_state"] == "entry_terminal"
-    assert row["parity_category"] is None
+    assert fourth.intent_id is None
+    rows = controller.snapshot(now=1000.0)["intents"]
+    assert len(rows) == 3
+    assert {row["symbol"] for row in rows} == {
+        "WLD-USDT",
+        "SOL-USDT",
+        "ETH-USDT",
+    }
