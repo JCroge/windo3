@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
@@ -42,6 +43,7 @@ class EpisodeRegistry:
         candidate: Mapping[str, Any] | Any,
         structure: Mapping[str, Any],
     ) -> EpisodeAssignment:
+        structure = self._normalize_structure(structure)
         symbol = to_internal(self._value(candidate, "symbol"))
         side = str(self._value(candidate, "side")).strip().lower()
         self._validate_side(side)
@@ -59,7 +61,6 @@ class EpisodeRegistry:
                 self._persist("episode_assigned", key, state)
                 return self._assignment(state, eligible=True, reason="eligible")
 
-            self._observe_locked(key, state, structure)
             reset_reason = self._reset_reason(state, side, structure)
             if reset_reason is not None:
                 evidence_state = copy.deepcopy(state)
@@ -67,11 +68,7 @@ class EpisodeRegistry:
                     "episode_reset_evidence",
                     key,
                     evidence_state,
-                    evidence={
-                        "reason": reset_reason,
-                        "closed_bar_ts": structure.get("tf_15m_closed_bar_ts"),
-                        "structure_token": structure.get("tf_15m_structure_token"),
-                    },
+                    evidence=self._structure_evidence(structure, reset_reason),
                 )
                 state = self._new_state(
                     symbol=symbol,
@@ -79,7 +76,6 @@ class EpisodeRegistry:
                     epoch_seq=state["epoch_seq"] + 1,
                     structure=structure,
                 )
-                self._states[key] = state
                 self._persist("episode_assigned", key, state)
                 renewal_reason = (
                     reset_reason
@@ -94,6 +90,7 @@ class EpisodeRegistry:
                 )
                 return self._assignment(state, eligible=True, reason=renewal_reason)
 
+            self._observe_locked(key, state, structure)
             reason = "opposing_block" if self._is_blocked(side, structure) else "duplicate_episode"
             return self._assignment(state, eligible=False, reason=reason)
 
@@ -106,6 +103,7 @@ class EpisodeRegistry:
         normalized_symbol = to_internal(symbol)
         normalized_side = str(side).strip().lower()
         self._validate_side(normalized_side)
+        structure = self._normalize_structure(structure)
         key = self._key(normalized_symbol, normalized_side)
         with self._lock:
             state = self._states.get(key)
@@ -157,38 +155,39 @@ class EpisodeRegistry:
         if not structure.get("tf_15m_available", False):
             return
 
-        side = state["side"]
+        original_state = copy.deepcopy(state)
+        next_state = self._normalize_state(state)
+        side = next_state["side"]
         bias = str(structure.get("tf_15m_bias") or "unavailable").lower()
         blocked = self._is_blocked(side, structure)
-        changed = False
         evidence_reason: Optional[str] = None
 
-        if blocked and not state.get("last_block", False):
-            state["reset_pending"] = "opposing_block"
+        if blocked and not next_state.get("last_block", False):
+            next_state["reset_pending"] = "opposing_block"
             evidence_reason = "opposing_block"
-            changed = True
-        if bias == "neutral" and not state.get("neutral_seen", False):
-            state["neutral_seen"] = True
+        if bias == "neutral" and not next_state.get("neutral_seen", False):
+            next_state["neutral_seen"] = True
             evidence_reason = evidence_reason or "neutral_seen"
-            changed = True
-        if state.get("last_block") != blocked:
-            state["last_block"] = blocked
-            changed = True
-        if state.get("current_bias") != bias:
-            state["current_bias"] = bias
-            changed = True
+        next_state["last_block"] = blocked
+        next_state["current_bias"] = bias
 
-        if changed:
+        closed_bar = structure.get("tf_15m_closed_bar_ts")
+        max_observed = next_state.get("max_observed_closed_bar_ts")
+        if (
+            closed_bar is not None
+            and (max_observed is None or closed_bar > max_observed)
+        ):
+            next_state["max_observed_closed_bar_ts"] = closed_bar
+
+        if next_state != original_state:
             event_type = "episode_reset_evidence" if evidence_reason else "episode_observed"
             self._persist(
                 event_type,
                 key,
-                state,
-                evidence={
-                    "reason": evidence_reason or "observation",
-                    "closed_bar_ts": structure.get("tf_15m_closed_bar_ts"),
-                    "structure_token": structure.get("tf_15m_structure_token"),
-                },
+                next_state,
+                evidence=self._structure_evidence(
+                    structure, evidence_reason or "observation"
+                ),
             )
 
     def _reset_reason(
@@ -202,39 +201,34 @@ class EpisodeRegistry:
         if self._is_blocked(side, structure):
             return None
 
-        if state.get("terminal"):
-            token = structure.get("tf_15m_structure_token")
-            closed_bar = structure.get("tf_15m_closed_bar_ts")
-            previous_bar = state.get("last_closed_bar_ts")
-            newer_bar = False
-            if closed_bar is not None and previous_bar is not None:
-                try:
-                    newer_bar = float(closed_bar) > float(previous_bar)
-                except (TypeError, ValueError):
-                    newer_bar = False
-            changed_token = bool(
-                token
-                and token != state.get("last_structure_token")
-            )
-            if newer_bar or changed_token:
-                return "new_confirmed_structure"
-
         bias = str(structure.get("tf_15m_bias") or "unavailable").lower()
         desired_bias = "bullish" if side == "long" else "bearish"
-        if bias != desired_bias:
+        if bias not in {desired_bias, "neutral"}:
             return None
-        if state.get("reset_pending") == "opposing_block":
-            return "opposing_block_then_renewed"
-        if state.get("neutral_seen"):
-            return "neutral_then_renewed"
 
+        if bias == desired_bias:
+            if state.get("reset_pending") == "opposing_block":
+                return "opposing_block_then_renewed"
+            if state.get("neutral_seen"):
+                return "neutral_then_renewed"
+
+        if not state.get("terminal"):
+            return None
         token = structure.get("tf_15m_structure_token")
-        if (
-            state.get("terminal")
-            and token
-            and state.get("last_structure_token")
+        closed_bar = structure.get("tf_15m_closed_bar_ts")
+        previous_bar = state.get("last_closed_bar_ts")
+        max_observed = state.get("max_observed_closed_bar_ts")
+        newer_bar = (
+            closed_bar is not None
+            and previous_bar is not None
+            and closed_bar > previous_bar
+            and (max_observed is None or closed_bar >= max_observed)
+        )
+        changed_token = bool(
+            token
             and token != state.get("last_structure_token")
-        ):
+        )
+        if newer_bar or changed_token:
             return "new_confirmed_structure"
         return None
 
@@ -246,6 +240,10 @@ class EpisodeRegistry:
         epoch_seq: int,
         structure: Mapping[str, Any],
     ) -> Dict[str, Any]:
+        token = self._normalize_token(structure.get("tf_15m_structure_token"))
+        closed_bar = self._normalize_closed_bar(
+            structure.get("tf_15m_closed_bar_ts")
+        )
         return {
             "namespace": self.namespace,
             "symbol": symbol,
@@ -261,8 +259,9 @@ class EpisodeRegistry:
             "neutral_seen": False,
             "last_block": self._is_blocked(side, structure),
             "reset_pending": None,
-            "last_structure_token": structure.get("tf_15m_structure_token"),
-            "last_closed_bar_ts": structure.get("tf_15m_closed_bar_ts"),
+            "last_structure_token": token,
+            "last_closed_bar_ts": closed_bar,
+            "max_observed_closed_bar_ts": closed_bar,
         }
 
     def _persist(
@@ -274,20 +273,20 @@ class EpisodeRegistry:
         evidence: Optional[Mapping[str, Any]] = None,
         make_current: bool = True,
     ) -> None:
-        stored_state = copy.deepcopy(dict(state))
+        stored_state = self._normalize_state(state)
         episode_id = str(stored_state["episode_id"])
-        self._episode_states[episode_id] = stored_state
-        self._episode_keys[episode_id] = key
-        if make_current:
-            self._states[key] = copy.deepcopy(stored_state)
         data: Dict[str, Any] = {
             "registry_key": key,
             "registry_state": copy.deepcopy(stored_state),
             "episode_id": episode_id,
         }
         if evidence is not None:
-            data["evidence"] = dict(evidence)
+            data["evidence"] = copy.deepcopy(dict(evidence))
         self.store.append(event_type, data)
+        self._episode_states[episode_id] = stored_state
+        self._episode_keys[episode_id] = key
+        if make_current:
+            self._states[key] = copy.deepcopy(stored_state)
 
     def _restore(self) -> None:
         for event in self.store.read_events():
@@ -295,7 +294,7 @@ class EpisodeRegistry:
             key = data.get("registry_key")
             state = data.get("registry_state")
             if key and isinstance(state, dict):
-                restored = copy.deepcopy(state)
+                restored = self._normalize_state(state)
                 episode_id = str(restored.get("episode_id") or "")
                 if not episode_id:
                     continue
@@ -314,6 +313,65 @@ class EpisodeRegistry:
             return int(state.get("epoch_seq", -1))
         except (TypeError, ValueError):
             return -1
+
+    @classmethod
+    def _normalize_state(cls, state: Mapping[str, Any]) -> Dict[str, Any]:
+        normalized = copy.deepcopy(dict(state))
+        baseline = cls._normalize_closed_bar(normalized.get("last_closed_bar_ts"))
+        max_observed = cls._normalize_closed_bar(
+            normalized.get("max_observed_closed_bar_ts")
+        )
+        if max_observed is None:
+            max_observed = baseline
+        elif baseline is not None and max_observed < baseline:
+            max_observed = baseline
+        normalized["last_structure_token"] = cls._normalize_token(
+            normalized.get("last_structure_token")
+        )
+        normalized["last_closed_bar_ts"] = baseline
+        normalized["max_observed_closed_bar_ts"] = max_observed
+        return normalized
+
+    @classmethod
+    def _normalize_structure(cls, structure: Mapping[str, Any]) -> Dict[str, Any]:
+        normalized = dict(structure)
+        normalized["tf_15m_structure_token"] = cls._normalize_token(
+            structure.get("tf_15m_structure_token")
+        )
+        normalized["tf_15m_closed_bar_ts"] = cls._normalize_closed_bar(
+            structure.get("tf_15m_closed_bar_ts")
+        )
+        return normalized
+
+    @staticmethod
+    def _normalize_token(value: Any) -> Optional[str]:
+        return None if value is None else str(value)
+
+    @staticmethod
+    def _normalize_closed_bar(value: Any) -> Optional[float]:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    @classmethod
+    def _structure_evidence(
+        cls,
+        structure: Mapping[str, Any],
+        reason: str,
+    ) -> Dict[str, Any]:
+        return {
+            "reason": str(reason),
+            "closed_bar_ts": cls._normalize_closed_bar(
+                structure.get("tf_15m_closed_bar_ts")
+            ),
+            "structure_token": cls._normalize_token(
+                structure.get("tf_15m_structure_token")
+            ),
+        }
 
     def _episode_id(self, symbol: str, side: str, epoch_seq: int) -> str:
         encoded = json.dumps(

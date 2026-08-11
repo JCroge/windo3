@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 
 def _paths(tmp_path):
     return SimpleNamespace(
@@ -116,6 +118,28 @@ def test_terminal_neutral_candidate_with_new_closed_bar_advances_epoch(tmp_path)
     assert renewed.epoch_seq == first.epoch_seq + 1
 
 
+@pytest.mark.parametrize("bias", ["bearish", "unavailable"])
+def test_terminal_fresh_candidate_with_incompatible_bias_is_duplicate(
+    tmp_path,
+    bias,
+):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    repeated = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias=bias, token="break-up-2"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
 def test_terminal_neutral_candidate_with_changed_token_advances_epoch(tmp_path):
     registry = _registry(tmp_path)
     first = registry.assign(_candidate(), _structure(token="break-up-1"))
@@ -149,6 +173,53 @@ def test_terminal_neutral_candidate_with_older_bar_and_same_token_is_duplicate(
     assert repeated.episode_id == first.episode_id
     assert repeated.eligible is False
     assert repeated.reason == "duplicate_episode"
+
+
+def test_observed_newer_bar_rejects_stale_terminal_candidate(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+    registry.observe(
+        "WLD-USDT",
+        "long",
+        {
+            **_structure(
+                bias="bearish",
+                token="break-down-1",
+                block_long=True,
+            ),
+            "tf_15m_closed_bar_ts": 930.0,
+        },
+    )
+
+    repeated = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="neutral", token="break-up-1"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
+def test_observed_same_fresh_bar_can_renew_terminal_episode(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+    structure = {
+        **_structure(bias="neutral", token="break-up-1"),
+        "tf_15m_closed_bar_ts": 915.0,
+    }
+    registry.observe("WLD-USDT", "long", structure)
+
+    renewed = registry.assign(_candidate(), structure)
+
+    assert renewed.eligible is True
+    assert renewed.reason == "new_confirmed_structure"
+    assert renewed.episode_id != first.episode_id
 
 
 def test_terminal_neutral_fresh_renewal_survives_registry_restart(tmp_path):
@@ -188,6 +259,61 @@ def test_terminal_neutral_candidate_with_same_evidence_is_duplicate(tmp_path):
     assert repeated.episode_id == first.episode_id
     assert repeated.eligible is False
     assert repeated.reason == "duplicate_episode"
+
+
+def test_numeric_and_string_structure_tokens_are_same_evidence(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token=1))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    repeated = registry.assign(
+        _candidate(),
+        _structure(bias="neutral", token="1"),
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
+def test_structure_evidence_is_normalized_before_persistence(tmp_path):
+    class StructureToken:
+        def __str__(self):
+            return "break-up-1"
+
+    registry = _registry(tmp_path)
+    assigned = registry.assign(
+        _candidate(),
+        {
+            **_structure(token=StructureToken()),
+            "tf_15m_closed_bar_ts": "900.0",
+        },
+    )
+
+    event = registry.store.read_events()[0]
+    state = event["data"]["registry_state"]
+    assert assigned.eligible is True
+    assert state["last_structure_token"] == "break-up-1"
+    assert state["last_closed_bar_ts"] == 900.0
+    assert state["max_observed_closed_bar_ts"] == 900.0
+
+
+def test_non_finite_closed_bar_is_stored_as_missing(tmp_path):
+    registry = _registry(tmp_path)
+
+    assigned = registry.assign(
+        _candidate(),
+        {
+            **_structure(),
+            "tf_15m_closed_bar_ts": float("nan"),
+        },
+    )
+
+    event = registry.store.read_events()[0]
+    state = event["data"]["registry_state"]
+    assert assigned.eligible is True
+    assert state["last_closed_bar_ts"] is None
+    assert state["max_observed_closed_bar_ts"] is None
 
 
 def test_terminal_neutral_candidate_with_opposing_block_is_blocked(tmp_path):
@@ -275,6 +401,80 @@ def test_reset_evidence_is_persisted_before_new_episode(tmp_path):
     )
 
     assert reset_seq < new_seq
+
+
+def test_failed_renewal_append_retry_matches_restart(tmp_path):
+    from utils.tactical_v2.episodes import EpisodeRegistry
+    from utils.tactical_v2.store import TacticalStore
+
+    structure = {
+        **_structure(bias="neutral", token="break-up-1"),
+        "tf_15m_closed_bar_ts": 915.0,
+    }
+
+    def fail_then_retry(path, *, restart):
+        registry = EpisodeRegistry(TacticalStore(_paths(path)), namespace="testnet")
+        first = registry.assign(_candidate(), _structure(token="break-up-1"))
+        registry.mark_terminal(first.episode_id, "expired")
+        original_append = registry.store.append
+        failed = False
+
+        def fail_once(event_type, data, **kwargs):
+            nonlocal failed
+            state = data.get("registry_state", {})
+            if (
+                not failed
+                and event_type == "episode_assigned"
+                and state.get("epoch_seq") == 2
+            ):
+                failed = True
+                raise OSError("simulated append failure")
+            return original_append(event_type, data, **kwargs)
+
+        registry.store.append = fail_once
+        with pytest.raises(OSError, match="simulated append failure"):
+            registry.assign(_candidate(), structure)
+        registry.store.append = original_append
+        if restart:
+            registry = EpisodeRegistry(
+                TacticalStore(_paths(path)),
+                namespace="testnet",
+            )
+        return registry.assign(_candidate(), structure)
+
+    same_process = fail_then_retry(tmp_path / "same-process", restart=False)
+    after_restart = fail_then_retry(tmp_path / "restart", restart=True)
+
+    assert same_process.eligible is True
+    assert same_process.reason == "new_confirmed_structure"
+    assert same_process == after_restart
+
+
+def test_failed_observation_append_leaves_no_phantom_state(tmp_path):
+    from utils.tactical_v2.episodes import EpisodeRegistry
+    from utils.tactical_v2.store import TacticalStore
+
+    paths = _paths(tmp_path)
+    registry = EpisodeRegistry(TacticalStore(paths), namespace="testnet")
+    registry.assign(_candidate(), _structure())
+    original_append = registry.store.append
+
+    def fail_once(event_type, data, **kwargs):
+        registry.store.append = original_append
+        raise OSError("simulated observation append failure")
+
+    registry.store.append = fail_once
+    with pytest.raises(OSError, match="simulated observation append failure"):
+        registry.observe(
+            "WLD-USDT",
+            "long",
+            _structure(bias="neutral", token="break-up-1"),
+        )
+
+    restarted = EpisodeRegistry(TacticalStore(paths), namespace="testnet")
+    assert registry._states == restarted._states
+    assert registry._episode_states == restarted._episode_states
+    assert registry._episode_keys == restarted._episode_keys
 
 
 def test_historical_episode_can_terminal_without_replacing_current_epoch(tmp_path):
