@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import math
 import os
 import time
@@ -123,6 +125,10 @@ class TacticalV2Controller:
         )
         self._lock = asyncio.Lock()
         self._intents: Dict[str, Dict[str, Any]] = {}
+        self._candidate_receipts = []
+        self._candidate_receipts_by_message_id: Dict[str, Dict[str, Any]] = {}
+        self._candidate_receipts_by_payload_hash: Dict[str, Dict[str, Any]] = {}
+        self._receipt_intent_ids = set()
         self._episode_outcomes: Dict[str, int] = {}
         self._parity_mismatches = 0
         self._last_status_write_at = 0.0
@@ -136,31 +142,59 @@ class TacticalV2Controller:
         raw: Mapping[str, Any],
         *,
         now: Optional[float] = None,
+        message_id: Optional[str] = None,
         replayed: bool = False,
     ) -> CandidateHandlingResult:
         evaluated_at = float(self.now_fn()) if now is None else float(now)
-        raw_namespace = str(raw.get("namespace") or "").strip().lower()
+        receipt_context = self._candidate_receipt_context(raw, message_id=message_id)
+        handled = self._handled_candidate_result(receipt_context)
+        if handled is not None:
+            return handled
+
+        def finish(
+            result: CandidateHandlingResult,
+            candidate: Optional[TacticalCandidate] = None,
+        ) -> CandidateHandlingResult:
+            return self._persist_candidate_handled(
+                receipt_context,
+                candidate=candidate,
+                result=result,
+                evaluated_at=evaluated_at,
+                replayed=replayed,
+            )
+
+        raw_namespace = self._safe_text(raw.get("namespace")).lower()
         if raw_namespace != self.namespace:
-            return CandidateHandlingResult(False, "namespace_mismatch")
+            return finish(CandidateHandlingResult(False, "namespace_mismatch"))
         try:
             candidate = TacticalCandidate.from_raw(raw)
         except (TypeError, ValueError) as exc:
             self._log_warning("invalid Tactical V2 candidate: %s", exc)
-            return CandidateHandlingResult(False, "invalid_candidate")
+            return finish(CandidateHandlingResult(False, "invalid_candidate"))
+        if replayed:
+            unknown = self._legacy_unknown_result(candidate)
+            if unknown is not None:
+                return unknown
         if evaluated_at < candidate.created_at:
-            return CandidateHandlingResult(False, "candidate_from_future")
+            return finish(
+                CandidateHandlingResult(False, "candidate_from_future"),
+                candidate,
+            )
         if evaluated_at - candidate.created_at > TACTICAL_V2_ENTRY_TTL_SECONDS:
-            return CandidateHandlingResult(False, "candidate_expired")
+            return finish(CandidateHandlingResult(False, "candidate_expired"), candidate)
         if self.mode == "off":
-            return CandidateHandlingResult(False, "admission_disabled")
+            return finish(CandidateHandlingResult(False, "admission_disabled"), candidate)
 
         structure = self._structure_from(raw)
         assignment = self.episodes.assign(candidate, structure)
         if not assignment.eligible:
-            return CandidateHandlingResult(
-                False,
-                assignment.reason,
-                episode_id=assignment.episode_id,
+            return finish(
+                CandidateHandlingResult(
+                    False,
+                    assignment.reason,
+                    episode_id=assignment.episode_id,
+                ),
+                candidate,
             )
 
         shadow_rejection = (
@@ -208,11 +242,14 @@ class TacticalV2Controller:
                         terminal_reason=shadow_rejection,
                     )
             self._refresh_status(force=True, now=evaluated_at)
-            return CandidateHandlingResult(
-                False,
-                reason,
-                intent_id=intent.intent_id if lane == "live" else None,
-                episode_id=assignment.episode_id,
+            return finish(
+                CandidateHandlingResult(
+                    False,
+                    reason,
+                    intent_id=intent.intent_id if lane == "live" else None,
+                    episode_id=assignment.episode_id,
+                ),
+                candidate,
             )
 
         record = self._register_intent(
@@ -229,12 +266,177 @@ class TacticalV2Controller:
                 terminal_reason=shadow_rejection,
             )
         self._refresh_status(force=True, now=evaluated_at)
-        return CandidateHandlingResult(
-            True,
-            "accepted",
-            intent_id=intent.intent_id,
-            episode_id=intent.episode_id,
+        return finish(
+            CandidateHandlingResult(
+                True,
+                "accepted",
+                intent_id=intent.intent_id,
+                episode_id=intent.episode_id,
+            ),
+            candidate,
         )
+
+    def _persist_candidate_handled(
+        self,
+        context: Mapping[str, Any],
+        *,
+        candidate: Optional[TacticalCandidate],
+        result: CandidateHandlingResult,
+        evaluated_at: float,
+        replayed: bool,
+    ) -> CandidateHandlingResult:
+        receipt = {
+            "candidate_id": (
+                candidate.candidate_id if candidate is not None else context["candidate_id"]
+            ),
+            "source_shadow_id": (
+                candidate.source_shadow_id
+                if candidate is not None
+                else context["source_shadow_id"]
+            ),
+            "message_id": context["message_id"],
+            "symbol": candidate.symbol if candidate is not None else context["symbol"],
+            "side": candidate.side if candidate is not None else context["side"],
+            "accepted": bool(result.accepted),
+            "reason": str(result.reason),
+            "episode_id": result.episode_id,
+            "intent_id": result.intent_id,
+            "evaluated_at": float(evaluated_at),
+            "replayed": bool(replayed),
+            "payload_hash": context["payload_hash"],
+        }
+        self.store.append("candidate_handled", receipt, emitted_at=evaluated_at)
+        self._remember_candidate_receipt(receipt)
+        return result
+
+    def _handled_candidate_result(
+        self,
+        context: Mapping[str, Any],
+    ) -> Optional[CandidateHandlingResult]:
+        message_id = context.get("message_id")
+        if message_id:
+            receipt = self._candidate_receipts_by_message_id.get(str(message_id))
+        else:
+            receipt = self._candidate_receipts_by_payload_hash.get(
+                str(context.get("payload_hash") or "")
+            )
+        if receipt is None:
+            return None
+        return CandidateHandlingResult(
+            bool(receipt.get("accepted")),
+            str(receipt.get("reason") or "unknown_handling_evidence"),
+            intent_id=self._optional_text(receipt.get("intent_id")),
+            episode_id=self._optional_text(receipt.get("episode_id")),
+        )
+
+    def _legacy_unknown_result(
+        self,
+        candidate: TacticalCandidate,
+    ) -> Optional[CandidateHandlingResult]:
+        for record in self._intents.values():
+            intent = record.get("intent")
+            if (
+                isinstance(intent, TacticalIntent)
+                and intent.candidate_id == candidate.candidate_id
+                and intent.intent_id not in self._receipt_intent_ids
+            ):
+                return CandidateHandlingResult(
+                    False,
+                    "unknown_handling_evidence",
+                    intent_id=intent.intent_id,
+                    episode_id=intent.episode_id,
+                )
+        return None
+
+    def _remember_candidate_receipt(self, raw: Mapping[str, Any]) -> None:
+        receipt = dict(raw)
+        self._candidate_receipts.append(receipt)
+        message_id = self._optional_text(receipt.get("message_id"))
+        payload_hash = self._optional_text(receipt.get("payload_hash"))
+        intent_id = self._optional_text(receipt.get("intent_id"))
+        if message_id:
+            self._candidate_receipts_by_message_id.setdefault(message_id, receipt)
+        if payload_hash:
+            self._candidate_receipts_by_payload_hash.setdefault(payload_hash, receipt)
+        if intent_id:
+            self._receipt_intent_ids.add(intent_id)
+
+    @classmethod
+    def _candidate_receipt_context(
+        cls,
+        raw: Mapping[str, Any],
+        *,
+        message_id: Optional[str],
+    ) -> Dict[str, Any]:
+        symbol = cls._receipt_text(raw.get("symbol"))
+        try:
+            symbol = to_internal(symbol) if symbol else ""
+        except (AttributeError, TypeError, ValueError):
+            symbol = ""
+        encoded = json.dumps(
+            cls._json_safe(raw),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        return {
+            "candidate_id": cls._receipt_text(raw.get("candidate_id")),
+            "source_shadow_id": cls._receipt_text(raw.get("source_shadow_id")),
+            "message_id": cls._receipt_text(message_id) or None,
+            "symbol": symbol,
+            "side": cls._receipt_text(raw.get("side")).lower(),
+            "payload_hash": hashlib.sha256(encoded).hexdigest(),
+        }
+
+    @classmethod
+    def _json_safe(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (bool, int, str)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else {"non_finite_float": str(value)}
+        if isinstance(value, Mapping):
+            return {
+                cls._safe_text(key): cls._json_safe(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, (set, frozenset)):
+            items = [cls._json_safe(item) for item in value]
+            return sorted(
+                items,
+                key=lambda item: json.dumps(
+                    item,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ),
+            )
+        if isinstance(value, bytes):
+            return {"bytes_hex": value.hex()}
+        return {
+            "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "value": cls._safe_text(value),
+        }
+
+    @staticmethod
+    def _safe_text(value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            return str(value).strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _receipt_text(value: Any) -> str:
+        return value.strip() if isinstance(value, str) else ""
+
+    @classmethod
+    def _optional_text(cls, value: Any) -> Optional[str]:
+        normalized = cls._safe_text(value)
+        return normalized or None
 
     def _register_intent(
         self,
@@ -752,6 +954,11 @@ class TacticalV2Controller:
                 ),
                 "shadow_close_reason": record.get("shadow_close_reason"),
                 "parity_category": record.get("parity_category"),
+                "handling_evidence": (
+                    "handled"
+                    if intent.intent_id in self._receipt_intent_ids
+                    else "unknown_handling_evidence"
+                ),
             })
         intents.sort(key=lambda row: (row["updated_at"], row["intent_id"]))
         parity = self._parity_summary()
@@ -761,6 +968,14 @@ class TacticalV2Controller:
             "as_of": evaluated_at,
             "active_slots": self._active_slot_count(),
             "intents": intents,
+            "candidate_handling": {
+                "receipt_count": len(self._candidate_receipts),
+                "unknown_handling_evidence": sum(
+                    1
+                    for record in self._intents.values()
+                    if record["intent"].intent_id not in self._receipt_intent_ids
+                ),
+            },
             "episode_outcomes": dict(self._episode_outcomes),
             "rolling_pnl_usdt": self.governor.rolling_pnl,
             "loss_streak": self.governor.loss_streak,
@@ -2958,6 +3173,9 @@ class TacticalV2Controller:
         for event in self.store.read_events():
             data = event.get("data") or {}
             event_type = event.get("event_type")
+            if event_type == "candidate_handled":
+                self._remember_candidate_receipt(data)
+                continue
             if event_type == "episode_terminal":
                 registry_state = data.get("registry_state") or {}
                 episode_id = str(data.get("episode_id") or "")

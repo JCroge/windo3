@@ -134,6 +134,7 @@ class MultiExecutor(BaseAgent):
             for replay in replayed:
                 await self._tactical_v2_controller.handle_candidate(
                     replay.get("payload") or {},
+                    message_id=replay.get("msg_id"),
                     replayed=True,
                 )
         except Exception as e:
@@ -223,7 +224,10 @@ class MultiExecutor(BaseAgent):
         controller = getattr(self, '_tactical_v2_controller', None)
         if msg['type'] == 'tactical_candidate.v2':
             if controller is not None:
-                await controller.handle_candidate(msg.get('payload') or {})
+                await controller.handle_candidate(
+                    msg.get('payload') or {},
+                    message_id=msg.get('msg_id'),
+                )
         elif msg['type'] == 'price_tick':
             payload = msg.get('payload') or {}
             symbol = msg.get('symbol') or payload.get('symbol')
