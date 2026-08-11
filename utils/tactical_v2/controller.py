@@ -24,7 +24,7 @@ from .exit import classify_exit, max_hold_due
 from .cutover import CutoverDecision, validate_live_cutover
 from .episodes import EpisodeRegistry
 from .exchange import LiveExchangeAdapter, ProtectionProof
-from .governor import TacticalGovernor
+from .governor import TacticalGovernor, is_complete_integrity_proof
 from .models import TACTICAL_V2_ENTRY_TTL_SECONDS, TacticalCandidate, TacticalIntent
 from .shadow import ShadowAdapter
 from .status import STATUS_REFRESH_SECONDS, build_status_snapshot, write_status
@@ -166,6 +166,7 @@ class TacticalV2Controller:
         self._conflicting_candidate_receipt_payload_hashes = set()
         self._quarantined_candidate_receipt_candidates: Dict[str, set] = {}
         self._candidate_receipt_integrity_halt: Optional[Dict[str, Any]] = None
+        self._handled_message_identity_conflicts = set()
         self._receipt_intent_ids = set()
         self._candidate_handling_gaps: Dict[str, Dict[str, Any]] = {}
         self._unknown_replays: Dict[str, CandidateHandlingResult] = {}
@@ -199,15 +200,13 @@ class TacticalV2Controller:
                 receipt_context.get("message_id")
                 and gap.get("payload_hash") != receipt_context.get("payload_hash")
             ):
-                self.governor.activate_integrity_halt(
-                    "message_identity_conflict",
-                    evidence={
-                        "message_id": receipt_context["message_id"],
-                        "stored_payload_hash": gap.get("payload_hash"),
-                        "incoming_payload_hash": receipt_context.get("payload_hash"),
-                    },
+                incident_recorded = self._record_message_identity_conflict(
+                    message_id=receipt_context["message_id"],
+                    stored_payload_hash=gap.get("payload_hash"),
+                    incoming_payload_hash=receipt_context.get("payload_hash"),
                 )
-                self._refresh_status(force=True, now=evaluated_at)
+                if incident_recorded:
+                    self._refresh_status(force=True, now=evaluated_at)
                 return CandidateHandlingResult(False, "message_identity_conflict")
             return self._remember_unknown_replay(
                 receipt_context,
@@ -360,7 +359,11 @@ class TacticalV2Controller:
             "payload_hash": context["payload_hash"],
         }
         try:
-            self.store.append("candidate_handled", receipt, emitted_at=evaluated_at)
+            event = self.store.append(
+                "candidate_handled",
+                receipt,
+                emitted_at=evaluated_at,
+            )
         except Exception:
             self._remember_candidate_handling_gap(
                 context,
@@ -368,7 +371,10 @@ class TacticalV2Controller:
             )
             self._refresh_status(force=True, now=evaluated_at)
             raise
-        self._remember_candidate_receipt(receipt)
+        self._remember_candidate_receipt(
+            receipt,
+            incident_id=self._optional_text(event.get("event_id")),
+        )
         self._refresh_status(force=True, now=evaluated_at)
         return result
 
@@ -385,15 +391,13 @@ class TacticalV2Controller:
                 receipt is not None
                 and receipt.get("payload_hash") != context.get("payload_hash")
             ):
-                self.governor.activate_integrity_halt(
-                    "message_identity_conflict",
-                    evidence={
-                        "message_id": str(message_id),
-                        "stored_payload_hash": receipt.get("payload_hash"),
-                        "incoming_payload_hash": context.get("payload_hash"),
-                    },
+                incident_recorded = self._record_message_identity_conflict(
+                    message_id=str(message_id),
+                    stored_payload_hash=receipt.get("payload_hash"),
+                    incoming_payload_hash=context.get("payload_hash"),
                 )
-                self._refresh_status(force=True, now=evaluated_at)
+                if incident_recorded:
+                    self._refresh_status(force=True, now=evaluated_at)
                 return CandidateHandlingResult(False, "message_identity_conflict")
         else:
             payload_hash = str(context.get("payload_hash") or "")
@@ -516,8 +520,8 @@ class TacticalV2Controller:
         self,
         raw: Mapping[str, Any],
         *,
-        restoring: bool = False,
         halted_at: Optional[float] = None,
+        incident_id: Optional[str] = None,
     ) -> None:
         receipt = dict(raw)
         validation_error = self._candidate_receipt_validation_error(receipt)
@@ -530,20 +534,39 @@ class TacticalV2Controller:
                     "message_id": self._optional_text(receipt.get("message_id")),
                     "payload_hash": self._optional_text(receipt.get("payload_hash")),
                 },
-                restoring=restoring,
                 halted_at=halted_at,
+                incident_id=incident_id,
             )
             return
         message_id = self._optional_text(receipt.get("message_id"))
         payload_hash = self._optional_text(receipt.get("payload_hash"))
         if message_id in self._conflicting_candidate_receipt_message_ids:
             self._quarantine_candidate_receipt(receipt)
+            self._activate_candidate_receipt_integrity_halt(
+                "candidate_receipt_message_conflict",
+                evidence={
+                    "message_id": message_id,
+                    "conflicting_payload_hash": payload_hash,
+                    "known_conflict": True,
+                },
+                halted_at=halted_at,
+                incident_id=incident_id,
+            )
             return
         if (
             not message_id
             and payload_hash in self._conflicting_candidate_receipt_payload_hashes
         ):
             self._quarantine_candidate_receipt(receipt)
+            self._activate_candidate_receipt_integrity_halt(
+                "candidate_receipt_payload_conflict",
+                evidence={
+                    "payload_hash": payload_hash,
+                    "known_conflict": True,
+                },
+                halted_at=halted_at,
+                incident_id=incident_id,
+            )
             return
         existing = (
             self._candidate_receipts_by_message_id.get(message_id)
@@ -569,8 +592,8 @@ class TacticalV2Controller:
                     "stored_payload_hash": existing["payload_hash"],
                     "conflicting_payload_hash": receipt["payload_hash"],
                 },
-                restoring=restoring,
                 halted_at=halted_at,
+                incident_id=incident_id,
             )
             return
 
@@ -610,8 +633,8 @@ class TacticalV2Controller:
                         "message_reason": receipt["reason"],
                         "fallback_reason": existing_fallback["reason"],
                     },
-                    restoring=restoring,
                     halted_at=halted_at,
+                    incident_id=incident_id,
                 )
             existing_fallback = None
         if not message_id and payload_hash:
@@ -639,8 +662,8 @@ class TacticalV2Controller:
                         "message_reason": conflicting_message["reason"],
                         "fallback_reason": receipt["reason"],
                     },
-                    restoring=restoring,
                     halted_at=halted_at,
+                    incident_id=incident_id,
                 )
                 return
         if existing_fallback == receipt:
@@ -665,8 +688,8 @@ class TacticalV2Controller:
                     "stored_reason": existing_fallback["reason"],
                     "conflicting_reason": receipt["reason"],
                 },
-                restoring=restoring,
                 halted_at=halted_at,
+                incident_id=incident_id,
             )
             return
 
@@ -713,22 +736,133 @@ class TacticalV2Controller:
         reason: str,
         *,
         evidence: Mapping[str, Any],
-        restoring: bool,
         halted_at: Optional[float],
+        incident_id: Optional[str],
     ) -> None:
         if self._candidate_receipt_integrity_halt is None:
+            effective_halted_at = (
+                float(self.now_fn()) if halted_at is None else float(halted_at)
+            )
             self._candidate_receipt_integrity_halt = {
                 "reason": str(reason),
                 "evidence": dict(evidence),
-                "halted_at": (
-                    float(self.now_fn()) if halted_at is None else float(halted_at)
+                "halted_at": effective_halted_at,
+                "incident_id": (
+                    incident_id
+                    or self._candidate_receipt_incident_fingerprint(
+                        reason,
+                        evidence,
+                        effective_halted_at,
+                    )
                 ),
             }
-        if not restoring:
-            self.governor.activate_integrity_halt_if_clear(
-                reason,
-                evidence=evidence,
-            )
+
+    @staticmethod
+    def _candidate_receipt_incident_fingerprint(
+        reason: str,
+        evidence: Mapping[str, Any],
+        halted_at: float,
+    ) -> str:
+        encoded = json.dumps(
+            {
+                "reason": str(reason),
+                "evidence": dict(evidence),
+                "halted_at": float(halted_at),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def acknowledge_candidate_receipt_integrity(
+        self,
+        reconciliation_id: str,
+        proof: Mapping[str, Any],
+    ) -> bool:
+        if (
+            not isinstance(reconciliation_id, str)
+            or not reconciliation_id
+            or reconciliation_id != reconciliation_id.strip()
+            or not is_complete_integrity_proof(proof)
+        ):
+            return False
+        halt = self._candidate_receipt_integrity_halt
+        if halt is None:
+            return True
+        acknowledged_at = float(self.now_fn())
+        event = self.store.append(
+            "candidate_receipt_integrity_acknowledged",
+            {
+                "reconciliation_id": reconciliation_id,
+                "incident_id": halt["incident_id"],
+                "proof": dict(proof),
+                "acknowledged_at": acknowledged_at,
+            },
+            emitted_at=acknowledged_at,
+        )
+        self._apply_candidate_receipt_integrity_acknowledgement(
+            event.get("data") or {}
+        )
+        self._refresh_status(force=True, now=acknowledged_at)
+        return self._candidate_receipt_integrity_halt is None
+
+    def _apply_candidate_receipt_integrity_acknowledgement(
+        self,
+        data: Mapping[str, Any],
+    ) -> None:
+        reconciliation_id = data.get("reconciliation_id")
+        proof = data.get("proof")
+        incident_id = data.get("incident_id")
+        acknowledged_at = data.get("acknowledged_at")
+        if (
+            not isinstance(reconciliation_id, str)
+            or not reconciliation_id
+            or reconciliation_id != reconciliation_id.strip()
+            or not isinstance(incident_id, str)
+            or not incident_id
+            or isinstance(acknowledged_at, bool)
+            or not isinstance(acknowledged_at, (int, float))
+            or not math.isfinite(float(acknowledged_at))
+            or not is_complete_integrity_proof(proof)
+        ):
+            return
+        halt = self._candidate_receipt_integrity_halt
+        if halt is not None and halt.get("incident_id") == incident_id:
+            self._candidate_receipt_integrity_halt = None
+
+    def _record_message_identity_conflict(
+        self,
+        *,
+        message_id: Any,
+        stored_payload_hash: Any,
+        incoming_payload_hash: Any,
+    ) -> bool:
+        evidence = {
+            "message_id": str(message_id),
+            "stored_payload_hash": stored_payload_hash,
+            "incoming_payload_hash": incoming_payload_hash,
+        }
+        identity = self._message_identity_conflict_identity(evidence)
+        if identity in self._handled_message_identity_conflicts:
+            return False
+        activated = self.governor.activate_integrity_halt_if_clear(
+            "message_identity_conflict",
+            evidence=evidence,
+        )
+        if activated:
+            self._handled_message_identity_conflicts.add(identity)
+        return activated
+
+    @staticmethod
+    def _message_identity_conflict_identity(
+        evidence: Mapping[str, Any],
+    ) -> tuple[str, str, str]:
+        return (
+            str(evidence.get("message_id") or ""),
+            str(evidence.get("stored_payload_hash") or ""),
+            str(evidence.get("incoming_payload_hash") or ""),
+        )
 
     def _rebuild_candidate_receipt_indexes(self) -> None:
         self._candidate_receipts_by_message_id = {}
@@ -3711,12 +3845,23 @@ class TacticalV2Controller:
         for event in self.store.read_events():
             data = event.get("data") or {}
             event_type = event.get("event_type")
+            if event_type == "governor_integrity_halted" and (
+                data.get("reason") == "message_identity_conflict"
+            ):
+                evidence = data.get("evidence") or {}
+                if isinstance(evidence, Mapping):
+                    self._handled_message_identity_conflicts.add(
+                        self._message_identity_conflict_identity(evidence)
+                    )
             if event_type == "candidate_handled":
                 self._remember_candidate_receipt(
                     data,
-                    restoring=True,
                     halted_at=event.get("emitted_at"),
+                    incident_id=self._optional_text(event.get("event_id")),
                 )
+                continue
+            if event_type == "candidate_receipt_integrity_acknowledged":
+                self._apply_candidate_receipt_integrity_acknowledgement(data)
                 continue
             if event_type == "episode_terminal":
                 registry_state = data.get("registry_state") or {}

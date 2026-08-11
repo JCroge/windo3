@@ -165,6 +165,51 @@ def _candidate_receipt(raw, intent, *, message_id, **overrides):
     return receipt
 
 
+def _invalid_candidate_receipt(raw, *, message_id):
+    return {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": message_id,
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": "false",
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+
+
+def _rejected_candidate_receipt(raw, *, message_id, reason="invalid_candidate"):
+    return {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": message_id,
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": False,
+        "reason": reason,
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+
+
+def _integrity_proof(**overrides):
+    proof = {
+        "ownership": True,
+        "orders": True,
+        "positions": True,
+        "protection": True,
+    }
+    proof.update(overrides)
+    return proof
+
+
 @pytest.mark.asyncio
 async def test_accepted_candidate_receipt_has_canonical_schema_hash_and_ordering(tmp_path):
     controller = _controller(tmp_path)
@@ -520,6 +565,197 @@ async def test_message_id_payload_conflict_fails_closed_and_halts(tmp_path):
     }
     status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
     assert status["integrity_halt"] == halt
+
+
+@pytest.mark.asyncio
+async def test_repeated_receipt_message_identity_conflict_records_one_halt(tmp_path):
+    controller = _controller(tmp_path)
+    original = _candidate(candidate_id="repeat-receipt-conflict")
+    changed = {**original, "entry_ref": 1.01}
+    await controller.handle_candidate(
+        original,
+        now=1000.0,
+        message_id="msg-repeat-receipt-conflict",
+    )
+    controller._refresh_status = MagicMock()
+
+    results = [
+        await controller.handle_candidate(
+            changed,
+            now=1001.0 + index,
+            message_id="msg-repeat-receipt-conflict",
+        )
+        for index in range(3)
+    ]
+
+    assert [result.reason for result in results] == [
+        "message_identity_conflict",
+    ] * 3
+    halt_events = [
+        event
+        for event in _events(tmp_path)
+        if event["event_type"] == "governor_integrity_halted"
+    ]
+    assert len(halt_events) == 1
+    assert controller._refresh_status.call_count == 1
+    assert halt_events[0]["data"]["evidence"] == {
+        "message_id": "msg-repeat-receipt-conflict",
+        "stored_payload_hash": _payload_hash(original),
+        "incoming_payload_hash": _payload_hash(changed),
+    }
+
+
+@pytest.mark.asyncio
+async def test_repeated_gap_message_identity_conflict_records_one_halt(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    original = _candidate(candidate_id="repeat-gap-conflict")
+    changed = {**original, "entry_ref": 1.01}
+    original_append = controller.store.append
+
+    def fail_receipt_append(event_type, data, **kwargs):
+        if event_type == "candidate_handled":
+            raise OSError("injected receipt gap")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(controller.store, "append", fail_receipt_append)
+    with pytest.raises(OSError, match="injected receipt gap"):
+        await controller.handle_candidate(
+            original,
+            now=1000.0,
+            message_id="msg-repeat-gap-conflict",
+        )
+    monkeypatch.setattr(controller.store, "append", original_append)
+    controller._refresh_status = MagicMock()
+
+    results = [
+        await controller.handle_candidate(
+            changed,
+            now=1001.0 + index,
+            message_id="msg-repeat-gap-conflict",
+        )
+        for index in range(3)
+    ]
+
+    assert [result.reason for result in results] == [
+        "message_identity_conflict",
+    ] * 3
+    assert len([
+        event
+        for event in _events(tmp_path)
+        if event["event_type"] == "governor_integrity_halted"
+    ]) == 1
+    assert controller._refresh_status.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_message_identity_conflict_preserves_existing_protection_halt(tmp_path):
+    controller = _controller(tmp_path)
+    original = _candidate(candidate_id="protected-conflict")
+    changed = {**original, "entry_ref": 1.01}
+    await controller.handle_candidate(
+        original,
+        now=1000.0,
+        message_id="msg-protected-conflict",
+    )
+    controller.governor.activate_integrity_halt(
+        "tactical_protection_incomplete",
+        evidence={"intent_id": "protected-intent"},
+    )
+    original_halt = controller.snapshot(now=1000.0)["integrity_halt"]
+    events_before_conflict = _events(tmp_path)
+
+    for index in range(3):
+        result = await controller.handle_candidate(
+            changed,
+            now=1001.0 + index,
+            message_id="msg-protected-conflict",
+        )
+        assert result.reason == "message_identity_conflict"
+
+    assert controller.snapshot(now=1004.0)["integrity_halt"] == original_halt
+    assert _events(tmp_path) == events_before_conflict
+
+
+@pytest.mark.asyncio
+async def test_message_identity_conflict_halts_once_after_prior_safety_halt_clears(
+    tmp_path,
+):
+    controller = _controller(tmp_path)
+    original = _candidate(candidate_id="conflict-after-safety-clear")
+    changed = {**original, "entry_ref": 1.01}
+    await controller.handle_candidate(
+        original,
+        now=1000.0,
+        message_id="msg-conflict-after-safety-clear",
+    )
+    controller.governor.activate_integrity_halt(
+        "tactical_protection_incomplete",
+        evidence={"intent_id": "protected-intent"},
+    )
+    await controller.handle_candidate(
+        changed,
+        now=1001.0,
+        message_id="msg-conflict-after-safety-clear",
+    )
+    assert controller.governor.clear_integrity_halt(
+        "protection-reconciled",
+        _integrity_proof(),
+    ) is True
+
+    for index in range(2):
+        result = await controller.handle_candidate(
+            changed,
+            now=1002.0 + index,
+            message_id="msg-conflict-after-safety-clear",
+        )
+        assert result.reason == "message_identity_conflict"
+
+    assert controller.governor.integrity_halt["reason"] == (
+        "message_identity_conflict"
+    )
+    assert len([
+        event
+        for event in _events(tmp_path)
+        if event["event_type"] == "governor_integrity_halted"
+    ]) == 2
+
+
+@pytest.mark.asyncio
+async def test_message_identity_conflict_incident_stays_deduplicated_after_restart(
+    tmp_path,
+):
+    controller = _controller(tmp_path)
+    original = _candidate(candidate_id="restart-deduplicated-conflict")
+    changed = {**original, "entry_ref": 1.01}
+    await controller.handle_candidate(
+        original,
+        now=1000.0,
+        message_id="msg-restart-deduplicated-conflict",
+    )
+    await controller.handle_candidate(
+        changed,
+        now=1001.0,
+        message_id="msg-restart-deduplicated-conflict",
+    )
+    assert controller.governor.clear_integrity_halt(
+        "message-conflict-reconciled",
+        _integrity_proof(),
+    ) is True
+    events_before_restart = _events(tmp_path)
+
+    restarted = _controller(tmp_path)
+    redelivered = await restarted.handle_candidate(
+        changed,
+        now=1002.0,
+        message_id="msg-restart-deduplicated-conflict",
+    )
+
+    assert redelivered.reason == "message_identity_conflict"
+    assert restarted.snapshot(now=1002.0)["integrity_halt"] is None
+    assert _events(tmp_path) == events_before_restart
 
 
 @pytest.mark.asyncio
@@ -1103,6 +1339,262 @@ def test_receipt_quarantine_restore_is_event_log_read_only(tmp_path, history_kin
     assert second.snapshot(now=1002.0)["candidate_handling"] == first.snapshot(
         now=1002.0
     )["candidate_handling"]
+
+
+@pytest.mark.parametrize(
+    ("reconciliation_id", "proof"),
+    [
+        ("", _integrity_proof()),
+        ("receipt-reconcile-invalid", _integrity_proof(protection=False)),
+        ("receipt-reconcile-invalid", {"ownership": True}),
+        ("receipt-reconcile-invalid", None),
+    ],
+)
+def test_invalid_candidate_receipt_integrity_acknowledgement_is_rejected(
+    tmp_path,
+    reconciliation_id,
+    proof,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="invalid-receipt-ack")
+    store = TacticalStore(_paths(tmp_path))
+    store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(raw, message_id="msg-invalid-receipt-ack"),
+        emitted_at=1000.0,
+    )
+    controller = _controller(tmp_path)
+    halt_before = controller.snapshot(now=1001.0)["integrity_halt"]
+    events_before = _events(tmp_path)
+
+    acknowledged = controller.acknowledge_candidate_receipt_integrity(
+        reconciliation_id,
+        proof,
+    )
+
+    assert acknowledged is False
+    assert _events(tmp_path) == events_before
+    assert controller.snapshot(now=1001.0)["integrity_halt"] == halt_before
+
+
+@pytest.mark.asyncio
+async def test_valid_candidate_receipt_integrity_acknowledgement_unblocks_admission(
+    tmp_path,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    malformed = _candidate(candidate_id="valid-receipt-ack-malformed")
+    store = TacticalStore(_paths(tmp_path))
+    source_event = store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(
+            malformed,
+            message_id="msg-valid-receipt-ack-malformed",
+        ),
+        emitted_at=1000.0,
+    )
+    controller = _controller(tmp_path)
+    incident = controller.snapshot(now=1001.0)["integrity_halt"]
+    proof = _integrity_proof(operator="alice", ticket="INC-42")
+
+    acknowledged = controller.acknowledge_candidate_receipt_integrity(
+        "receipt-reconcile-valid",
+        proof,
+    )
+    admitted = await controller.handle_candidate(
+        _candidate(
+            symbol="XRP-USDT",
+            candidate_id="candidate-after-receipt-ack",
+        ),
+        now=1001.0,
+        message_id="msg-candidate-after-receipt-ack",
+    )
+
+    assert acknowledged is True
+    assert admitted.accepted is True
+    assert controller.snapshot(now=1001.0)["integrity_halt"] is None
+    acknowledgements = [
+        event
+        for event in _events(tmp_path)
+        if event["event_type"] == "candidate_receipt_integrity_acknowledged"
+    ]
+    assert len(acknowledgements) == 1
+    assert acknowledgements[0]["data"] == {
+        "reconciliation_id": "receipt-reconcile-valid",
+        "incident_id": incident["incident_id"],
+        "proof": proof,
+        "acknowledged_at": 1000.0,
+    }
+    assert incident["incident_id"] == source_event["event_id"]
+    assert set(_receipts(tmp_path)[-1]["data"]) == RECEIPT_FIELDS
+
+
+def test_candidate_receipt_integrity_acknowledgement_survives_restart_and_keeps_quarantine(
+    tmp_path,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="restart-receipt-ack")
+    store = TacticalStore(_paths(tmp_path))
+    store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(raw, message_id="msg-restart-receipt-ack"),
+        emitted_at=1000.0,
+    )
+    controller = _controller(tmp_path)
+    assert controller.acknowledge_candidate_receipt_integrity(
+        "receipt-reconcile-restart",
+        _integrity_proof(),
+    ) is True
+
+    restarted = _controller(tmp_path)
+    snapshot = restarted.snapshot(now=1001.0)
+
+    assert snapshot["integrity_halt"] is None
+    assert snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    assert len(_receipts(tmp_path)) == 1
+    assert len([
+        event
+        for event in _events(tmp_path)
+        if event["event_type"] == "candidate_receipt_integrity_acknowledged"
+    ]) == 1
+
+
+def test_new_candidate_receipt_corruption_after_acknowledgement_rehalts_on_restart(
+    tmp_path,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    first_raw = _candidate(candidate_id="receipt-corruption-before-ack")
+    store = TacticalStore(_paths(tmp_path))
+    first_event = store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(
+            first_raw,
+            message_id="msg-receipt-corruption-before-ack",
+        ),
+        emitted_at=1000.0,
+    )
+    controller = _controller(tmp_path)
+    assert controller.acknowledge_candidate_receipt_integrity(
+        "receipt-reconcile-before-new-corruption",
+        _integrity_proof(),
+    ) is True
+    second_raw = _candidate(candidate_id="receipt-corruption-after-ack")
+    second_event = controller.store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(
+            second_raw,
+            message_id="msg-receipt-corruption-after-ack",
+        ),
+        emitted_at=1002.0,
+    )
+
+    restarted = _controller(tmp_path)
+    snapshot = restarted.snapshot(now=1003.0)
+
+    assert snapshot["integrity_halt"]["reason"] == "candidate_receipt_invalid"
+    assert snapshot["integrity_halt"]["incident_id"] == second_event["event_id"]
+    assert snapshot["integrity_halt"]["incident_id"] != first_event["event_id"]
+    assert snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 2,
+    }
+    assert _controller(tmp_path).snapshot(now=1003.0)["integrity_halt"] == (
+        snapshot["integrity_halt"]
+    )
+
+
+@pytest.mark.parametrize("identity_kind", ["message", "payload"])
+def test_known_candidate_receipt_conflict_after_acknowledgement_rehalts(
+    tmp_path,
+    identity_kind,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    store = TacticalStore(_paths(tmp_path))
+    if identity_kind == "message":
+        message_id = "msg-known-conflict-after-ack"
+        receipts = [
+            _rejected_candidate_receipt(
+                _candidate(candidate_id=f"known-message-conflict-{index}"),
+                message_id=message_id,
+            )
+            for index in range(3)
+        ]
+    else:
+        raw = _candidate(candidate_id="known-payload-conflict")
+        receipts = [
+            _rejected_candidate_receipt(
+                raw,
+                message_id=None,
+                reason=reason,
+            )
+            for reason in (
+                "invalid_candidate",
+                "namespace_mismatch",
+                "candidate_from_future",
+            )
+        ]
+    store.append("candidate_handled", receipts[0], emitted_at=1000.0)
+    store.append("candidate_handled", receipts[1], emitted_at=1001.0)
+    controller = _controller(tmp_path)
+    assert controller.acknowledge_candidate_receipt_integrity(
+        f"known-{identity_kind}-conflict-reconciled",
+        _integrity_proof(),
+    ) is True
+    later_corruption = controller.store.append(
+        "candidate_handled",
+        receipts[2],
+        emitted_at=1003.0,
+    )
+
+    restarted = _controller(tmp_path)
+    halt = restarted.snapshot(now=1004.0)["integrity_halt"]
+
+    assert halt["reason"] == f"candidate_receipt_{identity_kind}_conflict"
+    assert halt["incident_id"] == later_corruption["event_id"]
+    assert len(_receipts(tmp_path)) == 3
+
+
+def test_candidate_receipt_acknowledgement_does_not_clear_governor_halt(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="receipt-ack-with-governor-halt")
+    store = TacticalStore(_paths(tmp_path))
+    store.append(
+        "candidate_handled",
+        _invalid_candidate_receipt(
+            raw,
+            message_id="msg-receipt-ack-with-governor-halt",
+        ),
+        emitted_at=1000.0,
+    )
+    controller = _controller(tmp_path)
+    controller.governor.activate_integrity_halt(
+        "tactical_protection_incomplete",
+        evidence={"intent_id": "protected-intent"},
+    )
+    governor_halt = controller.governor.integrity_halt
+
+    assert controller.acknowledge_candidate_receipt_integrity(
+        "receipt-reconcile-independent-governor-halt",
+        _integrity_proof(),
+    ) is True
+
+    assert controller.governor.integrity_halt == governor_halt
+    assert controller.snapshot(now=1001.0)["integrity_halt"] == governor_halt
+    restarted = _controller(tmp_path)
+    assert restarted.governor.integrity_halt == governor_halt
+    assert restarted.snapshot(now=1001.0)["integrity_halt"] == governor_halt
+    assert not any(
+        event["event_type"] == "governor_integrity_cleared"
+        for event in _events(tmp_path)
+    )
 
 
 @pytest.mark.asyncio

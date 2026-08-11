@@ -19,6 +19,12 @@ MAX_CONCURRENT = 3
 _INTEGRITY_PROOF_KEYS = frozenset({"ownership", "orders", "positions", "protection"})
 
 
+def is_complete_integrity_proof(proof: Any) -> bool:
+    return isinstance(proof, Mapping) and all(
+        proof.get(key) is True for key in _INTEGRITY_PROOF_KEYS
+    )
+
+
 @dataclass(frozen=True)
 class FinalApplyResult:
     accepted: bool
@@ -244,9 +250,7 @@ class TacticalGovernor:
     ) -> bool:
         if self._integrity_halt is None:
             return True
-        if not reconciliation_id or not isinstance(proof, Mapping):
-            return False
-        if not all(proof.get(key) is True for key in _INTEGRITY_PROOF_KEYS):
+        if not reconciliation_id or not is_complete_integrity_proof(proof):
             return False
         with self._lock:
             event = self._append_event(
