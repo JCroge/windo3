@@ -39,6 +39,15 @@ def _registry(tmp_path):
     return EpisodeRegistry(TacticalStore(_paths(tmp_path)), namespace="testnet")
 
 
+def _latest_reset_evidence_reason(registry):
+    events = [
+        event
+        for event in registry.store.read_events()
+        if event["event_type"] == "episode_reset_evidence"
+    ]
+    return events[-1]["data"]["evidence"]["reason"]
+
+
 def test_repeated_prices_in_same_structure_share_consumed_episode(tmp_path):
     registry = _registry(tmp_path)
 
@@ -78,25 +87,82 @@ def test_opposing_block_then_renewal_advances_epoch(tmp_path):
         "long",
         _structure(bias="bearish", token="break-down", block_long=True),
     )
-    renewed = registry.assign(_candidate(0.99), _structure(token="break-up-2"))
+    renewed = registry.assign(_candidate(0.99), _structure(token="break-up-1"))
 
     assert renewed.eligible is True
     assert renewed.reason == "eligible"
     assert renewed.episode_id != first.episode_id
     assert renewed.epoch_seq == first.epoch_seq + 1
+    assert _latest_reset_evidence_reason(registry) == "opposing_block_then_renewed"
 
 
 def test_neutral_then_renewed_direction_advances_epoch(tmp_path):
     registry = _registry(tmp_path)
     first = registry.assign(_candidate(), _structure())
     registry.mark_terminal(first.episode_id, "expired")
-    registry.observe("WLD-USDT", "long", _structure(bias="neutral", token=None))
+    registry.observe(
+        "WLD-USDT",
+        "long",
+        _structure(bias="neutral", token="break-up-1"),
+    )
 
-    renewed = registry.assign(_candidate(), _structure(bias="bullish", token="break-up-2"))
+    renewed = registry.assign(
+        _candidate(),
+        _structure(bias="bullish", token="break-up-1"),
+    )
 
     assert renewed.eligible is True
     assert renewed.reason == "eligible"
     assert renewed.episode_id != first.episode_id
+    assert _latest_reset_evidence_reason(registry) == "neutral_then_renewed"
+
+
+def test_fresh_aligned_renewal_precedes_opposing_block_marker(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+    registry.observe(
+        "WLD-USDT",
+        "long",
+        _structure(bias="bearish", token="break-down-1", block_long=True),
+    )
+
+    renewed = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="bullish", token="break-up-2"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert renewed.eligible is True
+    assert renewed.reason == "eligible"
+    assert renewed.episode_id != first.episode_id
+    assert _latest_reset_evidence_reason(registry) == "new_confirmed_structure"
+
+
+def test_fresh_aligned_renewal_precedes_neutral_seen_marker(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+    registry.observe(
+        "WLD-USDT",
+        "long",
+        _structure(bias="neutral", token="break-up-1"),
+    )
+
+    renewed = registry.assign(
+        _candidate(),
+        {
+            **_structure(bias="bullish", token="break-up-2"),
+            "tf_15m_closed_bar_ts": 915.0,
+        },
+    )
+
+    assert renewed.eligible is True
+    assert renewed.reason == "eligible"
+    assert renewed.episode_id != first.episode_id
+    assert _latest_reset_evidence_reason(registry) == "new_confirmed_structure"
 
 
 def test_terminal_neutral_candidate_with_new_closed_bar_advances_epoch(tmp_path):

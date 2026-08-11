@@ -206,30 +206,29 @@ class EpisodeRegistry:
         if bias not in {desired_bias, "neutral"}:
             return None
 
+        if state.get("terminal"):
+            token = structure.get("tf_15m_structure_token")
+            closed_bar = structure.get("tf_15m_closed_bar_ts")
+            previous_bar = state.get("last_closed_bar_ts")
+            max_observed = state.get("max_observed_closed_bar_ts")
+            newer_bar = (
+                closed_bar is not None
+                and previous_bar is not None
+                and closed_bar > previous_bar
+                and (max_observed is None or closed_bar >= max_observed)
+            )
+            changed_token = bool(
+                token
+                and token != state.get("last_structure_token")
+            )
+            if newer_bar or changed_token:
+                return "new_confirmed_structure"
+
         if bias == desired_bias:
             if state.get("reset_pending") == "opposing_block":
                 return "opposing_block_then_renewed"
             if state.get("neutral_seen"):
                 return "neutral_then_renewed"
-
-        if not state.get("terminal"):
-            return None
-        token = structure.get("tf_15m_structure_token")
-        closed_bar = structure.get("tf_15m_closed_bar_ts")
-        previous_bar = state.get("last_closed_bar_ts")
-        max_observed = state.get("max_observed_closed_bar_ts")
-        newer_bar = (
-            closed_bar is not None
-            and previous_bar is not None
-            and closed_bar > previous_bar
-            and (max_observed is None or closed_bar >= max_observed)
-        )
-        changed_token = bool(
-            token
-            and token != state.get("last_structure_token")
-        )
-        if newer_bar or changed_token:
-            return "new_confirmed_structure"
         return None
 
     def _new_state(
