@@ -7,10 +7,10 @@
 
 ## 2. Candidate Receipts
 
-- [ ] Define the compact receipt event schema and backward-compatible replay behavior.
-- [ ] Persist receipts for accepted, duplicate, validation, expiry, block, capacity, and other rejection paths.
-- [ ] Preserve message ID/source Shadow ID mapping without assuming historical receipts exist.
-- [ ] Add tests for receipt ordering, idempotent replay, and absent historical receipts.
+- [x] Define the compact receipt event schema and backward-compatible replay behavior.
+- [x] Persist receipts for accepted, duplicate, validation, expiry, block, capacity, and other rejection paths.
+- [x] Preserve message ID/source Shadow ID mapping without assuming historical receipts exist.
+- [x] Add tests for receipt ordering, idempotent replay, and absent historical receipts.
 
 ## 3. Shadow Parity Replay
 
