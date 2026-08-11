@@ -575,7 +575,7 @@ class TacticalV2Controller:
             return
 
         existing_fallback = None
-        if not message_id and payload_hash:
+        if payload_hash:
             existing_fallback = next(
                 (
                     item
@@ -585,6 +585,64 @@ class TacticalV2Controller:
                 ),
                 None,
             )
+        if existing_fallback is not None and message_id:
+            if not self._candidate_receipt_decisions_match(
+                existing_fallback,
+                receipt,
+            ):
+                self._conflicting_candidate_receipt_payload_hashes.add(payload_hash)
+                self._quarantine_candidate_receipt(existing_fallback)
+                self._candidate_receipts = [
+                    item
+                    for item in self._candidate_receipts
+                    if not (
+                        self._optional_text(item.get("message_id")) is None
+                        and self._optional_text(item.get("payload_hash"))
+                        == payload_hash
+                    )
+                ]
+                self._rebuild_candidate_receipt_indexes()
+                self._activate_candidate_receipt_integrity_halt(
+                    "candidate_receipt_payload_conflict",
+                    evidence={
+                        "payload_hash": payload_hash,
+                        "message_id": message_id,
+                        "message_reason": receipt["reason"],
+                        "fallback_reason": existing_fallback["reason"],
+                    },
+                    restoring=restoring,
+                    halted_at=halted_at,
+                )
+            existing_fallback = None
+        if not message_id and payload_hash:
+            conflicting_message = next(
+                (
+                    item
+                    for item in self._candidate_receipts
+                    if self._optional_text(item.get("message_id")) is not None
+                    and self._optional_text(item.get("payload_hash")) == payload_hash
+                    and not self._candidate_receipt_decisions_match(item, receipt)
+                ),
+                None,
+            )
+            if conflicting_message is not None:
+                conflicting_message_id = self._optional_text(
+                    conflicting_message.get("message_id")
+                )
+                self._conflicting_candidate_receipt_payload_hashes.add(payload_hash)
+                self._quarantine_candidate_receipt(receipt)
+                self._activate_candidate_receipt_integrity_halt(
+                    "candidate_receipt_payload_conflict",
+                    evidence={
+                        "payload_hash": payload_hash,
+                        "message_id": conflicting_message_id,
+                        "message_reason": conflicting_message["reason"],
+                        "fallback_reason": receipt["reason"],
+                    },
+                    restoring=restoring,
+                    halted_at=halted_at,
+                )
+                return
         if existing_fallback == receipt:
             return
         if existing_fallback is not None and existing_fallback != receipt:
@@ -627,6 +685,17 @@ class TacticalV2Controller:
         self._candidate_handling_gaps.pop(
             self._candidate_handling_identity(receipt),
             None,
+        )
+
+    @staticmethod
+    def _candidate_receipt_decisions_match(
+        first: Mapping[str, Any],
+        second: Mapping[str, Any],
+    ) -> bool:
+        delivery_fields = {"message_id", "evaluated_at", "replayed"}
+        return all(
+            first.get(field) == second.get(field)
+            for field in _CANDIDATE_RECEIPT_FIELDS - delivery_fields
         )
 
     def _quarantine_candidate_receipt(self, receipt: Mapping[str, Any]) -> None:
@@ -758,6 +827,12 @@ class TacticalV2Controller:
         }
         if any(receipt.get(field) != value for field, value in expected.items()):
             return "accepted_intent_mismatch"
+        if not self.episodes.matches_episode(
+            episode_id,
+            receipt["symbol"],
+            receipt["side"],
+        ):
+            return "accepted_episode_mismatch"
         return None
 
     @staticmethod

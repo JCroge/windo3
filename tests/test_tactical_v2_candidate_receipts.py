@@ -128,6 +128,24 @@ def _append_intent_created(store, raw, *, episode_id):
     return intent
 
 
+def _append_episode(store, raw):
+    from utils.tactical_v2.episodes import EpisodeRegistry
+    from utils.tactical_v2.models import TacticalCandidate
+
+    assignment = EpisodeRegistry(store, namespace="testnet").assign(
+        TacticalCandidate.from_raw(raw),
+        {
+            "tf_15m_available": raw["tf_15m_available"],
+            "tf_15m_bias": raw["tf_15m_bias"],
+            "tf_15m_closed_bar_ts": raw["tf_15m_closed_bar_ts"],
+            "tf_15m_structure_token": raw["tf_15m_structure_token"],
+            "tf_15m_block_long": raw["tf_15m_block_long"],
+            "tf_15m_block_short": raw["tf_15m_block_short"],
+        },
+    )
+    return assignment.episode_id
+
+
 def _candidate_receipt(raw, intent, *, message_id, **overrides):
     receipt = {
         "candidate_id": raw["candidate_id"],
@@ -1231,6 +1249,68 @@ async def test_restored_episode_rejection_must_match_real_episode(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("message_id", ["msg-accepted-episode", None])
+@pytest.mark.parametrize("mismatch", ["missing", "symbol", "side"])
+async def test_restored_accepted_receipt_must_match_real_episode(
+    tmp_path,
+    message_id,
+    mismatch,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    store = TacticalStore(_paths(tmp_path))
+    episode_owner = _candidate(candidate_id=f"accepted-episode-owner-{mismatch}")
+    if mismatch == "missing":
+        episode_id = "fabricated-accepted-episode"
+        intent_raw = _candidate(candidate_id="accepted-fabricated-episode")
+    else:
+        episode_id = _append_episode(store, episode_owner)
+        intent_raw = _candidate(
+            candidate_id=f"accepted-episode-{mismatch}",
+            symbol="ETH-USDT" if mismatch == "symbol" else "WLD-USDT",
+            side="short" if mismatch == "side" else "long",
+        )
+    intent = _append_intent_created(store, intent_raw, episode_id=episode_id)
+    store.append(
+        "candidate_handled",
+        _candidate_receipt(intent_raw, intent, message_id=message_id),
+        emitted_at=1000.0,
+    )
+    original_events = _events(tmp_path)
+
+    first = _controller(tmp_path)
+    replayed = await first.handle_candidate(
+        intent_raw,
+        now=1001.0,
+        message_id=message_id,
+        replayed=True,
+    )
+    first_snapshot = first.snapshot(now=1001.0)
+    restarted = _controller(tmp_path)
+
+    assert replayed.reason == "unknown_handling_evidence"
+    assert replayed.intent_id == intent.intent_id
+    assert replayed.episode_id == intent.episode_id
+    assert first_snapshot["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 1,
+    }
+    assert first_snapshot["integrity_halt"]["reason"] == (
+        "candidate_receipt_invalid"
+    )
+    assert first_snapshot["integrity_halt"]["evidence"]["validation_error"] == (
+        "accepted_episode_mismatch"
+    )
+    assert restarted.snapshot(now=1001.0)["candidate_handling"] == (
+        first_snapshot["candidate_handling"]
+    )
+    assert restarted.snapshot(now=1001.0)["integrity_halt"] == (
+        first_snapshot["integrity_halt"]
+    )
+    assert _events(tmp_path) == original_events
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("message_id", ["msg-exact-duplicate", None])
 async def test_exact_duplicate_receipt_rows_dedupe_in_read_model_across_restart(
     tmp_path,
@@ -1328,15 +1408,228 @@ def test_conflicting_rejected_receipts_count_one_unknown_across_restart(
     assert len(_receipts(tmp_path)) == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_order", ["message_first", "fallback_first"])
+async def test_cross_identity_payload_conflict_quarantines_fallback_across_restart(
+    tmp_path,
+    event_order,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="cross-identity-conflict")
+    payload_hash = _payload_hash(raw)
+    message_receipt = {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": "msg-cross-identity",
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": False,
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": payload_hash,
+    }
+    fallback_receipt = {
+        **message_receipt,
+        "message_id": None,
+        "reason": "admission_disabled",
+        "evaluated_at": 1001.0,
+        "replayed": True,
+    }
+    ordered = (
+        (message_receipt, fallback_receipt)
+        if event_order == "message_first"
+        else (fallback_receipt, message_receipt)
+    )
+    store = TacticalStore(_paths(tmp_path))
+    for index, receipt in enumerate(ordered):
+        store.append("candidate_handled", receipt, emitted_at=1000.0 + index)
+    original_events = _events(tmp_path)
+
+    first = _controller(tmp_path)
+    message_replay = await first.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-cross-identity",
+        replayed=True,
+    )
+    fallback_replay = await first.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id=None,
+        replayed=True,
+    )
+    first_snapshot = first.snapshot(now=1002.0)
+    restarted = _controller(tmp_path)
+    restarted_fallback = await restarted.handle_candidate(
+        raw,
+        now=1003.0,
+        message_id=None,
+        replayed=True,
+    )
+
+    assert message_replay.reason == "invalid_candidate"
+    assert fallback_replay.reason == "unknown_handling_evidence"
+    assert restarted_fallback == fallback_replay
+    assert first_snapshot["candidate_handling"] == {
+        "receipt_count": 1,
+        "unknown_handling_evidence": 1,
+    }
+    assert first_snapshot["integrity_halt"]["reason"] == (
+        "candidate_receipt_payload_conflict"
+    )
+    assert first_snapshot["integrity_halt"]["evidence"] == {
+        "payload_hash": payload_hash,
+        "message_id": "msg-cross-identity",
+        "message_reason": "invalid_candidate",
+        "fallback_reason": "admission_disabled",
+    }
+    assert restarted.snapshot(now=1003.0)["candidate_handling"] == (
+        first_snapshot["candidate_handling"]
+    )
+    assert restarted.snapshot(now=1003.0)["integrity_halt"] == (
+        first_snapshot["integrity_halt"]
+    )
+    assert _events(tmp_path) == original_events
+    assert len(_receipts(tmp_path)) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_order", ["message_first", "fallback_first"])
+async def test_cross_identity_equivalent_receipts_ignore_delivery_metadata(
+    tmp_path,
+    event_order,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="cross-identity-equivalent")
+    message_receipt = {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": "msg-cross-equivalent",
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": False,
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+    fallback_receipt = {
+        **message_receipt,
+        "message_id": None,
+        "evaluated_at": 1001.0,
+        "replayed": True,
+    }
+    ordered = (
+        (message_receipt, fallback_receipt)
+        if event_order == "message_first"
+        else (fallback_receipt, message_receipt)
+    )
+    store = TacticalStore(_paths(tmp_path))
+    for index, receipt in enumerate(ordered):
+        store.append("candidate_handled", receipt, emitted_at=1000.0 + index)
+    original_events = _events(tmp_path)
+
+    first = _controller(tmp_path)
+    message_replay = await first.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-cross-equivalent",
+        replayed=True,
+    )
+    fallback_replay = await first.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id=None,
+        replayed=True,
+    )
+    restarted = _controller(tmp_path)
+
+    assert message_replay.reason == "invalid_candidate"
+    assert fallback_replay.reason == "invalid_candidate"
+    assert first.snapshot(now=1002.0)["candidate_handling"] == {
+        "receipt_count": 2,
+        "unknown_handling_evidence": 0,
+    }
+    assert restarted.snapshot(now=1002.0)["candidate_handling"] == {
+        "receipt_count": 2,
+        "unknown_handling_evidence": 0,
+    }
+    assert first.snapshot(now=1002.0)["integrity_halt"] is None
+    assert restarted.snapshot(now=1002.0)["integrity_halt"] is None
+    assert _events(tmp_path) == original_events
+
+
+@pytest.mark.asyncio
+async def test_distinct_message_ids_remain_independently_authoritative(tmp_path):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(candidate_id="distinct-message-identities")
+    first_receipt = {
+        "candidate_id": raw["candidate_id"],
+        "source_shadow_id": raw["source_shadow_id"],
+        "message_id": "msg-distinct-first",
+        "symbol": raw["symbol"],
+        "side": raw["side"],
+        "accepted": False,
+        "reason": "invalid_candidate",
+        "episode_id": None,
+        "intent_id": None,
+        "evaluated_at": 1000.0,
+        "replayed": False,
+        "payload_hash": _payload_hash(raw),
+    }
+    second_receipt = {
+        **first_receipt,
+        "message_id": "msg-distinct-second",
+        "reason": "admission_disabled",
+        "evaluated_at": 1001.0,
+    }
+    store = TacticalStore(_paths(tmp_path))
+    store.append("candidate_handled", first_receipt, emitted_at=1000.0)
+    store.append("candidate_handled", second_receipt, emitted_at=1001.0)
+    original_events = _events(tmp_path)
+
+    controller = _controller(tmp_path)
+    first = await controller.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-distinct-first",
+        replayed=True,
+    )
+    second = await controller.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-distinct-second",
+        replayed=True,
+    )
+
+    assert first.reason == "invalid_candidate"
+    assert second.reason == "admission_disabled"
+    assert controller.snapshot(now=1002.0)["candidate_handling"] == {
+        "receipt_count": 2,
+        "unknown_handling_evidence": 0,
+    }
+    assert controller.snapshot(now=1002.0)["integrity_halt"] is None
+    assert _events(tmp_path) == original_events
+
+
 def test_conflicting_duplicate_message_receipts_are_both_quarantined(tmp_path):
     from utils.tactical_v2.store import TacticalStore
 
     store = TacticalStore(_paths(tmp_path))
     first_raw = _candidate(candidate_id="duplicate-message-first")
+    first_episode_id = _append_episode(store, first_raw)
     first_intent = _append_intent_created(
         store,
         first_raw,
-        episode_id="episode-duplicate-message-first",
+        episode_id=first_episode_id,
     )
     store.append(
         "candidate_handled",
@@ -1351,10 +1644,11 @@ def test_conflicting_duplicate_message_receipts_are_both_quarantined(tmp_path):
         symbol="ETH-USDT",
         candidate_id="duplicate-message-second",
     )
+    second_episode_id = _append_episode(store, second_raw)
     second_intent = _append_intent_created(
         store,
         second_raw,
-        episode_id="episode-duplicate-message-second",
+        episode_id=second_episode_id,
     )
     store.append(
         "candidate_handled",
