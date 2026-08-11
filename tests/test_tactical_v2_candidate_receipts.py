@@ -1013,6 +1013,241 @@ async def test_intent_append_failure_records_durable_gap_before_memory(
 
 
 @pytest.mark.asyncio
+async def test_intent_and_gap_append_fail_once_still_persist_one_durable_gap(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    raw = _candidate(candidate_id="intent-and-gap-append-retry")
+    original_append = controller.store.append
+    attempts = {"intent_created": 0, "candidate_handling_gap_recorded": 0}
+
+    def fail_each_evidence_append_once(event_type, data, **kwargs):
+        if event_type in attempts:
+            attempts[event_type] += 1
+            if attempts[event_type] == 1:
+                raise OSError(f"injected {event_type} append failure")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(
+        controller.store,
+        "append",
+        fail_each_evidence_append_once,
+    )
+    with pytest.raises(OSError, match="injected intent_created append failure"):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id="msg-intent-and-gap-append-retry",
+        )
+    monkeypatch.setattr(controller.store, "append", original_append)
+
+    events_after_failure = _events(tmp_path)
+    assert [event["event_type"] for event in events_after_failure] == [
+        "episode_assigned",
+        "candidate_handling_gap_recorded",
+    ]
+    assert attempts == {
+        "intent_created": 1,
+        "candidate_handling_gap_recorded": 2,
+    }
+    same_process = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-intent-and-gap-append-retry",
+    )
+    restarted = _controller(tmp_path)
+    after_restart = await restarted.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-intent-and-gap-append-retry",
+    )
+
+    assert same_process.reason == "unknown_handling_evidence"
+    assert after_restart == same_process
+    assert _events(tmp_path) == events_after_failure
+    assert _receipts(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_committed_gap_is_confirmed_after_append_raises(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    raw = _candidate(candidate_id="committed-gap-confirmation")
+    original_append = controller.store.append
+    intent_failed = False
+    gap_raised_after_commit = False
+
+    def fail_after_gap_commit(event_type, data, **kwargs):
+        nonlocal intent_failed, gap_raised_after_commit
+        if event_type == "intent_created" and not intent_failed:
+            intent_failed = True
+            raise OSError("injected intent append failure")
+        event = original_append(event_type, data, **kwargs)
+        if (
+            event_type == "candidate_handling_gap_recorded"
+            and not gap_raised_after_commit
+        ):
+            gap_raised_after_commit = True
+            raise OSError("injected post-commit gap append failure")
+        return event
+
+    monkeypatch.setattr(controller.store, "append", fail_after_gap_commit)
+    with pytest.raises(OSError, match="injected intent append failure"):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id="msg-committed-gap-confirmation",
+        )
+    monkeypatch.setattr(controller.store, "append", original_append)
+    events_after_failure = _events(tmp_path)
+
+    assert [event["event_type"] for event in events_after_failure] == [
+        "episode_assigned",
+        "candidate_handling_gap_recorded",
+    ]
+    restarted = _controller(tmp_path)
+    replayed = await restarted.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-committed-gap-confirmation",
+    )
+    assert replayed.reason == "unknown_handling_evidence"
+    assert _events(tmp_path) == events_after_failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", ["before_append", "after_append"])
+async def test_payload_integrity_evidence_append_is_retried_or_confirmed(
+    tmp_path,
+    monkeypatch,
+    failure_phase,
+):
+    raw = {
+        **_candidate(candidate_id="payload-evidence-append-retry"),
+        "extra": float("nan"),
+    }
+    message_id = "msg-payload-evidence-append-retry"
+    controller = _controller(tmp_path)
+    original_append = controller.store.append
+    attempts = 0
+
+    def fail_evidence_once(event_type, data, **kwargs):
+        nonlocal attempts
+        if event_type == "candidate_payload_integrity_rejected":
+            attempts += 1
+            if attempts == 1:
+                if failure_phase == "after_append":
+                    original_append(event_type, data, **kwargs)
+                raise OSError("injected payload evidence append failure")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(controller.store, "append", fail_evidence_once)
+    first = await controller.handle_candidate(
+        raw,
+        now=1000.0,
+        message_id=message_id,
+    )
+    monkeypatch.setattr(controller.store, "append", original_append)
+    events_after_first = _events(tmp_path)
+    restarted = _controller(tmp_path)
+    valid_redelivery = await restarted.handle_candidate(
+        _candidate(candidate_id="payload-evidence-append-retry"),
+        now=1001.0,
+        message_id=message_id,
+    )
+
+    assert first.reason == "unknown_handling_evidence"
+    assert valid_redelivery.reason == "unknown_handling_evidence"
+    assert attempts == (2 if failure_phase == "before_append" else 1)
+    assert [event["event_type"] for event in events_after_first] == [
+        "candidate_payload_integrity_rejected",
+    ]
+    assert _events(tmp_path) == events_after_first
+    assert _receipts(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_payload_integrity_evidence_storage_failure_is_propagated(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    raw = {
+        **_candidate(candidate_id="payload-evidence-unavailable"),
+        "extra": float("nan"),
+    }
+    original_append = controller.store.append
+
+    def fail_evidence(event_type, data, **kwargs):
+        if event_type == "candidate_payload_integrity_rejected":
+            raise OSError("payload evidence storage unavailable")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(controller.store, "append", fail_evidence)
+
+    with pytest.raises(OSError, match="payload evidence storage unavailable"):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id="msg-payload-evidence-unavailable",
+        )
+    with pytest.raises(OSError, match="payload evidence storage unavailable"):
+        await controller.handle_candidate(
+            _candidate(candidate_id="payload-evidence-unavailable"),
+            now=1001.0,
+            message_id="msg-payload-evidence-unavailable",
+        )
+
+    assert _events(tmp_path) == []
+    assert controller.snapshot(now=1000.0)["candidate_handling"] == {
+        "receipt_count": 0,
+        "unknown_handling_evidence": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_unpersisted_gap_is_retried_before_same_process_redelivery(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    raw = _candidate(candidate_id="pending-gap-retry")
+    original_append = controller.store.append
+    intent_failed = False
+
+    def fail_gap_persistence(event_type, data, **kwargs):
+        nonlocal intent_failed
+        if event_type == "intent_created" and not intent_failed:
+            intent_failed = True
+            raise OSError("injected intent append failure")
+        if event_type == "candidate_handling_gap_recorded":
+            raise OSError("gap evidence storage unavailable")
+        return original_append(event_type, data, **kwargs)
+
+    monkeypatch.setattr(controller.store, "append", fail_gap_persistence)
+    with pytest.raises(OSError, match="gap evidence storage unavailable"):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id="msg-pending-gap-retry",
+        )
+    with pytest.raises(OSError, match="gap evidence storage unavailable"):
+        await controller.handle_candidate(
+            raw,
+            now=1001.0,
+            message_id="msg-pending-gap-retry",
+        )
+
+    assert [event["event_type"] for event in _events(tmp_path)] == [
+        "episode_assigned",
+    ]
+    assert _receipts(tmp_path) == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("raw", "mode"),
     [
@@ -2305,6 +2540,87 @@ async def test_receipt_episode_reference_is_validated_against_ledger_prefix(
         )
     assert _events(tmp_path) == original_events
     assert _controller(tmp_path).snapshot(now=1002.0)["integrity_halt"] == (
+        snapshot["integrity_halt"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receipt_kind", ["accepted", "duplicate_episode"])
+@pytest.mark.parametrize(
+    "episode_corruption",
+    ["outer_id_alias", "registry_key_mismatch"],
+)
+async def test_malformed_episode_prefix_cannot_authorize_candidate_receipt(
+    tmp_path,
+    receipt_kind,
+    episode_corruption,
+):
+    from utils.tactical_v2.store import TacticalStore
+
+    raw = _candidate(
+        candidate_id=f"malformed-prefix-{receipt_kind}-{episode_corruption}"
+    )
+    reference_path = tmp_path / "episode-reference"
+    real_episode_id = _append_episode(TacticalStore(_paths(reference_path)), raw)
+    episode_data = dict(_events(reference_path)[0]["data"])
+    if episode_corruption == "outer_id_alias":
+        receipt_episode_id = "fabricated-episode-alias"
+        episode_data["episode_id"] = receipt_episode_id
+    else:
+        receipt_episode_id = real_episode_id
+        episode_data["registry_key"] = "ETH-USDT|short"
+
+    store = TacticalStore(_paths(tmp_path))
+    store.append("episode_assigned", episode_data, emitted_at=999.0)
+    message_id = f"msg-malformed-prefix-{receipt_kind}-{episode_corruption}"
+    intent = None
+    if receipt_kind == "accepted":
+        intent = _append_intent_created(
+            store,
+            raw,
+            episode_id=receipt_episode_id,
+        )
+        receipt = _candidate_receipt(raw, intent, message_id=message_id)
+    else:
+        receipt = {
+            **_rejected_candidate_receipt(
+                raw,
+                message_id=message_id,
+                reason="duplicate_episode",
+            ),
+            "episode_id": receipt_episode_id,
+        }
+    receipt_event = store.append(
+        "candidate_handled",
+        receipt,
+        emitted_at=1000.0,
+    )
+    original_events = _events(tmp_path)
+
+    controller = _controller(tmp_path)
+    replayed = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id=message_id,
+        replayed=True,
+    )
+    snapshot = controller.snapshot(now=1001.0)
+
+    assert replayed.reason == "unknown_handling_evidence"
+    assert snapshot["candidate_handling"]["receipt_count"] == 0
+    assert snapshot["integrity_halt"]["reason"] == "candidate_receipt_invalid"
+    assert snapshot["integrity_halt"]["incident_id"] == receipt_event["event_id"]
+    assert snapshot["integrity_halt"]["evidence"]["validation_error"] == (
+        "accepted_episode_mismatch"
+        if receipt_kind == "accepted"
+        else "rejected_episode_mismatch"
+    )
+    if intent is not None:
+        assert snapshot["intents"][0]["handling_evidence"] == (
+            "unknown_handling_evidence"
+        )
+    assert _events(tmp_path) == original_events
+    assert _controller(tmp_path).snapshot(now=1001.0)["integrity_halt"] == (
         snapshot["integrity_halt"]
     )
 

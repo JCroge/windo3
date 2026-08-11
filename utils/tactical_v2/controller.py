@@ -29,7 +29,7 @@ from .governor import TacticalGovernor, is_complete_integrity_proof
 from .models import TACTICAL_V2_ENTRY_TTL_SECONDS, TacticalCandidate, TacticalIntent
 from .shadow import ShadowAdapter
 from .status import STATUS_REFRESH_SECONDS, build_status_snapshot, write_status
-from .store import TacticalStore
+from .store import TacticalStore, TacticalStoreIntegrityError
 
 
 ENTRY_VISIBILITY_GRACE_SECONDS = 15.0
@@ -197,12 +197,20 @@ class TacticalV2Controller:
         self._handled_message_identity_conflicts = set()
         self._receipt_intent_ids = set()
         self._candidate_handling_gaps: Dict[str, Dict[str, Any]] = {}
+        self._pending_candidate_handling_gap_evidence: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
         self._unknown_replays: Dict[str, CandidateHandlingResult] = {}
         self._candidate_payload_integrity_rejections: Dict[
             str,
             Dict[str, Any],
         ] = {}
         self._candidate_payload_integrity_message_ids: set[str] = set()
+        self._pending_candidate_payload_integrity_evidence: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
         self._episode_outcomes: Dict[str, int] = {}
         self._parity_mismatches = 0
         self._last_status_write_at = 0.0
@@ -221,6 +229,7 @@ class TacticalV2Controller:
     ) -> CandidateHandlingResult:
         evaluated_at = float(self.now_fn()) if now is None else float(now)
         receipt_context = self._candidate_receipt_context(raw, message_id=message_id)
+        self._retry_pending_candidate_evidence(receipt_context)
         if self._candidate_payload_identity_is_rejected(receipt_context):
             return CandidateHandlingResult(False, "unknown_handling_evidence")
         if self._candidate_receipt_identity_is_quarantined(receipt_context):
@@ -566,20 +575,30 @@ class TacticalV2Controller:
             "validation_error": str(context.get("payload_identity_error")),
             "recorded_at": float(evaluated_at),
         }
-        try:
-            self.store.append(
-                "candidate_payload_integrity_rejected",
-                evidence,
-                emitted_at=evaluated_at,
-            )
-        except Exception as exc:
-            self._log_warning(
-                "candidate payload integrity evidence append failed: %s",
-                exc,
-            )
-        self._apply_candidate_payload_integrity_rejection(evidence)
+        self._persist_candidate_payload_integrity_rejection(evidence)
         self._refresh_status(force=True, now=evaluated_at)
         return CandidateHandlingResult(False, "unknown_handling_evidence")
+
+    def _persist_candidate_payload_integrity_rejection(
+        self,
+        evidence: Mapping[str, Any],
+    ) -> None:
+        identity = str(evidence["identity"])
+        try:
+            event = self._append_idempotent_evidence(
+                "candidate_payload_integrity_rejected",
+                evidence,
+                emitted_at=float(evidence["recorded_at"]),
+                identity={"identity": identity},
+            )
+        except Exception:
+            self._pending_candidate_payload_integrity_evidence.setdefault(
+                identity,
+                dict(evidence),
+            )
+            raise
+        self._pending_candidate_payload_integrity_evidence.pop(identity, None)
+        self._apply_candidate_payload_integrity_rejection(event["data"])
 
     def _apply_candidate_payload_integrity_rejection(
         self,
@@ -672,6 +691,7 @@ class TacticalV2Controller:
     ) -> None:
         identity = self._candidate_handling_identity(raw)
         if identity in self._candidate_handling_gaps:
+            self._pending_candidate_handling_gap_evidence.pop(identity, None)
             return
         gap = {
             "candidate_id": raw.get("candidate_id"),
@@ -680,15 +700,141 @@ class TacticalV2Controller:
             "episode_id": self._optional_text(episode_id),
         }
         try:
-            self.store.append(
+            event = self._append_idempotent_evidence(
                 "candidate_handling_gap_recorded",
                 gap,
                 emitted_at=recorded_at,
+                identity={
+                    "candidate_id": gap["candidate_id"],
+                    "message_id": gap["message_id"],
+                    "payload_hash": gap["payload_hash"],
+                    "episode_id": gap["episode_id"],
+                },
             )
         except Exception:
-            self._remember_candidate_handling_gap(gap, episode_id=episode_id)
+            self._pending_candidate_handling_gap_evidence.setdefault(
+                identity,
+                {
+                    "data": gap,
+                    "recorded_at": float(recorded_at),
+                },
+            )
             raise
-        self._remember_candidate_handling_gap(gap, episode_id=episode_id)
+        self._pending_candidate_handling_gap_evidence.pop(identity, None)
+        self._remember_candidate_handling_gap(
+            event["data"],
+            episode_id=self._optional_text(event["data"].get("episode_id")),
+        )
+
+    def _retry_pending_candidate_evidence(
+        self,
+        context: Mapping[str, Any],
+    ) -> None:
+        handling_identity = self._candidate_handling_identity(context)
+        pending_gap = self._pending_candidate_handling_gap_evidence.get(
+            handling_identity
+        )
+        if pending_gap is not None:
+            gap = pending_gap["data"]
+            self._persist_candidate_handling_gap(
+                gap,
+                episode_id=self._optional_text(gap.get("episode_id")),
+                recorded_at=float(pending_gap["recorded_at"]),
+            )
+
+        message_id = self._optional_text(context.get("message_id"))
+        payload_identity = (
+            f"message:{message_id}"
+            if message_id
+            else (
+                self._untrusted_candidate_payload_identity(context)
+                if context.get("payload_identity_error") is not None
+                else None
+            )
+        )
+        if payload_identity is None:
+            return
+        pending_payload = self._pending_candidate_payload_integrity_evidence.get(
+            payload_identity
+        )
+        if pending_payload is not None:
+            self._persist_candidate_payload_integrity_rejection(
+                pending_payload
+            )
+
+    def _append_idempotent_evidence(
+        self,
+        event_type: str,
+        data: Mapping[str, Any],
+        *,
+        emitted_at: float,
+        identity: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        event_id = self._evidence_event_id(event_type, identity)
+        committed = self._committed_evidence_event(
+            event_id,
+            event_type=event_type,
+            identity=identity,
+        )
+        if committed is not None:
+            return committed
+
+        for attempt in range(2):
+            try:
+                return self.store.append(
+                    event_type,
+                    data,
+                    emitted_at=emitted_at,
+                    event_id=event_id,
+                )
+            except Exception:
+                committed = self._committed_evidence_event(
+                    event_id,
+                    event_type=event_type,
+                    identity=identity,
+                )
+                if committed is not None:
+                    return committed
+                if attempt == 1:
+                    raise
+        raise AssertionError("unreachable evidence append retry")
+
+    def _committed_evidence_event(
+        self,
+        event_id: str,
+        *,
+        event_type: str,
+        identity: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        for event in self.store.read_events():
+            if event.get("event_id") != event_id:
+                continue
+            data = event.get("data") or {}
+            if event.get("event_type") != event_type or any(
+                data.get(key) != value for key, value in identity.items()
+            ):
+                raise TacticalStoreIntegrityError(
+                    "deterministic evidence event_id collision"
+                )
+            return event
+        return None
+
+    @staticmethod
+    def _evidence_event_id(
+        event_type: str,
+        identity: Mapping[str, Any],
+    ) -> str:
+        encoded = json.dumps(
+            {
+                "event_type": event_type,
+                "identity": dict(identity),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def _unreceipted_intent_for_candidate(
         self,
@@ -4271,17 +4417,106 @@ class TacticalV2Controller:
         except Exception as exc:
             self._log_warning("Tactical V2 status refresh failed: %s", exc)
 
+    def _apply_episode_prefix_event(
+        self,
+        episode_prefix: Dict[str, Dict[str, Any]],
+        *,
+        event_type: str,
+        data: Mapping[str, Any],
+    ) -> None:
+        state = data.get("registry_state")
+        if not isinstance(state, Mapping):
+            return
+        outer_episode_id = data.get("episode_id")
+        inner_episode_id = state.get("episode_id")
+        if (
+            not isinstance(outer_episode_id, str)
+            or not outer_episode_id
+            or outer_episode_id != outer_episode_id.strip()
+            or not isinstance(inner_episode_id, str)
+            or inner_episode_id != outer_episode_id
+        ):
+            return
+        namespace = state.get("namespace")
+        symbol = state.get("symbol")
+        side = state.get("side")
+        epoch_seq = state.get("epoch_seq")
+        registry_key = data.get("registry_key")
+        if (
+            not isinstance(namespace, str)
+            or namespace.strip().lower() != self.namespace
+            or not isinstance(symbol, str)
+            or not isinstance(side, str)
+            or side not in {"long", "short"}
+            or isinstance(epoch_seq, bool)
+            or not isinstance(epoch_seq, int)
+            or epoch_seq < 1
+        ):
+            return
+        try:
+            normalized_symbol = to_internal(symbol)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if (
+            symbol != normalized_symbol
+            or registry_key != f"{normalized_symbol}|{side}"
+            or outer_episode_id
+            != self._restored_episode_id(
+                normalized_symbol,
+                side,
+                epoch_seq,
+            )
+        ):
+            return
+        normalized_state = dict(state)
+        normalized_state["namespace"] = self.namespace
+        normalized_state["symbol"] = normalized_symbol
+        normalized_state["side"] = side
+        if event_type == "episode_assigned":
+            episode_prefix[outer_episode_id] = normalized_state
+        elif outer_episode_id in episode_prefix:
+            previous = episode_prefix[outer_episode_id]
+            if (
+                previous.get("symbol") == normalized_symbol
+                and previous.get("side") == side
+            ):
+                episode_prefix[outer_episode_id] = normalized_state
+
+    def _restored_episode_id(
+        self,
+        symbol: str,
+        side: str,
+        epoch_seq: int,
+    ) -> str:
+        encoded = json.dumps(
+            {
+                "namespace": self.namespace,
+                "symbol": symbol,
+                "side": side,
+                "epoch_seq": epoch_seq,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
     def _restore(self) -> None:
         terminal_by_episode: Dict[str, str] = {}
         episode_prefix: Dict[str, Dict[str, Any]] = {}
         for event in self.store.read_events():
             data = event.get("data") or {}
             event_type = event.get("event_type")
-            if event_type == "episode_assigned":
-                state = data.get("registry_state")
-                episode_id = self._optional_text(data.get("episode_id"))
-                if episode_id and isinstance(state, Mapping):
-                    episode_prefix[episode_id] = dict(state)
+            if event_type in {
+                "episode_assigned",
+                "episode_observed",
+                "episode_reset_evidence",
+                "episode_terminal",
+            }:
+                self._apply_episode_prefix_event(
+                    episode_prefix,
+                    event_type=event_type,
+                    data=data,
+                )
             if event_type == "governor_integrity_halted" and (
                 data.get("reason") == "message_identity_conflict"
             ):
