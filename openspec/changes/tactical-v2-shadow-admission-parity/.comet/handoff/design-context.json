@@ -1,0 +1,16 @@
+{
+  "change": "tactical-v2-shadow-admission-parity",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d4a5088ce0eefe14d127b3cb087b47a223e4b40e79c8d9229ab676754c388cfa",
+  "files": [
+    { "path": "openspec/changes/tactical-v2-shadow-admission-parity/proposal.md", "sha256": "4c51859c96d8b16644a65c63d79877f228e6d900fba5875abacac8735e2875a6" },
+    { "path": "openspec/changes/tactical-v2-shadow-admission-parity/design.md", "sha256": "16a6f29168085d9aef9aab37553d02780b0dd08e5f25afbbe41cd517575ba4d9" },
+    { "path": "openspec/changes/tactical-v2-shadow-admission-parity/tasks.md", "sha256": "1bfee15b9d50ef70d5d8b1fb5d7eebda1fd0762d9a884d859d271d73860584ee" },
+    { "path": "openspec/changes/tactical-v2-shadow-admission-parity/specs/tactical-candidate-receipts/spec.md", "sha256": "633acafa38bf6143a770138bace66bb5581fcec5c0e92099c6acc01c01942ead" },
+    { "path": "openspec/changes/tactical-v2-shadow-admission-parity/specs/tactical-intent-lifecycle/spec.md", "sha256": "32302b4c88f4731b4949b0e1290c6e614516133f935d203f39ace44b4d3a19d4" },
+    { "path": "openspec/changes/tactical-v2-shadow-admission-parity/specs/tactical-shadow-admission-parity/spec.md", "sha256": "fba68778ac47740bff3d13384d92d7d03f5c69042f239c2d98494bcbe8c686b4" }
+  ]
+}
