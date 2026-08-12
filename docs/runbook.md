@@ -227,7 +227,7 @@ python3 verify_okx_testnet_real.py        # 真实 OKX testnet T0-T15，2026-05-
 | EV_BUCKET_SPARSE_ALLOW_UPLIFT | 是否允许稀疏 bucket 抬高 p_win（默认禁止，仅允许降低/缩仓） | false | 否 |
 | LADDER_RR_ENABLED | **lever2 逃生阀**（2026-06-17 `trend-entry-levers-default-on`）：阶梯加权 effective_rr 口径（按 executor 真实 50/25/25 离场加权，影响 R:R 地板 gate=多开仓）。**默认开**；设 `false` 即时回退 TP1-only 旧口径（live 决策回滚，无需改代码） | true | 否 |
 | TACTICAL_TRACK_ENABLED | Tactical Exit Track 总开关。`false`=所有候选按 Main/hold 旧行为；`true`=Judge 执行 Main-vs-Tactical 分类 | false | 否 |
-| TACTICAL_SHADOW_ONLY | Tactical 分类只记录 counterfactual，不真开 Tactical。`true` 时合格候选写入 `data/rejected_signal_*`，不发布 live Tactical 订单；首次启用必须保持 `true`，分桶验证后再小额灰度 `false` | true | 否 |
+| TACTICAL_SHADOW_ONLY | Tactical 分类只记录 counterfactual，不真开 Tactical。当前必须保持 `true`：合格候选写入 `data/rejected_signal_*`，不发布 live Tactical 订单。`false` 是历史 legacy live mode，受 2026-08-12 NO-GO gate 禁止，严禁设置 | true | 否 |
 | MAIN_QUALITY_GATE_ENABLED | Main Trend quality gate。开启后强趋势候选才留 Main，弱/混合但方向有效的候选才可能降级 Tactical | true | 否 |
 | MAIN_QUALITY_MIN_PROVENANCE | Main quality gate 对数据 provenance 的最低要求；低于一半阈值直接 shadow-only | 0.20 | 否 |
 | MAIN_QUALITY_BLOCK_LLM_REVERSAL | LLM 明确反向/反转风险时阻止留在 Main | true | 否 |
