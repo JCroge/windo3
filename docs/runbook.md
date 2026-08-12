@@ -68,12 +68,16 @@ kill -SIGINT $(pgrep -f run_agents.py)
 Sidecar 只用于镜像 strict eligible Tactical shadow 记录，写 `data/shadow_tactical_live_*` 专属状态，不应修改 Main `.env` 或重启 Main。**当前线上 admission 已关闭，仅保留 resident monitor 管理历史 owner；不得直接执行 `run` 恢复新开仓。** OKX `net_mode` 下同标的堆叠会被阻断；ghost exposure 会 fail-closed 并要求人工处理。
 
 ```bash
+# 当前允许：只读状态、维持 admission 关闭、生成 drain report
 python3 scripts/shadow_tactical_live_sidecar.py status
-python3 scripts/shadow_tactical_live_sidecar.py run --duration-hours 24 --size-usdt 100 --max-active 3
 python3 scripts/shadow_tactical_live_sidecar.py stop-admission
 python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live
+# 仅当 drain-report complete=true 时允许 archive
 python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live --archive
+# 仅当 exchange-flat、无 owner exposure/pending 且无需 resident monitor 时允许 stop
 python3 scripts/shadow_tactical_live_sidecar.py stop
+# PROHIBITED while admission_enabled=false; do not run or enable admission:
+# python3 scripts/shadow_tactical_live_sidecar.py run --duration-hours 24 --size-usdt 100 --max-active 3
 ```
 
 `--duration-hours` 已废弃，不会让 resident monitor 自动退出。`stop-admission` 与 runner 的单条候选处理共用 `<state>.lock`：命令会等待已进入交易所 I/O 的当前 admission attempt 完成，再持久化 `admission_enabled=false`；命令成功返回后，runner 每条 event 都会重读该状态，不得再开新仓或把 `false` 覆盖回 `true`。之后 monitor 仍继续管理并退出 owner-bound 旧仓。只有 `drain-report` 显示 `complete=true` 时才允许加 `--archive`；unknown exchange state、pending entry、open owner、保护单歧义或未说明的 pending PnL 都必须保持 incomplete。续跑前先确认 `status` 里 active 合理，并检查 `data/shadow_tactical_live_events.jsonl` 没有 `monitor_ghost_exposure` 或 `monitor_ambiguous_net_mode_stack`。
@@ -295,25 +299,26 @@ Tactical 是 Main Trend Runner 之外的短线落袋轨道。它不复用 Main l
 
 `TACTICAL_SHADOW_ONLY=true` 时，系统不会生成 live Tactical 订单，也不是 PaperExecutor 影子持仓；Judge 会通过 `_apply_tactical_shadow_profile` 生成“如果真开 Tactical 会使用的” counterfactual plan，并写入 `data/rejected_signal_events.jsonl` 与 `data/rejected_signal_lifecycle.json`。true-open 样本应带 `track=tactical`、`exit_profile=tactical_v1`、`tactical_cost_gate=pass`、`tactical_track_gate=pass`、`tactical_max_hold_minutes=90`；成本门通过但 RR/EV 阈值门失败的候选会保留 `track=shadow_only` / `exit_profile=tactical_v1` 继续做 90 分钟 max-hold counterfactual，不计入“会真开 Tactical”的盈利样本；成本门失败则为 `track=shadow_only` / `exit_profile=none`。
 
-`TACTICAL_SHADOW_ONLY=false` 时，合格 Tactical 会进入 live 执行链路；仍必须通过全局订单预检、Tactical risk gate 和保护单完整性检查。Tactical circuit 暂停只阻止 Tactical 新开仓，不等同全局 halt；全局保护单/执行完整性失败仍可停全系统。
+旧的 Tactical live 分支曾在 `TACTICAL_SHADOW_ONLY=false` 时进入 live 执行链路；该分支在当前 2026-08-12 gate 下为历史行为，禁止启用。Tactical circuit 暂停只阻止 Tactical 新开仓，不等同全局 halt；全局保护单/执行完整性失败仍可停全系统。
 
 `TACTICAL_TP1_R=1.00` 表示 TP1 距离为 1 倍 Tactical stop 距离；若原 Main TP1 更近，则使用更近的 Main TP1 作为上限。
 
-**上线顺序**：
+**历史上线顺序（已完成；非当前操作指引，2026-08-12 NO-GO gate 优先；不要复制或执行）**：
 
 ```bash
 # 1. 只打开分类与 Tactical counterfactual 记录，不真开 Tactical
-TACTICAL_TRACK_ENABLED=true
-TACTICAL_SHADOW_ONLY=true
-TACTICAL_MIN_RR_FOR_TRACK=0.75
-TACTICAL_MIN_EV_FOR_TRACK=-0.04
+# TACTICAL_TRACK_ENABLED=true
+# TACTICAL_SHADOW_ONLY=true
+# TACTICAL_MIN_RR_FOR_TRACK=0.75
+# TACTICAL_MIN_EV_FOR_TRACK=-0.04
 
 # 2. 重启后观察 rejected_signal_* 里的 Tactical counterfactual
-python3 -m pytest -q test_tactical_*.py tests/test_tactical_wld_replay.py
+# python3 -m pytest -q test_tactical_*.py tests/test_tactical_wld_replay.py
 
-# 3. 只有 shadow/replay 分桶达标后，再小额灰度真开
-TACTICAL_TRACK_ENABLED=true
-TACTICAL_SHADOW_ONLY=false
+# 3. 历史步骤，仅供审计上下文；当前 gate 禁止任何 live admission
+# TACTICAL_TRACK_ENABLED=true
+# PROHIBITED / no-op under the current gate; do not set live admission:
+# TACTICAL_SHADOW_ONLY=false
 ```
 
 **回滚**：
@@ -346,7 +351,7 @@ TACTICAL_SHADOW_ONLY=true
 本地重放命令（默认 100 次稳定性循环）：
 
 ```bash
-/usr/local/anaconda3/bin/python3.12 scripts/replay_tactical_v2_admission.py --fixture tests/fixtures/tactical_v2_shadow_admission_window.json
+python3.12 scripts/replay_tactical_v2_admission.py --fixture tests/fixtures/tactical_v2_shadow_admission_window.json
 ```
 
 成功结果必须同时满足：22 个 raw candidate（BICO 18、PUMP 4；6 个 unique candidate ID）归一化为 accepted 5（BICO 3、PUMP 2）、`duplicate_episode=17`、other rejected 0、normalized replay `unknown=0`，且 100 次循环的 identities/reasons 与 fixture fingerprint 稳定。历史 V2 persisted intent 只有 3 个且全为 BICO；但 22 个 source candidate 都早于 durable `candidate_handled` receipt，因此 historical receipt evidence 必须单列为 `unknown=22`，不得因 replay `unknown=0` 推断它们已消费或丢失。
@@ -355,9 +360,9 @@ PUMP 根因是 terminal episode 后出现 neutral、available/unblocked 且带�
 
 5 个 accepted candidate 的 entry-decision check 使用 recorded journal evaluation time 和 synthetic `bid=ask=entry_ref`，仅证明 shared entry reducer、governor capacity 与 900 秒 TTL 行为。必须保持以下限制：`historical_executable_quote_available=false`（PUMP 无历史 bid/ask）、`exchange_fill=false`、`protection_evidence_proven=false`、`protection_check_status=not_run_no_fill`、`live_rollout_ready=false`。synthetic terminal episode boundary 只做 admission normalization，不代表 market fill 或 settlement。
 
-收益只能按 counterfactual scalar plan return 报告：22 个 Legacy Shadow row 为 18 TP / 4 SL、row win rate `81.82%`、合计 `+32.4530%`；5 个 normalized opportunity 为 4 TP / 1 SL、opportunity win rate `80%`、合计 `+6.9621%`。不得称为 exchange fill、realized USDT PnL 或 settlement parity。
+收益只能按 audit worksheet/source aggregation 报告，不是 `scripts/replay_tactical_v2_admission.py` 的输出：read-only cloud source `/opt/crypto-arbitrage/data/rejected_signal_events.jsonl` 在 epoch `1786183980..1786443180` 内按 `shadow_tp`/`shadow_sl` 记录分组，得到 22 个 Legacy Shadow row 的 18 TP / 4 SL、row win rate `81.82%`；row return 为 `sum(pnl_pct) / 100 = +32.4530%`。归一化 opportunity 每个 normalized structural opportunity 只选一个 representative，得到 4 TP / 1 SL、opportunity win rate `80%`，scalar return 合计 `+6.9621%`。本地测试不重新拉取 cloud。不得称为 exchange fill、realized USDT PnL 或 settlement parity。
 
-审计窗口为 epoch `1786183980..1786443180`（2026-08-08 10:13 UTC 至 2026-08-11 10:13 UTC）。cloud source 只能 read-only 收集；实现、replay 和测试必须 local、network-denied、temp-root-only，不得访问或修改 cloud/production data。该 change/branch 的 Python 3.12 验证为 focused Tactical V2 `482 passed`、full repository `2143 passed, 4 deselected, 576 warnings`、network/temp isolation `2 passed, 80 deselected`；这些计数不是 main-branch baseline。
+审计窗口为 epoch `1786183980..1786443180`（2026-08-08 10:13 UTC 至 2026-08-11 10:13 UTC）。cloud source 只能 read-only 收集；实现、replay 和测试必须 local、network-denied、temp-root-only，不得访问或修改 cloud/production data。该 change/branch 的 Python 3.12 验证为 focused Tactical V2 `482 passed`、full repository `2143 passed, 4 deselected, 576 warnings`、network/temp isolation `2 passed, 80 deselected`；本次验证主机实际使用 `/usr/local/anaconda3/bin/python3.12`，这些计数不是 main-branch baseline。
 
 V2 不会重新启用旧的 `TACTICAL_SHADOW_ONLY=false` live 分支。Judge 在 Shadow Tactical 分类点生成固定计划，V2 再按 `100U`、最多 5x 的 full-TP1 净成本口径复核 cost coverage、RR 和 EV；合格计划冻结为 `tactical_intent.v2`，后续 Main 不得重算 entry/SL/TP。相同 symbol/side/15m structure epoch 只允许一次 attempt，capacity skip、account reject、miss、cancel 或 close 都会消费该 episode，释放槽位也不回填旧信号。
 
@@ -369,30 +374,31 @@ V2 风控只暂停新开：滚动 24h final PnL `<= -15U`，或 3 次连续 fina
 
 `entry_reconciliation_unknown` 和 `entry_cancel_unproven` 会由 Main 每 30 秒重做一次精确 `clOrdId` 证明；这是证据驱动的自愈，不是计时自动解除。任一 owner/order/position/quantity/TP/SL 不完整都必须继续 halt，且复查绝不得重提 entry。`entry_cancel_unproven` 必须保留原 cancel reason，后续仍见 open order 时继续撤单，不能退回普通 `pending_entry`；已被交易所终态取消且 `remaining_qty=0` 的订单必须收敛为 terminal `expired`。final PnL 先落 durable outbox 再发 bus，未 ack 会在重启后重发；无 `pnl_delivery_required` 的历史 correction 也必须先让 intent 收敛到 `closed_final`，再写 migration ack。governor/Reviewer/Judge 按 `resolution_id` 去重，但在“TG 已收到、outbox ack 尚未落盘”的崩溃窗口仍可能重复一次 TG 通知。
 
-**历史部署与切换顺序（已完成）**：
+**历史部署与切换顺序（已完成；非当前操作指引，2026-08-12 NO-GO gate 优先；不要复制或执行）**：
 
 ```bash
 # 1. 历史步骤：先跑 V2 shadow；sidecar 暂时保持 admission，便于同窗对照
-TACTICAL_TRACK_ENABLED=true
-TACTICAL_SHADOW_ONLY=true
-TACTICAL_V2_MODE=shadow
-BOT_INSTANCE_ID=main01
-SIDECAR_BOT_INSTANCE_ID=stlive
+# TACTICAL_TRACK_ENABLED=true
+# TACTICAL_SHADOW_ONLY=true
+# TACTICAL_V2_MODE=shadow
+# BOT_INSTANCE_ID=main01
+# SIDECAR_BOT_INSTANCE_ID=stlive
 
 # 2. 至少采集 24h executable bid/ask 生命周期和 parity 证据
-python3 scripts/replay_tactical_v2.py \
-  --fixture tests/fixtures/tactical_v2_reproduced_window.json
+# python3 scripts/replay_tactical_v2.py \
+#   --fixture tests/fixtures/tactical_v2_reproduced_window.json
 
 # 3. 停止 sidecar 新开，但保持 resident monitor 管理旧 owner exposure
-python3 scripts/shadow_tactical_live_sidecar.py stop-admission
-python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live
+# python3 scripts/shadow_tactical_live_sidecar.py stop-admission
+# python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live
 
 # 4. 只有 report complete=true 才归档；归档失败不得开启 live
-python3 scripts/shadow_tactical_live_sidecar.py \
-  drain-report --namespace live --archive
+# python3 scripts/shadow_tactical_live_sidecar.py \
+#   drain-report --namespace live --archive
 
-# 5. retirement proof 验证通过后切换 live（当前线上已完成）
-TACTICAL_V2_MODE=live
+# 5. 历史切换步骤（当时已完成）；当前 gate 下禁止重新执行
+# PROHIBITED / no-op under the current gate:
+# TACTICAL_V2_MODE=live
 ```
 
 shadow 观察至少记录开始/结束时间、重启次数、intent/episode 数、filled/non-filled、stale/invalid quote、parity category、snapshot freshness 和 integrity event。历史旧账本没有 bid/ask 或 15m token 的窗口只能标为不可执行回放，禁止补造价格。首轮少于 30 个 final episode 时只报告样本不足，不能据此扩仓或用旧 143 条重复 row 当作 143 笔交易。

@@ -1,7 +1,7 @@
 # To-Do List
 
 更新日期：2026-08-12
-Tactical V2 代码基线：`884ba60`；最新全量回归 `1878 passed, 4 deselected`。
+2026-08-06 deployed-main baseline (pre-change)：Tactical V2 代码基线 `884ba60`；当时全量回归 `1878 passed, 4 deselected`。这不是本 change/branch 的最新验证结果。
 
 > **基线与逐 change 历史以 `CLAUDE.md` 顶部「当前事实」段为权威单一来源**，完整逐基线里程碑见 `docs/handoff.md`。本文件不再内联复制 change changelog（曾累积漂移至 1338，已于 2026-06-26 收口），只维护**当前阻断项、Go/No-Go、后续 P2 优化**。
 
@@ -55,7 +55,7 @@ Tactical V2 代码基线：`884ba60`；最新全量回归 `1878 passed, 4 desele
 
 **审计边界与原始观察**：
 
-- 审计窗口为 epoch `1786183980..1786443180`，即 2026-08-08 10:13 UTC 至 2026-08-11 10:13 UTC。源数据只以 read-only 方式从 cloud 收集；实现和测试只使用本地固定 fixture，不访问 cloud。
+- 审计窗口为 epoch `1786183980..1786443180`，即 2026-08-08 10:13 UTC 至 2026-08-11 10:13 UTC。源观察和收益聚合来自 read-only cloud source `/opt/crypto-arbitrage/data/rejected_signal_events.jsonl`；本地实现、replay 和测试只使用固定 fixture，不重新拉取 cloud。
 - Legacy Shadow 原始候选共 22 row：BICO 18、PUMP 4；归一化前共有 6 个 unique candidate ID。历史 V2 持久化 intent 共 3 个，全部为 BICO。
 - 这 22 个 source candidate 早于 durable `candidate_handled` receipt。22/22 的历史 handling receipt evidence 均为 `unknown`；不得据此推断候选已消费、丢失或未处理。
 
@@ -77,18 +77,20 @@ Tactical V2 代码基线：`884ba60`；最新全量回归 `1878 passed, 4 desele
 
 - 5 个 accepted normalized candidate 使用 journal 记录的 evaluation time，并令 synthetic `bid=ask=entry_ref`，均通过 shared entry reducer、governor capacity 与 900 秒 TTL。这只证明 reducer 行为；synthetic terminal episode boundary 也只用于 admission normalization，不是 market fill 或 settlement。
 - `historical_executable_quote_available=false`，且 PUMP 没有历史 bid/ask 证据；`exchange_fill=false`；`protection_evidence_proven=false`，protection check status 为 `not_run_no_fill`；`live_rollout_ready=false`。
-- Legacy Shadow 原始 row 的反事实结果为 18 TP / 4 SL，row win rate `81.82%`，scalar plan return 合计 `+32.4530%`。归一化 opportunity 为 4 TP / 1 SL，opportunity win rate `80%`，scalar plan return 合计 `+6.9621%`。两组都是 scalar-price counterfactual plan return，不是 exchange fill、realized USDT PnL 或 settlement parity。
+- 收益数字是 audit worksheet/source aggregation，不由 `scripts/replay_tactical_v2_admission.py` 输出：read-only cloud source `/opt/crypto-arbitrage/data/rejected_signal_events.jsonl` 在 epoch `1786183980..1786443180` 内按 `shadow_tp`/`shadow_sl` 记录分组得到原始 row 结果 18 TP / 4 SL、row win rate `81.82%`，row return 为 `sum(pnl_pct) / 100 = +32.4530%`；归一化 opportunity 每个 normalized structural opportunity 只选一个 representative，得到 4 TP / 1 SL、opportunity win rate `80%`，scalar return 合计 `+6.9621%`。本地测试不重新拉取 cloud。两组都是 scalar-price counterfactual plan return，不是 exchange fill、realized USDT PnL 或 settlement parity。
 
 **本 change/branch 本地验证**（不替代文件顶部 main-branch baseline）：
 
 - Python 3.12 focused Tactical V2 suite：`482 passed`。
 - Python 3.12 full repository suite：`2143 passed, 4 deselected, 576 warnings`。
 - network/temp isolation：`2 passed, 80 deselected`；测试为 network-denied、temp-root-only，不修改 cloud 或 production data。
-- admission replay 默认 100 次，exit 0；`compileall` exit 0。重放命令：
+- admission replay 默认 100 次，exit 0；`compileall` exit 0。操作员命令（使用环境中的 Python 3.12）：
 
 ```bash
-/usr/local/anaconda3/bin/python3.12 scripts/replay_tactical_v2_admission.py --fixture tests/fixtures/tactical_v2_shadow_admission_window.json
+python3.12 scripts/replay_tactical_v2_admission.py --fixture tests/fixtures/tactical_v2_shadow_admission_window.json
 ```
+
+本次 change/branch 验证主机实际使用 `/usr/local/anaconda3/bin/python3.12`。
 
 ## 第五次审计阻断（处理中）
 
