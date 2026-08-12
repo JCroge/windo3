@@ -105,8 +105,8 @@ Judge
   -> Executor receives candidate(msg_id)
   -> Controller validates candidate
   -> EpisodeRegistry assigns/renews episode
-  -> candidate_handled receipt
   -> intent_created (accepted path)
+  -> candidate_handled receipt
   -> V2 executable bid/ask reducer
   -> live exchange or shared V2 ShadowAdapter
 ```
