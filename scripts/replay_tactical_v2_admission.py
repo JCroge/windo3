@@ -29,6 +29,23 @@ from utils.tactical_v2.store import TacticalStore  # noqa: E402
 
 SYNTHETIC_BOUNDARY_REASON = "synthetic_admission_window_opportunity_boundary"
 STABILITY_FIELDS = ("accepted_identities", "episode_ids", "row_reasons")
+PARITY_PROJECTION_FIELDS = (
+    "raw_candidates",
+    "accepted",
+    "accepted_by_symbol",
+    "reasons",
+    "accepted_reasons",
+    "rejected",
+    "unknown",
+    "accepted_identities",
+    "episode_ids",
+    "entry_decision_checks",
+)
+REPLAY_EVIDENCE_PROJECTION_FIELDS = PARITY_PROJECTION_FIELDS + (
+    "row_reasons",
+    "source_shadow_ids",
+    "source_evidence_payload_hashes",
+)
 EXPECTED_SCHEMA_VERSION = 1
 EXPECTED_TOPIC = "tactical_candidate.v2"
 EXPECTED_WINDOW_START = 1786183980
@@ -36,6 +53,15 @@ EXPECTED_WINDOW_END = 1786443180
 EXPECTED_CANDIDATE_COUNT = 22
 PINNED_FIXTURE_SHA256 = (
     "65dd6e2f3cd21dd1aaa9d163126c818f0a0db8f92997d80f24e548f44e72fa5f"
+)
+PINNED_PARITY_SHA256 = (
+    "d3cd2fe742b5bae5dafa1e018d007bb431d4f2314bcb13c31508e3697c0d02f5"
+)
+PINNED_REPLAY_EVIDENCE_SHA256 = (
+    "897580be19ba533e1a6b0bf4877d85ccbecf572143f23f35d1e83a8150499cd3"
+)
+PINNED_STABILITY_SHA256 = (
+    "73175bcdd2435db7c7be81f242be5264390acc318655c8c7cd758dd293ca2ab0"
 )
 FIXTURE_ROOT_FIELDS = frozenset({
     "schema_version",
@@ -114,6 +140,54 @@ EXPECTED_EPISODE_IDS = (
     "96ee7827c312372cf15c241bf3f990c0fc14fe434138f98614a2df389da8b382",
     "69cd302eac72ba654afccd84797b20ab27722fabb343e979b1f43af6460c848d",
 )
+EXPECTED_SOURCE_SHADOW_IDS = (
+    "d1e7880d",
+    "e75637c6",
+    "15cf7200",
+    "fc579a9b",
+    "f978fd43",
+    "d8dc7fca",
+    "2a3aae8c",
+    "f8a09aaa",
+    "dfb3ab09",
+    "bf64ccac",
+    "80a92cd8",
+    "1054371e",
+    "a86ae45a",
+    "3bce3dd2",
+    "b1863929",
+    "62bb7dda",
+    "ad899485",
+    "ae3aa4b1",
+    "d8e48042",
+    "ba2a1cd4",
+    "72524a13",
+    "90de5091",
+)
+EXPECTED_SOURCE_EVIDENCE_HASHES = (
+    "e0f2281a7717",
+    "f1beec6efcf1",
+    "3a0de78789cf",
+    "d9db09d56c4c",
+    "4b0add3b6efe",
+    "8d1502040f00",
+    "5f7ca11d4485",
+    "ecb06d6b7ae0",
+    "1c2983da430e",
+    "857ad0512e8c",
+    "415998e81eff",
+    "92a136cb30e2",
+    "c4712ea77187",
+    "08b7b05c6048",
+    "e498c34ff9a9",
+    "698b723b9e8e",
+    "56c3158c0050",
+    "bb1356709a71",
+    "a4db65634048",
+    "9fa2556efac9",
+    "80534592ec6d",
+    "054c4cf96d78",
+)
 
 
 class OpportunityEvidenceError(ValueError):
@@ -128,6 +202,21 @@ class _CandidateRow:
     raw: dict[str, Any]
     candidate: TacticalCandidate
     opportunity: tuple[Any, ...]
+
+
+def _projection_fingerprint(source: Any, fields: Sequence[str]) -> str:
+    projection = {
+        field: source[field] if isinstance(source, Mapping) else getattr(source, field)
+        for field in fields
+    }
+    encoded = json.dumps(
+        projection,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -162,19 +251,107 @@ class AdmissionReplayReport:
     protection_check_status: str
     protection_live_rollout_gate_passed: bool
     live_rollout_ready: bool
-    parity_expected_values_passed: bool
-    replay_integrity_passed: bool
-    stability_requirement_passed: bool
+
+    @property
+    def parity_expected_values_passed(self) -> bool:
+        try:
+            accepted_identity_pairs = tuple(
+                (row["candidate_id"], row["source_shadow_id"])
+                for row in self.accepted_identities
+            )
+            identity_episode_pairs = tuple(
+                (row["candidate_id"], row["episode_id"])
+                for row in self.accepted_identities
+            )
+            identity_episode_ids = tuple(
+                row["episode_id"] for row in self.accepted_identities
+            )
+            check_episode_pairs = tuple(
+                (check["candidate_id"], check["episode_id"])
+                for check in self.entry_decision_checks
+            )
+            checks_are_admitted = len(self.entry_decision_checks) == 5 and all(
+                isinstance(check, Mapping)
+                and check.get("label") == "entry-decision check"
+                and check.get("quote_evidence") == "synthetic"
+                and check.get("synthetic_quote_role") == "reducer_boundary_only"
+                and check.get("observed_at") == check.get("evaluated_at")
+                and check.get("action") == "immediate"
+                and check.get("reason") == "within_entry_drift"
+                and check.get("ttl_fresh") is True
+                and check.get("governor_allowed") is True
+                and check.get("governor_reason") == "admitted"
+                for check in self.entry_decision_checks
+            )
+            return bool(
+                self.raw_candidates == EXPECTED_CANDIDATE_COUNT
+                and self.accepted == 5
+                and len(self.accepted_identities) == self.accepted
+                and self.accepted_by_symbol == {"BICO-USDT": 3, "PUMP-USDT": 2}
+                and self.reasons == {"duplicate_episode": 17}
+                and self.accepted_reasons == {
+                    "eligible": 3,
+                    "new_confirmed_structure": 2,
+                }
+                and self.rejected == 0
+                and self.unknown == 0
+                and accepted_identity_pairs == EXPECTED_ACCEPTED
+                and tuple(self.episode_ids) == EXPECTED_EPISODE_IDS
+                and identity_episode_ids == tuple(self.episode_ids)
+                and identity_episode_pairs == check_episode_pairs
+                and checks_are_admitted
+                and _projection_fingerprint(self, PARITY_PROJECTION_FIELDS)
+                == PINNED_PARITY_SHA256
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+
+    @property
+    def replay_integrity_passed(self) -> bool:
+        try:
+            return bool(
+                self.fixture_fingerprint == PINNED_FIXTURE_SHA256
+                and self.pinned_fixture_fingerprint_match is True
+                and self.raw_candidates == EXPECTED_CANDIDATE_COUNT
+                and self.unknown == 0
+                and len(self.source_shadow_ids) == EXPECTED_CANDIDATE_COUNT
+                and len(self.source_evidence_payload_hashes)
+                == EXPECTED_CANDIDATE_COUNT
+                and len(self.row_reasons) == EXPECTED_CANDIDATE_COUNT
+                and len(self.accepted_identities) == 5
+                and len(self.episode_ids) == 5
+                and tuple(self.source_shadow_ids) == EXPECTED_SOURCE_SHADOW_IDS
+                and tuple(self.source_evidence_payload_hashes)
+                == EXPECTED_SOURCE_EVIDENCE_HASHES
+                and self.stability_compared_fields == STABILITY_FIELDS
+                and self.stability_fingerprint == PINNED_STABILITY_SHA256
+                and _projection_fingerprint(self, STABILITY_FIELDS)
+                == self.stability_fingerprint
+                and _projection_fingerprint(self, REPLAY_EVIDENCE_PROJECTION_FIELDS)
+                == PINNED_REPLAY_EVIDENCE_SHA256
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+
+    @property
+    def stability_requirement_passed(self) -> bool:
+        try:
+            return bool(
+                self.stable_iterations == 100
+                and self.stability_compared_fields == STABILITY_FIELDS
+                and self.stability_fingerprint == PINNED_STABILITY_SHA256
+                and _projection_fingerprint(self, STABILITY_FIELDS)
+                == self.stability_fingerprint
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
 
     @property
     def admission_replay_passed(self) -> bool:
         return bool(
-            self.parity_expected_values_passed is True
-            and self.replay_integrity_passed is True
-            and self.pinned_fixture_fingerprint_match is True
-            and self.fixture_fingerprint == PINNED_FIXTURE_SHA256
-            and self.stability_requirement_passed is True
-            and self.stable_iterations == 100
+            self.parity_expected_values_passed
+            and self.replay_integrity_passed
+            and self.stability_requirement_passed
             and self.historical_receipt_context == "predates_durable_receipts"
             and self.historical_receipt_evidence == "unknown"
             and self.historical_receipt_unknown
@@ -193,6 +370,9 @@ class AdmissionReplayReport:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        payload["parity_expected_values_passed"] = self.parity_expected_values_passed
+        payload["replay_integrity_passed"] = self.replay_integrity_passed
+        payload["stability_requirement_passed"] = self.stability_requirement_passed
         payload["admission_replay_passed"] = self.admission_replay_passed
         return json.loads(
             json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -350,7 +530,7 @@ def _candidate_rows(
             )
         )
     # Unique msg_id is the explicit final tie-breaker for created/journal ties.
-    return tuple(
+    ordered_rows = tuple(
         sorted(
             rows,
             key=lambda row: (
@@ -360,6 +540,17 @@ def _candidate_rows(
             ),
         )
     )
+    previous_replay_journal_timestamp = None
+    for row in ordered_rows:
+        if (
+            previous_replay_journal_timestamp is not None
+            and row.journal_timestamp <= previous_replay_journal_timestamp
+        ):
+            raise ValueError(
+                "replay-order journal timestamps must be strictly increasing"
+            )
+        previous_replay_journal_timestamp = row.journal_timestamp
+    return ordered_rows
 
 
 def _episode_id_for(namespace: str, symbol: str, side: str, epoch_seq: int) -> str:
@@ -670,33 +861,6 @@ def _stability_serialization(run: Mapping[str, Any]) -> str:
     )
 
 
-def _matches_expected_values(run: Mapping[str, Any]) -> bool:
-    accepted = tuple(
-        (row["candidate_id"], row["source_shadow_id"])
-        for row in run["accepted_identities"]
-    )
-    checks = run["entry_decision_checks"]
-    return bool(
-        run["raw_candidates"] == 22
-        and run["accepted"] == 5
-        and run["accepted_by_symbol"] == {"BICO-USDT": 3, "PUMP-USDT": 2}
-        and run["reasons"] == {"duplicate_episode": 17}
-        and run["rejected"] == 0
-        and run["unknown"] == 0
-        and accepted == EXPECTED_ACCEPTED
-        and tuple(run["episode_ids"]) == EXPECTED_EPISODE_IDS
-        and len(checks) == 5
-        and all(
-            check["action"] == "immediate"
-            and check["reason"] == "within_entry_drift"
-            and check["ttl_fresh"] is True
-            and check["governor_allowed"] is True
-            and check["governor_reason"] == "admitted"
-            for check in checks
-        )
-    )
-
-
 def replay_fixture(
     source: str | Path | Mapping[str, Any],
     *,
@@ -725,19 +889,6 @@ def replay_fixture(
 
     if first_run is None or stable_serialization is None:
         raise RuntimeError("admission replay produced no run")
-    parity_passed = _matches_expected_values(first_run)
-    replay_integrity_passed = bool(
-        pinned_fixture_fingerprint_match
-        and first_run["raw_candidates"]
-        == len(rows)
-        == EXPECTED_CANDIDATE_COUNT
-        and len(first_run["row_reasons"]) == EXPECTED_CANDIDATE_COUNT
-        and len(first_run["source_shadow_ids"]) == EXPECTED_CANDIDATE_COUNT
-        and len(first_run["source_evidence_payload_hashes"])
-        == EXPECTED_CANDIDATE_COUNT
-        and first_run["unknown"] == 0
-    )
-    stability_requirement_passed = iterations == 100
     return AdmissionReplayReport(
         raw_candidates=first_run["raw_candidates"],
         accepted=first_run["accepted"],
@@ -773,9 +924,6 @@ def replay_fixture(
         protection_check_status="not_run_no_fill",
         protection_live_rollout_gate_passed=False,
         live_rollout_ready=False,
-        parity_expected_values_passed=parity_passed,
-        replay_integrity_passed=replay_integrity_passed,
-        stability_requirement_passed=stability_requirement_passed,
     )
 
 

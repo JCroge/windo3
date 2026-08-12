@@ -2,6 +2,8 @@ import json
 import socket
 import subprocess
 import sys
+from copy import deepcopy
+from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +14,13 @@ ROOT = Path(__file__).parents[1]
 FIXTURE = Path(__file__).with_name("fixtures") / "tactical_v2_shadow_admission_window.json"
 DRIVER = ROOT / "scripts" / "replay_tactical_v2_admission.py"
 PINNED_FIXTURE_SHA256 = "65dd6e2f3cd21dd1aaa9d163126c818f0a0db8f92997d80f24e548f44e72fa5f"
+PINNED_PARITY_SHA256 = "d3cd2fe742b5bae5dafa1e018d007bb431d4f2314bcb13c31508e3697c0d02f5"
+PINNED_REPLAY_EVIDENCE_SHA256 = (
+    "897580be19ba533e1a6b0bf4877d85ccbecf572143f23f35d1e83a8150499cd3"
+)
+PINNED_STABILITY_SHA256 = (
+    "73175bcdd2435db7c7be81f242be5264390acc318655c8c7cd758dd293ca2ab0"
+)
 EXPECTED_ROOT_FIELDS = frozenset({
     "schema_version",
     "source_evidence",
@@ -173,9 +182,10 @@ def test_journal_time_beyond_candidate_ttl_fails_admission_expectation():
     from scripts.replay_tactical_v2_admission import replay_fixture
 
     fixture = _fixture()
-    first = fixture["candidates"].pop(0)
+    first = fixture["candidates"][0]
     first["journal_timestamp"] = first["candidate"]["created_at"] + 901.0
-    fixture["candidates"].insert(3, first)
+    for offset, row in enumerate(fixture["candidates"][1:4], start=1):
+        row["journal_timestamp"] = first["journal_timestamp"] + offset
 
     tampered = replay_fixture(fixture)
     failed_check = next(
@@ -191,7 +201,7 @@ def test_journal_time_beyond_candidate_ttl_fails_admission_expectation():
     assert tampered.parity_expected_values_passed is False
     assert tampered.pinned_fixture_fingerprint_match is False
     assert tampered.replay_integrity_passed is False
-    assert tampered.stability_requirement_passed is True
+    assert tampered.stability_requirement_passed is False
     assert tampered.admission_replay_passed is False
 
 
@@ -209,6 +219,10 @@ def test_journal_time_beyond_candidate_ttl_fails_admission_expectation():
         ("created_outside_window", "created_at must be inside"),
         ("journal_outside_window", "journal_timestamp must be inside"),
         ("nonmonotonic_journal", "journal timestamps must be strictly increasing"),
+        (
+            "replay_order_clock_regression",
+            "replay-order journal timestamps must be strictly increasing",
+        ),
         ("duplicate_msg", "duplicate msg_id"),
         ("duplicate_hash", "duplicate source evidence payload hash"),
     ],
@@ -250,6 +264,20 @@ def test_pinned_source_sequence_tampering_fails_before_store(
         fixture["candidates"][0], fixture["candidates"][1] = (
             fixture["candidates"][1], fixture["candidates"][0]
         )
+    elif case == "replay_order_clock_regression":
+        first = fixture["candidates"][0]["candidate"]
+        fixture["candidates"][1]["candidate"]["created_at"] = (
+            first["created_at"] - 1.0
+        )
+        assert all(
+            left["journal_timestamp"] < right["journal_timestamp"]
+            for left, right in zip(fixture["candidates"], fixture["candidates"][1:])
+        )
+        ordered = sorted(
+            fixture["candidates"][:2],
+            key=lambda row: row["candidate"]["created_at"],
+        )
+        assert ordered[0]["journal_timestamp"] > ordered[1]["journal_timestamp"]
     elif case == "duplicate_msg":
         fixture["candidates"][1]["msg_id"] = fixture["candidates"][0]["msg_id"]
     elif case == "duplicate_hash":
@@ -351,13 +379,169 @@ def test_report_separates_admission_integrity_from_live_rollout_safety(report):
     assert "entry-decision check" not in payload
 
 
+def test_summary_results_are_computed_and_serialized_from_report_content(report):
+    from scripts.replay_tactical_v2_admission import (
+        PINNED_PARITY_SHA256,
+        PINNED_REPLAY_EVIDENCE_SHA256,
+        PINNED_STABILITY_SHA256,
+    )
+
+    stored_fields = {field.name for field in dataclass_fields(report)}
+    computed_fields = {
+        "parity_expected_values_passed",
+        "replay_integrity_passed",
+        "stability_requirement_passed",
+        "admission_replay_passed",
+    }
+
+    assert computed_fields.isdisjoint(stored_fields)
+    assert PINNED_PARITY_SHA256 == globals()["PINNED_PARITY_SHA256"]
+    assert PINNED_REPLAY_EVIDENCE_SHA256 == globals()[
+        "PINNED_REPLAY_EVIDENCE_SHA256"
+    ]
+    assert PINNED_STABILITY_SHA256 == globals()["PINNED_STABILITY_SHA256"]
+    payload = report.to_dict()
+    assert all(payload[field] is True for field in computed_fields)
+
+
+@pytest.mark.parametrize(
+    "field,mutate,expected",
+    [
+        ("raw_candidates", lambda value: value - 1, (False, False, True)),
+        ("accepted", lambda value: value - 1, (False, False, True)),
+        (
+            "accepted_by_symbol",
+            lambda value: {**value, "BICO-USDT": 2},
+            (False, False, True),
+        ),
+        ("reasons", lambda value: {}, (False, False, True)),
+        ("accepted_reasons", lambda value: {}, (False, False, True)),
+        (
+            "episode_ids",
+            lambda value: (*value[:-1], "0" * 64),
+            (False, False, False),
+        ),
+        (
+            "source_shadow_ids",
+            lambda value: ("other", *value[1:]),
+            (True, False, True),
+        ),
+        (
+            "source_evidence_payload_hashes",
+            lambda value: ("0" * 12, *value[1:]),
+            (True, False, True),
+        ),
+        (
+            "stability_compared_fields",
+            lambda value: ("accepted_identities",),
+            (True, False, False),
+        ),
+        (
+            "stability_fingerprint",
+            lambda value: "0" * 64,
+            (True, False, False),
+        ),
+        ("stable_iterations", lambda value: 99, (True, True, False)),
+        (
+            "fixture_fingerprint",
+            lambda value: "0" * 64,
+            (True, False, True),
+        ),
+        (
+            "pinned_fixture_fingerprint_match",
+            lambda value: False,
+            (True, False, True),
+        ),
+    ],
+)
+def test_computed_results_fail_closed_for_top_level_evidence_tampering(
+    report,
+    field,
+    mutate,
+    expected,
+):
+    contradictory = replace(report, **{field: mutate(getattr(report, field))})
+
+    assert (
+        contradictory.parity_expected_values_passed,
+        contradictory.replay_integrity_passed,
+        contradictory.stability_requirement_passed,
+    ) == expected
+    assert contradictory.admission_replay_passed is False
+    assert contradictory.to_dict()["admission_replay_passed"] is False
+
+
+def _replace_nested_record(report, report_field, index, record_field, value):
+    records = list(deepcopy(getattr(report, report_field)))
+    records[index][record_field] = value
+    return replace(report, **{report_field: tuple(records)})
+
+
+def test_accepted_identity_nested_tampering_is_recomputed(report):
+    contradictory = _replace_nested_record(
+        report,
+        "accepted_identities",
+        0,
+        "msg_id",
+        "different-message",
+    )
+
+    assert contradictory.parity_expected_values_passed is False
+    assert contradictory.replay_integrity_passed is False
+    assert contradictory.stability_requirement_passed is False
+    assert contradictory.admission_replay_passed is False
+
+
+def test_row_reason_nested_tampering_is_recomputed(report):
+    contradictory = _replace_nested_record(
+        report,
+        "row_reasons",
+        1,
+        "reason",
+        "eligible",
+    )
+
+    assert contradictory.parity_expected_values_passed is True
+    assert contradictory.replay_integrity_passed is False
+    assert contradictory.stability_requirement_passed is False
+    assert contradictory.admission_replay_passed is False
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("parity_expected_values_passed", False),
-        ("replay_integrity_passed", False),
-        ("stability_requirement_passed", False),
-        ("raw_candidates", 21),
+        ("label", "other"),
+        ("quote_evidence", "historical"),
+        ("synthetic_quote_role", "other"),
+        ("observed_at", 0.0),
+        ("action", "terminal"),
+        ("reason", "expired"),
+        ("ttl_fresh", False),
+        ("governor_allowed", False),
+        ("governor_reason", "capacity"),
+        ("candidate_id", "other"),
+        ("episode_id", "0" * 64),
+        ("ask", 0.0),
+    ],
+)
+def test_entry_decision_nested_tampering_is_recomputed(report, field, value):
+    contradictory = _replace_nested_record(
+        report,
+        "entry_decision_checks",
+        0,
+        field,
+        value,
+    )
+
+    assert contradictory.parity_expected_values_passed is False
+    assert contradictory.replay_integrity_passed is False
+    assert contradictory.stability_requirement_passed is True
+    assert contradictory.admission_replay_passed is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
         ("historical_receipt_context", "other"),
         ("historical_receipt_evidence", "known"),
         ("historical_receipt_unknown", 21),
