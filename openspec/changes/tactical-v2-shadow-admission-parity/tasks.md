@@ -25,3 +25,4 @@
 - [x] Add an operator report showing accepted, duplicate, rejected, and unknown candidate counts.
 - [x] Update the runbook to prohibit Sidecar admission restoration until quote-level and protection evidence passes.
 - [x] Verify no production configuration or cloud data is modified by the implementation tests.
+- [x] Reconcile current-stage operator documentation with the 2026-08-12 Sidecar NO-GO gate.

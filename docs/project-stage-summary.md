@@ -61,7 +61,7 @@ Tactical V2 代码基线：`884ba60`
 | 12 | 复盘、账本与 PnL | `agents/trading/reviewer.py`, `utils/live_ledger.py`, `utils/realized_pnl_resolver.py`, `scripts/backfill_realized_pnl.py` | 交易历史、Daily Hard Stop、segmented metrics、OKX fills/bills 已实现 PnL 解析、pending->final correction | 任何收益统计必须优先使用 final PnL；close 类 payload 必须用 `pnl_is_final=True` 守门 |
 | 13 | Paper 与双轨模拟 | `agents/trading/paper_executor.py`, `agents/trading/paper_dual_track_report.py` | 不下真单的影子账户，realistic/idealized 双账本，对比限价漏单成本 | 策略观察和 paper/live gap 诊断用；`paper_execution_result` 不得污染 live Reviewer/风控 |
 | 14 | 运维与健康观测 | `agents/trading/telegram_notifier.py`, `utils/health_snapshot.py`, `utils/event_journal.py`, `utils/state_paths.py`, `utils/config_loader.py` | TG 命令、agent loop/queue/LLM/data 健康、关键事件 journal、状态命名空间、配置硬限 | 日常运维用 `/status`、`/health`、`/halts`、`/resume`、`/paper_gap`；状态路径以启动 banner 为准 |
-| 15 | 实验室与影子系统 | `utils/counterfactual_ledger.py`, `utils/decision_tape.py`, `utils/decision_replay.py`, `utils/perturbation_replay.py`, `utils/sequential_perturbation.py`, `utils/knob_sweep.py`, `utils/joint_knob_sweep.py`, `utils/shadow_tactical_live.py`, `scripts/shadow_tactical_live_sidecar.py`, `cf_*.py`, `pattern_forward_shadow.py` | 被拒信号追踪、确定性回放、扰动扫描、旋钮推荐、形态研究、Tactical shadow、Shadow Tactical live sidecar | 用来找策略方向和做 sidecar 实验；默认 observability-only，除 sidecar 明确 live 镜像外，不允许自动改线上配置或参与 live gate |
+| 15 | 实验室与影子系统 | `utils/counterfactual_ledger.py`, `utils/decision_tape.py`, `utils/decision_replay.py`, `utils/perturbation_replay.py`, `utils/sequential_perturbation.py`, `utils/knob_sweep.py`, `utils/joint_knob_sweep.py`, `utils/shadow_tactical_live.py`, `scripts/shadow_tactical_live_sidecar.py`, `cf_*.py`, `pattern_forward_shadow.py` | 被拒信号追踪、确定性回放、扰动扫描、旋钮推荐、形态研究、Tactical shadow、Shadow Tactical live sidecar | 用来找策略方向及观察 Sidecar owner/drain；当前 `admission_enabled=false`，默认 observability-only，不允许恢复 Sidecar admission、自动改线上配置或参与 live gate |
 
 ## 关键运行链路
 
@@ -142,10 +142,11 @@ Sidecar 状态：
 python3 scripts/shadow_tactical_live_sidecar.py status
 ```
 
-Sidecar 24h 运行：
+Sidecar admission 当前为 `admission_enabled=false`，受 2026-08-12 NO-GO gate 约束。状态查询可执行；历史 24h live run 命令仅保留为禁止项，不得执行。本 replay 的 `live_rollout_ready=false`；只有真实 quote-level executable evidence 与 fill-bound protection evidence 分别通过后，才可重新评审 Sidecar restoration。
 
 ```bash
-python3 scripts/shadow_tactical_live_sidecar.py run --duration-hours 24 --size-usdt 100 --max-active 3
+# PROHIBITED while the 2026-08-12 NO-GO gate is active; do not execute:
+# python3 scripts/shadow_tactical_live_sidecar.py run --duration-hours 24 --size-usdt 100 --max-active 3
 ```
 
 Sidecar 停止并尝试处理可证明归属的敞口：
@@ -185,7 +186,7 @@ python3 cf_neutral_momentum_rescue_ab.py
 | 改 OKX 执行 | `executor.py` + OKX testnet 验收脚本 | 不要手写 posSide/reduceOnly 绕过构造器 |
 | 看 Tactical shadow 是否赚钱 | `data/rejected_signal_events.jsonl` + `data/rejected_signal_lifecycle.json` | 不要用 PaperExecutor 当 Tactical shadow 证据 |
 | 看 live Tactical 是否赚钱 | LiveLedger / Reviewer final PnL，按 `track/exit_profile/tactical_close_reason` 分桶 | 不要把 pending/estimated PnL 算进最终收益 |
-| 跑 sidecar 实验 | `scripts/shadow_tactical_live_sidecar.py` + sidecar state/owners/audit 文件 | 不要改 Main `.env` 或让 Main 领养 sidecar 仓位 |
+| 观察 Sidecar owner/drain | Sidecar `status` + state/owners/audit 文件 | 当前禁止 live run；不要改 Main `.env`、恢复 admission 或让 Main 领养 sidecar 仓位 |
 | 策略研究 | 反事实实验室、pattern runner、`cf_*.py` | 不要把 observability-only 产物接回 live 决策 |
 
 ## 关键状态文件
@@ -223,11 +224,12 @@ Sidecar：
 - LLM 只能辅助，不能绕过 R:R、EV、余额、熔断、保护单和订单预检。
 - Sidecar 与 Main 同 OKX 账户时必须保持 owner isolation；Main 不能 backfill sidecar-owned 仓位，algo migration 不能取消 sidecar/manual protection。
 - OKX `net_mode` 下禁止 sidecar 同标的堆叠，除非未来专门实现 aggregate/per-lot position model。
+- 2026-08-12 Sidecar admission NO-GO：必须保持 `admission_enabled=false`。本 replay 的 `live_rollout_ready=false`，不授权恢复 Sidecar admission、扩大 V2 保证金/槽位或修改生产配置。恢复评审必须等待真实 quote-level executable evidence 与 fill-bound protection evidence 分别通过。
 
 ## 后续重点
 
 1. 继续观察 Main 的 `tech_analyst` backlog，避免队列长期高位拖慢决策。
 2. 继续累计 Tactical/sidecar 样本，按 final PnL 和 `track/exit_profile/tactical_close_reason` 分桶判断，而不是按单次 shadow 样本下结论。
-3. Sidecar 如果要续跑，先确认 owners 里无 ghost exposure、ambiguous net-mode stack 和未解决保护单。
+3. Sidecar 不得恢复 admission。无 ghost exposure、ambiguous net-mode stack 和未解决保护单等 owner/exposure 检查仍是必要条件，但不足以授权续跑；真实 quote-level executable evidence 与 fill-bound protection evidence 还必须分别通过。本 replay 的 `live_rollout_ready=false`，也不授权容量扩张或生产配置变更。
 4. 如需长期无人值守，再单独设计并验收 supervisor；当前云服没有应用级 cron/systemd/pm2 守护，不要把 `nohup` 误记为自动拉起。
 5. 策略改善重点应回到上游方向质量、体制识别和趋势行情筛选；单纯放宽 R:R、confidence 或入场门已经多次被反事实实验室证明不是高价值杠杆。
