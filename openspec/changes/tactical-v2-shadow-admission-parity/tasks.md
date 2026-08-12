@@ -14,10 +14,10 @@
 
 ## 3. Shadow Parity Replay
 
-- [ ] Add a pinned 22-candidate replay fixture derived from the audited cloud sequence without live credentials or exchange I/O.
-- [ ] Assert normalized output of three BICO episodes and two PUMP episodes, with repeated rows explicitly rejected.
-- [ ] Run the replay 100 times and assert identical accepted identities and reasons.
-- [ ] Keep executable quote, governor capacity, entry TTL, and protection checks in the parity boundary.
+- [x] Add a pinned 22-candidate replay fixture derived from the audited cloud sequence without live credentials or exchange I/O.
+- [x] Assert normalized output of three BICO episodes and two PUMP episodes, with repeated rows explicitly rejected.
+- [x] Run the replay 100 times and assert identical accepted identities and reasons.
+- [x] Keep executable quote, governor capacity, entry TTL, and protection checks in the parity boundary.
 
 ## 4. Verification and Operations
 
