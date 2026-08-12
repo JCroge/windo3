@@ -14,3 +14,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/tactical-v2-shadow-admission-parity/.comet/handoff/design-context.json
 handoff_hash: d4a5088ce0eefe14d127b3cb087b47a223e4b40e79c8d9229ab676754c388cfa
+build_command: /usr/local/anaconda3/bin/python3.12 -m compileall -q utils agents scripts tests
+verify_command: /usr/local/anaconda3/bin/python3.12 -m pytest -q
