@@ -339,6 +339,26 @@ TACTICAL_SHADOW_ONLY=true
 
 ### Tactical V2
 
+#### Shadow admission parity replay 门禁（2026-08-12）
+
+> **NO-GO：Sidecar admission 必须保持 `admission_enabled=false`。在真实 quote-level executable evidence 与 fill-bound protection evidence 分别通过前，禁止恢复 Sidecar admission。本 replay 的 `live_rollout_ready=false`；它也不授权扩大 V2 保证金/槽位或修改生产配置。**
+
+本地重放命令（默认 100 次稳定性循环）：
+
+```bash
+/usr/local/anaconda3/bin/python3.12 scripts/replay_tactical_v2_admission.py --fixture tests/fixtures/tactical_v2_shadow_admission_window.json
+```
+
+成功结果必须同时满足：22 个 raw candidate（BICO 18、PUMP 4；6 个 unique candidate ID）归一化为 accepted 5（BICO 3、PUMP 2）、`duplicate_episode=17`、other rejected 0、normalized replay `unknown=0`，且 100 次循环的 identities/reasons 与 fixture fingerprint 稳定。历史 V2 persisted intent 只有 3 个且全为 BICO；但 22 个 source candidate 都早于 durable `candidate_handled` receipt，因此 historical receipt evidence 必须单列为 `unknown=22`，不得因 replay `unknown=0` 推断它们已消费或丢失。
+
+PUMP 根因是 terminal episode 后出现 neutral、available/unblocked 且带更新 closed 15m bar 的 candidate；旧 renewal 规则在 intent creation 前返回 `duplicate_episode`。修复后，只有 terminal、available、unblocked、side-compatible 的 neutral candidate 在 closed bar 更新或 structure token 变化时才能续期；one-attempt-per-episode 仍保持权威。durable receipt 从此区分 accepted、duplicate、rejected 与 gap outcome。
+
+5 个 accepted candidate 的 entry-decision check 使用 recorded journal evaluation time 和 synthetic `bid=ask=entry_ref`，仅证明 shared entry reducer、governor capacity 与 900 秒 TTL 行为。必须保持以下限制：`historical_executable_quote_available=false`（PUMP 无历史 bid/ask）、`exchange_fill=false`、`protection_evidence_proven=false`、`protection_check_status=not_run_no_fill`、`live_rollout_ready=false`。synthetic terminal episode boundary 只做 admission normalization，不代表 market fill 或 settlement。
+
+收益只能按 counterfactual scalar plan return 报告：22 个 Legacy Shadow row 为 18 TP / 4 SL、row win rate `81.82%`、合计 `+32.4530%`；5 个 normalized opportunity 为 4 TP / 1 SL、opportunity win rate `80%`、合计 `+6.9621%`。不得称为 exchange fill、realized USDT PnL 或 settlement parity。
+
+审计窗口为 epoch `1786183980..1786443180`（2026-08-08 10:13 UTC 至 2026-08-11 10:13 UTC）。cloud source 只能 read-only 收集；实现、replay 和测试必须 local、network-denied、temp-root-only，不得访问或修改 cloud/production data。该 change/branch 的 Python 3.12 验证为 focused Tactical V2 `482 passed`、full repository `2143 passed, 4 deselected, 576 warnings`、network/temp isolation `2 passed, 80 deselected`；这些计数不是 main-branch baseline。
+
 V2 不会重新启用旧的 `TACTICAL_SHADOW_ONLY=false` live 分支。Judge 在 Shadow Tactical 分类点生成固定计划，V2 再按 `100U`、最多 5x 的 full-TP1 净成本口径复核 cost coverage、RR 和 EV；合格计划冻结为 `tactical_intent.v2`，后续 Main 不得重算 entry/SL/TP。相同 symbol/side/15m structure epoch 只允许一次 attempt，capacity skip、account reject、miss、cancel 或 close 都会消费该 episode，释放槽位也不回填旧信号。
 
 入口使用 executable price：long 看 ask、short 看 bid。现价最差偏离不超过 `0.10R` 才允许立即单；否则只挂 frozen entry 一次，最多 900 秒，无 market fallback。挂单期间如果 executable exit price 已到 TP、先到 SL、15m 结构反向或 TTL 到期，必须取消并终结，不能在已经错过的价位追入。partial fill 只保护已成交数量并取消余单，不追满 100U。

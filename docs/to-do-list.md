@@ -1,6 +1,6 @@
 # To-Do List
 
-更新日期：2026-08-06
+更新日期：2026-08-12
 Tactical V2 代码基线：`884ba60`；最新全量回归 `1878 passed, 4 deselected`。
 
 > **基线与逐 change 历史以 `CLAUDE.md` 顶部「当前事实」段为权威单一来源**，完整逐基线里程碑见 `docs/handoff.md`。本文件不再内联复制 change changelog（曾累积漂移至 1338，已于 2026-06-26 收口），只维护**当前阻断项、Go/No-Go、后续 P2 优化**。
@@ -46,8 +46,49 @@ Tactical V2 代码基线：`884ba60`；最新全量回归 `1878 passed, 4 desele
 
 - 本地开发：GO。
 - Paper/mock：GO。
-- Tactical V2 首轮 live：GO（固定 `100U x 3`，继续观察）。
-- live 扩容：BLOCKED UNTIL REVIEW（当前不扩大保证金、槽位或恢复 sidecar admission；如需长期无人值守，先另起 supervisor 设计和验收）。
+- Tactical V2 既有部署状态：保持 2026-08-06 快照不变；本次 admission replay 的 `live_rollout_ready=false`，不构成新的 live rollout 授权。
+- **Sidecar admission / live 扩容：NO-GO**。Sidecar `admission_enabled=false` 必须保持；真实 quote-level executable evidence 与 fill-bound protection evidence 必须分别通过后才可评审恢复。当前不扩大 V2 保证金或槽位，也不改生产配置。
+
+## Tactical V2 Shadow Admission Parity 运维报告（2026-08-12）
+
+> **关键门禁：Sidecar admission 继续禁用。本 replay 不证明 live readiness，不授权恢复 Sidecar admission、扩大 V2 保证金/槽位或修改生产配置。只有真实 quote-level executable evidence 与 fill-bound protection evidence 分别通过后，才可重新评审。**
+
+**审计边界与原始观察**：
+
+- 审计窗口为 epoch `1786183980..1786443180`，即 2026-08-08 10:13 UTC 至 2026-08-11 10:13 UTC。源数据只以 read-only 方式从 cloud 收集；实现和测试只使用本地固定 fixture，不访问 cloud。
+- Legacy Shadow 原始候选共 22 row：BICO 18、PUMP 4；归一化前共有 6 个 unique candidate ID。历史 V2 持久化 intent 共 3 个，全部为 BICO。
+- 这 22 个 source candidate 早于 durable `candidate_handled` receipt。22/22 的历史 handling receipt evidence 均为 `unknown`；不得据此推断候选已消费、丢失或未处理。
+
+**固定归一化 admission replay**：
+
+| 边界 | 结果 |
+|---|---:|
+| raw candidates | 22 |
+| accepted | 5（BICO 3、PUMP 2） |
+| `duplicate_episode` | 17 |
+| other rejected | 0 |
+| normalized replay outcome `unknown` | 0 |
+
+- 100 次独立 replay 的 accepted identities、reasons 与 episode IDs 稳定，fixture fingerprint 固定为 `65dd6e2f3cd21dd1aaa9d163126c818f0a0db8f92997d80f24e548f44e72fa5f`。这里的 replay `unknown=0` 只描述归一化 harness 的结果，不能覆盖上面的历史 receipt evidence `unknown=22`。
+- 根因：PUMP candidate 在一个 terminal PUMP episode 后以 neutral、available/unblocked 状态到达，并带有更新的 closed 15m bar；旧 `EpisodeRegistry` renewal 规则不续期这种 terminal neutral 情形，因此在创建 intent 前返回 `duplicate_episode`。
+- 修复只允许 terminal、available、unblocked、side-compatible 的 neutral candidate 在 closed bar 更新或 structure token 变化时续期。one-attempt-per-episode 仍是权威约束。新的 durable `candidate_handled` receipt 会从现在起区分 accepted、duplicate、rejected 与 gap outcome。
+
+**可执行性、保护与收益边界**：
+
+- 5 个 accepted normalized candidate 使用 journal 记录的 evaluation time，并令 synthetic `bid=ask=entry_ref`，均通过 shared entry reducer、governor capacity 与 900 秒 TTL。这只证明 reducer 行为；synthetic terminal episode boundary 也只用于 admission normalization，不是 market fill 或 settlement。
+- `historical_executable_quote_available=false`，且 PUMP 没有历史 bid/ask 证据；`exchange_fill=false`；`protection_evidence_proven=false`，protection check status 为 `not_run_no_fill`；`live_rollout_ready=false`。
+- Legacy Shadow 原始 row 的反事实结果为 18 TP / 4 SL，row win rate `81.82%`，scalar plan return 合计 `+32.4530%`。归一化 opportunity 为 4 TP / 1 SL，opportunity win rate `80%`，scalar plan return 合计 `+6.9621%`。两组都是 scalar-price counterfactual plan return，不是 exchange fill、realized USDT PnL 或 settlement parity。
+
+**本 change/branch 本地验证**（不替代文件顶部 main-branch baseline）：
+
+- Python 3.12 focused Tactical V2 suite：`482 passed`。
+- Python 3.12 full repository suite：`2143 passed, 4 deselected, 576 warnings`。
+- network/temp isolation：`2 passed, 80 deselected`；测试为 network-denied、temp-root-only，不修改 cloud 或 production data。
+- admission replay 默认 100 次，exit 0；`compileall` exit 0。重放命令：
+
+```bash
+/usr/local/anaconda3/bin/python3.12 scripts/replay_tactical_v2_admission.py --fixture tests/fixtures/tactical_v2_shadow_admission_window.json
+```
 
 ## 第五次审计阻断（处理中）
 

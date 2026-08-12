@@ -21,7 +21,7 @@
 
 ## 4. Verification and Operations
 
-- [ ] Run the focused Tactical V2 regression suite and the full relevant test suite.
-- [ ] Add an operator report showing accepted, duplicate, rejected, and unknown candidate counts.
-- [ ] Update the runbook to prohibit Sidecar admission restoration until quote-level and protection evidence passes.
-- [ ] Verify no production configuration or cloud data is modified by the implementation tests.
+- [x] Run the focused Tactical V2 regression suite and the full relevant test suite.
+- [x] Add an operator report showing accepted, duplicate, rejected, and unknown candidate counts.
+- [x] Update the runbook to prohibit Sidecar admission restoration until quote-level and protection evidence passes.
+- [x] Verify no production configuration or cloud data is modified by the implementation tests.
