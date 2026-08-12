@@ -29,6 +29,33 @@ from utils.tactical_v2.store import TacticalStore  # noqa: E402
 
 SYNTHETIC_BOUNDARY_REASON = "synthetic_admission_window_opportunity_boundary"
 STABILITY_FIELDS = ("accepted_identities", "episode_ids", "row_reasons")
+EXPECTED_SCHEMA_VERSION = 1
+EXPECTED_TOPIC = "tactical_candidate.v2"
+EXPECTED_WINDOW_START = 1786183980
+EXPECTED_WINDOW_END = 1786443180
+EXPECTED_CANDIDATE_COUNT = 22
+PINNED_FIXTURE_SHA256 = (
+    "65dd6e2f3cd21dd1aaa9d163126c818f0a0db8f92997d80f24e548f44e72fa5f"
+)
+FIXTURE_ROOT_FIELDS = frozenset({
+    "schema_version",
+    "source_evidence",
+    "initial_episode_state",
+    "candidates",
+})
+SOURCE_EVIDENCE_FIELDS = frozenset({
+    "description",
+    "topic",
+    "window_start_epoch",
+    "window_end_epoch",
+    "raw_candidate_count",
+})
+CANDIDATE_ROW_FIELDS = frozenset({
+    "msg_id",
+    "source_evidence_payload_hash",
+    "journal_timestamp",
+    "candidate",
+})
 CANDIDATE_ALLOWED_FIELDS = frozenset({
     "candidate_id",
     "created_at",
@@ -51,6 +78,28 @@ CANDIDATE_ALLOWED_FIELDS = frozenset({
     "tf_15m_closed_bar_ts",
     "tf_15m_structure_token",
 })
+INITIAL_EPISODE_FIELDS = frozenset({
+    "namespace",
+    "symbol",
+    "side",
+    "epoch_seq",
+    "episode_id",
+    "attempted",
+    "terminal",
+    "terminal_reason",
+    "current_bias",
+    "neutral_seen",
+    "last_block",
+    "reset_pending",
+    "last_closed_bar_ts",
+    "max_observed_closed_bar_ts",
+    "last_structure_token",
+})
+INITIAL_EPISODE_ID = (
+    "53642e33465ffe749cbb7da042f486c2bd4d68a350dcef68a42f8cad6bbd11dd"
+)
+INITIAL_EPISODE_BAR_TS = 1786072500000.0
+INITIAL_EPISODE_STRUCTURE_TOKEN = "break_up:a09b50a62afef967206a"
 EXPECTED_ACCEPTED = (
     ("92ae52b2a067b12a6c00f1ef80cbfa0b", "d1e7880d"),
     ("5e19050a9f8272e6e25b928137f2ac4a", "f978fd43"),
@@ -93,6 +142,8 @@ class AdmissionReplayReport:
     stable_iterations: int
     stability_compared_fields: tuple[str, ...]
     stability_fingerprint: str
+    fixture_fingerprint: str
+    pinned_fixture_fingerprint_match: bool
     accepted_identities: tuple[dict[str, Any], ...]
     episode_ids: tuple[str, ...]
     row_reasons: tuple[dict[str, Any], ...]
@@ -114,11 +165,35 @@ class AdmissionReplayReport:
     parity_expected_values_passed: bool
     replay_integrity_passed: bool
     stability_requirement_passed: bool
-    admission_replay_passed: bool
+
+    @property
+    def admission_replay_passed(self) -> bool:
+        return bool(
+            self.parity_expected_values_passed is True
+            and self.replay_integrity_passed is True
+            and self.pinned_fixture_fingerprint_match is True
+            and self.fixture_fingerprint == PINNED_FIXTURE_SHA256
+            and self.stability_requirement_passed is True
+            and self.stable_iterations == 100
+            and self.historical_receipt_context == "predates_durable_receipts"
+            and self.historical_receipt_evidence == "unknown"
+            and self.historical_receipt_unknown
+            == self.raw_candidates
+            == EXPECTED_CANDIDATE_COUNT
+            and self.synthetic_boundary_reason == SYNTHETIC_BOUNDARY_REASON
+            and self.synthetic_boundary_role == "admission_normalization_only"
+            and self.synthetic_boundary_market_settlement is False
+            and self.exchange_fill is False
+            and self.historical_executable_quote_available is False
+            and self.protection_evidence_proven is False
+            and self.protection_check_status == "not_run_no_fill"
+            and self.protection_live_rollout_gate_passed is False
+            and self.live_rollout_ready is False
+        )
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["entry-decision check"] = payload["entry_decision_checks"]
+        payload["admission_replay_passed"] = self.admission_replay_passed
         return json.loads(
             json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
@@ -192,22 +267,50 @@ def _load_fixture(source: str | Path | Mapping[str, Any]) -> dict[str, Any]:
     return fixture
 
 
-def _candidate_rows(fixture: Mapping[str, Any]) -> tuple[_CandidateRow, ...]:
+def _candidate_rows(
+    fixture: Mapping[str, Any],
+    window_start: float,
+    window_end: float,
+) -> tuple[_CandidateRow, ...]:
     raw_rows = fixture.get("candidates")
     if not isinstance(raw_rows, list):
         raise ValueError("fixture candidates must be a list")
+    if len(raw_rows) != EXPECTED_CANDIDATE_COUNT:
+        raise ValueError("source evidence candidate count mismatch")
 
     rows = []
+    seen_msg_ids = set()
+    seen_payload_hashes = set()
+    previous_journal_timestamp = None
     for raw_row in raw_rows:
         if not isinstance(raw_row, Mapping):
             raise ValueError("candidate evidence row must be an object")
+        if frozenset(raw_row) != CANDIDATE_ROW_FIELDS:
+            raise ValueError(
+                "candidate evidence row fields do not match the exact replay schema"
+            )
         raw_candidate = raw_row.get("candidate")
         if not isinstance(raw_candidate, Mapping):
             raise ValueError("candidate payload must be an object")
         candidate_data = dict(raw_candidate)
         if frozenset(candidate_data) != CANDIDATE_ALLOWED_FIELDS:
             raise ValueError("candidate fields do not match the exact replay schema")
+        if candidate_data.get("namespace") != "live":
+            raise ValueError("candidate namespace must be live")
+        created_at = _required_finite(
+            candidate_data.get("created_at"), "candidate created_at"
+        )
+        if not window_start <= created_at <= window_end:
+            raise ValueError(
+                "candidate created_at must be inside the source evidence window"
+            )
         candidate = TacticalCandidate.from_raw(candidate_data)
+        if candidate.created_at != created_at:
+            raise ValueError("candidate created_at is not canonical")
+        msg_id = _required_text(raw_row.get("msg_id"), "msg_id")
+        if msg_id in seen_msg_ids:
+            raise ValueError("duplicate msg_id in source evidence")
+        seen_msg_ids.add(msg_id)
         payload_hash = _required_text(
             raw_row.get("source_evidence_payload_hash"),
             "source_evidence_payload_hash",
@@ -215,48 +318,166 @@ def _candidate_rows(fixture: Mapping[str, Any]) -> tuple[_CandidateRow, ...]:
         if len(payload_hash) != 12 or any(
             character not in "0123456789abcdef" for character in payload_hash
         ):
-            raise ValueError("source evidence payload hash must be 12 lowercase hex characters")
+            raise ValueError(
+                "source evidence payload hash must be 12 lowercase hex characters"
+            )
+        if payload_hash in seen_payload_hashes:
+            raise ValueError("duplicate source evidence payload hash")
+        seen_payload_hashes.add(payload_hash)
+        journal_timestamp = _required_finite(
+            raw_row.get("journal_timestamp"), "journal_timestamp"
+        )
+        if created_at > journal_timestamp:
+            raise ValueError("journal_timestamp must not precede created_at")
+        if not window_start <= journal_timestamp <= window_end:
+            raise ValueError(
+                "journal_timestamp must be inside the source evidence window"
+            )
+        if (
+            previous_journal_timestamp is not None
+            and journal_timestamp <= previous_journal_timestamp
+        ):
+            raise ValueError("journal timestamps must be strictly increasing")
+        previous_journal_timestamp = journal_timestamp
         rows.append(
             _CandidateRow(
-                msg_id=_required_text(raw_row.get("msg_id"), "msg_id"),
+                msg_id=msg_id,
                 source_evidence_payload_hash=payload_hash,
-                journal_timestamp=_required_finite(
-                    raw_row.get("journal_timestamp"), "journal_timestamp"
-                ),
+                journal_timestamp=journal_timestamp,
                 raw=candidate_data,
                 candidate=candidate,
                 opportunity=_opportunity_for(candidate, candidate_data),
             )
         )
-    return tuple(sorted(rows, key=lambda row: row.candidate.created_at))
+    # Unique msg_id is the explicit final tie-breaker for created/journal ties.
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                row.candidate.created_at,
+                row.journal_timestamp,
+                row.msg_id,
+            ),
+        )
+    )
+
+
+def _episode_id_for(namespace: str, symbol: str, side: str, epoch_seq: int) -> str:
+    encoded = json.dumps(
+        {
+            "namespace": namespace,
+            "symbol": symbol,
+            "side": side,
+            "epoch_seq": epoch_seq,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _validate_initial_state(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise ValueError("initial_episode_state must be an object")
     state = dict(raw)
-    required = {
-        "namespace",
-        "symbol",
-        "side",
-        "epoch_seq",
-        "episode_id",
-        "attempted",
-        "terminal",
-        "terminal_reason",
-        "current_bias",
-        "neutral_seen",
-        "last_block",
-        "reset_pending",
-        "last_closed_bar_ts",
-        "max_observed_closed_bar_ts",
-        "last_structure_token",
-    }
-    if set(state) != required:
+    if frozenset(state) != INITIAL_EPISODE_FIELDS:
         raise ValueError("initial episode state fields do not match the replay schema")
-    if state["terminal"] is not True or state["terminal_reason"] != "loss_streak_pause":
-        raise ValueError("initial episode must carry its recorded terminal state")
+    if (
+        state["namespace"] != "live"
+        or state["symbol"] != "PUMP-USDT"
+        or state["side"] != "long"
+        or type(state["epoch_seq"]) is not int
+        or state["epoch_seq"] != 14
+        or state["attempted"] is not True
+        or state["terminal"] is not True
+        or state["terminal_reason"] != "loss_streak_pause"
+        or state["current_bias"] != "bullish"
+        or state["neutral_seen"] is not False
+        or state["last_block"] is not False
+        or state["reset_pending"] is not None
+    ):
+        raise ValueError("initial episode state semantics are not pinned")
+    last_closed_bar_ts = _required_finite(
+        state["last_closed_bar_ts"], "initial episode last_closed_bar_ts"
+    )
+    max_observed_closed_bar_ts = _required_finite(
+        state["max_observed_closed_bar_ts"],
+        "initial episode max_observed_closed_bar_ts",
+    )
+    if (
+        last_closed_bar_ts != INITIAL_EPISODE_BAR_TS
+        or max_observed_closed_bar_ts != INITIAL_EPISODE_BAR_TS
+        or max_observed_closed_bar_ts < last_closed_bar_ts
+    ):
+        raise ValueError("initial episode bar state is not coherent")
+    structure_token = _required_text(
+        state["last_structure_token"], "initial episode last_structure_token"
+    )
+    if structure_token != INITIAL_EPISODE_STRUCTURE_TOKEN:
+        raise ValueError("initial episode structure token is not pinned")
+    derived_episode_id = _episode_id_for(
+        state["namespace"], state["symbol"], state["side"], state["epoch_seq"]
+    )
+    if (
+        state["episode_id"] != derived_episode_id
+        or derived_episode_id != INITIAL_EPISODE_ID
+    ):
+        raise ValueError("initial episode id is not pinned to the registry identity")
     return state
+
+
+def _validate_fixture(
+    fixture: Mapping[str, Any],
+) -> tuple[dict[str, Any], tuple[_CandidateRow, ...]]:
+    if frozenset(fixture) != FIXTURE_ROOT_FIELDS:
+        raise ValueError("fixture root fields do not match the exact replay schema")
+    if (
+        type(fixture["schema_version"]) is not int
+        or fixture["schema_version"] != EXPECTED_SCHEMA_VERSION
+    ):
+        raise ValueError("schema_version must be 1")
+    evidence = fixture["source_evidence"]
+    if not isinstance(evidence, Mapping):
+        raise ValueError("source_evidence must be an object")
+    if frozenset(evidence) != SOURCE_EVIDENCE_FIELDS:
+        raise ValueError("source_evidence fields do not match the exact replay schema")
+    _required_text(evidence["description"], "source evidence description")
+    if evidence["topic"] != EXPECTED_TOPIC:
+        raise ValueError("source evidence topic must be tactical_candidate.v2")
+    if (
+        type(evidence["window_start_epoch"]) is not int
+        or type(evidence["window_end_epoch"]) is not int
+        or evidence["window_start_epoch"] != EXPECTED_WINDOW_START
+        or evidence["window_end_epoch"] != EXPECTED_WINDOW_END
+    ):
+        raise ValueError("source evidence window does not match the pinned replay window")
+    if (
+        type(evidence["raw_candidate_count"]) is not int
+        or evidence["raw_candidate_count"] != EXPECTED_CANDIDATE_COUNT
+    ):
+        raise ValueError(
+            "source evidence candidate count does not match the pinned window"
+        )
+    rows = _candidate_rows(
+        fixture,
+        float(evidence["window_start_epoch"]),
+        float(evidence["window_end_epoch"]),
+    )
+    if len(rows) != evidence["raw_candidate_count"]:
+        raise ValueError("source evidence candidate count mismatch")
+    initial_state = _validate_initial_state(fixture["initial_episode_state"])
+    return initial_state, rows
+
+
+def _fixture_fingerprint(fixture: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        fixture,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _seed_initial_episode(store: TacticalStore, state: Mapping[str, Any]) -> None:
@@ -328,7 +549,7 @@ def _entry_decision_check(
 
 
 def _replay_once(
-    fixture: Mapping[str, Any],
+    initial_state: Mapping[str, Any],
     rows: Sequence[_CandidateRow],
     temp_root: Path,
 ) -> dict[str, Any]:
@@ -337,7 +558,6 @@ def _replay_once(
         tactical_v2_state=str(temp_root / "state.json"),
     )
     store = TacticalStore(paths)
-    initial_state = _validate_initial_state(fixture.get("initial_episode_state"))
     _seed_initial_episode(store, initial_state)
     registry = EpisodeRegistry(store, namespace="live")
     first_created_at = rows[0].candidate.created_at if rows else 0.0
@@ -486,17 +706,16 @@ def replay_fixture(
     if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations < 1:
         raise ValueError("iterations must be a positive integer")
     fixture = _load_fixture(source)
-    rows = _candidate_rows(fixture)
-    evidence = fixture.get("source_evidence")
-    if not isinstance(evidence, Mapping) or evidence.get("raw_candidate_count") != len(rows):
-        raise ValueError("source evidence candidate count mismatch")
+    initial_state, rows = _validate_fixture(fixture)
+    fixture_fingerprint = _fixture_fingerprint(fixture)
+    pinned_fixture_fingerprint_match = fixture_fingerprint == PINNED_FIXTURE_SHA256
 
     parent = None if scratch_root is None else str(Path(scratch_root))
     first_run = None
     stable_serialization = None
     for _ in range(iterations):
         with TemporaryDirectory(prefix="tactical-v2-admission-", dir=parent) as temp_dir:
-            run = _replay_once(fixture, rows, Path(temp_dir))
+            run = _replay_once(initial_state, rows, Path(temp_dir))
         serialized = _stability_serialization(run)
         if stable_serialization is None:
             first_run = run
@@ -508,22 +727,17 @@ def replay_fixture(
         raise RuntimeError("admission replay produced no run")
     parity_passed = _matches_expected_values(first_run)
     replay_integrity_passed = bool(
-        len(first_run["row_reasons"]) == len(rows)
-        and len(first_run["source_shadow_ids"]) == len(rows)
-        and len(first_run["source_evidence_payload_hashes"]) == len(rows)
+        pinned_fixture_fingerprint_match
+        and first_run["raw_candidates"]
+        == len(rows)
+        == EXPECTED_CANDIDATE_COUNT
+        and len(first_run["row_reasons"]) == EXPECTED_CANDIDATE_COUNT
+        and len(first_run["source_shadow_ids"]) == EXPECTED_CANDIDATE_COUNT
+        and len(first_run["source_evidence_payload_hashes"])
+        == EXPECTED_CANDIDATE_COUNT
         and first_run["unknown"] == 0
     )
     stability_requirement_passed = iterations == 100
-    evidence_limitations_accurate = bool(
-        first_run["raw_candidates"] == 22
-        and len(rows) == 22
-    )
-    admission_replay_passed = bool(
-        parity_passed
-        and replay_integrity_passed
-        and stability_requirement_passed
-        and evidence_limitations_accurate
-    )
     return AdmissionReplayReport(
         raw_candidates=first_run["raw_candidates"],
         accepted=first_run["accepted"],
@@ -537,6 +751,8 @@ def replay_fixture(
         stability_fingerprint=hashlib.sha256(
             stable_serialization.encode("ascii")
         ).hexdigest(),
+        fixture_fingerprint=fixture_fingerprint,
+        pinned_fixture_fingerprint_match=pinned_fixture_fingerprint_match,
         accepted_identities=tuple(first_run["accepted_identities"]),
         episode_ids=tuple(first_run["episode_ids"]),
         row_reasons=tuple(first_run["row_reasons"]),
@@ -560,7 +776,6 @@ def replay_fixture(
         parity_expected_values_passed=parity_passed,
         replay_integrity_passed=replay_integrity_passed,
         stability_requirement_passed=stability_requirement_passed,
-        admission_replay_passed=admission_replay_passed,
     )
 
 
@@ -571,15 +786,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     report = replay_fixture(args.fixture, iterations=args.iterations)
     print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
-    limitations_are_fail_closed = bool(
-        report.exchange_fill is False
-        and report.historical_executable_quote_available is False
-        and report.protection_evidence_proven is False
-        and report.protection_check_status == "not_run_no_fill"
-        and report.protection_live_rollout_gate_passed is False
-        and report.live_rollout_ready is False
-    )
-    return 0 if report.admission_replay_passed and limitations_are_fail_closed else 1
+    return 0 if report.admission_replay_passed else 1
 
 
 if __name__ == "__main__":

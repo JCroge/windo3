@@ -2,6 +2,7 @@ import json
 import socket
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,26 @@ import pytest
 ROOT = Path(__file__).parents[1]
 FIXTURE = Path(__file__).with_name("fixtures") / "tactical_v2_shadow_admission_window.json"
 DRIVER = ROOT / "scripts" / "replay_tactical_v2_admission.py"
+PINNED_FIXTURE_SHA256 = "65dd6e2f3cd21dd1aaa9d163126c818f0a0db8f92997d80f24e548f44e72fa5f"
+EXPECTED_ROOT_FIELDS = frozenset({
+    "schema_version",
+    "source_evidence",
+    "initial_episode_state",
+    "candidates",
+})
+EXPECTED_SOURCE_FIELDS = frozenset({
+    "description",
+    "topic",
+    "window_start_epoch",
+    "window_end_epoch",
+    "raw_candidate_count",
+})
+EXPECTED_ROW_FIELDS = frozenset({
+    "msg_id",
+    "source_evidence_payload_hash",
+    "journal_timestamp",
+    "candidate",
+})
 
 EXPECTED_EPISODE_IDS = (
     "b321a646e2a0b5f0b65e2478a4cd65bdd9af3c4652f32daa9c118ce885b439c5",
@@ -60,6 +81,10 @@ def report():
     from scripts.replay_tactical_v2_admission import replay_fixture
 
     return replay_fixture(FIXTURE)
+
+
+def _fixture():
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 def test_replay_driver_exists_and_locks_admission_counts(report):
@@ -147,9 +172,10 @@ def test_accepted_identity_episode_and_entry_decisions_are_shared_reducer_result
 def test_journal_time_beyond_candidate_ttl_fails_admission_expectation():
     from scripts.replay_tactical_v2_admission import replay_fixture
 
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    first = fixture["candidates"][0]
+    fixture = _fixture()
+    first = fixture["candidates"].pop(0)
     first["journal_timestamp"] = first["candidate"]["created_at"] + 901.0
+    fixture["candidates"].insert(3, first)
 
     tampered = replay_fixture(fixture)
     failed_check = next(
@@ -163,8 +189,133 @@ def test_journal_time_beyond_candidate_ttl_fails_admission_expectation():
     assert failed_check["action"] == "terminal"
     assert failed_check["reason"] == "expired"
     assert tampered.parity_expected_values_passed is False
+    assert tampered.pinned_fixture_fingerprint_match is False
+    assert tampered.replay_integrity_passed is False
     assert tampered.stability_requirement_passed is True
     assert tampered.admission_replay_passed is False
+
+
+@pytest.mark.parametrize(
+    "case,match",
+    [
+        ("root_extra", "fixture root fields"),
+        ("schema_version", "schema_version"),
+        ("source_extra", "source_evidence fields"),
+        ("topic", "source evidence topic"),
+        ("window_start", "source evidence window"),
+        ("row_extra", "candidate evidence row fields"),
+        ("paper_namespace", "candidate namespace"),
+        ("journal_before_created", "journal_timestamp must not precede created_at"),
+        ("created_outside_window", "created_at must be inside"),
+        ("journal_outside_window", "journal_timestamp must be inside"),
+        ("nonmonotonic_journal", "journal timestamps must be strictly increasing"),
+        ("duplicate_msg", "duplicate msg_id"),
+        ("duplicate_hash", "duplicate source evidence payload hash"),
+    ],
+)
+def test_pinned_source_sequence_tampering_fails_before_store(
+    case,
+    match,
+    monkeypatch,
+):
+    import scripts.replay_tactical_v2_admission as replay
+
+    fixture = _fixture()
+    if case == "root_extra":
+        fixture["unexpected"] = None
+    elif case == "schema_version":
+        fixture["schema_version"] = 2
+    elif case == "source_extra":
+        fixture["source_evidence"]["unexpected"] = None
+    elif case == "topic":
+        fixture["source_evidence"]["topic"] = "other"
+    elif case == "window_start":
+        fixture["source_evidence"]["window_start_epoch"] += 1
+    elif case == "row_extra":
+        fixture["candidates"][0]["unexpected"] = None
+    elif case == "paper_namespace":
+        fixture["candidates"][0]["candidate"]["namespace"] = "paper"
+    elif case == "journal_before_created":
+        row = fixture["candidates"][0]
+        row["journal_timestamp"] = row["candidate"]["created_at"] - 1.0
+    elif case == "created_outside_window":
+        fixture["candidates"][0]["candidate"]["created_at"] = (
+            fixture["source_evidence"]["window_start_epoch"] - 1.0
+        )
+    elif case == "journal_outside_window":
+        fixture["candidates"][-1]["journal_timestamp"] = (
+            fixture["source_evidence"]["window_end_epoch"] + 1.0
+        )
+    elif case == "nonmonotonic_journal":
+        fixture["candidates"][0], fixture["candidates"][1] = (
+            fixture["candidates"][1], fixture["candidates"][0]
+        )
+    elif case == "duplicate_msg":
+        fixture["candidates"][1]["msg_id"] = fixture["candidates"][0]["msg_id"]
+    elif case == "duplicate_hash":
+        fixture["candidates"][1]["source_evidence_payload_hash"] = (
+            fixture["candidates"][0]["source_evidence_payload_hash"]
+        )
+
+    def forbid_store_construction(*args, **kwargs):
+        raise AssertionError("store constructed before source validation")
+
+    monkeypatch.setattr(replay.TacticalStore, "__init__", forbid_store_construction)
+    with pytest.raises(ValueError, match=match):
+        replay.replay_fixture(fixture, iterations=1)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("namespace", "paper"),
+        ("symbol", "BICO-USDT"),
+        ("side", "short"),
+        ("epoch_seq", 13),
+        ("attempted", False),
+        ("terminal", False),
+        ("terminal_reason", "other"),
+        ("episode_id", "0" * 64),
+        ("last_closed_bar_ts", float("nan")),
+        ("max_observed_closed_bar_ts", 1786072500001.0),
+        ("last_structure_token", ""),
+    ],
+)
+def test_initial_episode_tampering_fails_before_store(field, value, monkeypatch):
+    import scripts.replay_tactical_v2_admission as replay
+
+    fixture = _fixture()
+    fixture["initial_episode_state"][field] = value
+
+    def forbid_store_construction(*args, **kwargs):
+        raise AssertionError("store constructed before initial-state validation")
+
+    monkeypatch.setattr(replay.TacticalStore, "__init__", forbid_store_construction)
+    with pytest.raises(ValueError, match="initial episode"):
+        replay.replay_fixture(fixture, iterations=1)
+
+
+def test_full_fixture_fingerprint_pins_all_source_evidence(report):
+    from scripts.replay_tactical_v2_admission import PINNED_FIXTURE_SHA256
+
+    assert PINNED_FIXTURE_SHA256 == globals()["PINNED_FIXTURE_SHA256"]
+    assert report.fixture_fingerprint == PINNED_FIXTURE_SHA256
+    assert report.pinned_fixture_fingerprint_match is True
+    assert report.replay_integrity_passed is True
+
+
+def test_semantically_valid_fixture_change_cannot_claim_integrity():
+    from scripts.replay_tactical_v2_admission import replay_fixture
+
+    fixture = _fixture()
+    fixture["source_evidence"]["description"] += " Sanitized copy."
+
+    modified = replay_fixture(fixture, iterations=1)
+
+    assert modified.parity_expected_values_passed is True
+    assert modified.pinned_fixture_fingerprint_match is False
+    assert modified.replay_integrity_passed is False
+    assert modified.admission_replay_passed is False
 
 
 def test_stability_covers_full_identities_episode_ids_and_every_row_reason(report):
@@ -197,6 +348,34 @@ def test_report_separates_admission_integrity_from_live_rollout_safety(report):
     assert report.live_rollout_ready is False
     assert report.synthetic_boundary_role == "admission_normalization_only"
     assert report.synthetic_boundary_market_settlement is False
+    assert "entry-decision check" not in payload
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("parity_expected_values_passed", False),
+        ("replay_integrity_passed", False),
+        ("stability_requirement_passed", False),
+        ("raw_candidates", 21),
+        ("historical_receipt_context", "other"),
+        ("historical_receipt_evidence", "known"),
+        ("historical_receipt_unknown", 21),
+        ("synthetic_boundary_role", "market_settlement"),
+        ("synthetic_boundary_market_settlement", True),
+        ("exchange_fill", True),
+        ("historical_executable_quote_available", True),
+        ("protection_evidence_proven", True),
+        ("protection_check_status", "passed"),
+        ("protection_live_rollout_gate_passed", True),
+        ("live_rollout_ready", True),
+    ],
+)
+def test_computed_admission_replay_fails_for_every_invariant(report, field, value):
+    contradictory = replace(report, **{field: value})
+
+    assert contradictory.admission_replay_passed is False
+    assert contradictory.to_dict()["admission_replay_passed"] is False
 
 
 def test_historical_receipt_unknown_is_distinct_from_normalized_replay_unknown(report):
@@ -208,6 +387,12 @@ def test_historical_receipt_unknown_is_distinct_from_normalized_replay_unknown(r
 
 def test_all_source_evidence_is_preserved_and_artifacts_are_sanitized(report):
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert frozenset(fixture) == EXPECTED_ROOT_FIELDS
+    assert frozenset(fixture["source_evidence"]) == EXPECTED_SOURCE_FIELDS
+    assert all(
+        frozenset(row) == EXPECTED_ROW_FIELDS
+        for row in fixture["candidates"]
+    )
     assert report.source_shadow_ids == EXPECTED_SOURCE_SHADOW_IDS
     assert tuple(
         row["candidate"]["source_shadow_id"] for row in fixture["candidates"]
@@ -276,6 +461,43 @@ def test_replay_is_network_free_and_writes_only_under_temporary_root(tmp_path, m
     assert set(tmp_path.iterdir()) == initial_entries
 
 
+def test_default_temporary_directory_is_network_free_and_removed(monkeypatch):
+    import scripts.replay_tactical_v2_admission as replay
+
+    roots = []
+    destinations = []
+    original_temporary_directory = replay.TemporaryDirectory
+    original_store_init = replay.TacticalStore.__init__
+
+    def record_temporary_directory(*args, **kwargs):
+        temporary = original_temporary_directory(*args, **kwargs)
+        roots.append(Path(temporary.name).resolve())
+        return temporary
+
+    def record_store_paths(store, paths):
+        destinations.extend(
+            [Path(paths.tactical_v2_events).resolve(), Path(paths.tactical_v2_state).resolve()]
+        )
+        original_store_init(store, paths)
+
+    def deny_network(*args, **kwargs):
+        raise AssertionError("network access attempted")
+
+    monkeypatch.setattr(replay, "TemporaryDirectory", record_temporary_directory)
+    monkeypatch.setattr(replay.TacticalStore, "__init__", record_store_paths)
+    monkeypatch.setattr(socket, "socket", deny_network)
+
+    isolated_report = replay.replay_fixture(FIXTURE, iterations=2)
+
+    assert isolated_report.raw_candidates == 22
+    assert roots
+    assert all(
+        any(destination.is_relative_to(root) for root in roots)
+        for destination in destinations
+    )
+    assert all(not root.exists() for root in roots)
+
+
 def test_cli_prints_deterministic_json_and_evidence_limitations(report):
     result = subprocess.run(
         [sys.executable, str(DRIVER), "--fixture", str(FIXTURE)],
@@ -288,7 +510,7 @@ def test_cli_prints_deterministic_json_and_evidence_limitations(report):
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload == report.to_dict()
-    assert payload["entry-decision check"] == payload["entry_decision_checks"]
+    assert "entry-decision check" not in payload
     assert payload["exchange_fill"] is False
     assert payload["historical_executable_quote_available"] is False
     assert payload["protection_evidence_proven"] is False
