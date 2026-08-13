@@ -151,6 +151,7 @@ overlapping Main processes.
 | Focused persistence/receipt/bus/concurrency/status matrix | `196 passed in 5.04s` |
 | Bounded multiprocessing follow-up (2026-08-13) | `tests/test_tactical_v2_concurrency.py`: `3 passed in 0.21s` |
 | Repository regression | `2160 passed, 4 deselected, 580 warnings in 279.65s`; no failures |
+| Post-merge `main` regression | `2160 passed, 4 deselected, 580 warnings in 353.73s`; no failures |
 | Network-denied/temp-root isolation | `2 passed` |
 | Replay CLI, 100 iterations | exit 0; stable normalized identities, episode IDs, and all 22 row reasons |
 | Python compilation | `python3.12 -m compileall -q utils agents scripts tests` -> exit 0 |
