@@ -24,8 +24,8 @@ configuration changes, V2 capacity expansion, or Sidecar admission restoration.
 
 | Dimension | Status | Evidence |
 | --- | --- | --- |
-| Completeness | PASS | OpenSpec reports 17/17 tasks complete; 3/3 requirements and 15/15 scenarios are mapped to implementation and tests |
-| Correctness | PASS | Focused Tactical V2 matrix: `508 passed`; full repository regression: `2160 passed, 4 deselected`; no failures |
+| Completeness | PASS | OpenSpec reports 17/17 tasks complete; 4/4 requirements and 18/18 scenarios are mapped to implementation, tests, or normative operations evidence |
+| Correctness | PASS | Focused Tactical V2 matrix: `509 passed`; full repository regression: `2160 passed, 4 deselected`; no failures |
 | Coherence | PASS | Proposal, OpenSpec design, technical Design Doc, and delta specs agree on the admission boundary and NO-GO rollout gate |
 
 ## Root Cause And Fix
@@ -147,8 +147,8 @@ overlapping Main processes.
 
 | Check | Result |
 | --- | --- |
-| Focused Tactical V2 matrix | `508 passed in 63.05s` |
-| Focused persistence/receipt/bus/concurrency/status matrix | `195 passed in 4.02s` |
+| Focused Tactical V2 matrix | Canonical 21-module command: `493 passed in 78.85s`; atomic/status/concurrency follow-up: `16 passed in 0.36s`; `509 passed` total with no overlap |
+| Focused persistence/receipt/bus/concurrency/status matrix | `196 passed in 5.04s` |
 | Bounded multiprocessing follow-up (2026-08-13) | `tests/test_tactical_v2_concurrency.py`: `3 passed in 0.21s` |
 | Repository regression | `2160 passed, 4 deselected, 580 warnings in 279.65s`; no failures |
 | Network-denied/temp-root isolation | `2 passed` |
@@ -169,10 +169,14 @@ multiprocessing warnings. The fresh full-suite result is green.
 | Durable candidate receipts | `utils/tactical_v2/controller.py`, `utils/tactical_v2/store.py`, `agents/trading/executor.py` | `tests/test_tactical_v2_candidate_receipts.py`, controller/store regressions |
 | Terminal episode renewal from fresh compatible evidence | `utils/tactical_v2/episodes.py` | `tests/test_tactical_v2_episodes.py`, replay/controller/store regressions |
 | Normalized Shadow admission parity | `scripts/replay_tactical_v2_admission.py`, pinned fixture | `tests/test_tactical_v2_shadow_admission_parity.py`, parity/entry/governor/protection tests |
+| One active Main live precondition | `README.md`, `docs/integration-guide.md`, `docs/to-do-list.md` | Two-process regression is explicitly limited to ledger/admission scope; stop-then-start and overlapping-Main NO-GO are normative operations requirements |
 
-All five receipt scenarios, six lifecycle scenarios, and four admission-parity
-scenarios have direct test coverage. The implementation keeps existing executable
-quote, capacity, TTL, protection, ownership, and production-admission boundaries.
+All five receipt scenarios, six lifecycle scenarios, five normalized-admission
+scenarios, and two single-Main operations scenarios are mapped. Runtime behavior
+has direct regression coverage; the operations scenarios are enforced by the
+documented deployment precondition because full lifecycle fencing is explicitly
+outside this change. The implementation keeps existing executable quote,
+capacity, TTL, protection, ownership, and production-admission boundaries.
 
 ## Issues
 

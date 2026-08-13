@@ -91,7 +91,7 @@
 
 **本 change/branch 本地验证**（不替代文件顶部 main-branch baseline）：
 
-- Python 3.12 focused Tactical V2 suite（2026-08-13 final rerun）：`508 passed, 2 warnings`。
+- Python 3.12 focused Tactical V2 suite（2026-08-13 final rerun）：canonical 21-module matrix `493 passed`，atomic/status/concurrency follow-up `16 passed`，合计 `509 passed` 且无重叠。
 - Python 3.12 full repository suite（2026-08-13 final rerun）：`2160 passed, 4 deselected, 580 warnings`，无失败。
 - network/temp isolation：`2 passed, 80 deselected`；测试为 network-denied、temp-root-only，不修改 cloud 或 production data。
 - admission replay 默认 100 次，exit 0；normalized reducer 与真实 Controller 都在 100 个独立临时目录中运行并稳定；`compileall` exit 0。操作员命令（使用环境中的 Python 3.12）：
