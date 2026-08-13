@@ -2,6 +2,8 @@
 comet_change: tactical-v2-shadow-admission-parity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-08-13-tactical-v2-shadow-admission-parity
+status: final
 ---
 
 # Tactical V2 Shadow Admission Parity

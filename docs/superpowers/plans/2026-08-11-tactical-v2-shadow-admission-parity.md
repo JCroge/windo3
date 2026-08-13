@@ -2,6 +2,7 @@
 change: tactical-v2-shadow-admission-parity
 design-doc: docs/superpowers/specs/2026-08-11-tactical-v2-shadow-admission-parity-design.md
 base-ref: cd3e2342c469c0212da2833ee67110dac46d01f9
+archived-with: 2026-08-13-tactical-v2-shadow-admission-parity
 ---
 
 # Tactical V2 Shadow Admission Parity Implementation Plan
