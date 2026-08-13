@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import json
 import math
 import os
@@ -13,6 +14,69 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .models import SCHEMA_VERSION
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production and CI are POSIX
+    fcntl = None
+
+
+_PATH_LOCKS_GUARD = threading.Lock()
+_PATH_LOCKS: Dict[str, "_PathLedgerLock"] = {}
+
+
+class _PathLedgerLock:
+    """Reentrant thread/process lock shared by stores on one event path."""
+
+    def __init__(self, event_path: Path):
+        self.event_path = event_path.resolve()
+        self.lock_path = Path(f"{self.event_path}.lock")
+        self._thread_lock = threading.RLock()
+        self._local = threading.local()
+
+    def __enter__(self):
+        self._thread_lock.acquire()
+        depth = int(getattr(self._local, "depth", 0))
+        try:
+            if depth == 0 and fcntl is not None:
+                self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                except Exception:
+                    os.close(descriptor)
+                    raise
+                self._local.descriptor = descriptor
+            self._local.depth = depth + 1
+            return self
+        except Exception:
+            self._thread_lock.release()
+            raise
+
+    def __exit__(self, exc_type, exc, traceback):
+        depth = int(getattr(self._local, "depth", 1)) - 1
+        self._local.depth = depth
+        try:
+            if depth == 0 and fcntl is not None:
+                descriptor = getattr(self._local, "descriptor", None)
+                if descriptor is not None:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    finally:
+                        os.close(descriptor)
+                        del self._local.descriptor
+        finally:
+            self._thread_lock.release()
+
+
+def _shared_ledger_lock(event_path: Path) -> _PathLedgerLock:
+    key = str(event_path.resolve())
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = _PathLedgerLock(event_path)
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 class TacticalStoreIntegrityError(RuntimeError):
@@ -25,21 +89,30 @@ class TacticalStore:
     def __init__(self, paths: Any):
         self.event_path = Path(paths.tactical_v2_events)
         self.snapshot_path = Path(paths.tactical_v2_state)
+        self.append_marker_path = Path(f"{self.event_path}.append-pending")
         self.event_path.parent.mkdir(parents=True, exist_ok=True)
         self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        events, warnings, integrity = self._read_ledger()
-        self._integrity_failure = integrity
-        self._next_seq = events[-1]["seq"] + 1 if events else 1
-        self._partial_tail = any(
-            warning.get("reason") == "partial_tail_ignored" for warning in warnings
-        )
-        self._unterminated_valid_row = (
-            self.event_path.exists()
-            and self.event_path.stat().st_size > 0
-            and not self.event_path.read_bytes().endswith(b"\n")
-            and not self._partial_tail
-        )
+        self._ledger_lock = _shared_ledger_lock(self.event_path)
+        self._append_uncertain = self.append_marker_path.exists()
+        with self.locked():
+            pass
+
+    @contextlib.contextmanager
+    def locked(self):
+        """Hold the authoritative ledger lock across a multi-event transaction."""
+        with self._ledger_lock:
+            with self._lock:
+                self._sync_from_ledger()
+                if self._append_uncertain:
+                    raise TacticalStoreIntegrityError(
+                        "Tactical V2 append outcome is uncertain; refusing ledger authority"
+                    )
+                yield self
+
+    def last_seq(self) -> int:
+        with self.locked():
+            return self._next_seq - 1
 
     def append(
         self,
@@ -58,7 +131,7 @@ class TacticalStore:
         if not math.isfinite(timestamp):
             raise ValueError("emitted_at must be finite")
 
-        with self._lock:
+        with self.locked():
             if self._integrity_failure is not None:
                 raise TacticalStoreIntegrityError(
                     "committed Tactical V2 history is corrupt; refusing to append"
@@ -79,16 +152,46 @@ class TacticalStore:
                 ensure_ascii=True,
                 allow_nan=False,
             )
-            with self.event_path.open("a", encoding="utf-8") as handle:
-                handle.write(encoded + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            original_size = self.event_path.stat().st_size if self.event_path.exists() else 0
+            self._begin_append_marker(event, original_size=original_size)
+            try:
+                with self.event_path.open("a", encoding="utf-8") as handle:
+                    handle.write(encoded + "\n")
+                    self._sync_event_handle(handle)
+            except Exception as write_error:
+                try:
+                    with self.event_path.open("r+b") as handle:
+                        handle.truncate(original_size)
+                        self._sync_rollback_handle(handle)
+                except Exception as rollback_error:
+                    self._append_uncertain = True
+                    self._integrity_failure = {
+                        "reason": "append_rollback_failed",
+                        "detail": str(rollback_error),
+                        "original_error": str(write_error),
+                    }
+                else:
+                    self._clear_append_marker()
+                    self._sync_from_ledger()
+                raise
+            try:
+                self._clear_append_marker()
+            except Exception as marker_error:
+                self._append_uncertain = True
+                self._integrity_failure = {
+                    "reason": "append_commit_marker_cleanup_failed",
+                    "detail": str(marker_error),
+                    "event_id": event["event_id"],
+                }
+                raise TacticalStoreIntegrityError(
+                    "Tactical V2 append committed but marker cleanup is uncertain"
+                ) from marker_error
             self._next_seq += 1
             return event
 
     def read_events(self) -> List[Dict[str, Any]]:
         """Return committed valid events in sequence order."""
-        with self._lock:
+        with self.locked():
             events, _, _ = self._read_ledger()
             return copy.deepcopy(events)
 
@@ -107,7 +210,7 @@ class TacticalStore:
             f".{self.snapshot_path.name}.{os.getpid()}.tmp"
         )
 
-        with self._lock:
+        with self.locked():
             with temp_path.open("w", encoding="utf-8") as handle:
                 handle.write(encoded)
                 handle.flush()
@@ -116,7 +219,7 @@ class TacticalStore:
             self._fsync_directory(self.snapshot_path.parent)
 
     def rebuild(self) -> Dict[str, Any]:
-        with self._lock:
+        with self.locked():
             events, warnings, integrity = self._read_ledger()
             state, snapshot_warning = self._load_snapshot(
                 last_ledger_seq=events[-1]["seq"] if events else 0
@@ -141,6 +244,74 @@ class TacticalStore:
                 warning.get("reason") == "partial_tail_ignored" for warning in warnings
             )
             return state
+
+    def _sync_from_ledger(self) -> None:
+        events, warnings, integrity = self._read_ledger()
+        self._integrity_failure = integrity
+        self._next_seq = events[-1]["seq"] + 1 if events else 1
+        self._partial_tail = any(
+            warning.get("reason") == "partial_tail_ignored" for warning in warnings
+        )
+        self._unterminated_valid_row = (
+            self.event_path.exists()
+            and self.event_path.stat().st_size > 0
+            and not self.event_path.read_bytes().endswith(b"\n")
+            and not self._partial_tail
+        )
+
+    def _begin_append_marker(
+        self,
+        event: Mapping[str, Any],
+        *,
+        original_size: int,
+    ) -> None:
+        marker = {
+            "event_id": event["event_id"],
+            "event_type": event["event_type"],
+            "seq": event["seq"],
+            "original_size": int(original_size),
+        }
+        temp_path = self.append_marker_path.with_name(
+            f".{self.append_marker_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            with temp_path.open("w", encoding="utf-8") as handle:
+                json.dump(
+                    marker,
+                    handle,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                    allow_nan=False,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.append_marker_path)
+            self._append_uncertain = True
+            self._fsync_directory_strict(self.append_marker_path.parent)
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _clear_append_marker(self) -> None:
+        try:
+            self.append_marker_path.unlink()
+        except FileNotFoundError:
+            pass
+        self._fsync_directory_strict(self.append_marker_path.parent)
+        self._append_uncertain = False
+
+    @staticmethod
+    def _sync_event_handle(handle: Any) -> None:
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    @staticmethod
+    def _sync_rollback_handle(handle: Any) -> None:
+        handle.flush()
+        os.fsync(handle.fileno())
 
     @staticmethod
     def _empty_state() -> Dict[str, Any]:
@@ -315,5 +486,13 @@ class TacticalStore:
             os.fsync(descriptor)
         except OSError:
             pass
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _fsync_directory_strict(directory: Path) -> None:
+        descriptor = os.open(str(directory), os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
         finally:
             os.close(descriptor)

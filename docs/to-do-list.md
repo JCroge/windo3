@@ -5,11 +5,12 @@
 
 > **基线与逐 change 历史以 `CLAUDE.md` 顶部「当前事实」段为权威单一来源**，完整逐基线里程碑见 `docs/handoff.md`。本文件不再内联复制 change changelog（曾累积漂移至 1338，已于 2026-06-26 收口），只维护**当前阻断项、Go/No-Go、后续 P2 优化**。
 
-**当前关键运营状态（2026-08-06）**：
-- 云服 Tactical V2 为 `LIVE 100U x 3`：`0 active / 0 pending / 3 free`、`integrity_halt=null`、protection/reconciliation `verified`，rolling PnL `-0.9593U`、loss streak `1`；Main `data/positions.json` 为空。
+**当前关键运营状态（2026-08-12）**：
+- 云服 Tactical V2 为 `LIVE 100U x 3`：`0 active / 0 pending / 3 free`、`integrity_halt=null`、protection/reconciliation `verified`，rolling PnL `0U/24h`、loss streak `0`；Main `data/positions.json` 为空。
 - Shadow Tactical live sidecar 保留 resident monitor，但 `admission_enabled=false`、active=0；历史累计 `opened=69/rejected=1505`。禁止擅自恢复 sidecar admission。
 - 2026-08-05/06 已完成精确 `clOrdId` 入口回查、取消终态自愈、保护 halt 自愈/旧 halt 迁移，以及重启后 durable final-PnL replay。所有 recovery 必须有交易所、owner、订单、仓位、数量和保护证明。
-- Main PID `2663623`、Sidecar PID `1773370` 仅是 2026-08-06 快照；两者为常驻进程，没有已部署的应用级 cron/systemd/pm2 supervisor。
+- Main PID `3163368`、Sidecar PID `1773370` 是 2026-08-12 13:49 CST 快照；两者为常驻进程，没有已部署的应用级 cron/systemd/pm2 supervisor。
+- 当前 Live 的硬前提是同一 namespace/交易账户仅一个 active Main。跨进程 ledger/admission lock 不是 quote、submit/cancel、protection、close、PnL 和 status snapshot 的全 lifecycle fencing；重启必须 stop-then-start，确认旧 PID 退出后才能启新 Main。
 - 核心认知：**edge 在趋势单本身，非入场门**；入场门旋钮已近调参极限，方向质量改善须等趋势行情 + 攒够后门开仓样本才能实盘验证。
 - 后续可选（非阻塞）：Tactical/sidecar 继续攒 final PnL 分桶样本；sidecar 续跑前先确认无 ghost exposure、无 ambiguous net-mode stack、无未解决保护单；`cf-neutral-momentum-rescue-ab` 和 `cf-choppy-neutral-tp1-floor-ab` 继续等样本门槛。
 
@@ -46,7 +47,8 @@
 
 - 本地开发：GO。
 - Paper/mock：GO。
-- Tactical V2 既有部署状态：保持 2026-08-06 快照不变；本次 admission replay 的 `live_rollout_ready=false`，不构成新的 live rollout 授权。
+- Tactical V2 既有部署状态：保持 2026-08-12 实测的 `LIVE 100U x 3` 不变；本次 admission replay 的 `live_rollout_ready=false`，不构成扩大保证金/槽位或恢复 Sidecar admission 的授权。
+- 双 Main 重叠运行：**NO-GO**。当前未实现 live lifecycle 的跨进程 lease/fencing；候选准入并发测试不得被用作重叠 Main 安全证据。
 - **Sidecar admission / live 扩容：NO-GO**。Sidecar `admission_enabled=false` 必须保持；真实 quote-level executable evidence 与 fill-bound protection evidence 必须分别通过后才可评审恢复。当前不扩大 V2 保证金或槽位，也不改生产配置。
 
 ## Tactical V2 Shadow Admission Parity 运维报告（2026-08-12）
@@ -79,18 +81,29 @@
 - `historical_executable_quote_available=false`，且 PUMP 没有历史 bid/ask 证据；`exchange_fill=false`；`protection_evidence_proven=false`，protection check status 为 `not_run_no_fill`；`live_rollout_ready=false`。
 - 收益数字是 audit worksheet/source aggregation，不由 `scripts/replay_tactical_v2_admission.py` 输出：read-only cloud source `/opt/crypto-arbitrage/data/rejected_signal_events.jsonl` 在 epoch `1786183980..1786443180` 内按 `shadow_tp`/`shadow_sl` 记录分组得到原始 row 结果 18 TP / 4 SL、row win rate `81.82%`，row return 为 `sum(pnl_pct) / 100 = +32.4530%`；归一化 opportunity 每个 normalized structural opportunity 只选一个 representative，得到 4 TP / 1 SL、opportunity win rate `80%`，scalar return 合计 `+6.9621%`。本地测试不重新拉取 cloud。两组都是 scalar-price counterfactual plan return，不是 exchange fill、realized USDT PnL 或 settlement parity。
 
+**Live 部署后补充核验（2026-08-12）**：
+
+- episode renewal、durable receipt、跨进程 sequence/admission lock 和 journal replay 修复已部署；本地与云服的 `agents/trading/executor.py`、`utils/event_journal.py`、`utils/tactical_v2/{controller,episodes,store}.py` SHA-256 逐一一致。这里的 lock 结论仅限 ledger sequence 和 candidate admission/receipt，不包含全 live lifecycle fencing。Main 于 2026-08-12 12:13 CST 重启，Sidecar 未重启且 admission 仍关闭。
+- 跨过一根新 15m 收盘并额外等待 120 秒的自然 Live 观察中，新增 `tactical_candidate.v2=0`，因此 receipt/intent/order/fill 也均为 0。状态保持 `0 active / 0 pending / 3 free`、无 integrity halt、保护与对账 verified。该窗口证明运行稳定，但尚未形成自然 candidate -> receipt -> intent 的实盘闭环证据。
+- 重启后 CounterfactualLedger 新增 93 条记录：25 `quality_gate`、29 `direction_not_aligned`、29 `15m_opposing_block`、10 `main_quality_failed`。其中只有 6 条带 `exit_profile=tactical_v1`，且全部 `tactical_track_gate=fail`；`tactical_track_gate=pass` 为 0，所以 V2 没有 candidate 是当前输入门控的预期结果，不是 receipt 消费丢失。
+- `[Shadow] ... recorded` 是通用 CounterfactualLedger 日志，不等于 Shadow Tactical 合格开仓。只有 `track=tactical` 或 `exit_profile=tactical_v1` 才属于 Tactical-shaped 人群；其中 true-open 还必须满足 `tactical_track_gate=pass`。三天内 1,349 条 `quality_gate` 记录为 `track=main / exit_profile=trend_runner`，不能当作 Shadow Tactical 应开仓样本，也不得旁路导入 V2。
+- 对三天 1,348 条可回放 `quality_gate` 决策磁带做旁路实验时，0 条能到达 V2 candidate：681 条方向不一致、371 条 15m opposing hard veto、234 条 Main short regime guard、62 条 RSI 追涨跌禁令。该实验会扩大策略人群而非恢复 Shadow Tactical parity，相关 Judge 实验改动已撤销，云服和本地 `agents/trading/judge.py` 哈希一致且保持原策略边界。
+
 **本 change/branch 本地验证**（不替代文件顶部 main-branch baseline）：
 
-- Python 3.12 focused Tactical V2 suite：`482 passed`。
-- Python 3.12 full repository suite：`2143 passed, 4 deselected, 576 warnings`。
+- Python 3.12 focused Tactical V2 suite（2026-08-13 final rerun）：`508 passed, 2 warnings`。
+- Python 3.12 full repository suite（2026-08-13 final rerun）：`2160 passed, 4 deselected, 580 warnings`，无失败。
 - network/temp isolation：`2 passed, 80 deselected`；测试为 network-denied、temp-root-only，不修改 cloud 或 production data。
-- admission replay 默认 100 次，exit 0；`compileall` exit 0。操作员命令（使用环境中的 Python 3.12）：
+- admission replay 默认 100 次，exit 0；normalized reducer 与真实 Controller 都在 100 个独立临时目录中运行并稳定；`compileall` exit 0。操作员命令（使用环境中的 Python 3.12）：
 
 ```bash
 python3.12 scripts/replay_tactical_v2_admission.py --fixture tests/fixtures/tactical_v2_shadow_admission_window.json
 ```
 
 本次 change/branch 验证主机实际使用 `/usr/local/anaconda3/bin/python3.12`。
+
+- 2026-08-12 部署后复核：Tactical V2 专项 `488 passed`；receipt/episode/store/concurrency/bus/parity 子集 `294 passed`；100-loop replay 仍为 5 个 normalized opportunities、2 个真实 Controller intents、22 个 durable receipts，且 100 次稳定。
+- 同次全量回归为 `2149 passed, 4 deselected, 1 failed`。唯一失败是 `tests/test_decision_replay.py::test_no_unclassified_missing_snapshot_keys` 读取被 `.gitignore` 排除的本地 324MB `data/decision_replay_tape.jsonl`；其中一条 2026-06-17 旧 v3 记录仅有 22 个 config snapshot 键，触发历史数据守卫。该失败与 Tactical V2 runtime 改动无关，未修改或删除历史磁带来制造绿灯。
 
 ## 第五次审计阻断（处理中）
 

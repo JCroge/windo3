@@ -76,11 +76,12 @@ Every controller return path must pass through one receipt-writing helper. If th
 
 ### 3. Normalized admission parity
 
-Parity reporting will maintain two counts:
+Parity reporting will maintain separate observation, normalized, and Controller counts:
 
 ```text
 raw_shadow_rows       # Legacy Shadow observations
 normalized_opportunities  # candidate/episode identities
+controller_intents        # real Controller admissions without synthetic release
 ```
 
 For the audited fixture, repeated source Shadow IDs remain visible, but the expected admission result is:
@@ -91,11 +92,27 @@ For the audited fixture, repeated source Shadow IDs remain visible, but the expe
 all other repeated rows: duplicate_episode
 ```
 
-Parity does not mark an exchange fill. After admission, V2 still runs executable bid/ask, entry drift, TTL, governor, and protection checks. Quote-level and exchange-level PnL comparisons remain separate evidence classes.
+The normalized harness may mark the preceding normalized episode terminal when
+the audited structural opportunity identity changes. That synthetic boundary is
+only a research normalization rule. For this fixture it yields five eligible
+opportunities; the real Controller creates two intents and returns three
+`same_symbol_exposure` outcomes because the fixture has no terminal lifecycle
+evidence. Neither metric marks an exchange fill. After Controller admission, V2
+still runs executable bid/ask, entry drift, TTL, governor, and protection checks.
+Quote-level and exchange-level PnL comparisons remain separate evidence classes.
 
 ### 4. Replay harness
 
-The replay fixture will contain the 22 candidate payloads and the initial terminal PUMP episode state. It will use an in-memory TacticalStore, pinned timestamps, and no exchange or network access. The harness will assert the accepted identities, rejection reasons, episode sequence, and executable entry decision for an at-entry quote. It will repeat the same sequence 100 times and require identical serialized results.
+The replay fixture will contain the 22 candidate payloads and the initial terminal PUMP episode state. It will use an in-memory TacticalStore, pinned timestamps, and no exchange or network access. Every iteration runs both the normalized reducer and a fresh real Controller in separate temporary roots. The harness will assert each layer's accepted identities, intents, receipts, rejection reasons, sequence integrity, and executable entry decision for an at-entry quote. It will repeat both layers 100 times and require identical serialized results.
+
+### 5. Process ownership boundary
+
+The cross-process ledger lock covers sequence allocation and the complete
+candidate admission/receipt transaction. It does not fence quote handling,
+entry submit/reconcile/cancel, protection, close, PnL, or status projection.
+Live operation therefore requires exactly one active Main for each namespace and
+exchange account. Controlled restart is stop-then-start after confirming the old
+Main has exited. Overlapping Main live execution remains unsupported.
 
 ## Data Flow
 
@@ -122,12 +139,13 @@ The receipt records admission decisions; entry and settlement events record late
 | Same-bar structure token churn | Prefer strictly newer closed bars; only accept token changes when a non-empty token differs. |
 | Legacy Shadow remains non-executable | Keep admission parity separate and prohibit live rollout claims without L1 quote evidence. |
 | Existing ledgers lack receipt history | Preserve `unknown_handling_evidence`; never backfill inferred consumption. |
+| Candidate lock is mistaken for full lifecycle fencing | Make one active Main a normative requirement and keep overlapping Main operation NO-GO. |
 
 ## Verification Strategy
 
 1. Episode unit tests cover fresh neutral renewal, same-evidence duplicate, blocked neutral, missing structure, restart, and historical terminal episodes.
 2. Receipt tests cover accepted, duplicate, validation, expiry, capacity, ordering, replay, and absent historical receipt behavior.
-3. The cloud-derived replay asserts 3 BICO plus 2 PUMP normalized episodes and 100-loop stability.
+3. The cloud-derived replay asserts 3 BICO plus 2 PUMP normalized episodes, 2 real Controller intents plus 3 `same_symbol_exposure` outcomes, and independent 100-loop stability for both layers.
 4. The focused Tactical V2 suite and all related replay/shadow tests must pass.
 5. No test may require cloud credentials, exchange I/O, process restart, Sidecar admission, or mutation of production data.
 

@@ -398,7 +398,10 @@ class EpisodeRegistry:
 
     @staticmethod
     def _normalize_token(value: Any) -> Optional[str]:
-        return None if value is None else str(value)
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @staticmethod
     def _normalize_closed_bar(value: Any) -> Optional[float]:

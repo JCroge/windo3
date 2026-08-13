@@ -164,6 +164,12 @@ import os
 from utils.sequential_perturbation import _gate_of_recorded, _gate_of_replayed
 
 _TAPE = os.path.join(os.path.dirname(__file__), "..", "data", "decision_replay_tape.jsonl")
+_PRODUCTION_SNAPSHOT_SENTINELS = {
+    "interval",
+    "research_interval",
+    "daily_pnl_hard_stop",
+    "use_testnet",
+}
 
 
 def _load_v2_v3():
@@ -184,6 +190,14 @@ def _load_v2_v3():
             continue
         out.append(r)
     return out
+
+
+def test_full_config_snapshot_classifier_rejects_partial_test_config():
+    full = {key: object() for key in _PRODUCTION_SNAPSHOT_SENTINELS}
+    partial = {"tactical_v2_mode": "live"}
+
+    assert _PRODUCTION_SNAPSHOT_SENTINELS.issubset(full)
+    assert not _PRODUCTION_SNAPSHOT_SENTINELS.issubset(partial)
 
 
 def test_production_baseline_restores_fidelity():
@@ -259,7 +273,9 @@ def test_no_unclassified_missing_snapshot_keys():
     from utils.decision_replay import _EPOCH_FALLBACK, _GATE_IRRELEVANT, _PROD_DEFAULTS
     recs = [r for r in _load_v2_v3()
             if r.get("schema_version") == "decision_replay_record.v3"
-            and (r.get("config_snapshot") or {})]
+            and _PRODUCTION_SNAPSHOT_SENTINELS.issubset(
+                r.get("config_snapshot") or {}
+            )]
     if len(recs) < 50:
         pytest.skip("insufficient v3 tape")
     classified = set(_EPOCH_FALLBACK) | set(_GATE_IRRELEVANT)

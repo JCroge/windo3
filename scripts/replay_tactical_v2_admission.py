@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.tactical_v2.entry import ExecutableQuote, classify_entry  # noqa: E402
+from utils.tactical_v2.controller import TacticalV2Controller  # noqa: E402
 from utils.tactical_v2.episodes import EpisodeRegistry  # noqa: E402
 from utils.tactical_v2.governor import TacticalGovernor  # noqa: E402
 from utils.tactical_v2.models import TacticalCandidate, TacticalIntent  # noqa: E402
@@ -28,7 +29,18 @@ from utils.tactical_v2.store import TacticalStore  # noqa: E402
 
 
 SYNTHETIC_BOUNDARY_REASON = "synthetic_admission_window_opportunity_boundary"
-STABILITY_FIELDS = ("accepted_identities", "episode_ids", "row_reasons")
+STABILITY_FIELDS = (
+    "accepted_identities",
+    "episode_ids",
+    "row_reasons",
+)
+CONTROLLER_STABILITY_FIELDS = (
+    "controller_replay_intent_ids",
+    "controller_replay_receipts",
+    "controller_replay_results",
+    "controller_replay_event_seq_contiguous",
+    "controller_replay_integrity_failure",
+)
 PARITY_PROJECTION_FIELDS = (
     "raw_candidates",
     "accepted",
@@ -223,6 +235,7 @@ def _projection_fingerprint(source: Any, fields: Sequence[str]) -> str:
 class AdmissionReplayReport:
     raw_candidates: int
     accepted: int
+    accepted_metric: str
     accepted_by_symbol: dict[str, int]
     reasons: dict[str, int]
     accepted_reasons: dict[str, int]
@@ -251,6 +264,17 @@ class AdmissionReplayReport:
     protection_check_status: str
     protection_live_rollout_gate_passed: bool
     live_rollout_ready: bool
+    controller_replay_intents: int
+    controller_replay_intent_ids: tuple[str, ...]
+    controller_replay_receipts: int
+    controller_replay_results: dict[str, int]
+    controller_replay_event_seq_contiguous: bool
+    controller_replay_integrity_failure: Optional[dict[str, Any]]
+    controller_replay_lifecycle_evidence: str
+    controller_five_intent_parity_proven: bool
+    controller_stable_iterations: int
+    controller_stability_compared_fields: tuple[str, ...]
+    controller_stability_fingerprint: str
 
     @property
     def parity_expected_values_passed(self) -> bool:
@@ -366,6 +390,42 @@ class AdmissionReplayReport:
             and self.protection_check_status == "not_run_no_fill"
             and self.protection_live_rollout_gate_passed is False
             and self.live_rollout_ready is False
+            and self.controller_replay_expected_values_passed
+            and self.controller_replay_stability_requirement_passed
+        )
+
+    @property
+    def controller_replay_expected_values_passed(self) -> bool:
+        return bool(
+            self.accepted_metric == "normalized_admission_opportunities"
+            and self.controller_replay_intents == 2
+            and len(self.controller_replay_intent_ids) == 2
+            and self.controller_replay_receipts == EXPECTED_CANDIDATE_COUNT
+            and self.controller_replay_results
+            == {
+                "accepted": 2,
+                "duplicate_episode": 17,
+                "same_symbol_exposure": 3,
+            }
+            and self.controller_replay_event_seq_contiguous is True
+            and self.controller_replay_integrity_failure is None
+            and self.controller_replay_lifecycle_evidence == "absent_from_fixture"
+            and self.controller_five_intent_parity_proven is False
+        )
+
+    @property
+    def controller_replay_stability_requirement_passed(self) -> bool:
+        return bool(
+            self.controller_replay_expected_values_passed
+            and self.controller_stable_iterations == 100
+            and self.controller_stability_compared_fields
+            == CONTROLLER_STABILITY_FIELDS
+            and _projection_fingerprint(
+                self,
+                CONTROLLER_STABILITY_FIELDS,
+            )
+            == self.controller_stability_fingerprint
+            and self.controller_replay_event_seq_contiguous is True
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -374,6 +434,12 @@ class AdmissionReplayReport:
         payload["replay_integrity_passed"] = self.replay_integrity_passed
         payload["stability_requirement_passed"] = self.stability_requirement_passed
         payload["admission_replay_passed"] = self.admission_replay_passed
+        payload["controller_replay_expected_values_passed"] = (
+            self.controller_replay_expected_values_passed
+        )
+        payload["controller_replay_stability_requirement_passed"] = (
+            self.controller_replay_stability_requirement_passed
+        )
         return json.loads(
             json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
@@ -739,6 +805,62 @@ def _entry_decision_check(
     }
 
 
+class _ReplayExecutor:
+    def __init__(self):
+        self.positions = {}
+
+
+def _controller_replay_once(
+    initial_state: Mapping[str, Any],
+    rows: Sequence[_CandidateRow],
+    temp_root: Path,
+) -> dict[str, Any]:
+    paths = SimpleNamespace(
+        namespace="live",
+        tactical_v2_events=str(temp_root / "controller-events.jsonl"),
+        tactical_v2_state=str(temp_root / "controller-state.json"),
+        tactical_v2_status=str(temp_root / "controller-status.json"),
+    )
+    store = TacticalStore(paths)
+    _seed_initial_episode(store, initial_state)
+    controller = TacticalV2Controller(
+        executor=_ReplayExecutor(),
+        config={"tactical_v2_mode": "shadow"},
+        paths=paths,
+        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        publish=None,
+        now_fn=lambda: rows[-1].journal_timestamp if rows else 0.0,
+    )
+
+    results = [
+        controller.handle_candidate_sync(
+            row.raw,
+            now=row.journal_timestamp,
+            message_id=row.msg_id,
+        )
+        for row in rows
+    ]
+    events = store.read_events()
+    intent_ids = tuple(
+        str(event["data"]["intent_id"])
+        for event in events
+        if event["event_type"] == "intent_created"
+    )
+    reasons = Counter(result.reason for result in results)
+    seqs = [event["seq"] for event in events]
+    return {
+        "controller_replay_intents": len(intent_ids),
+        "controller_replay_intent_ids": intent_ids,
+        "controller_replay_receipts": sum(
+            event["event_type"] == "candidate_handled" for event in events
+        ),
+        "controller_replay_results": dict(sorted(reasons.items())),
+        "controller_replay_event_seq_contiguous": seqs
+        == list(range(1, len(seqs) + 1)),
+        "controller_replay_integrity_failure": store.rebuild()["integrity_failure"],
+    }
+
+
 def _replay_once(
     initial_state: Mapping[str, Any],
     rows: Sequence[_CandidateRow],
@@ -861,6 +983,16 @@ def _stability_serialization(run: Mapping[str, Any]) -> str:
     )
 
 
+def _controller_stability_serialization(run: Mapping[str, Any]) -> str:
+    projection = {field: run[field] for field in CONTROLLER_STABILITY_FIELDS}
+    return json.dumps(
+        projection,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
 def replay_fixture(
     source: str | Path | Mapping[str, Any],
     *,
@@ -877,21 +1009,44 @@ def replay_fixture(
     parent = None if scratch_root is None else str(Path(scratch_root))
     first_run = None
     stable_serialization = None
+    first_controller_run = None
+    controller_stable_serialization = None
     for _ in range(iterations):
         with TemporaryDirectory(prefix="tactical-v2-admission-", dir=parent) as temp_dir:
-            run = _replay_once(initial_state, rows, Path(temp_dir))
+            iteration_root = Path(temp_dir)
+            run = _replay_once(initial_state, rows, iteration_root / "normalized")
+            controller_run = _controller_replay_once(
+                initial_state,
+                rows,
+                iteration_root / "controller",
+            )
         serialized = _stability_serialization(run)
+        controller_serialized = _controller_stability_serialization(controller_run)
         if stable_serialization is None:
             first_run = run
             stable_serialization = serialized
         elif serialized != stable_serialization:
             raise RuntimeError("admission replay is not stable across independent runs")
+        if controller_stable_serialization is None:
+            first_controller_run = controller_run
+            controller_stable_serialization = controller_serialized
+        elif controller_serialized != controller_stable_serialization:
+            raise RuntimeError(
+                "controller replay is not stable across independent runs"
+            )
 
-    if first_run is None or stable_serialization is None:
+    if (
+        first_run is None
+        or stable_serialization is None
+        or first_controller_run is None
+        or controller_stable_serialization is None
+    ):
         raise RuntimeError("admission replay produced no run")
+    controller_run = first_controller_run
     return AdmissionReplayReport(
         raw_candidates=first_run["raw_candidates"],
         accepted=first_run["accepted"],
+        accepted_metric="normalized_admission_opportunities",
         accepted_by_symbol=first_run["accepted_by_symbol"],
         reasons=first_run["reasons"],
         accepted_reasons=first_run["accepted_reasons"],
@@ -923,6 +1078,23 @@ def replay_fixture(
         protection_evidence_proven=False,
         protection_check_status="not_run_no_fill",
         protection_live_rollout_gate_passed=False,
+        controller_replay_intents=controller_run["controller_replay_intents"],
+        controller_replay_intent_ids=tuple(controller_run["controller_replay_intent_ids"]),
+        controller_replay_receipts=controller_run["controller_replay_receipts"],
+        controller_replay_results=controller_run["controller_replay_results"],
+        controller_replay_event_seq_contiguous=(
+            controller_run["controller_replay_event_seq_contiguous"]
+        ),
+        controller_replay_integrity_failure=(
+            controller_run["controller_replay_integrity_failure"]
+        ),
+        controller_replay_lifecycle_evidence="absent_from_fixture",
+        controller_five_intent_parity_proven=False,
+        controller_stable_iterations=iterations,
+        controller_stability_compared_fields=CONTROLLER_STABILITY_FIELDS,
+        controller_stability_fingerprint=hashlib.sha256(
+            controller_stable_serialization.encode("ascii")
+        ).hexdigest(),
         live_rollout_ready=False,
     )
 

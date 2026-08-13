@@ -1899,6 +1899,69 @@ async def test_normal_redelivery_after_receipt_append_failure_remains_unknown(
 
 
 @pytest.mark.asyncio
+async def test_post_write_receipt_fsync_failure_remains_unknown(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    raw = _candidate(candidate_id="receipt-fsync-confirmed")
+    original_append = controller.store.append
+    active_event_type = None
+    failed_once = False
+
+    def track_event_type(event_type, data, **kwargs):
+        nonlocal active_event_type
+        previous = active_event_type
+        active_event_type = event_type
+        try:
+            return original_append(event_type, data, **kwargs)
+        finally:
+            active_event_type = previous
+
+    def fail_receipt_fsync_once(handle):
+        nonlocal failed_once
+        if active_event_type == "candidate_handled" and not failed_once:
+            failed_once = True
+            raise OSError("injected receipt fsync failure")
+        return handle.flush()
+
+    monkeypatch.setattr(controller.store, "append", track_event_type)
+    monkeypatch.setattr(controller.store, "_sync_event_handle", fail_receipt_fsync_once)
+
+    with pytest.raises(OSError, match="injected receipt fsync failure"):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id="msg-receipt-fsync-confirmed",
+        )
+    events_after_failure = _events(tmp_path)
+    same_process = await controller.handle_candidate(
+        raw,
+        now=1001.0,
+        message_id="msg-receipt-fsync-confirmed",
+    )
+    restarted = _controller(tmp_path)
+    after_restart = await restarted.handle_candidate(
+        raw,
+        now=1002.0,
+        message_id="msg-receipt-fsync-confirmed",
+    )
+
+    assert failed_once is True
+    assert same_process.accepted is False
+    assert same_process.reason == "unknown_handling_evidence"
+    assert after_restart == same_process
+    assert [event["event_type"] for event in events_after_failure] == [
+        "episode_assigned",
+        "intent_created",
+        "candidate_handling_gap_recorded",
+    ]
+    assert _events(tmp_path) == events_after_failure
+    assert [event["seq"] for event in events_after_failure] == [1, 2, 3]
+    assert restarted.store.rebuild()["integrity_failure"] is None
+
+
+@pytest.mark.asyncio
 async def test_governor_rejection_receipt_gap_remains_unknown_after_restart(
     tmp_path,
     monkeypatch,
@@ -1967,6 +2030,68 @@ async def test_governor_rejection_receipt_gap_remains_unknown_after_restart(
         "receipt_count": 0,
         "unknown_handling_evidence": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_receipt_fsync_and_pretruncate_rollback_failure_never_returns_accepted(
+    tmp_path,
+    monkeypatch,
+):
+    from pathlib import Path
+
+    from utils.tactical_v2.store import TacticalStore, TacticalStoreIntegrityError
+
+    controller = _controller(tmp_path)
+    raw = _candidate(candidate_id="receipt-rollback-open-failure")
+    original_append = controller.store.append
+    original_path_open = Path.open
+    active_event_type = None
+    receipt_fsync_failed = False
+
+    def track_event_type(event_type, data, **kwargs):
+        nonlocal active_event_type
+        previous = active_event_type
+        active_event_type = event_type
+        try:
+            return original_append(event_type, data, **kwargs)
+        finally:
+            active_event_type = previous
+
+    def fail_receipt_fsync_once(handle):
+        nonlocal receipt_fsync_failed
+        if active_event_type == "candidate_handled" and not receipt_fsync_failed:
+            receipt_fsync_failed = True
+            raise OSError("injected receipt fsync failure")
+        return handle.flush()
+
+    def fail_rollback_open(path, mode="r", *args, **kwargs):
+        if (
+            path == controller.store.event_path
+            and mode == "r+b"
+            and active_event_type == "candidate_handled"
+        ):
+            raise OSError("injected rollback open failure")
+        return original_path_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(controller.store, "append", track_event_type)
+    monkeypatch.setattr(controller.store, "_sync_event_handle", fail_receipt_fsync_once)
+    monkeypatch.setattr(Path, "open", fail_rollback_open)
+
+    with pytest.raises(TacticalStoreIntegrityError):
+        await controller.handle_candidate(
+            raw,
+            now=1000.0,
+            message_id="msg-receipt-rollback-open-failure",
+        )
+    with pytest.raises(TacticalStoreIntegrityError):
+        await controller.handle_candidate(
+            raw,
+            now=1001.0,
+            message_id="msg-receipt-rollback-open-failure",
+        )
+    assert controller.store.append_marker_path.exists()
+    with pytest.raises(TacticalStoreIntegrityError):
+        TacticalStore(controller.paths)
 
 
 @pytest.mark.asyncio

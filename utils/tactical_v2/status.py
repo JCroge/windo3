@@ -6,6 +6,7 @@ import json
 import math
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -53,13 +54,21 @@ def write_status(paths_or_path: Any, snapshot: Mapping[str, Any]) -> None:
         ensure_ascii=True,
         allow_nan=False,
     )
-    temp_path = path.with_name(f"{path.name}.tmp")
-    with temp_path.open("w", encoding="utf-8") as handle:
-        handle.write(encoded)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temp_path, path)
-    _fsync_directory(path.parent)
+    temp_path = path.with_name(
+        f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def read_status(paths_or_path: Any) -> Optional[dict]:

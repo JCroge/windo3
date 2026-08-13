@@ -76,6 +76,128 @@ def test_journal_replay_filters_namespace_and_original_ttl(tmp_path):
     assert replayed[0]["type"] == "tactical_candidate.v2"
 
 
+def test_journal_replay_scans_past_non_matching_rows_before_limit(tmp_path):
+    from utils.event_journal import EventJournal
+
+    journal = EventJournal(str(tmp_path))
+    now = time.time()
+    for index in range(1000):
+        journal.append(
+            "tactical_candidate.v2",
+            {
+                "candidate_id": f"old-{index}",
+                "namespace": "other",
+                "created_at": now - 30,
+            },
+            msg_id=f"old-{index}",
+        )
+    journal.append(
+        "tactical_candidate.v2",
+        {"candidate_id": "fresh", "namespace": "testnet", "created_at": now - 30},
+        msg_id="msg-fresh",
+    )
+    journal.close()
+
+    replayed = journal.replay_messages(
+        "tactical_candidate.v2",
+        namespace="testnet",
+        now=now,
+        max_age_seconds=900,
+    )
+
+    assert [row["payload"]["candidate_id"] for row in replayed] == ["fresh"]
+
+
+def test_journal_replay_stops_reading_once_message_limit_is_satisfied(
+    tmp_path,
+    monkeypatch,
+):
+    import utils.event_journal as event_journal
+
+    journal = event_journal.EventJournal(str(tmp_path))
+    now = time.time()
+    for index in range(2):
+        journal.append(
+            "tactical_candidate.v2",
+            {
+                "candidate_id": f"fresh-{index}",
+                "namespace": "testnet",
+                "created_at": now - 30,
+            },
+            msg_id=f"msg-fresh-{index}",
+        )
+    journal.close()
+    real_loads = event_journal.json.loads
+    parsed_rows = 0
+
+    def counting_loads(value):
+        nonlocal parsed_rows
+        parsed_rows += 1
+        return real_loads(value)
+
+    monkeypatch.setattr(event_journal.json, "loads", counting_loads)
+
+    replayed = journal.replay_messages(
+        "tactical_candidate.v2",
+        namespace="testnet",
+        now=now,
+        max_age_seconds=900,
+        limit=1,
+    )
+
+    assert [row["payload"]["candidate_id"] for row in replayed] == ["fresh-0"]
+    assert parsed_rows == 1
+
+
+def test_journal_replay_does_not_parse_files_older_than_message_ttl(
+    tmp_path,
+    monkeypatch,
+):
+    import utils.event_journal as event_journal
+
+    journal = event_journal.EventJournal(str(tmp_path))
+    now = time.time()
+    old_entry = {
+        "topic": "tactical_candidate.v2",
+        "msg_id": "msg-old",
+        "timestamp": now - 86400,
+        "payload": {
+            "candidate_id": "old",
+            "namespace": "testnet",
+            "created_at": now - 86400,
+        },
+    }
+    (tmp_path / "events_20000101.jsonl").write_text(
+        event_journal.json.dumps(old_entry) + "\n",
+        encoding="utf-8",
+    )
+    journal.append(
+        "tactical_candidate.v2",
+        {"candidate_id": "fresh", "namespace": "testnet", "created_at": now - 30},
+        msg_id="msg-fresh",
+    )
+    journal.close()
+    real_loads = event_journal.json.loads
+    parsed_rows = 0
+
+    def counting_loads(value):
+        nonlocal parsed_rows
+        parsed_rows += 1
+        return real_loads(value)
+
+    monkeypatch.setattr(event_journal.json, "loads", counting_loads)
+
+    replayed = journal.replay_messages(
+        "tactical_candidate.v2",
+        namespace="testnet",
+        now=now,
+        max_age_seconds=900,
+    )
+
+    assert [row["payload"]["candidate_id"] for row in replayed] == ["fresh"]
+    assert parsed_rows == 1
+
+
 @pytest.mark.asyncio
 async def test_judge_routes_exact_shadow_profile_to_candidate_and_main_hold(monkeypatch):
     from test_tactical_track_classifier import base_plan, make_judge, strong_short_tech

@@ -6,6 +6,8 @@
 
 **系统状态（2026-08-06）**：两层多 Agent 系统主入口为 `run_agents.py`。Open 主链路使用 `trade_decision.v2`，Executor 终态使用 `execution_result.v2`；Tactical V2 当前为云服 live 执行 owner，固定 `100U x 3`，Sidecar 仅 resident monitoring 且 admission 关闭。R:R floor、Entry Position Guard、Entry Drift、Short Structural Gate、protection halt recovery、精确入口回查和 durable final-PnL replay 均有单点收口函数或明确边界。**下游集成红线**：消费 close 类 payload 必须用 `pnl_is_final=True` 守门；消费 `risk_reduced` 必须同时检查 `result.reduce_ok` 与 `result.protection_failed`；消费 open/reject/close 结果时必须保留 `track` / `exit_profile` / `slot_type` / `tactical_close_reason`，不能只按 `regime + side` 反推出口语义；消费状态时必须区分全局 halt、per-symbol halt、Tactical V2 status 和 sidecar 专属 `shadow_tactical_live_*` 状态。生产入口不再接旧 `live_trading.py`。
 
+**Tactical V2 单主进程约束**：同一 state namespace 和交易账户必须只有一个 active `run_agents.py` Main。`TacticalStore` 的跨进程锁仅保证 JSONL sequence 与 candidate admission/receipt 事务序列化；它不是 live lifecycle lease/fencing，不覆盖 quote 处理、入场 submit/reconcile/cancel、保护单、平仓、PnL 或 status snapshot。部署与重启必须使用 stop-then-start，并在启动新 Main 前验证旧 PID 已退出；不得把 candidate 并发测试解读为双 Main live 安全证明。
+
 ## 核心模块接口
 
 ### 多Agent交易系统（两层架构） ✅
@@ -284,7 +286,7 @@ class MyAgent(BaseAgent):
 
 `TACTICAL_SHADOW_ONLY=true` 时，Tactical 不发布 live 订单，也不走 PaperExecutor 的 `paper_execution_result`；Judge 会把可交易的 Tactical counterfactual 写入 `data/rejected_signal_events.jsonl` 与 `data/rejected_signal_lifecycle.json`。复盘 Tactical 是否赚钱时，优先筛 `track=tactical`、`exit_profile=tactical_v1`、`tactical_cost_gate=pass`、`tactical_track_gate=pass` 的 ledger 记录；`tactical_cost_gate=fail` 或 `tactical_track_gate=fail` 的记录可保留诊断字段，其中成本门已过但 RR/EV 阈值门失败的记录仍可用来观察 Tactical max-hold 结局，但不计入“本应真开 Tactical”的盈利样本。
 
-`TACTICAL_SHADOW_ONLY=false` 时，合格 Tactical 会进入 live `trade_decision.v2` / `execution_result.v2` 链路，仓位和 close payload 仍以 `track=tactical`、`exit_profile=tactical_v1`、`slot_type=tactical`、`tactical_close_reason` 识别。此时 `rejected_signal_*` 只代表被拒/影子候选，不等同 live Tactical 成交账本；live 收益以 LiveLedger / Reviewer final PnL 为准。
+`TACTICAL_SHADOW_ONLY=false` 描述的是历史 legacy live 分支，不是当前推荐配置。该分支在 2026-08-12 NO-GO gate 下禁止设置；当前不得据此恢复 Tactical live 发布或 Sidecar admission。若未来经过独立 gate 审批重新启用，合格 Tactical 才会进入 live `trade_decision.v2` / `execution_result.v2` 链路，仓位和 close payload 仍以 `track=tactical`、`exit_profile=tactical_v1`、`slot_type=tactical`、`tactical_close_reason` 识别；live 收益以 LiveLedger / Reviewer final PnL 为准。
 
 **状态消费约定**：
 - 全局 halt：读 `data/halt_state.json` 的 `halted` / `can_open_new` / `reason`。

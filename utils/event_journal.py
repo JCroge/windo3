@@ -8,7 +8,7 @@ import json
 import os
 import time
 import hashlib
-from typing import Optional
+from typing import Iterator, Optional
 
 
 JOURNAL_DIR = "data/journal"
@@ -45,10 +45,22 @@ class EventJournal:
             pass
 
     def replay(self, filter_key: str = None, filter_value: str = None,
-               since: float = 0, limit: int = 1000) -> list:
+               since: float = 0, limit: Optional[int] = 1000) -> list:
         """重放事件，支持按 request_id/symbol/topic 过滤"""
-        results = []
-        for filepath in sorted(self._list_files()):
+        return list(self._iter_replay(filter_key, filter_value, since, limit))
+
+    def _iter_replay(
+        self,
+        filter_key: str = None,
+        filter_value: str = None,
+        since: float = 0,
+        limit: Optional[int] = 1000,
+        file_since: Optional[float] = None,
+    ) -> Iterator[dict]:
+        """Yield matching events without materializing the journal history."""
+        emitted = 0
+        effective_file_since = since if file_since is None else file_since
+        for filepath in sorted(self._list_files(since=effective_file_since)):
             try:
                 with open(filepath, 'r') as f:
                     for line in f:
@@ -65,12 +77,12 @@ class EventJournal:
                                     continue
                             elif payload.get(filter_key) != filter_value:
                                 continue
-                        results.append(entry)
-                        if len(results) >= limit:
-                            return results
+                        yield entry
+                        emitted += 1
+                        if limit is not None and emitted >= limit:
+                            return
             except Exception:
                 continue
-        return results
 
     def replay_messages(self, topic: str, *, namespace: str, now: float,
                         max_age_seconds: float, limit: int = 1000) -> list:
@@ -80,7 +92,14 @@ class EventJournal:
             return []
 
         replayed = []
-        for entry in self.replay(filter_key="topic", filter_value=topic, limit=limit):
+        since = float(now) - float(max_age_seconds)
+        for entry in self._iter_replay(
+            filter_key="topic",
+            filter_value=topic,
+            since=0,
+            limit=None,
+            file_since=since,
+        ):
             payload = entry.get("payload")
             if not isinstance(payload, dict):
                 continue
@@ -99,6 +118,8 @@ class EventJournal:
                 "timestamp": entry.get("timestamp", 0),
                 "payload": payload,
             })
+            if len(replayed) >= limit:
+                break
         return replayed
 
     def _write_line(self, line: str):
@@ -118,12 +139,22 @@ class EventJournal:
         except OSError:
             pass
 
-    def _list_files(self) -> list:
+    def _list_files(self, *, since: float = 0) -> list:
         try:
+            oldest_date = (
+                time.strftime("%Y%m%d", time.gmtime(since))
+                if since > 0
+                else None
+            )
             return [
                 os.path.join(self._dir, f)
                 for f in sorted(os.listdir(self._dir))
                 if f.startswith("events_") and f.endswith(".jsonl")
+                and (
+                    oldest_date is None
+                    or len(f) != len("events_YYYYMMDD.jsonl")
+                    or f[7:15] >= oldest_date
+                )
             ]
         except Exception:
             return []

@@ -106,6 +106,35 @@ def test_replay_driver_exists_and_locks_admission_counts(report):
     assert report.unknown == 0
 
 
+def test_report_separates_normalized_opportunities_from_controller_intents(report):
+    assert report.accepted_metric == "normalized_admission_opportunities"
+    assert report.controller_replay_intents == 2
+    assert report.controller_replay_receipts == 22
+    assert report.controller_replay_results == {
+        "accepted": 2,
+        "duplicate_episode": 17,
+        "same_symbol_exposure": 3,
+    }
+    assert report.controller_replay_event_seq_contiguous is True
+    assert report.controller_replay_integrity_failure is None
+    assert report.controller_replay_lifecycle_evidence == "absent_from_fixture"
+    assert report.controller_five_intent_parity_proven is False
+    assert report.controller_replay_expected_values_passed is True
+    assert report.controller_replay_stability_requirement_passed is True
+
+
+def test_controller_replay_runs_and_compares_every_independent_iteration(report):
+    assert report.controller_stable_iterations == 100
+    assert report.controller_stability_compared_fields == (
+        "controller_replay_intent_ids",
+        "controller_replay_receipts",
+        "controller_replay_results",
+        "controller_replay_event_seq_contiguous",
+        "controller_replay_integrity_failure",
+    )
+    assert len(report.controller_stability_fingerprint) == 64
+
+
 def test_normalized_opportunity_uses_bias_specific_identity():
     from scripts.replay_tactical_v2_admission import normalized_structural_opportunity
 

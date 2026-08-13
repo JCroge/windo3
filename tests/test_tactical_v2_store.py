@@ -1,6 +1,9 @@
 import json
+import multiprocessing as mp
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 def _paths(tmp_path):
@@ -8,6 +11,96 @@ def _paths(tmp_path):
         tactical_v2_events=str(tmp_path / "events.jsonl"),
         tactical_v2_state=str(tmp_path / "state.json"),
     )
+
+
+def _append_from_process(events_path, state_path, barrier, count, queue):
+    from utils.tactical_v2.store import TacticalStore
+
+    paths = SimpleNamespace(
+        tactical_v2_events=events_path,
+        tactical_v2_state=state_path,
+    )
+    barrier.wait()
+    store = TacticalStore(paths)
+    for index in range(count):
+        store.append("concurrent_event", {"worker": index})
+    queue.put("ok")
+
+
+def test_store_serializes_sequence_allocation_across_processes(tmp_path):
+    paths = _paths(tmp_path)
+    context = mp.get_context("fork")
+    barrier = context.Barrier(2)
+    queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_append_from_process,
+            args=(paths.tactical_v2_events, paths.tactical_v2_state, barrier, 3, queue),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+
+    assert all(process.exitcode == 0 for process in processes)
+    assert [queue.get(timeout=1) for _ in processes] == ["ok", "ok"]
+    events = json.loads("[" + ",".join(
+        line for line in Path(paths.tactical_v2_events).read_text().splitlines()
+    ) + "]")
+    assert [event["seq"] for event in events] == list(range(1, 7))
+    assert __import__("utils.tactical_v2.store", fromlist=["TacticalStore"]).TacticalStore(
+        paths
+    ).rebuild()["integrity_failure"] is None
+
+
+def test_post_write_fsync_failure_rolls_back_unconfirmed_event(tmp_path, monkeypatch):
+    from utils.tactical_v2.store import TacticalStore
+
+    paths = _paths(tmp_path)
+    store = TacticalStore(paths)
+    failed_once = False
+
+    def fail_after_write_once(handle):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise OSError("injected fsync failure")
+
+    monkeypatch.setattr(store, "_sync_event_handle", fail_after_write_once)
+    try:
+        store.append("one", {}, emitted_at=1)
+    except OSError as exc:
+        assert str(exc) == "injected fsync failure"
+    else:
+        raise AssertionError("fsync failure did not propagate")
+
+    assert store.append("two", {}, emitted_at=2)["seq"] == 1
+    assert [event["seq"] for event in store.read_events()] == [1]
+    assert TacticalStore(paths).rebuild()["integrity_failure"] is None
+
+
+def test_append_rollback_failure_halts_further_writes(tmp_path, monkeypatch):
+    from utils.tactical_v2.store import TacticalStore, TacticalStoreIntegrityError
+
+    store = TacticalStore(_paths(tmp_path))
+    monkeypatch.setattr(
+        store,
+        "_sync_event_handle",
+        lambda handle: (_ for _ in ()).throw(OSError("injected fsync failure 1")),
+    )
+    monkeypatch.setattr(
+        store,
+        "_sync_rollback_handle",
+        lambda handle: (_ for _ in ()).throw(OSError("injected fsync failure 2")),
+    )
+
+    with pytest.raises(OSError, match="injected fsync failure 1"):
+        store.append("one", {}, emitted_at=1)
+    with pytest.raises(TacticalStoreIntegrityError):
+        store.append("two", {}, emitted_at=2)
 
 
 def test_store_replays_events_after_snapshot(tmp_path):

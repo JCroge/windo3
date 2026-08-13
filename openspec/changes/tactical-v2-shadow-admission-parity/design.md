@@ -26,8 +26,9 @@ The same replay also showed that Legacy Shadow rows are repeated price-counterfa
 1. **Fresh evidence gates compatible neutral renewal.** A terminal episode may renew when the candidate is available, the side is not blocked, the bias is aligned or neutral, and either the closed 15m bar advances or the structure token changes. Neutral bias alone is insufficient; opposing or unavailable bias remains ineligible.
 2. **Episode de-duplication remains authoritative.** Repeated candidates on the same episode and structure evidence return a durable duplicate result. The normalized parity unit is the accepted episode, with source Shadow IDs retained for traceability.
 3. **Receipts are append-only V2 events.** The handler records candidate ID, source Shadow ID, message ID when available, symbol, side, accepted flag, reason, episode ID, intent ID, evaluated time, and replay flag. Missing historical receipts remain explicitly unknown.
-4. **Shadow parity stops at the correct boundary.** Admission parity can be proven from candidate and episode data. Fill and PnL parity still requires executable quote and exchange evidence; the implementation must not infer a live fill from a Legacy scalar-price Shadow result.
-5. **Replay is the acceptance harness.** The 22-candidate cloud sequence is replayed repeatedly with pinned time and state. The expected normalized result is three BICO episodes plus two PUMP episodes, with repeated rows rejected explicitly.
+4. **Shadow parity has two explicit admission layers.** Normalized structural eligibility can be proven from candidate, episode, and audited opportunity-boundary data. It is a research projection, not the real Controller population. Real Controller admission is replayed separately without synthetic lifecycle release and retains `same_symbol_exposure`; fill and PnL parity still require executable quote and exchange evidence.
+5. **Replay is the acceptance harness.** The 22-candidate cloud sequence is replayed repeatedly with pinned time and state. The expected normalized result is three BICO episodes plus two PUMP episodes, while the real Controller result is two intents, 22 receipts, and three `same_symbol_exposure` outcomes because terminal lifecycle evidence is absent. Both projections run independently in every one of 100 iterations.
+6. **Single Main is a live correctness precondition.** The cross-process lock protects ledger sequence and candidate admission/receipt transactions only. Until a live lifecycle lease/fencing token exists, one namespace and exchange account may have exactly one active Main; controlled restart is stop-then-start.
 
 ## Risks / Trade-offs
 
@@ -35,6 +36,7 @@ The same replay also showed that Legacy Shadow rows are repeated price-counterfa
 - **[Risk]** Existing ledgers have no historical receipt events. **Mitigation:** report a separate `unknown_handling_evidence` state and do not backfill fabricated receipts.
 - **[Risk]** Legacy Shadow and V2 may continue to disagree at executable entry. **Mitigation:** keep admission parity separate from fill parity and require quote capture before using the result for live rollout.
 - **[Risk]** New receipt volume increases the Tactical ledger. **Mitigation:** use compact append-only records and preserve replay compatibility with absent receipts.
+- **[Risk]** Operators mistake candidate locking for complete multi-process live safety. **Mitigation:** make one active Main a normative precondition and explicitly keep overlapping Main execution NO-GO.
 
 ## Migration Plan
 

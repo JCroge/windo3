@@ -46,7 +46,6 @@ The 72-hour production replay showed that Tactical V2 and Shadow Tactical do not
 - Affected operational reporting: parity summaries will distinguish accepted episode alignment, intentional duplicate rejection, and missing/unknown handling evidence.
 - No production configuration, Sidecar admission setting, exchange protection behavior, or live order policy is changed as part of the admission fix.
 ```
-
 ## openspec/changes/tactical-v2-shadow-admission-parity/design.md
 
 - Source: openspec/changes/tactical-v2-shadow-admission-parity/design.md
@@ -255,4 +254,3 @@ The system SHALL compare Legacy Shadow Tactical and Tactical V2 admission at the
 - **THEN** V2 SHALL still evaluate executable bid/ask price, entry drift, TTL, capacity, and protection state before live exposure
 - **AND** admission parity SHALL NOT claim that the candidate was exchange-filled
 ```
-

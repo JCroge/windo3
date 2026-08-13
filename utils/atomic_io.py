@@ -7,6 +7,7 @@
 
 import json
 import os
+import uuid
 from typing import Any
 
 
@@ -24,9 +25,29 @@ def atomic_write_json(path: str, data: Any, indent: int = 2) -> None:
     dir_name = os.path.dirname(path) or '.'
     os.makedirs(dir_name, exist_ok=True)
 
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, 'w') as f:
-        json.dump(data, f, indent=indent)
-        f.flush()
-        os.fsync(f.fileno())  # 确保数据落盘
-    os.replace(tmp_path, path)  # POSIX 原子重命名
+    tmp_path = f"{path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp_path, 'w') as f:
+            json.dump(data, f, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())  # 确保数据落盘
+        os.replace(tmp_path, path)  # POSIX 原子重命名
+        _fsync_directory(dir_name)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _fsync_directory(path: str) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)

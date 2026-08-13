@@ -221,6 +221,21 @@ def test_terminal_neutral_candidate_with_changed_token_advances_epoch(tmp_path):
     assert renewed.episode_id != first.episode_id
 
 
+def test_terminal_neutral_candidate_with_whitespace_token_does_not_renew(tmp_path):
+    registry = _registry(tmp_path)
+    first = registry.assign(_candidate(), _structure(token="break-up-1"))
+    registry.mark_terminal(first.episode_id, "expired")
+
+    repeated = registry.assign(
+        _candidate(),
+        _structure(bias="neutral", token="   "),
+    )
+
+    assert repeated.episode_id == first.episode_id
+    assert repeated.eligible is False
+    assert repeated.reason == "duplicate_episode"
+
+
 def test_terminal_neutral_candidate_with_older_bar_and_same_token_is_duplicate(
     tmp_path,
 ):

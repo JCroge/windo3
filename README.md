@@ -8,6 +8,7 @@
 - V2 固定约束：最多 5x、`0.10R` 追价上限、900 秒 frozen-entry 限价、全仓 TP1/SL、90 分钟 max-hold、滚动 24h `-15U` 新开暂停、3 连亏 60 分钟暂停。代码默认仍为 `TACTICAL_V2_MODE=off`；云服实际模式以 `.env` 与启动 banner 为准。
 - 2026-08-05/06 已完成 V2 入口精确回查、保护单 halt 自愈、旧保护 halt 迁移和重启后 durable final-PnL replay；当前线上修复后的状态不依赖手工清空账本或重启绕过熔断。
 - 主入口仍是 `python3 run_agents.py`。云服当前由常驻进程运行，**没有已部署的应用级 cron/systemd/pm2 supervisor**；需要代码生效时使用 `/restart` 或按 [docs/runbook.md](docs/runbook.md) 的受控重启流程。
+- **Live 运行前提：同一 namespace/交易账户只允许一个 active Main。** Tactical V2 的跨进程锁只序列化事件账本和 candidate admission 事务，不保护 quote、submit/cancel、protection、close、PnL 或 status snapshot 的完整 live lifecycle。受控重启必须先确认旧 Main 已退出，再启动新 Main；禁止重叠运行。
 - **Tactical Exit Track** 与旧 Shadow Tactical sidecar 的详细历史、验收和回滚证据分别见 [docs/handoff.md](docs/handoff.md) 与 `docs/superpowers/reports/`；不要把历史灰度快照当作当前线上状态。
 - 保护单 halt 仍保持 fail-closed：只允许在风险已消失且证据完整时自动清除 `okx_sl_algo_unresolved:<symbol>` / `migrate_missing_sl`；manual/daily/reconcile/未知原因必须人工处理。
 - OKX 真实 testnet 语义验收 2026-05-28 完成：long_short_mode 13 PASS、net_mode 3 PASS；owner-tag 补验 T0/T1/T6 PASS。
@@ -52,7 +53,7 @@ python3 run_agents.py         # 主入口（生产/paper/testnet/实盘验收都
 | 多头位置保护 | `LONG_LIVE_POSITION_GUARD_ENABLED` / `LONG_LIVE_MAX_RANGE_POS` / `LONG_LIVE_MAX_PRE_MOVE` / `LONG_LIVE_MAX_DAILY_GAIN` | 山顶接货防护，命中走 `deferred_pullback_overheat`（2026-05-26） |
 | 多头位置保护·体制感知 | `LONG_LIVE_REGIME_AWARE_RANGE_ENABLED` / `LONG_LIVE_MAX_RANGE_POS_CHOPPY` / `LONG_LIVE_DAILY_GAIN_RANGE_POS_CHOPPY` | choppy/mixed/bearish 收紧 range_pos 阈值转回调入场，bullish 保 0.82；总开关可回退（2026-06-21，生产起步 0.70/目标 0.55） |
 | EV 分桶 | `EV_BUCKET_MIN_TRADES` / `EV_BUCKET_SPARSE_ALLOW_UPLIFT` | 稀疏 bucket 不抬 p_win（2026-05-26） |
-| Tactical 出口轨道 | `TACTICAL_TRACK_ENABLED` / `TACTICAL_SHADOW_ONLY` / `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` / `TACTICAL_TP1_R` / `TACTICAL_MAX_HOLD_MINUTES` | 代码默认 disabled + shadow-only；live 灰度需 track=true 且 shadow_only=false，先过 cost gate，再按 Tactical R:R≥0.75 且 EV>-0.04 筛“会真开”样本，TP1 默认 1.00R |
+| Tactical 出口轨道 | `TACTICAL_TRACK_ENABLED` / `TACTICAL_SHADOW_ONLY` / `TACTICAL_MIN_RR_FOR_TRACK` / `TACTICAL_MIN_EV_FOR_TRACK` / `TACTICAL_TP1_R` / `TACTICAL_MAX_HOLD_MINUTES` | 代码默认 disabled + shadow-only；`TACTICAL_SHADOW_ONLY=false` 仅是历史 legacy live 分支，当前 2026-08-12 NO-GO gate 下禁止设置。当前状态以 `data/tactical_v2_status.json` 和 runbook 为准 |
 | Tactical V2 执行 | `TACTICAL_V2_MODE` / `TACTICAL_V2_MARGIN_USDT` / `TACTICAL_V2_MAX_CONCURRENT` / `TACTICAL_V2_ROLLING_LOSS_LIMIT_USDT` | 代码默认 `off`；当前云服为 `live`，固定 `100U x 3`、滚动 24h `-15U`，并要求 sidecar drain proof |
 
 完整列表与默认值见 `utils/config_loader.py` 的 `DEFAULTS` 与 `HARD_LIMITS`。

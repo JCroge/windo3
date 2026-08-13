@@ -1,4 +1,6 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 
@@ -43,6 +45,32 @@ def test_status_snapshot_write_and_read_are_atomic(tmp_path):
 
     assert read_status(paths) == expected
     assert not (tmp_path / "status.json.tmp").exists()
+
+
+def test_atomic_status_writers_use_independent_temp_files(tmp_path, monkeypatch):
+    import utils.tactical_v2.status as status
+
+    path = tmp_path / "status.json"
+    snapshots = ({"writer": 1}, {"writer": 2})
+    replace_barrier = threading.Barrier(len(snapshots))
+    real_replace = status.os.replace
+
+    def synchronized_replace(source, destination):
+        replace_barrier.wait(timeout=5)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(status.os, "replace", synchronized_replace)
+
+    with ThreadPoolExecutor(max_workers=len(snapshots)) as pool:
+        futures = [
+            pool.submit(status.write_status, str(path), snapshot)
+            for snapshot in snapshots
+        ]
+        for future in futures:
+            future.result(timeout=5)
+
+    assert json.loads(path.read_text(encoding="utf-8")) in snapshots
+    assert list(tmp_path.glob("status.json*.tmp")) == []
 
 
 def test_status_marks_old_snapshot_stale():

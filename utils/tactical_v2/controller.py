@@ -169,6 +169,23 @@ class TacticalV2Controller:
             governor=self.governor,
         )
         self._lock = asyncio.Lock()
+        self._pending_candidate_handling_gap_evidence: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+        self._pending_candidate_payload_integrity_evidence: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+        self._reset_persisted_read_model()
+        self._last_status_write_at = 0.0
+        self._entry_io_inflight = set()
+        self._entry_pnl_recovery_queued = set()
+        self._restore()
+        self._observed_store_seq = self.store.last_seq()
+        self._refresh_status(force=True)
+
+    def _reset_persisted_read_model(self) -> None:
         self._intents: Dict[str, Dict[str, Any]] = {}
         self._candidate_receipts = []
         self._candidate_receipts_by_message_id: Dict[str, Dict[str, Any]] = {}
@@ -203,10 +220,6 @@ class TacticalV2Controller:
         self._handled_message_identity_conflicts = set()
         self._receipt_intent_ids = set()
         self._candidate_handling_gaps: Dict[str, Dict[str, Any]] = {}
-        self._pending_candidate_handling_gap_evidence: Dict[
-            str,
-            Dict[str, Any],
-        ] = {}
         self._unknown_replays: Dict[str, CandidateHandlingResult] = {}
         self._candidate_payload_integrity_rejections: Dict[
             str,
@@ -220,19 +233,65 @@ class TacticalV2Controller:
             Dict[str, Any],
         ] = {}
         self._candidate_payload_integrity_quarantine_identities: set[str] = set()
-        self._pending_candidate_payload_integrity_evidence: Dict[
-            str,
-            Dict[str, Any],
-        ] = {}
         self._episode_outcomes: Dict[str, int] = {}
         self._parity_mismatches = 0
-        self._last_status_write_at = 0.0
-        self._entry_io_inflight = set()
-        self._entry_pnl_recovery_queued = set()
-        self._restore()
-        self._refresh_status(force=True)
 
     async def handle_candidate(
+        self,
+        raw: Any,
+        *,
+        now: Optional[float] = None,
+        message_id: Optional[str] = None,
+        replayed: bool = False,
+    ) -> CandidateHandlingResult:
+        return self.handle_candidate_sync(
+            raw,
+            now=now,
+            message_id=message_id,
+            replayed=replayed,
+        )
+
+    def handle_candidate_sync(
+        self,
+        raw: Any,
+        *,
+        now: Optional[float] = None,
+        message_id: Optional[str] = None,
+        replayed: bool = False,
+    ) -> CandidateHandlingResult:
+        """Run the non-awaiting admission transaction for offline replay."""
+        with self.store.locked():
+            self._reload_candidate_read_model_if_stale()
+            try:
+                return self._handle_candidate_locked(
+                    raw,
+                    now=now,
+                    message_id=message_id,
+                    replayed=replayed,
+                )
+            except BaseException:
+                self._observed_store_seq = -1
+                raise
+            finally:
+                if self._observed_store_seq >= 0:
+                    self._observed_store_seq = self.store.last_seq()
+
+    def _reload_candidate_read_model_if_stale(self) -> None:
+        latest_seq = self.store.last_seq()
+        if latest_seq <= self._observed_store_seq:
+            return
+        self.episodes = EpisodeRegistry(self.store, namespace=self.namespace)
+        self.governor = TacticalGovernor(store=self.store, now_fn=self.now_fn)
+        self.live = LiveExchangeAdapter(
+            executor=self.executor,
+            store=self.store,
+            governor=self.governor,
+        )
+        self._reset_persisted_read_model()
+        self._restore()
+        self._observed_store_seq = latest_seq
+
+    def _handle_candidate_locked(
         self,
         raw: Any,
         *,
@@ -434,12 +493,50 @@ class TacticalV2Controller:
             "replayed": bool(replayed),
             "payload_hash": context["payload_hash"],
         }
+        event_id = self._evidence_event_id(
+            "candidate_handled",
+            {"handling_identity": self._candidate_handling_identity(receipt)},
+        )
         try:
-            event = self.store.append(
-                "candidate_handled",
-                receipt,
+            committed = self._committed_evidence_event(
+                event_id,
+                event_type="candidate_handled",
+                expected_data=receipt,
                 emitted_at=evaluated_at,
             )
+            if committed is not None:
+                event = committed
+            else:
+                try:
+                    event = self.store.append(
+                        "candidate_handled",
+                        receipt,
+                        emitted_at=evaluated_at,
+                        event_id=event_id,
+                    )
+                except Exception:
+                    committed = self._committed_evidence_event(
+                        event_id,
+                        event_type="candidate_handled",
+                        expected_data=receipt,
+                        emitted_at=evaluated_at,
+                    )
+                    if committed is None:
+                        raise
+                    event = committed
+        except _DeterministicEvidenceConflict as exc:
+            self._activate_candidate_receipt_integrity_halt(
+                "candidate_receipt_identity_conflict",
+                evidence={
+                    "handling_identity": self._candidate_handling_identity(receipt),
+                    "stored_event_id": exc.event.get("event_id"),
+                    "incoming_event_id": event_id,
+                },
+                halted_at=evaluated_at,
+                incident_id=self._optional_text(exc.event.get("event_id")),
+            )
+            self._refresh_status(force=True, now=evaluated_at)
+            raise
         except Exception:
             self._persist_candidate_handling_gap(
                 context,
