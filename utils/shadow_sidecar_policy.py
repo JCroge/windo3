@@ -145,7 +145,7 @@ def verify_sidecar_policy(record: dict, *, now: float) -> SidecarPolicyVerificat
         )
 
     nested_evidence = record.get("sidecar_policy_evidence")
-    if type(nested_evidence) is not dict or nested_evidence != evidence:
+    if not _evidence_exactly_matches(nested_evidence, evidence):
         return _verification_failure(
             record,
             "sidecar_policy_evidence_mismatch",
@@ -246,6 +246,16 @@ def _freeze_evidence(evidence: dict | None) -> Mapping[str, object] | None:
     if evidence is None:
         return None
     return MappingProxyType(dict(evidence))
+
+
+def _evidence_exactly_matches(nested: object, canonical: dict) -> bool:
+    if type(nested) is not dict or nested.keys() != canonical.keys():
+        return False
+    return all(
+        type(nested[field]) is type(canonical[field])
+        and nested[field] == canonical[field]
+        for field in canonical
+    )
 
 
 def _strict_optional_bool(value: object) -> bool | None:

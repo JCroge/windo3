@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from itertools import product
 
 import pytest
 
@@ -67,50 +68,75 @@ def test_canonical_policy_evidence_rejects_missing_field():
     assert canonical_policy_evidence(plan) is None
 
 
+def _expected_policy(gate, exhaustion, weak_volume, weak_provenance):
+    if gate == "fail":
+        return False, "none", "tactical_track_gate_failed"
+    if exhaustion:
+        return False, "none", "trend_exhaustion_warning"
+    if weak_volume or weak_provenance:
+        return True, "reduced", ""
+    return True, "full", ""
+
+
+_POLICY_TRUTH_TABLE = [
+    (
+        gate,
+        exhaustion,
+        weak_volume,
+        weak_provenance,
+        *_expected_policy(gate, exhaustion, weak_volume, weak_provenance),
+    )
+    for gate, exhaustion, weak_volume, weak_provenance in product(
+        ("pass", "fail"),
+        (False, True),
+        (False, True),
+        (False, True),
+    )
+]
+
+
 @pytest.mark.parametrize(
-    ("overrides", "eligible", "tier", "reason"),
-    [
-        ({}, True, "full", ""),
-        ({"tactical_weak_volume_oi": True}, True, "reduced", ""),
-        ({"tactical_weak_provenance": True}, True, "reduced", ""),
-        (
-            {
-                "tactical_weak_volume_oi": True,
-                "tactical_weak_provenance": True,
-            },
-            True,
-            "reduced",
-            "",
-        ),
-        (
-            {"tactical_track_gate": "fail"},
-            False,
-            "none",
-            "tactical_track_gate_failed",
-        ),
-        (
-            {"tactical_trend_exhaustion_warning": True},
-            False,
-            "none",
-            "trend_exhaustion_warning",
-        ),
-        (
-            {
-                "tactical_track_gate": "fail",
-                "tactical_trend_exhaustion_warning": True,
-            },
-            False,
-            "none",
-            "tactical_track_gate_failed",
-        ),
-    ],
+    (
+        "gate",
+        "exhaustion",
+        "weak_volume",
+        "weak_provenance",
+        "eligible",
+        "tier",
+        "reason",
+    ),
+    _POLICY_TRUTH_TABLE,
 )
-def test_policy_truth_table(overrides, eligible, tier, reason):
-    decision = classify_sidecar_policy(_plan(**overrides))
+def test_policy_truth_table_covers_all_sixteen_valid_combinations(
+    gate,
+    exhaustion,
+    weak_volume,
+    weak_provenance,
+    eligible,
+    tier,
+    reason,
+):
+    decision = classify_sidecar_policy(
+        _plan(
+            tactical_track_gate=gate,
+            tactical_trend_exhaustion_warning=exhaustion,
+            tactical_weak_volume_oi=weak_volume,
+            tactical_weak_provenance=weak_provenance,
+        )
+    )
 
     assert decision.eligible is eligible
     assert decision.risk_tier == tier
     assert decision.rejection_reason == reason
+
+
+@pytest.mark.parametrize("gate", [None, True, "PASS", "unknown"])
+def test_policy_invalid_gate_evidence_fails_closed(gate):
+    decision = classify_sidecar_policy(_plan(tactical_track_gate=gate))
+
+    assert decision.eligible is False
+    assert decision.risk_tier == "none"
+    assert decision.rejection_reason == "malformed_policy_evidence"
 
 
 @pytest.mark.parametrize(
@@ -253,6 +279,34 @@ def test_verify_rejects_extra_nested_evidence_field():
     verified = verify_sidecar_policy(stamped, now=101.0)
 
     assert verified.valid is False
+    assert verified.rejection_reason == "sidecar_policy_evidence_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("field", "nested_value"),
+    [
+        ("tactical_trend_exhaustion_warning", 0),
+        ("tactical_trend_exhaustion_warning", 1),
+        ("tactical_weak_volume_oi", 0),
+        ("tactical_weak_volume_oi", 1),
+        ("tactical_weak_provenance", 0),
+        ("tactical_weak_provenance", 1),
+    ],
+)
+def test_verify_rejects_nested_only_integer_boolean_substitutes(
+    field,
+    nested_value,
+):
+    stamped = stamp_sidecar_policy(
+        _plan(**{field: bool(nested_value)}),
+        decided_at=100.0,
+    )
+    stamped["sidecar_policy_evidence"][field] = nested_value
+
+    verified = verify_sidecar_policy(stamped, now=101.0)
+
+    assert verified.valid is False
+    assert verified.admissible is False
     assert verified.rejection_reason == "sidecar_policy_evidence_mismatch"
 
 
