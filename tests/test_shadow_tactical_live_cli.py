@@ -823,6 +823,9 @@ def test_process_event_persists_sidecar_entry_drift_rejection_audit(tmp_path):
             "decision": "abandon",
             "reason": "drift_too_large",
             "source": "sidecar",
+            "sidecar_policy_version": SIDECAR_POLICY_VERSION,
+            "sidecar_risk_tier": "full",
+            "requested_size_usdt": 30.0,
         }
     ]
     rejected = next(row for row in rows if row["event_type"] == "rejected")
