@@ -71,7 +71,8 @@ class ContractExecutor:
                  positions_file: Optional[str] = None,
                  risk_state_file: Optional[str] = None,
                  ledger_events_file: Optional[str] = None,
-                 ledger_lifecycle_file: Optional[str] = None):
+                 ledger_lifecycle_file: Optional[str] = None,
+                 max_trade_amount_override: Optional[float] = None):
         """
         Args:
             exchange_id: 交易所ID (binance/okx)
@@ -147,6 +148,23 @@ class ContractExecutor:
             _cap = _fb['effective_balance_cap']
             _baseline_mode = os.getenv('DRAWDOWN_BASELINE_MODE', 'session_start')
             self._config = {}   # config 加载失败时双确认走默认 2
+
+        if max_trade_amount_override is not None:
+            from utils.config_loader import HARD_LIMITS
+
+            if isinstance(max_trade_amount_override, bool):
+                raise ValueError("max_trade_amount_override must be a finite number")
+            try:
+                override_amount = float(max_trade_amount_override)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("max_trade_amount_override must be a finite number") from exc
+            lo, hi = HARD_LIMITS["max_trade_amount"]
+            if not math.isfinite(override_amount) or not (lo <= override_amount <= hi):
+                raise ValueError(
+                    f"max_trade_amount_override must be between {lo} and {hi}"
+                )
+            max_amount = override_amount
+
         self.risk_manager = RiskManager(
             max_trade_amount=max_amount,
             max_drawdown_pct=max_dd,

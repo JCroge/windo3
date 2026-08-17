@@ -1,10 +1,13 @@
+import math
 import logging
 from unittest.mock import MagicMock
+
+import pytest
 
 from executor import ContractExecutor
 
 
-def _executor():
+def _executor(max_trade_amount=30.0):
     ex = ContractExecutor.__new__(ContractExecutor)
     ex.logger = logging.getLogger("test_shadow_tactical_live_executor")
     ex.exchange_id = "okx"
@@ -12,11 +15,11 @@ def _executor():
     ex.leverage = 20
     ex.positions = {}
     ex.risk_manager = MagicMock()
-    ex.risk_manager.max_trade_amount = 30.0
+    ex.risk_manager.max_trade_amount = float(max_trade_amount)
     ex.risk_manager.check_can_trade.return_value = (True, "ok")
     ex.get_balance = MagicMock(return_value=300.0)
     ex.balance_adapter = MagicMock()
-    ex.balance_adapter.get_free.return_value = 100.0
+    ex.balance_adapter.get_free.return_value = max(100.0, float(max_trade_amount) * 2)
     ex.caps = MagicMock()
     ex.caps.precheck_order.return_value = (True, "ok", {})
     ex.idempotency = None
@@ -63,6 +66,107 @@ def _executor():
     )
     ex.exchange.create_order.return_value = {"id": "ord-1"}
     return ex
+
+
+class _FakeExchange:
+    def __init__(self, config):
+        self.config = config
+
+    def set_sandbox_mode(self, enabled):
+        self.sandbox_enabled = enabled
+
+    def private_get_account_config(self):
+        return {"data": [{"posMode": "net_mode"}]}
+
+
+class _CapturingRiskManager:
+    instances = []
+
+    def __init__(
+        self,
+        *,
+        max_trade_amount,
+        max_drawdown_pct,
+        max_daily_loss,
+        state_file,
+        effective_balance_cap,
+        baseline_mode,
+    ):
+        self.max_trade_amount = max_trade_amount
+        self.max_drawdown_pct = max_drawdown_pct
+        self.max_daily_loss = max_daily_loss
+        self.state_file = state_file
+        self.effective_balance_cap = effective_balance_cap
+        self.baseline_mode = baseline_mode
+        _CapturingRiskManager.instances.append(self)
+
+    def sync_from_ledger(self, ledger):
+        return None
+
+    def initialize_session(self, real_total_balance, effective_balance_cap=None):
+        return None
+
+
+@pytest.fixture
+def executor_constructor_harness(monkeypatch, tmp_path):
+    import executor as executor_mod
+
+    _CapturingRiskManager.instances = []
+    monkeypatch.setattr(executor_mod.ccxt, "okx", _FakeExchange)
+    monkeypatch.setattr(executor_mod, "RiskManager", _CapturingRiskManager)
+    monkeypatch.setattr(
+        "utils.config_loader.load_config",
+        lambda strict_live_check=False: {
+            "max_trade_amount": 30.0,
+            "max_drawdown_pct": 12.0,
+            "daily_pnl_hard_stop": -40.0,
+            "effective_balance_cap": 500.0,
+            "drawdown_baseline_mode": "session_start",
+        },
+    )
+    monkeypatch.setattr(ContractExecutor, "_load_positions", lambda self: None)
+    monkeypatch.setattr(ContractExecutor, "get_balance", lambda self: 0.0)
+
+    def build(**kwargs):
+        return ContractExecutor(
+            exchange_id="okx",
+            testnet=True,
+            positions_file=str(tmp_path / "positions.json"),
+            risk_state_file=str(tmp_path / "risk.json"),
+            ledger_events_file=str(tmp_path / "events.jsonl"),
+            ledger_lifecycle_file=str(tmp_path / "lifecycle.json"),
+            **kwargs,
+        )
+
+    return build
+
+
+def test_contract_executor_uses_sidecar_max_trade_amount_override(
+    executor_constructor_harness,
+):
+    ex = executor_constructor_harness(max_trade_amount_override=100.0)
+
+    assert ex.risk_manager.max_trade_amount == 100.0
+    assert ex.risk_manager.max_drawdown_pct == 12.0
+    assert ex.risk_manager.max_daily_loss == 40.0
+    assert ex.risk_manager.effective_balance_cap == 500.0
+
+
+def test_contract_executor_without_override_preserves_main_configured_limit(
+    executor_constructor_harness,
+):
+    ex = executor_constructor_harness()
+
+    assert ex.risk_manager.max_trade_amount == 30.0
+
+
+@pytest.mark.parametrize("invalid", [0, math.nan, 10001])
+def test_contract_executor_rejects_invalid_max_trade_amount_override(
+    executor_constructor_harness,
+    invalid,
+):
+    with pytest.raises(ValueError):
+        executor_constructor_harness(max_trade_amount_override=invalid)
 
 
 def _plan(**overrides):
@@ -236,11 +340,17 @@ def test_open_sidecar_plan_rejects_invalid_long_stop_side():
 
 
 def test_open_sidecar_plan_enforces_hard_size_cap():
-    ex = _executor()
+    main_like = _executor(max_trade_amount=30.0)
 
-    pos = ex.open_sidecar_plan(_plan(), size_usdt=99.0)
+    main_pos = main_like.open_sidecar_plan(_plan(), size_usdt=99.0)
 
-    assert pos["amount_usdt"] == 30.0
+    assert main_pos["amount_usdt"] == 30.0
+
+    sidecar = _executor(max_trade_amount=100.0)
+
+    sidecar_pos = sidecar.open_sidecar_plan(_plan(), size_usdt=100.0)
+
+    assert sidecar_pos["amount_usdt"] == 100.0
 
 
 def test_open_sidecar_plan_fails_closed_when_sl_unverified():

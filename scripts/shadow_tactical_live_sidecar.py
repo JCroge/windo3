@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -41,6 +42,7 @@ SIDECAR_FLAT_CLEAR_HALT_REASONS = {
     "sl_replace_failed",
     "sl_restore_failed",
 }
+SIDECAR_DEFAULT_FULL_TIER_SIZE_USDT = 100.0
 
 
 def _paths(args) -> SidecarPaths:
@@ -66,6 +68,38 @@ def _active_owner_count(registry: ShadowTacticalOwnerRegistry) -> int:
     )
 
 
+def resolve_sidecar_base_size(value) -> float:
+    from utils.config_loader import HARD_LIMITS
+
+    if isinstance(value, bool):
+        raise ValueError("size-usdt must be a finite positive number")
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("size-usdt must be a finite positive number") from exc
+    lo, hi = HARD_LIMITS["max_trade_amount"]
+    if not math.isfinite(resolved) or not (lo <= resolved <= hi):
+        raise ValueError(f"size-usdt must be between {lo} and {hi}")
+    return resolved
+
+
+def resolve_sidecar_max_active(value) -> int:
+    if isinstance(value, bool):
+        raise ValueError("max-active must be an integer from 1 through 3")
+    if isinstance(value, int):
+        resolved = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text.isdecimal():
+            raise ValueError("max-active must be an integer from 1 through 3")
+        resolved = int(text)
+    else:
+        raise ValueError("max-active must be an integer from 1 through 3")
+    if not 1 <= resolved <= 3:
+        raise ValueError("max-active must be an integer from 1 through 3")
+    return resolved
+
+
 def cmd_status(args) -> int:
     paths = _paths(args)
     state = SidecarStateStore(paths.state).load()
@@ -82,7 +116,11 @@ def cmd_status(args) -> int:
     return 0
 
 
-def _build_executor(paths: SidecarPaths) -> ContractExecutor:
+def _build_executor(
+    paths: SidecarPaths,
+    *,
+    max_trade_amount: float,
+) -> ContractExecutor:
     try:
         from dotenv import load_dotenv
 
@@ -108,6 +146,7 @@ def _build_executor(paths: SidecarPaths) -> ContractExecutor:
         risk_state_file=paths.risk_state,
         ledger_events_file=paths.live_order_events,
         ledger_lifecycle_file=paths.live_position_lifecycle,
+        max_trade_amount_override=resolve_sidecar_base_size(max_trade_amount),
     )
 
 
@@ -1071,6 +1110,13 @@ def collect_sidecar_drain_report(
 
 
 def cmd_run(args) -> int:
+    try:
+        args.size_usdt = resolve_sidecar_base_size(args.size_usdt)
+        args.max_active = resolve_sidecar_max_active(args.max_active)
+    except ValueError as exc:
+        print(f"invalid sidecar run argument: {exc}", file=sys.stderr)
+        return 2
+
     paths = _paths(args)
     store = SidecarStateStore(paths.state)
     with store.locked():
@@ -1088,7 +1134,11 @@ def cmd_run(args) -> int:
         store.save(state)
 
     registry = ShadowTacticalOwnerRegistry(paths.owners)
-    executor = None if args.dry_run else _build_executor(paths)
+    executor = (
+        None
+        if args.dry_run
+        else _build_executor(paths, max_trade_amount=args.size_usdt)
+    )
 
     while True:
         for row in iter_new_shadow_events(paths.events, state.get("last_offset", 0)):
@@ -1143,7 +1193,10 @@ def stop_sidecar_owned_exposure(paths: SidecarPaths, executor: ContractExecutor)
 
 def cmd_stop(args) -> int:
     paths = _paths(args)
-    executor = _build_executor(paths)
+    executor = _build_executor(
+        paths,
+        max_trade_amount=SIDECAR_DEFAULT_FULL_TIER_SIZE_USDT,
+    )
     result = stop_sidecar_owned_exposure(paths, executor)
     append_audit_event(paths.audit, "stop_requested", result)
     print(f"stop_requested closed={result['closed']} skipped={result['skipped']}")
@@ -1198,7 +1251,10 @@ def cmd_drain_report(args) -> int:
         print(f"invalid documented exceptions: {exc}", file=sys.stderr)
         return 2
 
-    executor = _build_executor(paths)
+    executor = _build_executor(
+        paths,
+        max_trade_amount=SIDECAR_DEFAULT_FULL_TIER_SIZE_USDT,
+    )
     report = collect_sidecar_drain_report(
         paths,
         executor,

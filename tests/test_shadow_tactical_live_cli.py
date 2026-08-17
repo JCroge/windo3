@@ -155,9 +155,68 @@ def test_sidecar_executor_forces_dedicated_bot_owner(monkeypatch):
     )
     monkeypatch.setattr(mod, "ContractExecutor", MagicMock(return_value=object()))
 
-    mod._build_executor(mod.SidecarPaths())
+    mod._build_executor(mod.SidecarPaths(), max_trade_amount=100.0)
 
     assert mod.os.environ["BOT_INSTANCE_ID"] == "stlive"
+    mod.ContractExecutor.assert_called_once()
+    assert mod.ContractExecutor.call_args.kwargs["max_trade_amount_override"] == 100.0
+
+
+def test_resolve_sidecar_base_size_accepts_valid_hard_limit_value():
+    mod = _load_sidecar_module()
+
+    assert mod.resolve_sidecar_base_size("100") == 100.0
+
+
+@pytest.mark.parametrize("invalid", ["bad", "nan", "inf", "0", "-1", "10001"])
+def test_resolve_sidecar_base_size_rejects_invalid_values(invalid):
+    mod = _load_sidecar_module()
+
+    with pytest.raises(ValueError):
+        mod.resolve_sidecar_base_size(invalid)
+
+
+@pytest.mark.parametrize("value, expected", [("1", 1), (2, 2), ("3", 3)])
+def test_resolve_sidecar_max_active_accepts_one_through_three(value, expected):
+    mod = _load_sidecar_module()
+
+    assert mod.resolve_sidecar_max_active(value) == expected
+
+
+@pytest.mark.parametrize("invalid", [True, False, "bad", "2.0", 2.5, 0, "0", 4, "4"])
+def test_resolve_sidecar_max_active_rejects_invalid_values(invalid):
+    mod = _load_sidecar_module()
+
+    with pytest.raises(ValueError):
+        mod.resolve_sidecar_max_active(invalid)
+
+
+def test_run_rejects_oversized_max_active_before_state_or_executor(
+    tmp_path, monkeypatch
+):
+    mod = _load_sidecar_module()
+    build_executor = MagicMock()
+    monkeypatch.setattr(mod, "_build_executor", build_executor)
+    state = tmp_path / "state.json"
+
+    code = mod.cmd_run(
+        SimpleNamespace(
+            events=str(tmp_path / "events.jsonl"),
+            state=str(state),
+            audit=str(tmp_path / "audit.jsonl"),
+            owners=str(tmp_path / "owners.json"),
+            dry_run=False,
+            once=True,
+            backfill_from_start=False,
+            poll_seconds="2",
+            size_usdt="100",
+            max_active="4",
+        )
+    )
+
+    assert code == 2
+    assert not state.exists()
+    build_executor.assert_not_called()
 
 
 def test_run_dry_run_processes_new_tactical_event(tmp_path):
@@ -503,7 +562,7 @@ def test_drain_report_cli_writes_incomplete_evidence_without_archiving(
     output = tmp_path / "retirement.json"
     mod.SidecarStateStore(str(state)).disable_admission(source="cutover", now=900.0)
     fake = _drain_cli_executor(exchange_error=RuntimeError("offline"))
-    monkeypatch.setattr(mod, "_build_executor", lambda paths: fake)
+    monkeypatch.setattr(mod, "_build_executor", lambda paths, **kwargs: fake)
 
     code = mod.main([
         "drain-report",
@@ -531,7 +590,7 @@ def test_drain_report_cli_requires_explicit_archive_flag(tmp_path, monkeypatch):
     output = tmp_path / "retirement.json"
     mod.SidecarStateStore(str(state)).disable_admission(source="cutover", now=900.0)
     monkeypatch.setattr(
-        mod, "_build_executor", lambda paths: _drain_cli_executor()
+        mod, "_build_executor", lambda paths, **kwargs: _drain_cli_executor()
     )
 
     code = mod.main([
@@ -595,7 +654,9 @@ def test_drain_report_cli_uses_namespaced_default_and_documented_exceptions(
         "status": "pending",
     }]
     monkeypatch.setattr(
-        mod, "_build_executor", lambda paths: _drain_cli_executor(pending_pnl=pending)
+        mod,
+        "_build_executor",
+        lambda paths, **kwargs: _drain_cli_executor(pending_pnl=pending),
     )
     monkeypatch.setattr(
         mod,
@@ -983,7 +1044,7 @@ def test_stop_closes_only_proven_sidecar_owned_exposure(tmp_path, monkeypatch):
     }
     fake._cancel_algo_by_id.return_value = True
     fake.close_position.return_value = {"id": "close-1"}
-    monkeypatch.setattr(mod, "_build_executor", lambda paths: fake)
+    monkeypatch.setattr(mod, "_build_executor", lambda paths, **kwargs: fake)
 
     code = mod.main(
         [
@@ -1046,7 +1107,7 @@ def test_stop_matches_legacy_internal_symbol_position(tmp_path, monkeypatch):
     }
     fake._cancel_algo_by_id.return_value = True
     fake.close_position.return_value = {"id": "close-1"}
-    monkeypatch.setattr(mod, "_build_executor", lambda paths: fake)
+    monkeypatch.setattr(mod, "_build_executor", lambda paths, **kwargs: fake)
 
     code = mod.main(
         [
@@ -1169,7 +1230,7 @@ def test_run_once_monitors_open_sidecar_position_without_new_events(tmp_path, mo
     }
     fake.check_stop_loss_take_profit.return_value = "tactical_tp1"
     fake.reduce_position.return_value = {"ok": True}
-    monkeypatch.setattr(mod, "_build_executor", lambda paths: fake)
+    monkeypatch.setattr(mod, "_build_executor", lambda paths, **kwargs: fake)
 
     code = mod.main(
         [
