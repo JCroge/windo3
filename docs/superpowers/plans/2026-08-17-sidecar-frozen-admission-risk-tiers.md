@@ -14,6 +14,7 @@ base-ref: c2ae752cd6d717ab23e959ea2106279e5b583f7c
 
 **Tech Stack:** Python 3.12, dataclasses, JSON/JSONL, pytest, unittest.mock, existing Judge/CounterfactualLedger/Sidecar/ContractExecutor paths.
 
+archived-with: 2026-08-17-sidecar-frozen-admission-risk-tiers
 ---
 
 ### Task 1: Versioned Frozen Policy Module

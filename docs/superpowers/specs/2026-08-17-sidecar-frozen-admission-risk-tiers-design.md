@@ -2,6 +2,8 @@
 comet_change: sidecar-frozen-admission-risk-tiers
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-08-17-sidecar-frozen-admission-risk-tiers
+status: final
 ---
 
 # Sidecar Frozen Admission And Risk Tiers
