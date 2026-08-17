@@ -188,7 +188,37 @@ def map_shadow_record_to_plan(record: dict, *, return_error: bool = False):
         "tactical_expected_value",
         "tactical_min_rr_for_track",
         "tactical_min_ev_for_track",
+        "tactical_trend_exhaustion_warning",
+        "tactical_weak_volume_oi",
+        "tactical_weak_provenance",
+        "sidecar_live_eligible",
+        "sidecar_policy_version",
+        "sidecar_risk_tier",
+        "sidecar_rejection_reason",
+        "sidecar_decided_at",
+        "sidecar_policy_evidence",
     ]
+    policy_keys = [
+        "tactical_track_gate",
+        "tactical_trend_exhaustion_warning",
+        "tactical_weak_volume_oi",
+        "tactical_weak_provenance",
+        "sidecar_live_eligible",
+        "sidecar_policy_version",
+        "sidecar_risk_tier",
+        "sidecar_rejection_reason",
+        "sidecar_decided_at",
+        "sidecar_policy_evidence",
+    ]
+    gate_metadata = {
+        key: (
+            dict(record.get(key))
+            if key == "sidecar_policy_evidence" and isinstance(record.get(key), dict)
+            else record.get(key)
+        )
+        for key in gate_keys
+        if key in record
+    }
     plan = {
         "symbol": record["symbol"],
         "side": record["side"],
@@ -202,8 +232,15 @@ def map_shadow_record_to_plan(record: dict, *, return_error: bool = False):
         "tactical_max_hold_minutes": record.get("tactical_max_hold_minutes"),
         "shadow_id": record.get("id"),
         "sidecar_source": "shadow_tactical_live",
-        "gate_metadata": {key: record.get(key) for key in gate_keys if key in record},
+        "gate_metadata": gate_metadata,
     }
+    for key in policy_keys:
+        if key not in record:
+            continue
+        value = record.get(key)
+        if key == "sidecar_policy_evidence" and isinstance(value, dict):
+            value = dict(value)
+        plan[key] = value
     return (plan, None) if return_error else plan
 
 

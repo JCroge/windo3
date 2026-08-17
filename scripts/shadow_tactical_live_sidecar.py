@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from executor import ContractExecutor
+from utils.shadow_sidecar_policy import verify_sidecar_policy
 from utils.shadow_tactical_live import (
     ShadowTacticalOwnerRegistry,
     SidecarPaths,
@@ -116,6 +117,12 @@ def _fetch_exchange_positions(executor: ContractExecutor) -> list | None:
     except Exception as exc:
         executor.logger.warning(f"[Sidecar] fetch positions failed for guard: {exc}")
         return None
+
+
+def _policy_tier_size_usdt(full_tier_size_usdt: float, risk_tier: str) -> float:
+    if risk_tier == "reduced":
+        return full_tier_size_usdt * 0.5
+    return full_tier_size_usdt
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -757,15 +764,43 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         )
         return
 
+    verification = verify_sidecar_policy(record, now=time.time())
+    if not verification.admissible:
+        state["seen_shadow_ids"][shadow_id] = "rejected"
+        append_audit_event(
+            paths.audit,
+            "rejected",
+            verification.audit_payload(shadow_id),
+        )
+        return
+
     plan, reason = map_shadow_record_to_plan(record, return_error=True)
     if reason:
         state["seen_shadow_ids"][shadow_id] = "rejected"
-        append_audit_event(paths.audit, "rejected", {"shadow_id": shadow_id, "reason": reason})
+        append_audit_event(
+            paths.audit,
+            "rejected",
+            {"shadow_id": shadow_id, "reason": reason},
+        )
         return
+
+    requested_size_usdt = _policy_tier_size_usdt(
+        float(args.size_usdt),
+        verification.risk_tier,
+    )
+    policy_audit = {
+        "sidecar_policy_version": verification.policy_version,
+        "sidecar_risk_tier": verification.risk_tier,
+        "requested_size_usdt": requested_size_usdt,
+    }
 
     if args.dry_run:
         state["seen_shadow_ids"][shadow_id] = "opened"
-        append_audit_event(paths.audit, "dry_run_plan", {"shadow_id": shadow_id, "plan": plan})
+        append_audit_event(
+            paths.audit,
+            "dry_run_plan",
+            {"shadow_id": shadow_id, "plan": plan, **policy_audit},
+        )
         return
 
     max_active = int(args.max_active)
@@ -774,7 +809,11 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         append_audit_event(
             paths.audit,
             "rejected",
-            {"shadow_id": shadow_id, "reason": "sidecar_active_cap"},
+            {
+                "shadow_id": shadow_id,
+                "reason": "sidecar_active_cap",
+                **policy_audit,
+            },
         )
         return
 
@@ -784,7 +823,11 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         append_audit_event(
             paths.audit,
             "rejected",
-            {"shadow_id": shadow_id, "reason": "same_symbol_exposure_unknown"},
+            {
+                "shadow_id": shadow_id,
+                "reason": "same_symbol_exposure_unknown",
+                **policy_audit,
+            },
         )
         return
 
@@ -799,18 +842,22 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         append_audit_event(
             paths.audit,
             "rejected",
-            {"shadow_id": shadow_id, "reason": guard_reason},
+            {"shadow_id": shadow_id, "reason": guard_reason, **policy_audit},
         )
         return
 
-    position = executor.open_sidecar_plan(plan, size_usdt=float(args.size_usdt))
+    position = executor.open_sidecar_plan(plan, size_usdt=requested_size_usdt)
     if position:
         state["seen_shadow_ids"][shadow_id] = "opened"
         _record_owner_if_open(registry, shadow_id, position)
         append_audit_event(
             paths.audit,
             "opened",
-            {"shadow_id": shadow_id, "symbol": position.get("symbol")},
+            {
+                "shadow_id": shadow_id,
+                "symbol": position.get("symbol"),
+                **policy_audit,
+            },
         )
     else:
         state["seen_shadow_ids"][shadow_id] = "rejected"
@@ -818,7 +865,11 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         append_audit_event(
             paths.audit,
             "rejected",
-            {"shadow_id": shadow_id, "reason": "executor_rejected"},
+            {
+                "shadow_id": shadow_id,
+                "reason": "executor_rejected",
+                **policy_audit,
+            },
         )
 
 

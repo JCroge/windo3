@@ -1,5 +1,9 @@
 import json
 
+from utils.shadow_sidecar_policy import (
+    SIDECAR_POLICY_VERSION,
+    stamp_sidecar_policy,
+)
 from utils.shadow_tactical_live import (
     ShadowTacticalOwnerRegistry,
     SidecarStateStore,
@@ -9,6 +13,23 @@ from utils.shadow_tactical_live import (
     is_tactical_shadow_event,
     iter_new_shadow_events,
     map_shadow_record_to_plan,
+)
+
+
+POLICY_DECIDED_AT = 1000.0
+POLICY_EVIDENCE_FIELDS = (
+    "tactical_track_gate",
+    "tactical_trend_exhaustion_warning",
+    "tactical_weak_volume_oi",
+    "tactical_weak_provenance",
+)
+POLICY_STAMP_FIELDS = (
+    "sidecar_live_eligible",
+    "sidecar_policy_version",
+    "sidecar_risk_tier",
+    "sidecar_rejection_reason",
+    "sidecar_decided_at",
+    "sidecar_policy_evidence",
 )
 
 
@@ -30,10 +51,13 @@ def _tactical_record(**overrides):
         "tactical_source": "shadow_only",
         "tactical_max_hold_minutes": 90,
         "reject_reason": "rr_below_floor",
-        "tactical_track_gate": "fail",
+        "tactical_track_gate": "pass",
+        "tactical_trend_exhaustion_warning": False,
+        "tactical_weak_volume_oi": False,
+        "tactical_weak_provenance": False,
     }
     rec.update(overrides)
-    return rec
+    return stamp_sidecar_policy(rec, decided_at=POLICY_DECIDED_AT)
 
 
 def test_tactical_shadow_event_accepts_shadow_mirror_records_without_gate_pass():
@@ -63,7 +87,8 @@ def test_tactical_shadow_event_accepts_shadow_mirror_records_without_gate_pass()
     )
 
 def test_map_shadow_record_preserves_execution_fields():
-    plan = map_shadow_record_to_plan(_tactical_record())
+    record = _tactical_record()
+    plan = map_shadow_record_to_plan(record)
 
     assert plan["symbol"] == "WLD-USDT-SWAP"
     assert plan["side"] == "long"
@@ -75,7 +100,12 @@ def test_map_shadow_record_preserves_execution_fields():
     assert plan["tactical_max_hold_minutes"] == 90
     assert plan["shadow_id"] == "shadow-1"
     assert plan["sidecar_source"] == "shadow_tactical_live"
-    assert plan["gate_metadata"]["tactical_track_gate"] == "fail"
+    assert plan["gate_metadata"]["tactical_track_gate"] == "pass"
+
+    for field in POLICY_EVIDENCE_FIELDS + POLICY_STAMP_FIELDS:
+        assert plan[field] == record[field]
+        assert plan["gate_metadata"][field] == record[field]
+    assert plan["sidecar_policy_version"] == SIDECAR_POLICY_VERSION
 
 
 def test_map_shadow_record_accepts_scalar_take_profit():

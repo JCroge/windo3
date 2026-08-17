@@ -2,15 +2,103 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock
 
+import pytest
+
+from utils.shadow_sidecar_policy import (
+    SIDECAR_POLICY_MAX_AGE_SECONDS,
+    SIDECAR_POLICY_VERSION,
+    stamp_sidecar_policy,
+)
 from utils.shadow_tactical_live import ShadowEventRow
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = str(ROOT / "scripts" / "shadow_tactical_live_sidecar.py")
+
+
+def _load_sidecar_module():
+    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _tactical_record(*, decided_at=None, stamp=True, **overrides):
+    rec = {
+        "id": "shadow-1",
+        "symbol": "WLD-USDT-SWAP",
+        "side": "long",
+        "entry_price": 1.25,
+        "stop_loss": 1.20,
+        "take_profit": [1.32],
+        "leverage": 20,
+        "track": "tactical",
+        "exit_profile": "tactical_v1",
+        "tactical_track_gate": "pass",
+        "tactical_trend_exhaustion_warning": False,
+        "tactical_weak_volume_oi": False,
+        "tactical_weak_provenance": False,
+    }
+    rec.update(overrides)
+    if not stamp:
+        return rec
+    return stamp_sidecar_policy(
+        rec,
+        decided_at=time.time() + 0.5 if decided_at is None else decided_at,
+    )
+
+
+def _event(record):
+    return {"event_type": "rejected_plan_created", "record": record}
+
+
+def _policy_evidence(record):
+    return {
+        "tactical_track_gate": record["tactical_track_gate"],
+        "tactical_trend_exhaustion_warning": record[
+            "tactical_trend_exhaustion_warning"
+        ],
+        "tactical_weak_volume_oi": record["tactical_weak_volume_oi"],
+        "tactical_weak_provenance": record["tactical_weak_provenance"],
+    }
+
+
+def _process_event_fixture(tmp_path, mod):
+    paths = mod.SidecarPaths(
+        owners=str(tmp_path / "owners.json"),
+        audit=str(tmp_path / "audit.jsonl"),
+    )
+    state = {"seen_shadow_ids": {}}
+    registry = mod.ShadowTacticalOwnerRegistry(paths.owners)
+    executor = MagicMock()
+    executor.open_sidecar_plan.return_value = {
+        "symbol": "WLD-USDT-SWAP",
+        "side": "long",
+        "amount_usdt": 100.0,
+        "entry_order_id": "ord-1",
+        "entry_clord_id": "stl-1",
+        "sl_algo_id": "algo-1",
+        "sl_algo_clord_id": "sl-1",
+    }
+    return paths, state, registry, executor
+
+
+def _audit_rows(path):
+    return [json.loads(line) for line in Path(path).read_text().splitlines()]
+
+
+def _assert_policy_rejected(row, *, shadow_id, reason, version, tier, evidence):
+    assert row["event_type"] == "rejected"
+    assert row["shadow_id"] == shadow_id
+    assert row["reason"] == reason
+    assert row["sidecar_policy_version"] == version
+    assert row["sidecar_risk_tier"] == tier
+    assert row["sidecar_policy_evidence"] == evidence
 
 
 def test_status_prints_state_counts(tmp_path):
@@ -76,19 +164,8 @@ def test_run_dry_run_processes_new_tactical_event(tmp_path):
     events = tmp_path / "events.jsonl"
     state = tmp_path / "state.json"
     audit = tmp_path / "audit.jsonl"
-    rec = {
-        "id": "s1",
-        "symbol": "WLD-USDT-SWAP",
-        "side": "long",
-        "entry_price": 1.25,
-        "stop_loss": 1.20,
-        "take_profit": [1.32],
-        "leverage": 20,
-        "track": "tactical",
-        "exit_profile": "tactical_v1",
-        "tactical_track_gate": "pass",
-    }
-    events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
+    rec = _tactical_record(id="s1")
+    events.write_text(json.dumps(_event(rec)) + "\n")
 
     subprocess.check_call(
         [
@@ -113,26 +190,27 @@ def test_run_dry_run_processes_new_tactical_event(tmp_path):
     row = json.loads(audit.read_text().splitlines()[0])
     assert row["event_type"] == "dry_run_plan"
     assert row["shadow_id"] == "s1"
+    assert row["requested_size_usdt"] == 30.0
+    assert row["sidecar_policy_version"] == SIDECAR_POLICY_VERSION
+    assert row["sidecar_risk_tier"] == "full"
 
 
-def test_run_dry_run_processes_shadow_only_tactical_gate_fail_event(tmp_path):
+def test_run_dry_run_rejects_shadow_only_tactical_gate_fail_event(tmp_path):
     events = tmp_path / "events.jsonl"
     state = tmp_path / "state.json"
     audit = tmp_path / "audit.jsonl"
-    rec = {
-        "id": "shadow-gate-fail",
-        "symbol": "DOGE-USDT-SWAP",
-        "side": "short",
-        "entry_price": 0.072,
-        "stop_loss": 0.073,
-        "take_profit": [0.071],
-        "leverage": 20,
-        "track": "shadow_only",
-        "exit_profile": "tactical_v1",
-        "tactical_track_gate": "fail",
-        "reject_reason": "main_quality_failed:tactical_shadow_only",
-    }
-    events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
+    rec = _tactical_record(
+        id="shadow-gate-fail",
+        symbol="DOGE-USDT-SWAP",
+        side="short",
+        entry_price=0.072,
+        stop_loss=0.073,
+        take_profit=[0.071],
+        track="shadow_only",
+        tactical_track_gate="fail",
+        reject_reason="main_quality_failed:tactical_shadow_only",
+    )
+    events.write_text(json.dumps(_event(rec)) + "\n")
 
     subprocess.check_call(
         [
@@ -155,28 +233,22 @@ def test_run_dry_run_processes_shadow_only_tactical_gate_fail_event(tmp_path):
     )
 
     row = json.loads(audit.read_text().splitlines()[0])
-    assert row["event_type"] == "dry_run_plan"
-    assert row["shadow_id"] == "shadow-gate-fail"
-    assert row["plan"]["gate_metadata"]["tactical_track_gate"] == "fail"
+    _assert_policy_rejected(
+        row,
+        shadow_id="shadow-gate-fail",
+        reason="tactical_track_gate_failed",
+        version=SIDECAR_POLICY_VERSION,
+        tier="none",
+        evidence=_policy_evidence(rec),
+    )
 
 
 def test_run_defaults_to_no_backfill_on_first_start(tmp_path):
     events = tmp_path / "events.jsonl"
     state = tmp_path / "state.json"
     audit = tmp_path / "audit.jsonl"
-    rec = {
-        "id": "old",
-        "symbol": "WLD-USDT-SWAP",
-        "side": "long",
-        "entry_price": 1.25,
-        "stop_loss": 1.20,
-        "take_profit": [1.32],
-        "leverage": 20,
-        "track": "tactical",
-        "exit_profile": "tactical_v1",
-        "tactical_track_gate": "pass",
-    }
-    events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
+    rec = _tactical_record(id="old")
+    events.write_text(json.dumps(_event(rec)) + "\n")
 
     subprocess.check_call(
         [
@@ -205,23 +277,7 @@ def test_run_preserves_existing_watermark_when_no_backfill_default(tmp_path):
     events = tmp_path / "events.jsonl"
     state = tmp_path / "state.json"
     audit = tmp_path / "audit.jsonl"
-    old_line = json.dumps(
-        {
-            "event_type": "rejected_plan_created",
-            "record": {
-                "id": "old",
-                "symbol": "WLD-USDT-SWAP",
-                "side": "long",
-                "entry_price": 1.25,
-                "stop_loss": 1.20,
-                "take_profit": [1.32],
-                "leverage": 20,
-                "track": "tactical",
-                "exit_profile": "tactical_v1",
-                "tactical_track_gate": "pass",
-            },
-        }
-    ) + "\n"
+    old_line = json.dumps(_event(_tactical_record(id="old"))) + "\n"
     events.write_text(old_line)
     old_offset = events.stat().st_size
     state.write_text(
@@ -235,26 +291,7 @@ def test_run_preserves_existing_watermark_when_no_backfill_default(tmp_path):
         )
     )
     with events.open("a") as fh:
-        fh.write(
-            json.dumps(
-                {
-                    "event_type": "rejected_plan_created",
-                    "record": {
-                        "id": "new",
-                        "symbol": "WLD-USDT-SWAP",
-                        "side": "long",
-                        "entry_price": 1.25,
-                        "stop_loss": 1.20,
-                        "take_profit": [1.32],
-                        "leverage": 20,
-                        "track": "tactical",
-                        "exit_profile": "tactical_v1",
-                        "tactical_track_gate": "pass",
-                    },
-                }
-            )
-            + "\n"
-        )
+        fh.write(json.dumps(_event(_tactical_record(id="new"))) + "\n")
 
     subprocess.check_call(
         [
@@ -283,19 +320,8 @@ def test_run_ignores_legacy_stop_at_and_stays_resident(tmp_path):
     events = tmp_path / "events.jsonl"
     state = tmp_path / "state.json"
     audit = tmp_path / "audit.jsonl"
-    rec = {
-        "id": "legacy-stop",
-        "symbol": "WLD-USDT-SWAP",
-        "side": "long",
-        "entry_price": 1.25,
-        "stop_loss": 1.20,
-        "take_profit": [1.32],
-        "leverage": 20,
-        "track": "tactical",
-        "exit_profile": "tactical_v1",
-        "tactical_track_gate": "pass",
-    }
-    events.write_text(json.dumps({"event_type": "rejected_plan_created", "record": rec}) + "\n")
+    rec = _tactical_record(id="legacy-stop")
+    events.write_text(json.dumps(_event(rec)) + "\n")
     state.write_text(
         json.dumps(
             {
@@ -601,10 +627,142 @@ def test_drain_report_cli_uses_namespaced_default_and_documented_exceptions(
     assert report["documented_exceptions"][0]["object_id"] == "pnl-1"
 
 
+def test_process_event_opens_valid_full_policy_with_full_size(tmp_path, monkeypatch):
+    mod = _load_sidecar_module()
+    monkeypatch.setattr(mod.time, "time", lambda: 100.0)
+    fetch_positions = MagicMock(return_value=[])
+    monkeypatch.setattr(mod, "_fetch_exchange_positions", fetch_positions)
+    paths, state, registry, executor = _process_event_fixture(tmp_path, mod)
+    record = _tactical_record(id="shadow-full", decided_at=100.0)
+    args = SimpleNamespace(dry_run=False, max_active="3", size_usdt="100")
+
+    mod._process_event(args, paths, state, registry, executor, _event(record))
+
+    executor.open_sidecar_plan.assert_called_once()
+    assert executor.open_sidecar_plan.call_args.kwargs["size_usdt"] == 100.0
+    fetch_positions.assert_called_once_with(executor)
+    row = _audit_rows(paths.audit)[0]
+    assert row["event_type"] == "opened"
+    assert row["sidecar_policy_version"] == SIDECAR_POLICY_VERSION
+    assert row["sidecar_risk_tier"] == "full"
+    assert row["requested_size_usdt"] == 100.0
+
+
+def test_process_event_opens_valid_reduced_policy_with_half_size(
+    tmp_path, monkeypatch
+):
+    mod = _load_sidecar_module()
+    monkeypatch.setattr(mod.time, "time", lambda: 100.0)
+    fetch_positions = MagicMock(return_value=[])
+    monkeypatch.setattr(mod, "_fetch_exchange_positions", fetch_positions)
+    paths, state, registry, executor = _process_event_fixture(tmp_path, mod)
+    record = _tactical_record(
+        id="shadow-reduced",
+        decided_at=100.0,
+        tactical_weak_volume_oi=True,
+    )
+    args = SimpleNamespace(dry_run=False, max_active="3", size_usdt="100")
+
+    mod._process_event(args, paths, state, registry, executor, _event(record))
+
+    executor.open_sidecar_plan.assert_called_once()
+    assert executor.open_sidecar_plan.call_args.kwargs["size_usdt"] == 50.0
+    fetch_positions.assert_called_once_with(executor)
+    row = _audit_rows(paths.audit)[0]
+    assert row["event_type"] == "opened"
+    assert row["sidecar_policy_version"] == SIDECAR_POLICY_VERSION
+    assert row["sidecar_risk_tier"] == "reduced"
+    assert row["requested_size_usdt"] == 50.0
+
+
+@pytest.mark.parametrize(
+    ("record", "reason", "version", "tier", "expected_age"),
+    [
+        (
+            _tactical_record(
+                id="shadow-gate-failure",
+                tactical_track_gate="fail",
+                decided_at=100.0,
+            ),
+            "tactical_track_gate_failed",
+            SIDECAR_POLICY_VERSION,
+            "none",
+            0.0,
+        ),
+        (
+            _tactical_record(
+                id="shadow-trend-exhaustion",
+                tactical_trend_exhaustion_warning=True,
+                decided_at=100.0,
+            ),
+            "trend_exhaustion_warning",
+            SIDECAR_POLICY_VERSION,
+            "none",
+            0.0,
+        ),
+        (
+            _tactical_record(id="shadow-missing-stamp", stamp=False),
+            "sidecar_policy_version_missing",
+            None,
+            None,
+            None,
+        ),
+        (
+            {
+                **_tactical_record(id="shadow-stamp-mismatch", decided_at=100.0),
+                "sidecar_risk_tier": "reduced",
+            },
+            "sidecar_policy_outcome_mismatch",
+            SIDECAR_POLICY_VERSION,
+            "reduced",
+            None,
+        ),
+        (
+            _tactical_record(id="shadow-stale", decided_at=100.0),
+            "sidecar_policy_stale",
+            SIDECAR_POLICY_VERSION,
+            "full",
+            SIDECAR_POLICY_MAX_AGE_SECONDS + 0.01,
+        ),
+    ],
+)
+def test_process_event_rejects_invalid_policy_before_exchange_work(
+    tmp_path,
+    monkeypatch,
+    record,
+    reason,
+    version,
+    tier,
+    expected_age,
+):
+    mod = _load_sidecar_module()
+    now = 105.01 if reason == "sidecar_policy_stale" else 100.0
+    monkeypatch.setattr(mod.time, "time", lambda: now)
+    fetch_positions = MagicMock(return_value=[])
+    monkeypatch.setattr(mod, "_fetch_exchange_positions", fetch_positions)
+    paths, state, registry, executor = _process_event_fixture(tmp_path, mod)
+    args = SimpleNamespace(dry_run=False, max_active="3", size_usdt="100")
+
+    mod._process_event(args, paths, state, registry, executor, _event(record))
+
+    fetch_positions.assert_not_called()
+    executor.open_sidecar_plan.assert_not_called()
+    assert state["seen_shadow_ids"][record["id"]] == "rejected"
+    row = _audit_rows(paths.audit)[0]
+    _assert_policy_rejected(
+        row,
+        shadow_id=record["id"],
+        reason=reason,
+        version=version,
+        tier=tier,
+        evidence=_policy_evidence(record),
+    )
+    if expected_age is not None:
+        assert row["sidecar_policy_age_seconds"] == pytest.approx(expected_age)
+
+
 def test_process_event_persists_sidecar_entry_drift_rejection_audit(tmp_path):
-    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _load_sidecar_module()
 
     paths = mod.SidecarPaths(
         owners=str(tmp_path / "owners.json"),
@@ -612,21 +770,8 @@ def test_process_event_persists_sidecar_entry_drift_rejection_audit(tmp_path):
     )
     state = {"seen_shadow_ids": {}}
     registry = mod.ShadowTacticalOwnerRegistry(paths.owners)
-    event = {
-        "event_type": "rejected_plan_created",
-        "record": {
-            "id": "shadow-drift",
-            "symbol": "WLD-USDT-SWAP",
-            "side": "long",
-            "entry_price": 1.25,
-            "stop_loss": 1.20,
-            "take_profit": [1.32],
-            "leverage": 20,
-            "track": "tactical",
-            "exit_profile": "tactical_v1",
-            "tactical_track_gate": "pass",
-        },
-    }
+    record = _tactical_record(id="shadow-drift")
+    event = _event(record)
     fake = MagicMock()
     fake._fetch_positions_with_retry.return_value = []
     fake.logger = MagicMock()
@@ -680,10 +825,11 @@ def test_process_event_persists_sidecar_entry_drift_rejection_audit(tmp_path):
             "source": "sidecar",
         }
     ]
-    assert any(
-        row["event_type"] == "rejected" and row["reason"] == "executor_rejected"
-        for row in rows
-    )
+    rejected = next(row for row in rows if row["event_type"] == "rejected")
+    assert rejected["reason"] == "executor_rejected"
+    assert rejected["sidecar_policy_version"] == SIDECAR_POLICY_VERSION
+    assert rejected["sidecar_risk_tier"] == "full"
+    assert rejected["requested_size_usdt"] == 30.0
     assert fake._pending_drift_alerts == [
         {
             "type": "sidecar_entry_drift_rejected",
@@ -705,9 +851,7 @@ def test_process_event_persists_sidecar_entry_drift_rejection_audit(tmp_path):
 
 
 def test_process_event_passes_scalar_take_profit_as_level_list(tmp_path):
-    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _load_sidecar_module()
 
     paths = mod.SidecarPaths(
         owners=str(tmp_path / "owners.json"),
@@ -715,21 +859,7 @@ def test_process_event_passes_scalar_take_profit_as_level_list(tmp_path):
     )
     state = {"seen_shadow_ids": {}}
     registry = mod.ShadowTacticalOwnerRegistry(paths.owners)
-    event = {
-        "event_type": "rejected_plan_created",
-        "record": {
-            "id": "shadow-scalar-tp",
-            "symbol": "WLD-USDT-SWAP",
-            "side": "long",
-            "entry_price": 1.25,
-            "stop_loss": 1.20,
-            "take_profit": 1.32,
-            "leverage": 20,
-            "track": "tactical",
-            "exit_profile": "tactical_v1",
-            "tactical_track_gate": "pass",
-        },
-    }
+    event = _event(_tactical_record(id="shadow-scalar-tp", take_profit=1.32))
     fake = MagicMock()
     fake._fetch_positions_with_retry.return_value = []
     fake.logger = MagicMock()
@@ -751,9 +881,7 @@ def test_process_event_passes_scalar_take_profit_as_level_list(tmp_path):
 
 
 def test_process_event_rejects_when_exchange_position_guard_fetch_fails(tmp_path):
-    spec = importlib.util.spec_from_file_location("shadow_tactical_live_sidecar", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _load_sidecar_module()
 
     paths = mod.SidecarPaths(
         owners=str(tmp_path / "owners.json"),
@@ -761,21 +889,7 @@ def test_process_event_rejects_when_exchange_position_guard_fetch_fails(tmp_path
     )
     state = {"seen_shadow_ids": {}}
     registry = mod.ShadowTacticalOwnerRegistry(paths.owners)
-    event = {
-        "event_type": "rejected_plan_created",
-        "record": {
-            "id": "shadow-fetch-fail",
-            "symbol": "WLD-USDT-SWAP",
-            "side": "long",
-            "entry_price": 1.25,
-            "stop_loss": 1.20,
-            "take_profit": [1.32],
-            "leverage": 20,
-            "track": "tactical",
-            "exit_profile": "tactical_v1",
-            "tactical_track_gate": "pass",
-        },
-    }
+    event = _event(_tactical_record(id="shadow-fetch-fail"))
     fake = MagicMock()
     fake._fetch_positions_with_retry.side_effect = RuntimeError("okx unavailable")
     fake.logger = MagicMock()
