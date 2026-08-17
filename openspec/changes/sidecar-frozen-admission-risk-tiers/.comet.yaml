@@ -1,16 +1,18 @@
 workflow: full
-phase: build
+phase: verify
 build_mode: subagent-driven-development
 isolation: worktree
-verify_mode: null
+verify_mode: full
 base_ref: c2ae752cd6d717ab23e959ea2106279e5b583f7c
 design_doc: docs/superpowers/specs/2026-08-17-sidecar-frozen-admission-risk-tiers-design.md
 plan: docs/superpowers/plans/2026-08-17-sidecar-frozen-admission-risk-tiers.md
 verify_result: pending
-verification_report: null
+verification_report: docs/superpowers/reports/2026-08-17-sidecar-frozen-admission-risk-tiers-verify.md
 branch_status: pending
 created_at: 2026-08-17
 verified_at: null
 archived: false
 handoff_context: openspec/changes/sidecar-frozen-admission-risk-tiers/.comet/handoff/design-context.json
 handoff_hash: e954b222a2c80a9d9fa6590eeec294361554b3c2371b66152ec2e9cb53bf4423
+build_command: python3.12 -m pytest -q
+verify_command: python3.12 -m pytest -q
