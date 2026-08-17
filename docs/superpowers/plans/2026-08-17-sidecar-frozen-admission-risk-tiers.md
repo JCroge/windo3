@@ -22,7 +22,7 @@ base-ref: c2ae752cd6d717ab23e959ea2106279e5b583f7c
 - Create: `utils/shadow_sidecar_policy.py`
 - Create: `tests/test_shadow_sidecar_policy.py`
 
-- [ ] **Step 1: Write the failing policy truth-table tests**
+- [x] **Step 1: Write the failing policy truth-table tests**
 
 Create tests that import the new constants and functions and assert clean/full, warning/reduced, gate-fail, exhaustion, malformed evidence, stamp mismatch, unsupported version, exact five-second TTL, stale TTL, and future-skew behavior.
 
@@ -89,13 +89,13 @@ def test_verify_rejects_stamp_evidence_mismatch():
     assert verified.rejection_reason == "sidecar_policy_evidence_mismatch"
 ```
 
-- [ ] **Step 2: Run the policy tests and confirm RED**
+- [x] **Step 2: Run the policy tests and confirm RED**
 
 Run: `python3 -m pytest -q tests/test_shadow_sidecar_policy.py`
 
 Expected: collection fails because `utils.shadow_sidecar_policy` does not exist.
 
-- [ ] **Step 3: Implement the minimal pure policy module**
+- [x] **Step 3: Implement the minimal pure policy module**
 
 Implement frozen result dataclasses, strict canonical evidence extraction, deterministic classification, stamp generation, and verification. Required constants are:
 
@@ -108,13 +108,13 @@ SIDECAR_MAX_ACTIVE_POSITIONS = 3
 
 The implementation must reject non-boolean warning evidence rather than applying `bool(value)`, compare nested `sidecar_policy_evidence` with the canonical top-level raw fields, compare all frozen outcome fields with a freshly classified result, and return `sidecar_policy_stale` only after integrity passes.
 
-- [ ] **Step 4: Run policy tests and confirm GREEN**
+- [x] **Step 4: Run policy tests and confirm GREEN**
 
 Run: `python3 -m pytest -q tests/test_shadow_sidecar_policy.py`
 
 Expected: all policy tests pass.
 
-- [ ] **Step 5: Commit the policy module**
+- [x] **Step 5: Commit the policy module**
 
 ```bash
 git add utils/shadow_sidecar_policy.py tests/test_shadow_sidecar_policy.py

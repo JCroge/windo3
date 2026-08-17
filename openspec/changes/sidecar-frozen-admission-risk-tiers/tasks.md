@@ -1,7 +1,7 @@
 ## 1. Frozen Policy Contract
 
-- [ ] 1.1 Add failing unit tests for clean full-tier, warning reduced-tier, exhaustion rejection, gate rejection, malformed evidence, and unsupported versions.
-- [ ] 1.2 Implement the pure versioned Sidecar admission classifier and canonical policy evidence model.
+- [x] 1.1 Add failing unit tests for clean full-tier, warning reduced-tier, exhaustion rejection, gate rejection, malformed evidence, and unsupported versions.
+- [x] 1.2 Implement the pure versioned Sidecar admission classifier and canonical policy evidence model.
 - [ ] 1.3 Propagate explicit Tactical quality flags into Judge plans and freeze the Sidecar policy before ledger persistence.
 - [ ] 1.4 Persist and map every policy stamp/evidence field without removing ineligible rows from counterfactual tracking.
 
