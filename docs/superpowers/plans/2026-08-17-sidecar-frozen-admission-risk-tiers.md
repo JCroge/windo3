@@ -130,7 +130,7 @@ git commit -m "feat: define frozen Sidecar admission policy"
 - Modify: `test_tactical_track_classifier.py`
 - Create: `tests/test_shadow_sidecar_policy_judge.py`
 
-- [ ] **Step 1: Write failing Judge profile and ledger-stamp tests**
+- [x] **Step 1: Write failing Judge profile and ledger-stamp tests**
 
 Extend `test_tactical_track_classifier.py` so `_apply_tactical_profile()` copies the three explicit policy booleans from `track_decision["quality_flags"]`:
 
@@ -155,13 +155,13 @@ def test_tactical_profile_exports_explicit_sidecar_quality_flags():
 
 Create a partial Judge with a capturing ledger and assert `_record_rejected_plan()` stamps Tactical rows but leaves a Main reject unstamped. Also assert `CounterfactualLedger.record_rejection()` writes every stamp/evidence field into the created record.
 
-- [ ] **Step 2: Run focused tests and confirm RED**
+- [x] **Step 2: Run focused tests and confirm RED**
 
 Run: `python3 -m pytest -q test_tactical_track_classifier.py tests/test_shadow_sidecar_policy_judge.py`
 
 Expected: explicit policy fields and frozen stamp assertions fail.
 
-- [ ] **Step 3: Export quality flags in Tactical profiles**
+- [x] **Step 3: Export quality flags in Tactical profiles**
 
 In `_apply_tactical_profile()`, read a defensive copy of `track_decision.get("quality_flags") or {}` and add these exact fields to `plan.update()`:
 
@@ -171,11 +171,11 @@ In `_apply_tactical_profile()`, read a defensive copy of `track_decision.get("qu
 "tactical_weak_provenance": quality_flags.get("weak_provenance") is True,
 ```
 
-- [ ] **Step 4: Stamp at the final Judge-to-ledger boundary**
+- [x] **Step 4: Stamp at the final Judge-to-ledger boundary**
 
 In `_record_rejected_plan()`, copy `plan`, identify Tactical rows using the same `track == "tactical" or exit_profile == "tactical_v1"` contract, call `stamp_sidecar_policy()` with one captured `time.time()`, and pass the stamped copy to both ledger and decision-tape price reads. Do not stamp non-Tactical records.
 
-- [ ] **Step 5: Persist fields verbatim in CounterfactualLedger**
+- [x] **Step 5: Persist fields verbatim in CounterfactualLedger**
 
 Add these fields to the created record:
 
@@ -191,13 +191,13 @@ Add these fields to the created record:
 "sidecar_policy_evidence": dict(plan.get("sidecar_policy_evidence") or {}),
 ```
 
-- [ ] **Step 6: Run focused tests and confirm GREEN**
+- [x] **Step 6: Run focused tests and confirm GREEN**
 
 Run: `python3 -m pytest -q test_tactical_track_classifier.py tests/test_shadow_sidecar_policy_judge.py tests/test_judge_decision_tape_wiring.py`
 
 Expected: all pass and decision-tape behavior remains unchanged.
 
-- [ ] **Step 7: Commit Judge and ledger stamping**
+- [x] **Step 7: Commit Judge and ledger stamping**
 
 ```bash
 git add agents/trading/judge.py utils/counterfactual_ledger.py test_tactical_track_classifier.py tests/test_shadow_sidecar_policy_judge.py
