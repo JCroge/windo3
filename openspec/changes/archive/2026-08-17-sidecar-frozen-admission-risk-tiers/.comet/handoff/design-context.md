@@ -302,4 +302,3 @@ The live sidecar admission path SHALL enforce Tactical hard vetoes that protect 
 - **THEN** Sidecar SHALL still enforce active capacity, account exposure, symbol halt, balance, entry drift, slippage, order capability, geometry, and attached protective-stop verification
 - **AND** no policy field SHALL bypass those safety checks
 ```
-
