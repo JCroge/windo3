@@ -19,6 +19,7 @@ from utils.candidate_ranker import CandidateRanker
 from utils.market_regime import RegimeManager
 from utils.counterfactual_ledger import CounterfactualLedger
 from utils.decision_tape import DecisionTape, build_bundle
+from utils import shadow_sidecar_policy
 from utils.state_paths import get_state_paths
 from dotenv import load_dotenv
 
@@ -3250,6 +3251,14 @@ class MultiJudge(BaseAgent):
 
     def _apply_tactical_profile(self, plan: dict, tech: dict, track_decision: dict) -> dict:
         plan = dict(plan or {})
+        quality_flags = dict(track_decision.get('quality_flags') or {})
+        plan.update({
+            'tactical_trend_exhaustion_warning': (
+                quality_flags.get('trend_exhaustion_warning') is True
+            ),
+            'tactical_weak_volume_oi': quality_flags.get('weak_volume_oi') is True,
+            'tactical_weak_provenance': quality_flags.get('weak_provenance') is True,
+        })
         side = plan.get('side', 'long')
         is_short = side == 'short'
         entry_zone = plan.get('entry_zone') or []
@@ -4054,9 +4063,17 @@ class MultiJudge(BaseAgent):
         """Record a rejected planned signal to the counterfactual ledger."""
         if not self._counterfactual_ledger._enabled or not plan:
             return
+        recorded_plan = dict(plan)
+        if (recorded_plan.get("track") == "tactical"
+                or recorded_plan.get("exit_profile") == "tactical_v1"):
+            decided_at = time.time()
+            recorded_plan = shadow_sidecar_policy.stamp_sidecar_policy(
+                recorded_plan, decided_at=decided_at
+            )
         side = 'long' if 'long' in action else 'short'
         regime = self._regime_manager._effective_regime
-        attr = attribution or plan.get('attribution') or self._rejection_attribution(action, plan, reason)
+        attr = (attribution or recorded_plan.get('attribution')
+                or self._rejection_attribution(action, recorded_plan, reason))
         _tech = getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {}
         _trend = _tech.get("trend", {}) or {}
         _ectx = _tech.get("entry_context", {}) or {}
@@ -4070,7 +4087,7 @@ class MultiJudge(BaseAgent):
             "prev_daily_return_pct": _ectx.get("prev_daily_return_pct"),
         } if _tech else {}
         record_id = self._counterfactual_ledger.record_rejection(
-            symbol, side, plan, regime, score, confidence, reason,
+            symbol, side, recorded_plan, regime, score, confidence, reason,
             attribution=attr, tech_context=tech_context
         )
         # Counterfactual replay: tape the rejected plan (observability-only).
@@ -4080,7 +4097,8 @@ class MultiJudge(BaseAgent):
                 symbol=symbol, decision="reject",
                 request_id=(attr or {}).get("request_id") if isinstance(attr, dict) else None,
                 tech_analysis=getattr(self, "_symbol_tech_tape_cache", {}).get(symbol) or {},
-                price_at_decision=(plan or {}).get("entry_ref") or (plan or {}).get("entry_price"),
+                price_at_decision=(recorded_plan.get("entry_ref")
+                                   or recorded_plan.get("entry_price")),
                 regime_state=regime,
                 llm_output=getattr(self, "_symbol_llm_cache", {}).get(symbol), llm_audit_ref=None,
                 trade_decision_output={"reject_reason": reason, "attribution": attr},

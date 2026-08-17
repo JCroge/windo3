@@ -40,6 +40,10 @@ class CounterfactualLedger:
         if not entry_price:
             entry_price = plan.get('price', 0)
 
+        sidecar_policy_evidence = plan.get("sidecar_policy_evidence")
+        if isinstance(sidecar_policy_evidence, dict):
+            sidecar_policy_evidence = dict(sidecar_policy_evidence)
+
         record = {
             "id": record_id,
             "symbol": symbol,
@@ -63,8 +67,19 @@ class CounterfactualLedger:
             "tactical_gate_failed": plan.get("tactical_gate_failed"),
             "tactical_min_rr_for_track": plan.get("tactical_min_rr_for_track"),
             "tactical_min_ev_for_track": plan.get("tactical_min_ev_for_track"),
+            "tactical_trend_exhaustion_warning": plan.get(
+                "tactical_trend_exhaustion_warning"
+            ),
+            "tactical_weak_volume_oi": plan.get("tactical_weak_volume_oi"),
+            "tactical_weak_provenance": plan.get("tactical_weak_provenance"),
             "tactical_max_hold_minutes": plan.get("tactical_max_hold_minutes",
                                                  plan.get("max_holding_minutes")),
+            "sidecar_live_eligible": plan.get("sidecar_live_eligible"),
+            "sidecar_policy_version": plan.get("sidecar_policy_version"),
+            "sidecar_risk_tier": plan.get("sidecar_risk_tier"),
+            "sidecar_rejection_reason": plan.get("sidecar_rejection_reason"),
+            "sidecar_decided_at": plan.get("sidecar_decided_at"),
+            "sidecar_policy_evidence": sidecar_policy_evidence,
             "created_at": time.time(),
             "status": "tracking",
         }

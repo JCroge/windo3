@@ -183,6 +183,27 @@ def test_tactical_short_that_passed_tactical_gate_bypasses_main_range_guards():
     assert tactical_position_gate["allowed"] is True
 
 
+def test_tactical_profile_exports_exact_quality_flag_booleans():
+    judge = make_judge()
+    plan = base_plan()
+    plan["size_usdt"] = 8.57
+
+    profiled = judge._apply_tactical_profile(plan, strong_short_tech(), {
+        "track": "tactical",
+        "exit_profile": "tactical_v1",
+        "reason": "main_quality_failed:weak_volume_oi,weak_provenance",
+        "quality_flags": {
+            "trend_exhaustion_warning": False,
+            "weak_volume_oi": True,
+            "weak_provenance": True,
+        },
+    })
+
+    assert profiled["tactical_trend_exhaustion_warning"] is False
+    assert profiled["tactical_weak_volume_oi"] is True
+    assert profiled["tactical_weak_provenance"] is True
+
+
 def test_15m_opposing_block_is_hard_veto_not_tactical():
     judge = make_judge()
     tech = strong_short_tech()
