@@ -1,0 +1,15 @@
+{
+  "change": "sidecar-frozen-admission-risk-tiers",
+  "phase": "design",
+  "mode": "full",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "e954b222a2c80a9d9fa6590eeec294361554b3c2371b66152ec2e9cb53bf4423",
+  "files": [
+    { "path": "openspec/changes/sidecar-frozen-admission-risk-tiers/proposal.md", "sha256": "94b8f203621b50760d485ebaf49f27233dc4852a9883702842011dd7bc09b15c" },
+    { "path": "openspec/changes/sidecar-frozen-admission-risk-tiers/design.md", "sha256": "1456f6e2d8b1d053f99799b08456db2826ba9722fbf13e7a1b3e437717f9feed" },
+    { "path": "openspec/changes/sidecar-frozen-admission-risk-tiers/tasks.md", "sha256": "a0e9bba52fc647f980c32b174478df1e48271ad05666eda91b53d07b88fe2cbe" },
+    { "path": "openspec/changes/sidecar-frozen-admission-risk-tiers/specs/shadow-sidecar-frozen-admission/spec.md", "sha256": "1086e8944258be27147bf10177390687c632d58cc8efc504602956cb3f7c7537" },
+    { "path": "openspec/changes/sidecar-frozen-admission-risk-tiers/specs/tactical-exit-track/spec.md", "sha256": "3b44f42f8348e4b91c87b09ef6912cfaedb724075ed50ebaa6304bd4c8df20b3" }
+  ]
+}
