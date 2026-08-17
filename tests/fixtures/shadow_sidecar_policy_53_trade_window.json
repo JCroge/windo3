@@ -1,0 +1,567 @@
+{
+  "schema_version": "shadow_sidecar_policy_53_trade_window.v1",
+  "metadata": {
+    "description": "Sealed local replay fixture for Shadow Tactical Sidecar frozen-admission policy v1.",
+    "owner_window_start_epoch": "1786602333.548581",
+    "owner_window_end_epoch": "1786931035.0",
+    "owner_window_start_cst": "2026-08-13 14:25:33.548581",
+    "owner_window_end_cst": "2026-08-17 09:43:55",
+    "extracted_at_cst": "2026-08-17 10:52:00",
+    "row_count": 53,
+    "eligible_count": 9,
+    "expected_all_100u_net": "4.47024185",
+    "expected_tiered_100u_50u_net": "9.086859325",
+    "decimal_normalization": "gross_pnl_usdt, fees_usdt, and funding_usdt were each scaled to 100U with Decimal precision 28; pnl_usdt_at_100u is their net sum.",
+    "canonical_trade_rows_sha256": "2ec2493a2c49d3cdc74e84d616a2faf1ee04e8150e5908193e13aa4032d11ae1",
+    "selected_source_rows_sha256": "5ebbdbc506ddc30c2491b71893d62ee2a165374d9de4ebbf0da6cfb9d120b196",
+    "source_paths": {
+      "owner_registry": "/opt/crypto-arbitrage/data/shadow_tactical_live_owners.json",
+      "event_source": "/opt/crypto-arbitrage/data/rejected_signal_events.jsonl",
+      "actual_pnl_order_events": "/opt/crypto-arbitrage/data/shadow_tactical_live_order_events.jsonl",
+      "actual_pnl_lifecycle": "/opt/crypto-arbitrage/data/shadow_tactical_live_position_lifecycle.json",
+      "actual_pnl_okx_audit": "/tmp/crypto-audit-20260817T014355Z/okx_actual_position_audit.json",
+      "derived_join_snapshot": "/tmp/crypto-audit-20260817T014355Z/sidecar_strategy_join.json"
+    },
+    "source_snapshot_hashes_sha256": {
+      "owner_registry_snapshot": "5d485d979b8a9c003244fb793a491dbc8bff5c238ef187b099299419264ee33a",
+      "actual_pnl_order_events_snapshot": "f60d1d48a0202cd4f4c78334345da8b960a5da711ff60793b779f99bb32b1ad4",
+      "actual_pnl_lifecycle_snapshot": "ec93361184efdc0d5527e44332b0356a27ccecc5f32440403f9ae5c87dfcdfcf",
+      "actual_pnl_okx_audit_snapshot": "ebc240d9eb0e800c49d31585738c514badc3c2e436d1ab6bc5208948de68e06c",
+      "derived_join_snapshot": "34043d3d65a54ddf1884a357795db0eaef712f787e29a6d2e90886acd258f27e"
+    },
+    "raw_source_completeness_limitations": "The full remote rejected_signal_events.jsonl checksum was not completed because hashing the large append-only file exceeded the interactive runtime. The fixture records the canonical selected source rows hash and the derived join snapshot hash instead.",
+    "counterfactual_disclaimer": "This fixture verifies frozen policy classification and counterfactual tiered arithmetic only; it is not exchange-fill proof, live-PnL proof, or deployment authorization."
+  },
+  "trades": [
+    {
+      "shadow_id": "23d14fa4",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "0.0376795"
+    },
+    {
+      "shadow_id": "4c168214",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-1.7503515"
+    },
+    {
+      "shadow_id": "7c50f8f8",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.9268104"
+    },
+    {
+      "shadow_id": "fa78449f",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "9.305235"
+    },
+    {
+      "shadow_id": "888acefb",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "7.4126175"
+    },
+    {
+      "shadow_id": "7e89e492",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-16.408012"
+    },
+    {
+      "shadow_id": "b22722aa",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.1417322"
+    },
+    {
+      "shadow_id": "59448de3",
+      "symbol": "XRP-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.25105955"
+    },
+    {
+      "shadow_id": "7dd0993e",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "6.4325915"
+    },
+    {
+      "shadow_id": "e74d6171",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-4.4394506"
+    },
+    {
+      "shadow_id": "ec7f5c3f",
+      "symbol": "XRP-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-2.93590325"
+    },
+    {
+      "shadow_id": "8b79a2cd",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-1.3565345"
+    },
+    {
+      "shadow_id": "b1573ab2",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-4.8207315"
+    },
+    {
+      "shadow_id": "72430dbe",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "8.595475"
+    },
+    {
+      "shadow_id": "8d3b8e58",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-1.7140641"
+    },
+    {
+      "shadow_id": "05888fab",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-6.375348"
+    },
+    {
+      "shadow_id": "117a66fd",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-8.7754095"
+    },
+    {
+      "shadow_id": "70346318",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-1.43245845"
+    },
+    {
+      "shadow_id": "da69da84",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "1.3605735"
+    },
+    {
+      "shadow_id": "7ce32523",
+      "symbol": "BTC-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.77626032"
+    },
+    {
+      "shadow_id": "25d0ae31",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-5.686856"
+    },
+    {
+      "shadow_id": "05401b11",
+      "symbol": "XRP-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-0.7981446"
+    },
+    {
+      "shadow_id": "c342e639",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "3.5469595"
+    },
+    {
+      "shadow_id": "27c5c61d",
+      "symbol": "BTC-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-0.90668735"
+    },
+    {
+      "shadow_id": "2fbafc5f",
+      "symbol": "XRP-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "1.9913526"
+    },
+    {
+      "shadow_id": "dd49216f",
+      "symbol": "XRP-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "0.0007"
+    },
+    {
+      "shadow_id": "7cdce539",
+      "symbol": "PUMP-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-2.83779"
+    },
+    {
+      "shadow_id": "4369302f",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-3.43465605"
+    },
+    {
+      "shadow_id": "73a530cc",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-0.8531303"
+    },
+    {
+      "shadow_id": "dcf29c16",
+      "symbol": "LINK-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "1.502369333333333333333333333"
+    },
+    {
+      "shadow_id": "cf3c9900",
+      "symbol": "LINK-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "0.4500893333333333333333333337"
+    },
+    {
+      "shadow_id": "7052b242",
+      "symbol": "LINK-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "4.575895833333333333333333333"
+    },
+    {
+      "shadow_id": "afb4abfc",
+      "symbol": "LINK-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.65325"
+    },
+    {
+      "shadow_id": "3f28ef8f",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.2994906666666666666666666666"
+    },
+    {
+      "shadow_id": "9542d3e0",
+      "symbol": "LINK-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-1.53712"
+    },
+    {
+      "shadow_id": "ffb8ef63",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "0.071643"
+    },
+    {
+      "shadow_id": "9ab6c460",
+      "symbol": "HYPE-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.7207025"
+    },
+    {
+      "shadow_id": "c2b4246b",
+      "symbol": "HYPE-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-2.781748666666666666666666667"
+    },
+    {
+      "shadow_id": "dc549c6f",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-2.4343375"
+    },
+    {
+      "shadow_id": "8cb8013e",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-0.3551686666666666666666666666"
+    },
+    {
+      "shadow_id": "7d617aea",
+      "symbol": "XRP-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "0.4964183333333333333333333332"
+    },
+    {
+      "shadow_id": "82a80dd4",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-2.075538333333333333333333334"
+    },
+    {
+      "shadow_id": "97024067",
+      "symbol": "HYPE-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "4.346793866666666666666666667"
+    },
+    {
+      "shadow_id": "82f0ea58",
+      "symbol": "HYPE-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": false,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.220246"
+    },
+    {
+      "shadow_id": "722ae847",
+      "symbol": "HYPE-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-0.1075576666666666666666666666"
+    },
+    {
+      "shadow_id": "cac962b3",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-1.001720833333333333333333333"
+    },
+    {
+      "shadow_id": "96914fe4",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-0.060823"
+    },
+    {
+      "shadow_id": "98a413e5",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": true,
+      "pnl_usdt_at_100u": "-4.085904"
+    },
+    {
+      "shadow_id": "fd406122",
+      "symbol": "XRP-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "3.00235"
+    },
+    {
+      "shadow_id": "26ff7eef",
+      "symbol": "BTC-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-2.669756433333333333333333333"
+    },
+    {
+      "shadow_id": "3e6a29a7",
+      "symbol": "DOGE-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": true,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-4.514211666666666666666666666"
+    },
+    {
+      "shadow_id": "3b76dc6e",
+      "symbol": "ETH-USDT-SWAP",
+      "side": "short",
+      "tactical_track_gate": "fail",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "-4.854327466666666666666666666"
+    },
+    {
+      "shadow_id": "acb155e4",
+      "symbol": "WLD-USDT-SWAP",
+      "side": "long",
+      "tactical_track_gate": "pass",
+      "tactical_trend_exhaustion_warning": true,
+      "tactical_weak_volume_oi": false,
+      "tactical_weak_provenance": false,
+      "pnl_usdt_at_100u": "6.259334999999999999999999999"
+    }
+  ]
+}
