@@ -709,6 +709,16 @@ def test_process_event_opens_valid_reduced_policy_with_half_size(
         ),
         (
             {
+                **_tactical_record(id="shadow-unsupported-version", decided_at=100.0),
+                "sidecar_policy_version": "shadow-sidecar-v999",
+            },
+            "sidecar_policy_version_unsupported",
+            "shadow-sidecar-v999",
+            "full",
+            None,
+        ),
+        (
+            {
                 **_tactical_record(id="shadow-stamp-mismatch", decided_at=100.0),
                 "sidecar_risk_tier": "reduced",
             },
@@ -759,6 +769,31 @@ def test_process_event_rejects_invalid_policy_before_exchange_work(
     )
     if expected_age is not None:
         assert row["sidecar_policy_age_seconds"] == pytest.approx(expected_age)
+
+
+def test_process_event_rejects_unmappable_verified_policy_with_audit(
+    tmp_path, monkeypatch
+):
+    mod = _load_sidecar_module()
+    monkeypatch.setattr(mod.time, "time", lambda: 100.0)
+    fetch_positions = MagicMock(return_value=[])
+    monkeypatch.setattr(mod, "_fetch_exchange_positions", fetch_positions)
+    paths, state, registry, executor = _process_event_fixture(tmp_path, mod)
+    record = _tactical_record(id="shadow-bad-plan", decided_at=100.0, stop_loss=0)
+    args = SimpleNamespace(dry_run=False, max_active="3", size_usdt="100")
+
+    mod._process_event(args, paths, state, registry, executor, _event(record))
+
+    fetch_positions.assert_not_called()
+    executor.open_sidecar_plan.assert_not_called()
+    assert state["seen_shadow_ids"]["shadow-bad-plan"] == "rejected"
+    row = _audit_rows(paths.audit)[0]
+    assert row["event_type"] == "rejected"
+    assert row["shadow_id"] == "shadow-bad-plan"
+    assert row["reason"] == "missing_stop_loss"
+    assert row["sidecar_policy_version"] == SIDECAR_POLICY_VERSION
+    assert row["sidecar_risk_tier"] == "full"
+    assert row["requested_size_usdt"] == 100.0
 
 
 def test_process_event_persists_sidecar_entry_drift_rejection_audit(tmp_path):

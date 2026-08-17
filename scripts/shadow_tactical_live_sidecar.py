@@ -781,16 +781,6 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         )
         return
 
-    plan, reason = map_shadow_record_to_plan(record, return_error=True)
-    if reason:
-        state["seen_shadow_ids"][shadow_id] = "rejected"
-        append_audit_event(
-            paths.audit,
-            "rejected",
-            {"shadow_id": shadow_id, "reason": reason},
-        )
-        return
-
     requested_size_usdt = _policy_tier_size_usdt(
         float(args.size_usdt),
         verification.risk_tier,
@@ -800,6 +790,16 @@ def _process_event(args, paths, state, registry, executor, event) -> None:
         "sidecar_risk_tier": verification.risk_tier,
         "requested_size_usdt": requested_size_usdt,
     }
+
+    plan, reason = map_shadow_record_to_plan(record, return_error=True)
+    if reason:
+        state["seen_shadow_ids"][shadow_id] = "rejected"
+        append_audit_event(
+            paths.audit,
+            "rejected",
+            {"shadow_id": shadow_id, "reason": reason, **policy_audit},
+        )
+        return
 
     if args.dry_run:
         state["seen_shadow_ids"][shadow_id] = "opened"
