@@ -21,8 +21,9 @@ This verification is local. It does not authorize cloud deployment, process
 restart, admission restoration, or a live PnL claim. The sealed replay proves
 policy classification and counterfactual tier arithmetic only.
 
-Branch handling and the final Comet verify guard are still pending the required
-Comet finishing-branch user decision.
+Independent code review found no Critical or Important issues and assessed the
+change as ready to merge. Branch handling and the final Comet verify guard are
+still pending the required Comet finishing-branch user decision.
 
 ## Scorecard
 
@@ -58,13 +59,15 @@ Comet finishing-branch user decision.
 | Neighboring Tactical V2 isolation set | `python3.12 -m pytest -q tests/test_tactical_v2_candidate_bus.py tests/test_tactical_v2_shadow.py tests/test_tactical_v2_main_isolation.py tests/test_shadow_tactical_owner_isolation.py` -> `33 passed in 2.28s` |
 | Full repository regression | `python3.12 -m pytest -q` was executed by the build guard through `build_command`; earlier manual full-suite evidence for this build recorded `2267 passed, 5 skipped, 4 deselected` |
 | Credential/path scan | Added diff contains env variable names and test dummy values only; no actual secret-like value or credential file was added |
+| Independent code review | Completed by reviewer agent; no Critical or Important issues, two Minor non-blocking notes, ready to merge |
 
 ## Issues
 
 - CRITICAL: none found in local verification.
 - WARNING: branch handling is pending. Comet verify cannot transition to archive until the required finishing-branch option is chosen and `branch_status: handled` is recorded.
-- WARNING: independent code review is running and should be incorporated before final archive if it reports material findings.
 - WARNING: the cloud snapshot collected during build showed the resident Sidecar command was still `--max-active 5`; that is not this change's contract and must be handled as a separate rollout decision. No cloud restart or deployment was performed here.
+- MINOR: `SIDECAR_MAX_ACTIVE_POSITIONS = 3` exists while `resolve_sidecar_max_active()` hardcodes the same value in validation text. This is not behavioral drift today, but it is a future cleanup candidate.
+- MINOR: Sidecar process-boundary tests cover most policy rejection paths; malformed top-level evidence and nested evidence mismatch are covered in the pure verifier suite, not repeated at `_process_event()`. This is accepted as non-blocking because verifier-level coverage proves fail-closed reasons and CLI tests already prove rejected verifier outcomes stop before exchange/executor work.
 
 ## Operational Boundary
 
