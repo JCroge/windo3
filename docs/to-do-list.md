@@ -1,6 +1,6 @@
 # To-Do List
 
-更新日期：2026-08-12
+更新日期：2026-08-17
 2026-08-06 deployed-main baseline (pre-change)：Tactical V2 代码基线 `884ba60`；当时全量回归 `1878 passed, 4 deselected`。这不是本 change/branch 的最新验证结果。
 
 > **基线与逐 change 历史以 `CLAUDE.md` 顶部「当前事实」段为权威单一来源**，完整逐基线里程碑见 `docs/handoff.md`。本文件不再内联复制 change changelog（曾累积漂移至 1338，已于 2026-06-26 收口），只维护**当前阻断项、Go/No-Go、后续 P2 优化**。
@@ -50,6 +50,22 @@
 - Tactical V2 既有部署状态：保持 2026-08-12 实测的 `LIVE 100U x 3` 不变；本次 admission replay 的 `live_rollout_ready=false`，不构成扩大保证金/槽位或恢复 Sidecar admission 的授权。
 - 双 Main 重叠运行：**NO-GO**。当前未实现 live lifecycle 的跨进程 lease/fencing；候选准入并发测试不得被用作重叠 Main 安全证据。
 - **Sidecar admission / live 扩容：NO-GO**。Sidecar `admission_enabled=false` 必须保持；真实 quote-level executable evidence 与 fill-bound protection evidence 必须分别通过后才可评审恢复。当前不扩大 V2 保证金或槽位，也不改生产配置。
+- **Frozen Sidecar admission change：本地 build 中，非 live 授权**。`sidecar-frozen-admission-risk-tiers` 将 Judge 冻结为唯一策略决策点，Sidecar 只验证 `sidecar_policy_version` / eligibility / tier / rejection / evidence / 5 秒 TTL 后按 100U full、50U reduced、最多 3 仓执行。sealed 53-row replay 只证明 9 条 eligible 与 `+9.086859325U` tiered counterfactual arithmetic；不是 exchange-fill proof、未来 realized PnL 或恢复 Sidecar admission 的授权。恢复前必须 read-only 收集当前 process、owner、position、protection、pending PnL 与 admission facts。
+
+## Shadow Sidecar Frozen Admission 运维边界（2026-08-17）
+
+- 新 Tactical Shadow row 必须带冻结字段：`sidecar_live_eligible`、`sidecar_policy_version`、`sidecar_risk_tier`、`sidecar_rejection_reason`、`sidecar_decided_at`、`sidecar_policy_evidence`，以及 canonical evidence：`tactical_track_gate`、`tactical_trend_exhaustion_warning`、`tactical_weak_volume_oi`、`tactical_weak_provenance`。
+- Sidecar 不重算策略，只做 policy v1 integrity + freshness verification。历史 unstamped、unsupported version、evidence mismatch、outcome mismatch、malformed/future/stale timestamp 都在 exchange/executor 调用前 fail-closed。
+- 唯一可评审的恢复命令是 `python3 scripts/shadow_tactical_live_sidecar.py run --poll-seconds 2 --size-usdt 100 --max-active 3`；在当前 NO-GO 未解除前不得执行。Main `.env` / Main `MAX_TRADE_AMOUNT` 不随 Sidecar 100U ceiling 改动。
+- 本地验证 artifact：`tests/fixtures/shadow_sidecar_policy_53_trade_window.json` + `tests/test_shadow_sidecar_policy_replay.py`。fixture 含 53 个 audited Sidecar cohort row、9 个 policy-eligible row、all-100U counterfactual net `+4.47024185U`、tiered 100U/50U counterfactual net `+9.086859325U`。
+
+**Read-only cloud facts（2026-08-17 18:24-18:26 CST，禁止据此重启/部署）**：
+
+- Cloud repo `/opt/crypto-arbitrage` at HEAD `2e2d187` has a dirty worktree and is not this local change branch. Main process PID `3267240` is running `run_agents.py`; Sidecar process PID `3505073` is running `scripts/shadow_tactical_live_sidecar.py run --poll-seconds 2 --size-usdt 100 --max-active 5`.
+- Sidecar `status`: `opened=127`、`rejected=2769`、`active=0`、`admission_enabled=true`。State file has `seen_count=5091` and no `admission_disabled_at/by` marker.
+- Owner/local state: `shadow_tactical_live_owners.json` has 132 owners, all `closed`; `shadow_tactical_live_positions.json` is empty; Main `data/positions.json` is empty.
+- Drain-style read-only exchange/protection summary: `exchange_state=flat`、exchange positions `0`、Sidecar-relevant exchange positions `0`、local positions `0`、protection orders `0`、pending entries `0`、ownership proof all true. Report remains `complete=false` because `admission_enabled=1` and `pending_pnl=14` are unresolved; `final_pnl=1`.
+- 当前云服 Sidecar 参数与本 change 合约不一致（live 正在 `--max-active 5`，新合约为 1..3 且生产命令 3）。任何恢复/重启都必须先完成 admission stop/drain/pending-PnL 处理、同步代码、再按 `--max-active 3` 受控启动。
 
 ## Tactical V2 Shadow Admission Parity 运维报告（2026-08-12）
 

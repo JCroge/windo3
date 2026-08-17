@@ -22,6 +22,6 @@
 
 - [x] 4.1 Create a sealed local fixture from the read-only 53-row audit cohort with only policy and audited PnL fields.
 - [x] 4.2 Add deterministic replay tests asserting nine eligible rows, stable tier identities/reasons, approved tiered PnL, and repeated-loop stability.
-- [ ] 4.3 Run focused Shadow/Sidecar/Judge/executor tests and the relevant repository regression suite.
-- [ ] 4.4 Update operator documentation with the frozen-policy contract, `100U x 3` Sidecar command, fail-closed migration, and no-live-claim replay boundary.
-- [ ] 4.5 Collect current cloud owner, position, protection, process, and admission facts before any deployment or restart decision.
+- [x] 4.3 Run focused Shadow/Sidecar/Judge/executor tests and the relevant repository regression suite.
+- [x] 4.4 Update operator documentation with the frozen-policy contract, `100U x 3` Sidecar command, fail-closed migration, and no-live-claim replay boundary.
+- [x] 4.5 Collect current cloud owner, position, protection, process, and admission facts before any deployment or restart decision.

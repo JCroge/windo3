@@ -65,10 +65,10 @@ kill -SIGINT $(pgrep -f run_agents.py)
 
 **Shadow Tactical live sidecar（独立进程，高风险实验入口）**：
 
-Sidecar 只用于镜像 strict eligible Tactical shadow 记录，写 `data/shadow_tactical_live_*` 专属状态，不应修改 Main `.env` 或重启 Main。**当前线上 admission 已关闭，仅保留 resident monitor 管理历史 owner；不得直接执行 `run` 恢复新开仓。** OKX `net_mode` 下同标的堆叠会被阻断；ghost exposure 会 fail-closed 并要求人工处理。
+Sidecar 只用于镜像 strict eligible Tactical shadow 记录，写 `data/shadow_tactical_live_*` 专属状态，不应修改 Main `.env` 或重启 Main。目标运维状态是 admission 关闭、只保留 resident monitor 管理历史 owner；**2026-08-17 read-only 复核发现云服 Sidecar 实际仍为 `admission_enabled=true`，进程命令为 `--size-usdt 100 --max-active 5`，这不是本 change 的授权状态。不得直接重启、扩容或把当前运行态当作已验收；恢复/重启前必须先处理 admission stop、drain、pending PnL 和代码同步。** OKX `net_mode` 下同标的堆叠会被阻断；ghost exposure 会 fail-closed 并要求人工处理。
 
 ```bash
-# 当前允许：只读状态、维持 admission 关闭、生成 drain report
+# 受控运维动作：status 为只读；stop-admission / stop 会改状态，需操作员明确执行
 python3 scripts/shadow_tactical_live_sidecar.py status
 python3 scripts/shadow_tactical_live_sidecar.py stop-admission
 python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live
@@ -77,10 +77,20 @@ python3 scripts/shadow_tactical_live_sidecar.py drain-report --namespace live --
 # 仅当 exchange-flat、无 owner exposure/pending 且无需 resident monitor 时允许 stop
 python3 scripts/shadow_tactical_live_sidecar.py stop
 # PROHIBITED while admission_enabled=false; do not run or enable admission:
-# python3 scripts/shadow_tactical_live_sidecar.py run --duration-hours 24 --size-usdt 100 --max-active 3
+# python3 scripts/shadow_tactical_live_sidecar.py run --poll-seconds 2 --size-usdt 100 --max-active 3
 ```
 
 `--duration-hours` 已废弃，不会让 resident monitor 自动退出。`stop-admission` 与 runner 的单条候选处理共用 `<state>.lock`：命令会等待已进入交易所 I/O 的当前 admission attempt 完成，再持久化 `admission_enabled=false`；命令成功返回后，runner 每条 event 都会重读该状态，不得再开新仓或把 `false` 覆盖回 `true`。之后 monitor 仍继续管理并退出 owner-bound 旧仓。只有 `drain-report` 显示 `complete=true` 时才允许加 `--archive`；unknown exchange state、pending entry、open owner、保护单歧义或未说明的 pending PnL 都必须保持 incomplete。续跑前先确认 `status` 里 active 合理，并检查 `data/shadow_tactical_live_events.jsonl` 没有 `monitor_ghost_exposure` 或 `monitor_ambiguous_net_mode_stack`。
+
+**Frozen Sidecar admission contract（change `sidecar-frozen-admission-risk-tiers`）**：
+
+Judge 是 Sidecar admission 的唯一策略决策点。未来 Tactical Shadow row 必须在写入 `data/rejected_signal_events.jsonl` 前冻结并持久化这些字段：`sidecar_live_eligible`、`sidecar_policy_version`、`sidecar_risk_tier`、`sidecar_rejection_reason`、`sidecar_decided_at`、`sidecar_policy_evidence`，以及 canonical raw evidence：`tactical_track_gate`、`tactical_trend_exhaustion_warning`、`tactical_weak_volume_oi`、`tactical_weak_provenance`。
+
+Sidecar 只验证冻结结果，不重算指标、LLM、provenance 或 Tactical economics。缺 stamp、unsupported version、字段类型错误、top-level evidence 与 `sidecar_policy_evidence` 不一致、冻结 outcome 与 policy v1 重算结果不一致，全部在任何 exchange / executor 调用前 fail-closed。`sidecar_decided_at` 超过 5 秒、缺失、非有限值或未来偏移超过 1 秒也 fail-closed；历史 unstamped row 只保留研究用途，不允许 backfill live admission。
+
+Policy v1 tier 规则固定：`tactical_track_gate != pass` 拒绝，`tactical_trend_exhaustion_warning=true` 拒绝；clean eligible row 为 `full`，按 `--size-usdt 100` 请求 100U；`tactical_weak_volume_oi=true` 或 `tactical_weak_provenance=true` 为 `reduced`，请求 50U。Sidecar `--max-active` 只允许 1..3，生产上限是 3；`ContractExecutor` 的 Sidecar-only `max_trade_amount_override` 使用 100U ceiling，Main 的 `MAX_TRADE_AMOUNT` 和 Main 进程风险配置不变。
+
+本地 sealed replay fixture `tests/fixtures/shadow_sidecar_policy_53_trade_window.json` 只证明 policy v1 在 53-row audited Sidecar cohort 上得到 9 条 eligible、all-100U counterfactual net `+4.47024185U`、100U/50U tiered counterfactual net `+9.086859325U`，并且 100-loop deterministic replay 稳定。这个 replay 不是 exchange-fill proof、不是未来 realized PnL，也不授权 live restart。恢复 admission 前必须重新收集当前 process、owner、position、protection、pending PnL 与 admission facts；有 active owner 或 unknown exchange/protection state 时不得重启。
 
 **Telegram远程命令**（需配置TELEGRAM_BOT_TOKEN和TELEGRAM_CHAT_ID）：
 | 命令 | 功能 |
