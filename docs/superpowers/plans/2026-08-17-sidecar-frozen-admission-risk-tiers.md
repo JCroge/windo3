@@ -331,17 +331,17 @@ git commit -m "fix: give Sidecar a dedicated bounded risk ceiling"
 - Create: `tests/fixtures/shadow_sidecar_policy_53_trade_window.json`
 - Create: `tests/test_shadow_sidecar_policy_replay.py`
 
-- [ ] **Step 1: Extract the cohort read-only from cloud into local stdout**
+- [ ] **Step 1: Extract and join the audited cohort read-only**
 
-Use `ssh root@45.77.27.55` only for read-only parsing of `/opt/crypto-arbitrage/data/rejected_signal_events.jsonl`. Select epoch `1786602300..1786930980` (`2026-08-13 14:25:00` through `2026-08-17 09:43:00` CST), join each `rejected_plan_created` Tactical record to its final `shadow_tp`, `shadow_sl`, or `shadow_tactical_max_hold` event by `record.id`, and emit only the fixture fields defined in the design doc. Do not write any cloud file, change `.env`, or restart a process.
+Use the Sidecar owner registry as the authoritative population: select owners whose `opened_at` is within the exact inclusive epoch window `1786602333.548581..1786931035.0` (`2026-08-13 14:25:33.548581` through `2026-08-17 09:43:55` CST). This must produce 53 unique `shadow_id` and entry `order_id` values. For those ids, scan `/opt/crypto-arbitrage/data/rejected_signal_events.jsonl` in append order and retain the last `rejected_plan_created` row per id; do not apply a second event-time filter. Join audited actual PnL by owner entry order id, normalize gross, fees, and funding independently to 100U with decimal arithmetic, and use that net as `pnl_usdt_at_100u`. Shadow settlement rows are attribution evidence only and are not the actual-PnL source. Read cloud files only through stdout; do not write any cloud file, change `.env`, call a trading endpoint, or restart a process.
 
 Validate extraction facts before adding the fixture:
 
 ```text
 source Tactical trades: 53
 policy-eligible trades: 9
-all-100U net PnL: +4.4702U
-tiered 100U/50U net PnL: +9.09U within source precision
+all-100U net PnL: +4.47024185U
+tiered 100U/50U net PnL: +9.086859325U
 ```
 
 - [ ] **Step 2: Add a failing deterministic replay test**
@@ -356,7 +356,7 @@ Expected before fixture finalization: failure identifies count, tier, id, reason
 
 - [ ] **Step 4: Finalize fixture metadata and confirm GREEN**
 
-Fixture metadata must include source path, window start/end in epoch and CST, extraction timestamp, SHA-256 of canonical trade rows, row count, eligible count, and counterfactual disclaimer.
+Fixture metadata must include owner/event/actual-PnL source paths and hashes, the exact owner window start/end in epoch and CST, extraction timestamp, decimal normalization precision, SHA-256 of canonical trade rows, row count, eligible count, and counterfactual disclaimer. Record any raw-source completeness limitation instead of silently presenting a derived audit as independently regenerated exchange evidence.
 
 Run: `python3 -m pytest -q tests/test_shadow_sidecar_policy_replay.py`
 

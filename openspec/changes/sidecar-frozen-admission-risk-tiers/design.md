@@ -38,7 +38,7 @@ Constraints include preserving every Shadow row for counterfactual research, kee
 
 6. **Make three positions a hard Sidecar ceiling.** Runtime values below three remain valid for cautious operation; values above three fail startup rather than silently expanding risk. The production command remains `--size-usdt 100 --max-active 3`.
 
-7. **Replay policy, not future exchange behavior.** A sealed local fixture derived read-only from the 53-row cloud cohort will contain only fields needed to classify the row and its audited resolved PnL. The replay asserts nine eligible rows, stable full/reduced assignments, and the approved 100U/50U arithmetic over repeated loops. Live latency, drift, protection, and realized PnL remain separate rollout evidence.
+7. **Replay policy, not future exchange behavior.** A sealed local fixture uses the Sidecar owner registry's exact `opened_at` window to identify the 53-trade population, joins policy evidence by `shadow_id`, and joins audited actual PnL by the owner entry order id. It will contain only fields needed to classify the row and its audited 100U-normalized PnL. The replay asserts nine eligible rows, stable full/reduced assignments, and the approved 100U/50U arithmetic over repeated loops. Live latency, drift, protection, and future realized PnL remain separate rollout evidence.
 
 **Alternatives considered:**
 

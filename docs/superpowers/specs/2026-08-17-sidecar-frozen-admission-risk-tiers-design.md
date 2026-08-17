@@ -137,7 +137,7 @@ After `load_config()` or its existing fallback establishes Main risk values, val
 
 ## Replay Fixture
 
-Create `tests/fixtures/shadow_sidecar_policy_53_trade_window.json` from a read-only cloud extraction. Store only:
+Create `tests/fixtures/shadow_sidecar_policy_53_trade_window.json` from the audited Sidecar cohort. The authoritative population is the owner registry filtered by the exact inclusive `opened_at` window `1786602333.548581..1786931035.0`; this yields 53 unique `shadow_id` and entry-order identities. Join each identity to the last `rejected_plan_created` row in append order without applying a second event-time filter. Join actual PnL by owner entry order id and normalize gross, fees, and funding independently to 100U using decimal arithmetic. Shadow settlement rows do not replace the actual fill/fee audit. Store only:
 
 ```text
 shadow_id
@@ -148,7 +148,7 @@ weak_provenance
 resolved_pnl_pct or audited pnl_usdt_at_100u
 ```
 
-The fixture metadata records source path, UTC/CST window, row count, extraction hash, and the approved aggregate. It contains no credentials, account balances, order ids, or mutable production state.
+The fixture metadata records owner/event/actual-PnL source paths and hashes, the exact UTC/CST owner window, row count, decimal precision, canonical-row hash, approved aggregate, and any raw-source completeness limitation. It contains no credentials, account balances, order ids, or mutable production state.
 
 The replay helper remains local and pure. It classifies all 53 rows, asserts exactly nine eligible, scales full rows by 1.0 and reduced rows by 0.5 against the sealed 100U PnL, and repeats classification enough times to prove stable identities, reasons, tiers, and aggregate arithmetic. The expected tiered result is `+9.09U` within fixture precision. It is labeled counterfactual, not realized PnL.
 
