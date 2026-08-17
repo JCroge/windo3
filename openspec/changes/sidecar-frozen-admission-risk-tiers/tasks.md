@@ -7,9 +7,9 @@
 
 ## 2. Sidecar Verification And Sizing
 
-- [ ] 2.1 Add failing Sidecar tests for policy integrity, five-second freshness, historical unstamped rows, and no exchange calls on policy rejection.
-- [ ] 2.2 Enforce policy verification and freshness before dry-run, capacity, account exposure, and executor calls.
-- [ ] 2.3 Apply full/reduced sizing from the verified risk tier and persist tier, requested size, policy version, and rejection evidence in audits.
+- [x] 2.1 Add failing Sidecar tests for policy integrity, five-second freshness, historical unstamped rows, and no exchange calls on policy rejection.
+- [x] 2.2 Enforce policy verification and freshness before dry-run, capacity, account exposure, and executor calls.
+- [x] 2.3 Apply full/reduced sizing from the verified risk tier and persist tier, requested size, policy version, and rejection evidence in audits.
 - [ ] 2.4 Enforce a startup capacity range of one through three and retain existing same-symbol/exchange fail-closed guards.
 
 ## 3. Dedicated Sidecar Risk Ceiling
