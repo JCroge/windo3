@@ -39,6 +39,7 @@ class SidecarPolicyVerification:
     frozen_eligible: bool | None
     frozen_risk_tier: str | None
     frozen_rejection_reason: str | None
+    frozen_policy_evidence: Mapping[str, object] | None = None
 
     def audit_payload(self, shadow_id: str | None = None) -> dict:
         payload = {
@@ -48,6 +49,9 @@ class SidecarPolicyVerification:
             "sidecar_risk_tier": self.frozen_risk_tier,
             "sidecar_policy_age_seconds": self.age_seconds,
             "sidecar_policy_evidence": dict(self.policy_evidence or {}),
+            "sidecar_frozen_policy_evidence": dict(
+                self.frozen_policy_evidence or {}
+            ),
         }
         if shadow_id is not None:
             payload["shadow_id"] = shadow_id
@@ -170,8 +174,9 @@ def verify_sidecar_policy(record: dict, *, now: float) -> SidecarPolicyVerificat
             decision=decision,
         )
 
-    decided_at = record.get("sidecar_decided_at")
-    if not _is_finite_number(decided_at) or not _is_finite_number(now):
+    decided_at = _finite_float(record.get("sidecar_decided_at"))
+    normalized_now = _finite_float(now)
+    if decided_at is None or normalized_now is None:
         return _verification_failure(
             record,
             "sidecar_policy_timestamp_invalid",
@@ -180,7 +185,15 @@ def verify_sidecar_policy(record: dict, *, now: float) -> SidecarPolicyVerificat
             decision=decision,
         )
 
-    age_seconds = float(now) - float(decided_at)
+    age_seconds = normalized_now - decided_at
+    if not math.isfinite(age_seconds):
+        return _verification_failure(
+            record,
+            "sidecar_policy_timestamp_invalid",
+            policy_version=version,
+            evidence=evidence,
+            decision=decision,
+        )
     if age_seconds < -SIDECAR_POLICY_FUTURE_TOLERANCE_SECONDS:
         return _verification_failure(
             record,
@@ -209,6 +222,9 @@ def verify_sidecar_policy(record: dict, *, now: float) -> SidecarPolicyVerificat
         rejection_reason=decision.rejection_reason,
         age_seconds=age_seconds,
         policy_evidence=_freeze_evidence(evidence),
+        frozen_policy_evidence=_freeze_evidence(
+            record.get("sidecar_policy_evidence")
+        ),
         frozen_eligible=frozen_eligible,
         frozen_risk_tier=frozen_risk_tier,
         frozen_rejection_reason=frozen_reason,
@@ -236,14 +252,17 @@ def _verification_failure(
         rejection_reason=reason,
         age_seconds=age_seconds,
         policy_evidence=_freeze_evidence(evidence),
+        frozen_policy_evidence=_freeze_evidence(
+            record.get("sidecar_policy_evidence")
+        ),
         frozen_eligible=frozen_eligible,
         frozen_risk_tier=frozen_risk_tier,
         frozen_rejection_reason=frozen_reason,
     )
 
 
-def _freeze_evidence(evidence: dict | None) -> Mapping[str, object] | None:
-    if evidence is None:
+def _freeze_evidence(evidence: object) -> Mapping[str, object] | None:
+    if type(evidence) is not dict:
         return None
     return MappingProxyType(dict(evidence))
 
@@ -266,8 +285,14 @@ def _strict_optional_str(value: object) -> str | None:
     return value if type(value) is str else None
 
 
-def _is_finite_number(value: object) -> bool:
-    return type(value) in {int, float} and math.isfinite(float(value))
+def _finite_float(value: object) -> float | None:
+    if type(value) not in {int, float}:
+        return None
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return normalized if math.isfinite(normalized) else None
 
 
 __all__ = [

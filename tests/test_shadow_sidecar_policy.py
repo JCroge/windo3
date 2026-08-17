@@ -310,6 +310,27 @@ def test_verify_rejects_nested_only_integer_boolean_substitutes(
     assert verified.rejection_reason == "sidecar_policy_evidence_mismatch"
 
 
+def test_evidence_mismatch_audit_preserves_canonical_and_frozen_evidence():
+    stamped = stamp_sidecar_policy(
+        _plan(tactical_weak_volume_oi=True),
+        decided_at=100.0,
+    )
+    stamped["sidecar_policy_evidence"]["tactical_weak_volume_oi"] = 1
+
+    verified = verify_sidecar_policy(stamped, now=101.0)
+    payload = verified.audit_payload("shadow-1")
+
+    assert verified.rejection_reason == "sidecar_policy_evidence_mismatch"
+    assert dict(verified.policy_evidence)["tactical_weak_volume_oi"] is True
+    assert type(
+        verified.frozen_policy_evidence["tactical_weak_volume_oi"]
+    ) is int
+    assert payload["sidecar_policy_evidence"]["tactical_weak_volume_oi"] is True
+    assert type(
+        payload["sidecar_frozen_policy_evidence"]["tactical_weak_volume_oi"]
+    ) is int
+
+
 def test_verify_rejects_malformed_top_level_evidence():
     stamped = stamp_sidecar_policy(_plan(), decided_at=100.0)
     stamped["tactical_weak_volume_oi"] = 1
@@ -355,6 +376,39 @@ def test_verify_rejects_malformed_or_non_finite_decision_timestamp(timestamp):
     assert verified.age_seconds is None
 
 
+@pytest.mark.parametrize(
+    ("decided_at", "now"),
+    [(10**1000, 0.0), (0.0, 10**1000)],
+)
+def test_verify_huge_integer_timestamps_fail_closed_without_raising(
+    decided_at,
+    now,
+):
+    stamped = stamp_sidecar_policy(_plan(), decided_at=decided_at)
+
+    verified = verify_sidecar_policy(stamped, now=now)
+
+    assert verified.valid is False
+    assert verified.admissible is False
+    assert verified.rejection_reason == "sidecar_policy_timestamp_invalid"
+    assert verified.age_seconds is None
+
+
+@pytest.mark.parametrize(
+    ("decided_at", "now"),
+    [(-1e308, 1e308), (1e308, -1e308)],
+)
+def test_verify_rejects_non_finite_computed_age(decided_at, now):
+    stamped = stamp_sidecar_policy(_plan(), decided_at=decided_at)
+
+    verified = verify_sidecar_policy(stamped, now=now)
+
+    assert verified.valid is False
+    assert verified.admissible is False
+    assert verified.rejection_reason == "sidecar_policy_timestamp_invalid"
+    assert verified.age_seconds is None
+
+
 def test_verification_is_immutable_and_exposes_audit_payload():
     stamped = stamp_sidecar_policy(_plan(), decided_at=100.0)
     verified = verify_sidecar_policy(stamped, now=101.0)
@@ -370,4 +424,5 @@ def test_verification_is_immutable_and_exposes_audit_payload():
         "sidecar_risk_tier": "full",
         "sidecar_policy_age_seconds": 1.0,
         "sidecar_policy_evidence": canonical_policy_evidence(_plan()),
+        "sidecar_frozen_policy_evidence": canonical_policy_evidence(_plan()),
     }
