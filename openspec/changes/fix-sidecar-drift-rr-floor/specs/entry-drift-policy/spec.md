@@ -35,3 +35,20 @@ the existing floor selection: `gate_metadata.rr_floor` when present, otherwise
 - **WHEN** a Sidecar Tactical plan has `tactical_min_rr_for_track=0.75`
 - **AND** drift is in the medium band
 - **THEN** the drift gate SHALL use `0.95` as the R:R floor
+
+### Requirement: Sidecar live opens SHALL enforce stale-entry drift protection
+The sidecar live open path SHALL evaluate live price drift against the Tactical shadow plan entry reference before submitting a market order. If explicit drift anchors are missing, the sidecar SHALL derive stop and TP percentages from `entry_ref`, `stop_loss`, and the first `take_profit` level when possible. A stale sidecar plan beyond the configured hard drift bound SHALL be rejected before order submission. A plan that passes bounded drift recalculation SHALL use the recomputed SL/TP values for the current open and continue through all existing balance, slippage, exchange precheck, minimum-size, and protective-SL checks.
+
+#### Scenario: Bounded Sidecar recalculation opens with recomputed protection
+- **WHEN** a Sidecar Tactical plan has a valid Tactical R:R floor
+- **AND** live drift is within the small or medium band
+- **AND** recomputed R:R clears the applicable floor
+- **THEN** the Sidecar SHALL continue toward order submission
+- **AND** it SHALL use recomputed SL/TP values derived from the live price
+- **AND** it SHALL retain the original entry reference in attribution
+
+#### Scenario: Failed Sidecar recalculation still rejects
+- **WHEN** a Sidecar Tactical plan's drift is within the hard bound
+- **AND** recomputed R:R is below the applicable floor
+- **THEN** the Sidecar SHALL reject before exchange order submission
+- **AND** it SHALL record `drift_rr_floor_fail`

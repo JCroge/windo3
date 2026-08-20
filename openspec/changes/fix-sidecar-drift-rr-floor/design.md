@@ -10,6 +10,7 @@ The fix must preserve the existing generic executor behavior and the medium-band
 
 - Use `tactical_min_rr_for_track` as the Sidecar drift base floor when it is finite and positive.
 - Keep the existing `gate_metadata.rr_floor` and `2.0` fallback behavior for non-Tactical plans.
+- Accept `recalc_pass` Sidecar plans by applying the classifier's recomputed SL/TP before downstream execution checks.
 - Make the behavior deterministic and covered by a regression test.
 - Restart the cloud Sidecar with `--max-active 3` after deployment.
 
@@ -17,7 +18,7 @@ The fix must preserve the existing generic executor behavior and the medium-band
 
 - Do not change the frozen Sidecar policy, risk tiers, active-cap semantics, or Main execution path.
 - Do not lower the Tactical admission policy itself.
-- Do not bypass drift protection or submit an order during deployment.
+- Do not bypass drift protection: `drift_too_large`, invalid anchors, failed R:R, balance, slippage, exchange precheck, and protection failures still reject.
 
 ## Decisions
 
@@ -30,12 +31,15 @@ The fix must preserve the existing generic executor behavior and the medium-band
 3. **Reject malformed floors safely.**
    Non-numeric, non-finite, or non-positive Tactical floors are ignored and fall back to the existing floor selection rather than weakening the guard.
 
-4. **Deploy by process restart with explicit bounded arguments.**
+4. **Use recomputed protection only after `recalc_pass`.**
+   The classifier's new SL/TP are copied to the Sidecar plan before order construction. The original entry reference remains unchanged for attribution, and the hard drift bands remain unchanged.
+
+5. **Deploy by process restart with explicit bounded arguments.**
    The cloud Sidecar will be restarted using `--size-usdt 100 --max-active 3`; Main will not be restarted or reconfigured.
 
 ## Risks / Trade-offs
 
-- [Risk] A lower Tactical floor admits more drifted candidates than the generic `2.0` floor. → Mitigation: the candidate already passed frozen Tactical policy, the hard drift bands remain unchanged, and SL/TP side validation, slippage, precheck, and protective-SL checks remain active.
+- [Risk] A lower Tactical floor and bounded recomputation admit more drifted candidates than the previous strict reject path. → Mitigation: the candidate already passed frozen Tactical policy, the hard drift bands remain unchanged, and SL/TP side validation, slippage, precheck, and protective-SL checks remain active.
 - [Risk] Cloud SSH instability can make deployment verification intermittent. → Mitigation: use short read-only probes, verify process command/PID, status, and audit output after restart.
 
 ## Migration Plan

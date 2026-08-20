@@ -216,19 +216,28 @@ def test_open_sidecar_plan_rejects_large_entry_drift_before_order():
     assert ex._pending_drift_alerts[-1]["type"] == "sidecar_entry_drift_rejected"
 
 
-def test_open_sidecar_plan_rejects_recalc_pass_with_explicit_sidecar_reason():
+def test_open_sidecar_plan_accepts_recalc_pass_with_recomputed_protection():
     ex = _executor()
     ex.exchange.fetch_ticker.return_value = {"last": 1.26}
 
-    assert (
-        ex.open_sidecar_plan(_plan(stop_loss=1.23, take_profit=[1.32]), size_usdt=30.0)
-        is None
+    pos = ex.open_sidecar_plan(
+        _plan(
+            stop_loss=1.23,
+            take_profit=[1.32],
+            gate_metadata={
+                "reject_reason": "main_quality_failed:weak_volume_oi",
+                "tactical_track_gate": "pass",
+                "tactical_min_rr_for_track": 0.75,
+            },
+        ),
+        size_usdt=30.0,
     )
 
-    ex.exchange.create_order.assert_not_called()
-    assert ex._pending_drift_alerts[-1]["type"] == "sidecar_entry_drift_rejected"
-    assert ex._pending_drift_alerts[-1]["decision"] == "recalc_pass"
-    assert ex._pending_drift_alerts[-1]["reason"] == "sidecar_recalc_required"
+    assert pos["stop_loss"] == pytest.approx(1.23984)
+    assert pos["take_profit"] == pytest.approx(1.33056)
+    assert pos["gate_metadata"]["entry_drift"]["decision"] == "recalc_pass"
+    assert pos["gate_metadata"]["entry_drift"]["reason"] is None
+    ex.exchange.create_order.assert_called_once()
 
 
 def test_sidecar_drift_recalculation_uses_tactical_rr_floor():

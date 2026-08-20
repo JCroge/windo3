@@ -3262,9 +3262,37 @@ class ContractExecutor:
             return False, {"decision": "missing_anchor"}
 
         decision = self._classify_entry_drift(drift_plan, live_price)
-        reason = decision.reason
         if decision.decision == "recalc_pass":
-            reason = "sidecar_recalc_required"
+            if not decision.new_plan:
+                self._enqueue_drift_alert(
+                    "sidecar_entry_drift_rejected",
+                    symbol=plan.get("symbol"),
+                    side=plan.get("side"),
+                    drift_pct=decision.drift_pct,
+                    decision="recalc_fail",
+                    reason="sidecar_recalc_missing_plan",
+                    source="sidecar",
+                    shadow_id=plan.get("shadow_id"),
+                )
+                return False, {
+                    "band": decision.band,
+                    "drift_pct": decision.drift_pct,
+                    "decision": "recalc_fail",
+                    "reason": "sidecar_recalc_missing_plan",
+                }
+            plan["stop_loss"] = decision.new_plan["stop_loss"]
+            plan["take_profit"] = list(decision.new_plan["take_profit"])
+            return True, {
+                "band": decision.band,
+                "drift_pct": decision.drift_pct,
+                "decision": decision.decision,
+                "reason": None,
+                "rr_actual": decision.rr_actual,
+                "rr_floor_used": decision.rr_floor_used,
+                "recomputed_entry": decision.new_plan["recomputed_entry"],
+            }
+
+        reason = decision.reason
         metadata = {
             "band": decision.band,
             "drift_pct": decision.drift_pct,
