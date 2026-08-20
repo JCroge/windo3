@@ -11,6 +11,6 @@
 
 ## 3. Deployment
 
-- [ ] 3.1 Commit and sync the fix to cloud.
-- [ ] 3.2 Restart Sidecar with `--size-usdt 100 --max-active 3` and verify runtime state.
-- [ ] 3.3 Observe post-restart audit for new opens, executor rejects, and safety anomalies.
+- [x] 3.1 Commit and sync the fix to cloud.
+- [x] 3.2 Restart Sidecar with `--size-usdt 100 --max-active 3` and verify runtime state.
+- [x] 3.3 Observe post-restart audit for new opens, executor rejects, and safety anomalies.
