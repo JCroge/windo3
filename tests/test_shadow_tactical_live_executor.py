@@ -231,6 +231,51 @@ def test_open_sidecar_plan_rejects_recalc_pass_with_explicit_sidecar_reason():
     assert ex._pending_drift_alerts[-1]["reason"] == "sidecar_recalc_required"
 
 
+def test_sidecar_drift_recalculation_uses_tactical_rr_floor():
+    ex = _executor()
+    plan = _plan(
+        stop_loss=1.20,
+        take_profit=[1.2905],
+        sl_pct=0.04,
+        tp_pct=[0.0324],
+        gate_metadata={
+            "reject_reason": "main_quality_failed:weak_volume_oi",
+            "tactical_track_gate": "pass",
+            "tactical_min_rr_for_track": 0.75,
+        },
+    )
+
+    drift_plan = ex._build_sidecar_drift_plan(plan)
+    decision = ex._classify_entry_drift(drift_plan, 1.2745)
+
+    assert decision.band == "small"
+    assert decision.decision == "recalc_pass"
+    assert decision.rr_floor_used == 0.75
+    assert decision.rr_actual == pytest.approx(0.81)
+
+
+def test_sidecar_medium_drift_adds_bump_to_tactical_rr_floor():
+    ex = _executor()
+    plan = _plan(
+        stop_loss=1.20,
+        take_profit=[1.2905],
+        sl_pct=0.04,
+        tp_pct=[0.0324],
+        gate_metadata={
+            "reject_reason": "main_quality_failed:weak_volume_oi",
+            "tactical_track_gate": "pass",
+            "tactical_min_rr_for_track": 0.75,
+        },
+    )
+
+    drift_plan = ex._build_sidecar_drift_plan(plan)
+    decision = ex._classify_entry_drift(drift_plan, 1.2875)
+
+    assert decision.band == "medium"
+    assert decision.decision == "recalc_fail"
+    assert decision.rr_floor_used == pytest.approx(0.95)
+
+
 def test_open_sidecar_plan_rejects_when_sidecar_drift_anchors_missing():
     ex = _executor()
     plan = _plan(entry_ref=None)

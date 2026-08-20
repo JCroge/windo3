@@ -3217,6 +3217,17 @@ class ContractExecutor:
         if any(not math.isfinite(level) or level <= 0 for level in tp_pct):
             return None
 
+        attribution = dict(plan.get("gate_metadata") or {})
+        tactical_floor = attribution.get("tactical_min_rr_for_track")
+        if isinstance(tactical_floor, bool):
+            tactical_floor = None
+        try:
+            tactical_floor = float(tactical_floor)
+        except (TypeError, ValueError):
+            tactical_floor = None
+        if tactical_floor is not None and math.isfinite(tactical_floor) and tactical_floor > 0:
+            attribution["rr_floor"] = tactical_floor
+
         return {
             "symbol": plan.get("symbol"),
             "side": plan.get("side"),
@@ -3225,7 +3236,7 @@ class ContractExecutor:
             "tp_pct": tp_pct,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
-            "attribution": dict(plan.get("gate_metadata") or {}),
+            "attribution": attribution,
         }
 
     def _check_sidecar_entry_drift(self, plan: dict, live_price: float) -> tuple[bool, dict]:
